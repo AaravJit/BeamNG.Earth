@@ -184,6 +184,31 @@ def _height_grid(frame, elev, xy, q=None, cell=GRID_M):
     return np.ascontiguousarray(u), i0, j0
 
 
+def drawn_ground(frame, drawn, xy, q=None, cell=GRID_M):
+    """The drawn ground (n,) at the points xy (n, 2) over one _height_grid of drawn (lat, lon) -> metres: the block's
+    squares, each cut from its south-west corner to its north-east one, a point on the grid's last line in the square
+    before it - the ground follow_ground (earthfast.follow_tris) puts the road surfaces on. The sidewalks' curbs on
+    the ground the road surfaces lie on (the user, 2026-10-21: sidewalks on the drawn ground with upstream's road
+    surfaces): elev and the block differ by its height quantum q alone, more between its samples on hills. One drawn
+    call."""
+    xy = np.asarray(xy, np.float64).reshape(-1, 2)
+    if not len(xy):
+        return np.zeros(0)
+    grid, i0, j0 = _height_grid(frame, drawn, xy, q, cell)
+    gx, gy = xy[:, 0] / cell, xy[:, 1] / cell
+    i, j = np.floor(gx).astype(np.int64), np.floor(gy).astype(np.int64)
+    ny, nx = grid.shape
+    i -= (i - i0 == nx - 1) & (gx == i)         # a point on the grid's last line belongs to the square before it
+    j -= (j - j0 == ny - 1) & (gy == j)
+    li, lj = i - i0, j - j0
+    ok = (li >= 0) & (lj >= 0) & (li + 1 < nx) & (lj + 1 < ny)
+    li, lj = np.clip(li, 0, nx - 2), np.clip(lj, 0, ny - 2)
+    fx, fy = gx - i, gy - j
+    a, b, c, d = grid[lj, li], grid[lj, li + 1], grid[lj + 1, li], grid[lj + 1, li + 1]
+    z = np.where(fy > fx, a + fy * (c - a) + fx * (d - c), a + fx * (b - a) + fy * (d - b))
+    return np.where(ok, z, np.nan)
+
+
 def follow_ground(P, UV, T, grid, i0, j0, tol=None, cell=GRID_M):
     """(points (m, 3), uvs, triangles, source triangle) of the triangles T over P (n, 2) on the drawn ground (grid:
     _height_grid): earthfast.follow_tris."""

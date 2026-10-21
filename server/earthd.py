@@ -1067,11 +1067,19 @@ class Server:
             town = buildingsmod.coverage(items) < buildingsmod.POLES_COVERAGE
         rwalls = []
         ctx = []
+        box = roadsmod.tile_bbox(tx, ty)
+        cell_fn = lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads")  # noqa: E731
+
+        def drawn(la, lo):      # the block's ground: raised over the low arches as the terrain is (_make_heightmap_here)
+            return roadsmod.block_arch_raise(anchor.tunnels, cell_fn, anchor.frame, la, lo, elev(la, lo),
+                                             (box[0] - 8, box[1] - 8, box[2] + 8, box[3] + 8))
         chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, elev, urban, walks=walks, deck_context=ctx, bridges=anchor.bridges,
                                      widths=self.road_widths, props=props, lines=lines, wires=wires, town=town, park=park,
                                      left_hand=self.left_hand(anchor), mph=self.mph(anchor),
                                      structures=buildingsmod.centres(items, tx, ty) if items else (),
-                                     tunnels=anchor.tunnels, walls=rwalls)
+                                     tunnels=anchor.tunnels, walls=rwalls,
+                                     ground=lambda x, y: roadmeshmod.drawn_ground(anchor.frame, drawn, np.c_[x, y],
+                                                                                  self.anchor_q(anchor)))
         if self.airports is not None:   # runway markings, drawn by the road mesh like the lane lines
             chunks += self.airports.tile_chunks(anchor.frame, tx, ty, elev, roadsmod.tile_bbox)
         x0, y0, _, _ = roadsmod.tile_bbox(tx, ty)
@@ -1084,12 +1092,6 @@ class Server:
             park = parkingmod.clear_of(park, props, drives)
             park = parkingmod.tile_lot_spots(anchor.frame, tx, ty, self.mapdata, elev, items, park)
             buildingsmod.brick_walks(walks, items, anchor.lat, anchor.lon)
-        box = roadsmod.tile_bbox(tx, ty)
-        cell_fn = lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads")  # noqa: E731
-
-        def drawn(la, lo):      # the block's ground: raised over the low arches as the terrain is (_make_heightmap_here)
-            return roadsmod.block_arch_raise(anchor.tunnels, cell_fn, anchor.frame, la, lo, elev(la, lo),
-                                             (box[0] - 8, box[1] - 8, box[2] + 8, box[3] + 8))
         mesh = roadmeshmod.build(anchor.frame, chunks, elev, (x0, y0, 0.0),
                                  DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0,
                                  clip=box, follow=True, q=self.anchor_q(anchor), drawn=drawn)

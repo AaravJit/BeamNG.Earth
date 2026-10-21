@@ -355,6 +355,37 @@ class BuildTileTest(unittest.TestCase):
                 n = np.array(c["n"])
                 self.assertLess(np.abs(n[:, 2] - ground(n[:, :2])).max(), 0.05)
 
+    def test_sidewalks_on_the_drawn_ground(self):
+        # the road surfaces lie on the terrain block's own heights (its 2 m lattice rounded to the quantum, each
+        # square cut south-west to north-east: roadmesh.follow), elev's smooth curve off them by up to the quantum and
+        # more between the samples; the curbs take the same ground (the user, 2026-10-21)
+        import roadmesh
+        import sidewalks
+
+        def hill(lat, lon):
+            e = (np.asarray(lon) - LON) * M_LON
+            n = (np.asarray(lat) - LAT) * M_LAT
+            return 10.0 + 0.04 * e - 3.0 * np.exp(-((e - 128.0) ** 2 + (n - 147.0) ** 2) / 8.0 ** 2)   # a dip on the street
+
+        def ground(x, y):
+            return roadmesh.drawn_ground(FRAME, hill, np.c_[x, y], 1 / 32)
+        f = features([[(-300, 40), (300, 190)]], ["secondary"])
+        walks = []
+        chunks = roads.build_tile(FRAME, 0, 0, [f], hill, lambda la, lo: np.ones(np.shape(la), bool), walks=walks,
+                                  ground=ground)
+        self.assertEqual(len(walks), 2)
+        for w in walks:
+            curb, _ = sidewalks.run_geometry(w["pts"], w["side"], w["w"])
+            s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(curb[:, :2], axis=0).T))]
+            fine = np.arange(0.0, s[-1], 0.5)
+            xy = np.stack([np.interp(fine, s, curb[:, c]) for c in range(2)], axis=1)
+            dz = np.interp(fine, s, curb[:, 2]) - ground(xy[:, 0], xy[:, 1])
+            self.assertLess(np.abs(dz).max(), 0.025, "the curb on the drawn ground under it")
+        for c in chunks:
+            if c["m"] == roads.DRAIN["m"]:
+                n = np.array(c["n"])
+                self.assertLess(np.abs(n[:, 2] - ground(n[:, 0], n[:, 1])).max(), 0.025)
+
     def test_sidewalks_on_flat_ground_keep_their_points(self):
         # the drape adds points only where the ground bends: a flat street's runs are as before (MAX_SPACING apart)
         f = features([[(-300, 100), (300, 100)]], ["secondary"])
