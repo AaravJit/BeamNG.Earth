@@ -1708,6 +1708,53 @@ def densify(pts, spacing=MAX_SPACING):
     return fast._ef.densify(pts, float(spacing))     # the Rust loop
 
 
+WALK_DRAPE_M = 2.0      # m between the ground samples under a sidewalk (roadmesh.DRAPE_STEP: the road mesh's edges)
+WALK_DRAPE_TOL_M = 0.02     # m a sidewalk point dropped again may lie off the line through its kept neighbours
+
+
+def drape_walks(frame, elev, walks):
+    """The sidewalk runs and corner pieces of build_tile's walks put on the ground, in place: z = elev at the curb line,
+    as the road mesh's draped edges there. The runs carried the road's centreline z, sampled at its vertices only and
+    interpolated along straight stretches (simplify keeps the xy bends), so a sidewalk crossing a dip ran as a chord
+    up to the dip's depth in the air beside the draped road. Each run is sampled every WALK_DRAPE_M m, thinned to the
+    points the ground's shape needs (WALK_DRAPE_TOL_M) and densified again: a flat street keeps exactly its points.
+    One elev call (its cost is per call)."""
+    import sidewalks
+    items, xy = [], []
+    for wk in walks:
+        if "corner" in wk:
+            arc = np.asarray(wk["corner"]["arc"], np.float64)
+            items.append((wk, arc))
+            xy.append(arc[:, :2])
+            continue
+        pts = densify(np.asarray(wk["pts"], np.float64), WALK_DRAPE_M)
+        curb, _ = sidewalks.run_geometry(pts, wk["side"], wk.get("w", SIDEWALK["w"]))
+        items.append((wk, pts))
+        xy.append(curb[:, :2])
+    if not items:
+        return
+    xy = np.concatenate(xy)
+    la, lo, _ = frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
+    _, _, u = frame.geodetic_to_enu(la, lo, np.asarray(elev(la, lo), np.float64))
+    k = 0
+    for wk, pts in items:
+        z = u[k:k + len(pts)]
+        k += len(pts)
+        if "corner" in wk:
+            c = wk["corner"]
+            arc = pts.copy()
+            arc[:, 2] = z
+            # the outer corners: the ends at the ends of the arc (where the runs' slabs end), the rest between
+            zo = 0.5 * (z[0] + z[-1])
+            outer = [tuple(q) for q in c["outer"]]
+            outer = [(*outer[0][:2], z[-1])] + [(*q[:2], zo) for q in outer[1:-1]] + [(*outer[-1][:2], z[0])]
+            wk["corner"] = {**c, "arc": arc, "outer": outer}
+            continue
+        pts = pts.copy()
+        pts[:, 2] = z
+        wk["pts"] = densify(pts[sidewalks.simplify(pts, WALK_DRAPE_TOL_M)])
+
+
 def split(pts, n=MAX_NODES):
     """Chunks of at most n nodes sharing their end nodes. Pure."""
     if len(pts) <= n:
@@ -3534,6 +3581,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                             chunks.append(_chunk(look, w, c))
     if walks is not None:
         runs_near = join_walk_ends(runs_near, [(p2[:, :2], s2.width / 2) for _, s2, p2, _ in roads])
+        drain_runs = []                         # (walks entry, side, real ends, width): drains once on the ground
         for rn in runs_near:
             fid, side, w, run0 = rn["fid"], rn["side"], rn["w"], rn["pts"]
             for run in clip_polyline(run0, *exact):
@@ -3550,7 +3598,10 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                 walks.append({"pts": run, "side": side, "caps": caps, "ramps": ramps, "w": w, "fid": fid,
                               "median": rn.get("median", False)})
                 if not rn.get("median"):                # (a median: a bare curb, no storm drains)
-                    chunks.extend(drains(run, side, (caps[0] or at_j0, caps[1] or at_j1), w))
+                    drain_runs.append((walks[-1], side, (caps[0] or at_j0, caps[1] or at_j1), w))
+        drape_walks(frame, elev, walks)
+        for wk, side, ends, w in drain_runs:
+            chunks.extend(drains(wk["pts"], side, ends, w))
     if lines is not None:                           # the centrelines near the tile (buildings' front doors)
         lines.extend((pts[:, :2], spec.width / 2, spec.cls, spec.urban) for _, spec, pts, _ in roads)
     if props is not None and walks is not None:     # street lights and utility poles (furniture.py)
