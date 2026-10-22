@@ -83,8 +83,19 @@ LOOK = {
     "gravel": {"m": "m_dirt_road", "tl": 88.0, "p": 21},
     "dirt": {"m": "m_dirt_road", "tl": 88.0, "p": 21},
 }
-Spec = namedtuple("Spec", "width kind urban cls oneway walk dir kmh gap median",
-                  defaults=(False, 2.5, 0, None, None, None))   # median: m to the other carriageway's centre line
+# a `surface=concrete` street is still a paved one (markings, widths, the tyres' asphalt feel) but is drawn with
+# gridmap v2's plain concrete instead of asphalt (the user, 2026-10-22: "for concrete road surfaces")
+CONCRETE = {"m": "m_gm_concrete_plain", "tl": 11.0, "p": 20}
+
+
+def look_of(spec):
+    """A spec's road look: gridmap v2's concrete for a `surface=concrete` street, else its kind's (LOOK)."""
+    if spec.kind == "paved" and spec.surf == "concrete":
+        return CONCRETE
+    return LOOK[spec.kind]
+Spec = namedtuple("Spec", "width kind urban cls oneway walk dir kmh gap median surf",
+                  defaults=(False, 2.5, 0, None, None, None, None))   # median: m to the other carriageway's centre line
+# (surf: the surface rule value's base token, e.g. "concrete": the look's concrete, roads.py look_of)
 # road_specs' result per feature (walk: the sidewalk width, measured from the buildings where known: roadwidth.py;
 # dir: a one-way road's direction along its geometry, +1 / -1, 0 two-way; kmh: its speed limit, None unknown;
 # gap: m of road per junction along it (its connectors), None unknown)
@@ -439,6 +450,14 @@ def _clear_end(feats, i, rs, ring, at_start, half):
     return ring
 
 
+def surface_token(surface):
+    """A surface rule value's base token: the detail after a colon and a second value after a semicolon dropped
+    (`sett:pattern` -> `sett`, `sett;asphalt` -> `sett`); None for no value. surface_kind and look_of read it."""
+    if surface is None:
+        return None
+    return str(surface).lower().split(";")[0].split(":")[0].strip()
+
+
 def surface_kind(cls, surface):
     """'paved', 'cobble', 'gravel' or 'dirt' from the class and the surface rule value (None if unknown).
 
@@ -448,7 +467,7 @@ def surface_kind(cls, surface):
     as gravel tracks (2026-10-22). Interlocking pavers have their own names in the map. A value not understood at
     all is the class's own surface, not dirt: an unknown tag must not turn a residential street into a track."""
     if surface is not None:
-        s = str(surface).lower().split(";")[0].split(":")[0].strip()
+        s = surface_token(surface)
         if s in PAVED:
             return "paved"
         if s in COBBLE or s in COBBLE_ALIASES:
@@ -683,7 +702,8 @@ def _road_specs(feats, urban_fn, widths, left_hand):
             continue
         width = _rule_value(rules.get("width"), i)
         rule_w = float(width) if width is not None and 1.0 <= float(width) <= 40.0 else None
-        kind = surface_kind(cls, _rule_value(rules.get("surface"), i))
+        surf = _rule_value(rules.get("surface"), i)
+        kind = surface_kind(cls, surf)
         ow = _rule_value(rules.get("oneway"), i) is not None
         if rule_w is None and _rule_value(rules.get("subclass"), i) == "link":
             rule_w = LINK_M[1] if ow else LINK_M[2]
@@ -695,7 +715,8 @@ def _road_specs(feats, urban_fn, widths, left_hand):
                 ask.append((len(out), cls, kind, a, b, ow, dk))
                 out.append(None)
                 continue
-        out.append(Spec(carriageway(cls, kind, False, rule_w, ow), kind, False, cls, ow, 2.5, *dk))
+        out.append(Spec(carriageway(cls, kind, False, rule_w, ow), kind, False, cls, ow, 2.5, *dk,
+                        surf=surface_token(surf)))
     if ask:
         ll = np.concatenate([feats.lonlat[a:b] for _, _, _, a, b, _, _ in ask])
         u = np.asarray(urban_fn(ll[:, 1], ll[:, 0]), bool)
@@ -703,7 +724,8 @@ def _road_specs(feats, urban_fn, widths, left_hand):
         for j, cls, kind, a, b, ow, dk in ask:
             urban = float(np.mean(u[k:k + (b - a)])) >= URBAN_SHARE
             k += b - a
-            out[j] = Spec(carriageway(cls, kind, urban, None, ow), kind, urban, cls, ow, 2.5, *dk)
+            out[j] = Spec(carriageway(cls, kind, urban, None, ow), kind, urban, cls, ow, 2.5, *dk,
+                          surf=surface_token(surf))
     out = dual_carriageways(feats, out, left_hand)
     if widths is not None:                      # measured between the buildings (roadwidth.py)
         for j, sp in enumerate(out):
@@ -755,11 +777,13 @@ def _bridge_specs(feats, want="bridge"):
             continue
         width = _rule_value(rules.get("width"), i)
         rule_w = float(width) if width is not None and 1.0 <= float(width) <= 40.0 else None
-        kind = surface_kind(cls, _rule_value(rules.get("surface"), i))
+        surf = _rule_value(rules.get("surface"), i)
+        kind = surface_kind(cls, surf)
         ow = _rule_value(rules.get("oneway"), i) is not None
         if rule_w is None and _rule_value(rules.get("subclass"), i) == "link":
             rule_w = LINK_M[1] if ow else LINK_M[2]
-        out.append(Spec(carriageway(cls, kind, False, rule_w, ow), kind, False, cls, ow))
+        out.append(Spec(carriageway(cls, kind, False, rule_w, ow), kind, False, cls, ow,
+                        surf=surface_token(surf)))
     return out
 
 
@@ -3199,7 +3223,7 @@ def _tunnel_chunks(tunnels, cells, exact):
             if not np.isfinite(z).all():
                 continue
             pts = np.c_[xy, z]
-            for look, w, line in [(LOOK[spec.kind], spec.width, pts)] + [
+            for look, w, line in [(look_of(spec), spec.width, pts)] + [
                     (lk, w2, ln) for lk, w2, ln in extras(spec, pts, lon)
                     if lk["m"] != SIDEWALK["m"] and lk["m"] != GUTTER["m"]]:
                 for piece in clip_polyline(line, *exact):
@@ -3420,7 +3444,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
             k += m
     chunks = []
     for fid, spec, pts, _ in roads:
-        look = LOOK[spec.kind]
+        look = look_of(spec)
         lanes = [(0.0, spec.width)]
         if look.get("strip"):                   # parallel strips across the width (see LOOK)
             n = max(1, int(round(spec.width / look["strip"])))

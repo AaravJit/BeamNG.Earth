@@ -91,6 +91,22 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(roads.surface_kind("residential", "whatever"), "paved")
         self.assertEqual(roads.surface_kind("track", "whatever"), "dirt")
 
+    def test_surface_token(self):
+        self.assertEqual(roads.surface_token("sett:pattern"), "sett")
+        self.assertEqual(roads.surface_token("sett;asphalt"), "sett")
+        self.assertEqual(roads.surface_token(" Concrete:Lanes "), "concrete")
+        self.assertIsNone(roads.surface_token(None))
+
+    def test_concrete_streets_get_gridmap_v2_concrete(self):
+        f = features([[(0, 0), (10, 0)]] * 2, ["residential", "secondary"],
+                     surfaces=[(0, "concrete"), (1, "asphalt")])
+        s = roads.road_specs(f)
+        self.assertEqual(s[0].surf, "concrete")
+        self.assertEqual(s[0].kind, "paved", "marks, widths and the tyres' feel stay a paved road's")
+        self.assertEqual(roads.look_of(s[0])["m"], "m_gm_concrete_plain")
+        self.assertEqual(roads.look_of(s[1])["m"], "road_asphalt_2lane")
+        self.assertEqual(roads.look_of(s[0])["tl"], roads.LOOK["paved"]["tl"], "the texture length is asphalt's")
+
     def test_specs_width_and_left_out(self):
         f = features([[(0, 0), (10, 0)]] * 6, ["residential", "footway", "primary", "tertiary", "track", "secondary"],
                      surfaces=[(4, "gravel")], widths=[(2, 14.0)], levels=[(3, 1.0)], flags=[(5, "is_bridge")])
