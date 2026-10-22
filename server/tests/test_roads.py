@@ -335,6 +335,79 @@ class BuildTileTest(unittest.TestCase):
         self.assertEqual(names, [m for m in sidewalks.MATERIALS if m in names])
         self.assertIn("curbs", names)
 
+    def test_sidewalks_follow_the_ground(self):
+        # a straight street (two vertices) across a 5 m dip: the road mesh drapes on the ground every 2 m, the
+        # sidewalks ran as a chord between the vertices, up to 5 m in the air beside it
+        import sidewalks
+
+        def dip(lat, lon):
+            e = (np.asarray(lon) - LON) * M_LON
+            return 10.0 - 5.0 * np.exp(-((e - 128.0) / 30.0) ** 2)
+
+        def ground(xy):
+            la, lo, _ = FRAME.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
+            return FRAME.geodetic_to_enu(la, lo, dip(la, lo))[2]
+        f = features([[(-300, 100), (300, 100)]], ["secondary"])
+        walks = []
+        chunks = roads.build_tile(FRAME, 0, 0, [f], dip, lambda la, lo: np.ones(np.shape(la), bool), walks=walks)
+        # both sides (1.5.5 leaves a sidewalk out where the ground falls away from the road, so a side can be in
+        # pieces); every piece is checked below
+        self.assertEqual({w["side"] for w in walks}, {1, -1})
+        for w in walks:
+            curb, _ = sidewalks.run_geometry(w["pts"], w["side"], w["w"])
+            s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(curb[:, :2], axis=0).T))]
+            fine = np.arange(0.0, s[-1], 0.5)               # between the run's points too (the mesh is linear there)
+            xy = np.stack([np.interp(fine, s, curb[:, c]) for c in range(2)], axis=1)
+            dz = np.interp(fine, s, curb[:, 2]) - ground(xy)
+            self.assertLess(np.abs(dz).max(), 0.05, "the curb on the ground under it")
+        for c in chunks:                                    # storm drains in the gutter, on the ground too
+            if c["m"] == roads.DRAIN["m"]:
+                n = np.array(c["n"])
+                self.assertLess(np.abs(n[:, 2] - ground(n[:, :2])).max(), 0.05)
+
+    def test_sidewalks_on_the_drawn_ground(self):
+        # the road surfaces lie on the terrain block's own heights (its 2 m lattice rounded to the quantum, each
+        # square cut south-west to north-east: roadmesh.follow), elev's smooth curve off them by up to the quantum and
+        # more between the samples; the curbs take the same ground (the user, 2026-10-21)
+        import roadmesh
+        import sidewalks
+
+        def hill(lat, lon):
+            e = (np.asarray(lon) - LON) * M_LON
+            n = (np.asarray(lat) - LAT) * M_LAT
+            return 10.0 + 0.04 * e - 3.0 * np.exp(-((e - 128.0) ** 2 + (n - 147.0) ** 2) / 8.0 ** 2)   # a dip on the street
+
+        def ground(x, y):
+            return roadmesh.drawn_ground(FRAME, hill, np.c_[x, y], 1 / 32)
+        f = features([[(-300, 40), (300, 190)]], ["secondary"])
+        walks = []
+        chunks = roads.build_tile(FRAME, 0, 0, [f], hill, lambda la, lo: np.ones(np.shape(la), bool), walks=walks,
+                                  ground=ground)
+        # both sides (1.5.5 leaves a sidewalk out where the ground falls away from the road, so a side can be in
+        # pieces); every piece is checked below
+        self.assertEqual({w["side"] for w in walks}, {1, -1})
+        for w in walks:
+            curb, _ = sidewalks.run_geometry(w["pts"], w["side"], w["w"])
+            s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(curb[:, :2], axis=0).T))]
+            fine = np.arange(0.0, s[-1], 0.5)
+            xy = np.stack([np.interp(fine, s, curb[:, c]) for c in range(2)], axis=1)
+            dz = np.interp(fine, s, curb[:, 2]) - ground(xy[:, 0], xy[:, 1])
+            self.assertLess(np.abs(dz).max(), 0.025, "the curb on the drawn ground under it")
+        for c in chunks:
+            if c["m"] == roads.DRAIN["m"]:
+                n = np.array(c["n"])
+                self.assertLess(np.abs(n[:, 2] - ground(n[:, 0], n[:, 1])).max(), 0.025)
+
+    def test_sidewalks_on_flat_ground_keep_their_points(self):
+        # the drape adds points only where the ground bends: a flat street's runs are as before (MAX_SPACING apart)
+        f = features([[(-300, 100), (300, 100)]], ["secondary"])
+        walks = []
+        roads.build_tile(FRAME, 0, 0, [f], flat, lambda la, lo: np.ones(np.shape(la), bool), walks=walks)
+        for w in walks:
+            p = w["pts"]
+            length = float(np.hypot(*np.diff(p[:, :2], axis=0).T).sum())
+            self.assertEqual(len(p), math.ceil(length / roads.MAX_SPACING - 1e-9) + 1)
+
     def test_sidewalk_profile_faces_out(self):
         import sidewalks
         run = np.array([[0.0, 5.0, 10.0], [20.0, 5.0, 10.0], [40.0, 8.0, 10.0]])

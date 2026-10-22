@@ -358,10 +358,17 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
         town = buildingsmod.coverage(items) < buildingsmod.POLES_COVERAGE
     rwalls = []
     ctx = []
+    box = roadsmod.tile_bbox(tx, ty)
+    cell_fn = lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads")   # noqa: E731
+
+    def drawn(la, lo):          # the block's ground: raised over the low arches as the terrain is (_make_heightmap)
+        return roadsmod.block_arch_raise(tunnels, cell_fn, frame, la, lo, elev(la, lo),
+                                         (box[0] - 8, box[1] - 8, box[2] + 8, box[3] + 8))
     chunks = roadsmod.build_tile(frame, tx, ty, cells, elev, urban, walks=walks, deck_context=ctx, bridges=bridges, widths=_s.widths,
                                  props=props, lines=lines, wires=wires, town=town, park=park,
                                  left_hand=left_hand, mph=mph, structures=buildingsmod.centres(items, tx, ty) if items else (),
-                                 tunnels=tunnels, walls=rwalls)
+                                 tunnels=tunnels, walls=rwalls,
+                                 ground=lambda x, y: roadmeshmod.drawn_ground(frame, drawn, np.c_[x, y], q))
     if _s.airports is not None:         # runway markings, drawn by the road mesh like the lane lines
         chunks += _s.airports.tile_chunks(frame, tx, ty, elev, roadsmod.tile_bbox)
     x0, y0, _, _ = roadsmod.tile_bbox(tx, ty)
@@ -374,12 +381,6 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
         park = parkingmod.clear_of(park, props, drives)
         park = parkingmod.tile_lot_spots(frame, tx, ty, _s.md, elev, items, park)
         buildingsmod.brick_walks(walks, items, lat, lon)
-    box = roadsmod.tile_bbox(tx, ty)
-    cell_fn = lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads")   # noqa: E731
-
-    def drawn(la, lo):          # the block's ground: raised over the low arches as the terrain is (_make_heightmap)
-        return roadsmod.block_arch_raise(tunnels, cell_fn, frame, la, lo, elev(la, lo),
-                                         (box[0] - 8, box[1] - 8, box[2] + 8, box[3] + 8))
     mesh = roadmeshmod.build(frame, chunks, elev, (x0, y0, 0.0), lift, clip=box, follow=True, q=q, drawn=drawn)
     mesh = _with_plazas(mesh, frame, tx, ty, elev, (x0, y0, 0.0), getattr(_s, "surface", None))
     dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0), bridges.piers_in(roadsmod.tile_bbox(tx, ty)), ctx,

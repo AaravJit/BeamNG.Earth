@@ -102,6 +102,20 @@ class FollowTest(unittest.TestCase):
             return 10.0 + 0.8 * np.sin(e / 3.1) * np.cos(n / 2.3) + 0.05 * e
         return elev
 
+    def test_drawn_ground_is_the_road_surfaces_ground(self):
+        # the sidewalks' curbs on the ground the road surfaces lie on (the user, 2026-10-21): drawn_ground at every
+        # point follow_ground (the kernel the road mesh uses) cuts the triangles into is the height it gives them,
+        # on the cells' edges, diagonals and corners too
+        rng = np.random.default_rng(7)
+        P = np.r_[rng.uniform(-30, 30, (80, 2)), rng.integers(-15, 16, (20, 2)) * 2.0]
+        T = np.array([rng.choice(len(P), 3, replace=False) for _ in range(60)], np.int64)
+        grid, i0, j0 = roadmesh._height_grid(FRAME, self.bumpy(), P, 1 / 32)
+        fP, _, fT, _ = roadmesh.follow_ground(P, np.zeros((len(P), 2)), T, grid, i0, j0)
+        self.assertGreater(len(fP), len(P), "cut along the ground's triangles")
+        z = roadmesh.drawn_ground(FRAME, self.bumpy(), fP[:, :2], 1 / 32)
+        self.assertTrue(np.isfinite(z).all())
+        np.testing.assert_allclose(z, fP[:, 2], rtol=0, atol=1e-6)
+
     def test_with_filled_polygons(self):
         """A tile with corner asphalt (a filled polygon) follows the ground too: the polygon's points once took the
         name of the height quantum and every such road tile failed (a Steam Deck in Baltimore, 2026-10-20)."""
