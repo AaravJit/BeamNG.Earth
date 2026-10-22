@@ -26,6 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from PIL import Image, ImageDraw
 
+import fast
 import heightmap
 import mapcells
 import mapdata as mapdatamod
@@ -305,6 +306,70 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, e
         m = np.asarray(layers[k]) > 0
         out[m] = ROAD_MATERIAL[k]
     return out
+
+
+# Roads in the ground (the user, 2026-10-22: "I dont love that we are applying a floating road texture over the normal
+# terrain"): with BNGE_ROADS_IN_GROUND=1 the road tiles carry no carriageway mesh (roads.ROADS_IN_GROUND) and the
+# ground's photos have the carriageways painted in at their width (photo_roads): the drawn block's base photo and the
+# far tiles' textures down to PHOTO_ROADS_MAX_TEXEL (the near ring the block does not cover, where the meshes were);
+# the asphalt / cobble terrain layer (paint_roads) gives them their grain up close. Markings, curbs and sidewalks stay
+# meshes.
+# colour and opacity by surface, blended in this order (paved last: it wins at junctions); a trace of the photo is kept
+# (stains, patches), and most of it on unpaved tracks, which the photo shows well and a flat colour drew as stripes
+PHOTO_ROAD_RGBA = {"dirt": (122, 104, 82, 0.45), "gravel": (128, 118, 102, 0.6), "cobble": (112, 104, 96, 0.85),
+                   "paved": (95, 95, 94, 0.92)}
+PHOTO_ROADS_MAX_TEXEL = 2.0     # m per texel: coarser far tiles keep the photo's own roads (far, under a pixel wide)
+
+
+def photo_roads(rgb, frame, x0, y0, size, feats_list, urban_fn=None, widths=None):
+    """The photo rgb (H x W x 3, row 0 = north, covering [x0, x0 + size] x [y0, y0 + size] of frame) with the
+    carriageways of feats_list (road Features: roads.road_specs widths, ground parts only) painted in, antialiased
+    (earthfast.paint_lines, PHOTO_ROAD_RGBA). Pure (a new array)."""
+    fast.require(49, "roads in the ground")
+    h, w = rgb.shape[:2]
+    px_m = w / size
+    kinds = list(PHOTO_ROAD_RGBA)
+    segs, hws, kind = [], [], []
+    seen = set()
+    for feats in feats_list:
+        if feats is None or len(feats) == 0:
+            continue
+        specs = roadsmod.road_specs(feats, urban_fn, widths)
+        for i in range(len(feats)):
+            fid = str(feats.ids[i])
+            sp = specs[i]
+            if sp is None or fid in seen or sp.kind not in PHOTO_ROAD_RGBA:
+                continue
+            seen.add(fid)
+            hw = sp.width * px_m / 2
+            for ring in roadsmod.ground_parts(feats, i):
+                e, n, _ = frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
+                c = (np.asarray(e) - x0) * px_m
+                r = (y0 + size - np.asarray(n)) * px_m
+                if len(c) < 2 or c.max() < -hw or c.min() > w + hw or r.max() < -hw or r.min() > h + hw:
+                    continue
+                segs.append(np.stack([c[:-1], r[:-1], c[1:], r[1:]], axis=1))
+                hws.append(np.full(len(c) - 1, hw))
+                kind.append(np.full(len(c) - 1, kinds.index(sp.kind), np.uint8))
+    if not segs:
+        return rgb
+    colors = np.array([PHOTO_ROAD_RGBA[k] for k in kinds], np.float32)
+    return fast._ef.paint_lines(np.ascontiguousarray(rgb, np.uint8), np.concatenate(segs), np.concatenate(hws),
+                                np.concatenate(kind), colors)
+
+
+def paint_square(rgb, frame, x0, y0, size, surface, widths=None):
+    """photo_roads for a ground photo over [x0, x0 + size]² of frame with the roads of surface's cached cells (a
+    Surface; never waits); as it was when its texels are coarser than PHOTO_ROADS_MAX_TEXEL or no cell is cached."""
+    if surface is None or size / max(rgb.shape[1], 1) > PHOTO_ROADS_MAX_TEXEL:
+        return rgb
+    gx = x0 + np.array([0.0, size, 0.0, size, size / 2])
+    gy = y0 + np.array([0.0, 0.0, size, size, size / 2])
+    la, lo, _ = frame.enu_to_geodetic(gx, gy, np.zeros(5))
+    feats, _ = surface.roads(np.asarray(la), np.asarray(lo))
+    if not feats:
+        return rgb
+    return photo_roads(rgb, frame, x0, y0, size, feats, surface.urban, widths)
 
 
 # A road without sidewalks gets a verge of VERGE_M a side painted bare where the ground would carry grass or shrubs:

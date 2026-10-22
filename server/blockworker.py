@@ -539,6 +539,7 @@ def base_photo(lat, lon, x0, y0, size, px, tex, buildings, rock_zoom, path, cach
     server renders it, fetching what is missing). In the server process it ran 2 s alone but 8-11 s next to the
     rest of the world's threads on a Steam Deck (one interpreter lock), and the next block waited for it."""
     import imagery as imagerymod
+    import roads as roadsmod
     import rockface as rockfacemod
     import staging
     from PIL import Image
@@ -558,6 +559,12 @@ def base_photo(lat, lon, x0, y0, size, px, tex, buildings, rock_zoom, path, cach
                 rgb = buildingsmod.fill_photo(rgb, mask, size, px)
         except Exception as e:      # the photo stays as it is
             log.info("base photo: building mask: %s", e)
+    if roadsmod.ROADS_IN_GROUND:          # (earthd.Server.write_base)
+        try:
+            import surface as surfacemod
+            rgb = surfacemod.paint_square(rgb, frame, x0, y0, size, getattr(_s, "surface", None), _s.widths)
+        except Exception as e:      # the photo stays as it is
+            log.info("base photo: roads: %s", e)
     try:            # (earthd.Server.write_base)
         n = 65
         xs = x0 + np.arange(n) * (size / (n - 1))
@@ -599,6 +606,13 @@ def far_tile(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout, tex):
             rgb = rockfacemod.rock(rgb, frame, *sq, g, x0, y0, tile.size / (g.shape[1] - 1))
         except Exception as e:
             log.debug("rock faces of %s: %s", tile.key, e)
+    import roads as roadsmod
+    if roadsmod.ROADS_IN_GROUND:          # (earthd.Server.road_faces)
+        try:
+            import surface as surfacemod
+            rgb = surfacemod.paint_square(rgb, frame, *sq, getattr(_s, "surface", None), _s.widths)
+        except Exception as e:
+            log.debug("road faces of %s: %s", tile.key, e)
     return built, (imagerymod.write_dds(tex["path"], rgb), used)
 
 

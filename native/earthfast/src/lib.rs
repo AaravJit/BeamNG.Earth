@@ -3378,6 +3378,81 @@ fn wet_run_inside(xy: PyReadonlyArray2<f64>, wet: PyReadonlyArray1<bool>) -> PyR
     Ok(best)
 }
 
+/// surface.photo_roads: the photo rgb (h, w, 3) with thick lines painted in. segs (m, 4): segment ends in pixel
+/// coordinates (column, row; a pixel's centre at +0.5); hw (m,): half widths in pixels; kind (m,): index into colors
+/// (k, 4: r g b, opacity). Each kind's coverage is the largest over its segments of clamp(hw - distance + 0.5, 0, 1)
+/// (round ends and joints, a one-pixel antialiased edge); the kinds are blended over the photo in index order at their
+/// opacity times their coverage (the last kind wins where they overlap).
+#[pyfunction]
+fn paint_lines<'py>(py: Python<'py>, rgb: PyReadonlyArray3<'py, u8>, segs: PyReadonlyArray2<'py, f64>,
+                    hw: PyReadonlyArray1<'py, f64>, kind: PyReadonlyArray1<'py, u8>, colors: PyReadonlyArray2<'py, f32>)
+                    -> PyResult<Bound<'py, numpy::PyArray3<u8>>> {
+    let img = rgb.as_array();
+    let sg = segs.as_array();
+    let hw = hw.as_array();
+    let kd = kind.as_array();
+    let col = colors.as_array();
+    let m = sg.nrows();
+    if sg.ncols() != 4 || hw.len() != m || kd.len() != m || col.ncols() != 4 || img.shape()[2] != 3 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "paint_lines: rgb (h, w, 3), segs (m, 4), hw (m,), kind (m,), colors (k, 4)"));
+    }
+    let k = col.nrows();
+    if kd.iter().any(|&v| v as usize >= k) {
+        return Err(pyo3::exceptions::PyValueError::new_err("paint_lines: a kind past the colours"));
+    }
+    let out = py.allow_threads(|| {
+        let (h, w) = (img.shape()[0], img.shape()[1]);
+        let mut cov = vec![0f32; k * h * w];
+        for s in 0..m {
+            let (ax, ay, bx, by, r) = (sg[[s, 0]], sg[[s, 1]], sg[[s, 2]], sg[[s, 3]], hw[s]);
+            if !(r > 0.0) || !ax.is_finite() || !ay.is_finite() || !bx.is_finite() || !by.is_finite() {
+                continue;
+            }
+            let pad = r + 1.0;
+            let c0 = (ax.min(bx) - pad).floor().max(0.0);
+            let c1 = (ax.max(bx) + pad).ceil().min(w as f64);
+            let r0 = (ay.min(by) - pad).floor().max(0.0);
+            let r1 = (ay.max(by) + pad).ceil().min(h as f64);
+            if c0 >= c1 || r0 >= r1 {
+                continue;
+            }
+            let (dx, dy) = (bx - ax, by - ay);
+            let l2 = dx * dx + dy * dy;
+            let base = kd[s] as usize * h * w;
+            for j in r0 as usize..r1 as usize {
+                let py_ = j as f64 + 0.5;
+                for i in c0 as usize..c1 as usize {
+                    let px_ = i as f64 + 0.5;
+                    let t = if l2 > 0.0 { (((px_ - ax) * dx + (py_ - ay) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+                    let (ex, ey) = (px_ - ax - t * dx, py_ - ay - t * dy);
+                    let c = (r - (ex * ex + ey * ey).sqrt() + 0.5).clamp(0.0, 1.0) as f32;
+                    let v = &mut cov[base + j * w + i];
+                    if c > *v { *v = c; }
+                }
+            }
+        }
+        let mut out = img.to_owned();
+        for q in 0..k {
+            let base = q * h * w;
+            let c = [col[[q, 0]], col[[q, 1]], col[[q, 2]]];
+            let alpha = col[[q, 3]];
+            for j in 0..h {
+                for i in 0..w {
+                    let a = cov[base + j * w + i] * alpha;
+                    if a <= 0.0 { continue; }
+                    for ch in 0..3 {
+                        let v = out[[j, i, ch]] as f32 * (1.0 - a) + c[ch] * a;
+                        out[[j, i, ch]] = (v + 0.5).clamp(0.0, 255.0) as u8;
+                    }
+                }
+            }
+        }
+        out
+    });
+    Ok(out.into_pyarray(py))
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -3435,6 +3510,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(grid_mesh, m)?)?;
     m.add_function(wrap_pyfunction!(points_on_tris, m)?)?;
     m.add_function(wrap_pyfunction!(wet_run_inside, m)?)?;
-    m.add("VERSION", 48)?;
+    m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
+    m.add("VERSION", 49)?;
     Ok(())
 }

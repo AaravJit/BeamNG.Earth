@@ -115,6 +115,8 @@ LINK_M = {1: 6.0, 2: 9.0}
 LINK_LANE_M = 3.7       # a one-lane ramp's lane between its shoulders
 URBAN_ARTERIAL = {"trunk": 13.2}     # primaries in towns are often 2 lanes (Lancaster County's PA-340)
 LANE_M = 3.3            # m per lane when counting the lanes a carriageway holds
+# (experiment, 2026-10-22) carriageways painted into the drawn ground instead of meshes (surface.photo_roads); detail mode
+ROADS_IN_GROUND = os.environ.get("BNGE_ROADS_IN_GROUND") == "1"
 # m per driving lane by class when OpenStreetMap gives the lane count (osmtags.py; typical design widths)
 LANE_W = {"motorway": 3.6, "trunk": 3.5, "primary": 3.3, "secondary": 3.3, "tertiary": 3.1}
 LANE_W_DEFAULT = 3.0
@@ -3501,6 +3503,8 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
             k += m
     chunks = []
     for fid, spec, pts, _ in roads:
+        if ROADS_IN_GROUND:                     # the carriageway painted into the ground (surface.photo_roads)
+            continue
         look = LOOK[spec.kind]
         lanes = [(0.0, spec.width)]
         if look.get("strip"):                   # parallel strips across the width (see LOOK)
@@ -3574,7 +3578,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                 continue                        # a curb return inside a loop: its island has its own curb
             if x0 <= p[0] < x1 and y0 <= p[1] < y1:
                 walks.append({"corner": c})
-                for fill in ([c["fill"]] if c["fill"] is not None else []) + c.get("fills", []):
+                for fill in ([] if ROADS_IN_GROUND else ([c["fill"]] if c["fill"] is not None else []) + c.get("fills", [])):
                     chunks.append({"m": LOOK["paved"]["m"], "w": 0.0, "tl": LOOK["paved"]["tl"], "p": LOOK["paved"]["p"],
                                    "poly": [[round(float(v), 3) for v in q] for q in fill], "n": []})
         for cw in crosswalks:                   # crosswalks and stop lines

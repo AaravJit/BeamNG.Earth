@@ -1528,6 +1528,11 @@ class Server:
                     rgb = buildingsmod.fill_photo(rgb, mask, size, BASE_PX)
             except Exception as e:      # the photo stays as it is
                 log.info("base photo %s: building mask: %s", (anchor.id, cx, cy), e)
+        if roadsmod.ROADS_IN_GROUND:          # the carriageways in the ground (surface.photo_roads)
+            try:
+                rgb = surfacemod.paint_square(rgb, anchor.frame, x0, y0, size, self.surface, self.road_widths)
+            except Exception as e:      # the photo stays as it is
+                log.info("base photo %s: roads: %s", (anchor.id, cx, cy), e)
         try:            # its cliffs as rock, like the far tiles' (rockface.py), from a 16 m grid of the ground
             n = 65
             xs = x0 + np.arange(n) * (size / (n - 1))
@@ -1813,6 +1818,7 @@ class Server:
                 rgb, used = self.imagery.render(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px), px,
                                                 pending=pending)
                 rgb = self.rock_faces(anchor, tile, px, rgb, built.grid)
+                rgb = self.road_faces(anchor, tile, px, rgb)
                 texture = self.texture_name(anchor.id, tile.key, self.tex_rev.get((anchor.id, tile.key), 0))
                 tex_bytes = imagerymod.write_dds(os.path.join(self.out_dir, texture), rgb)
                 material = self.matslots.take(ck)
@@ -1858,6 +1864,19 @@ class Server:
             log.debug("rock faces of %s: %s", tile.key, e)
             return rgb
 
+    def road_faces(self, anchor, tile, px, rgb):
+        """The far tile's photo with the carriageways painted in (roads.ROADS_IN_GROUND, surface.paint_square: the
+        near ring the drawn block does not cover); as it was otherwise or if that fails."""
+        if not roadsmod.ROADS_IN_GROUND:
+            return rgb
+        try:
+            x0, y0, _, _ = tile.bbox
+            return surfacemod.paint_square(rgb, anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px),
+                                           self.surface, self.road_widths)
+        except Exception as e:          # the photo as it is
+            log.debug("road faces of %s: %s", tile.key, e)
+            return rgb
+
     def retexture(self, anchor, tile, prev):
         """Worker thread: render a stale tile's texture again (its colour-match regions are ready now)
         under the next revision's file name; the shape and its material name stay. Network trouble:
@@ -1873,6 +1892,7 @@ class Server:
             log.debug("tile %s of anchor %d: texture not rendered again (%s)", tile.key, anchor.id, e)
             return prev
         rgb = self.rock_faces(anchor, tile, px, rgb, prev.grid)
+        rgb = self.road_faces(anchor, tile, px, rgb)
         texture = self.texture_name(anchor.id, tile.key, prev.rev + 1)
         tex_bytes = imagerymod.write_dds(os.path.join(self.out_dir, texture), rgb)
         sources = prev.credits
