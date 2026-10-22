@@ -64,6 +64,16 @@ local postfx = require('beamngEarth/postfx')       -- no far depth-of-field blur
 local gps = require('beamngEarth/gps')               -- the game's GPS route to a place picked on the world map
 local collisionfoci = require('beamngEarth/collisionfoci') -- other vehicles' collision islands
 local fociBroken = false
+-- The pose's foci: the last collision foci (collisionfoci.lua), rounded, at most 16 (earthd FOCI_MAX); nil when none.
+local function poseFoci()
+  local f = collisionfoci.last
+  if not f or #f == 0 then return nil end
+  local out = {}
+  for i = 1, math.min(#f, 16) do
+    out[i] = { x = math.floor(f[i].x + 0.5), y = math.floor(f[i].y + 0.5), r = f[i].r, trees = f[i].trees }
+  end
+  return out
+end
 local beammp = require('beamngEarth/beammp')           -- BeamMP sessions: the install recommendation
 local seasonlook = require('beamngEarth/seasonlook')   -- the trees' leaves in the season (hello.season) -- the AI road graph for the stock traffic and AI (map.reset)
 
@@ -1032,6 +1042,7 @@ local function updateWorld(dt)
       held = (farfield.session() == st.sessionId) and farfield.heldAnchors() or {},
       sessions = farfield.heldSessions(),
       slotsGone = slotsGoneNow(), -- pooled shape slots let go (server/matslots.py)
+      foci = poseFoci(),          -- other vehicles' collision islands (collisionfoci.lua; earthd parse_foci)
       cam = c and { x = c.x, y = c.y, z = c.z, fx = c.fx, fy = c.fy, fz = c.fz, fovDeg = c.fovDeg, h = c.h } or nil })
   end
 

@@ -180,6 +180,26 @@ TUNNEL_FLOOR_UNDER_M = 2.0     # a tunnel floor this far under the ground at a t
 SEA_CHECK_S = 15.0          # sea (--sea on): the water tiles planned again when the player enters another
                             # 512 m square, or after this long (cells built meanwhile; seatiles.py)
 VIEW_AWAY_M = 50.0              # m: a camera this far from the car centres what is drawn (Conn.camera_away)
+FOCI_MAX = 16                   # other vehicles' collision foci taken from a pose (the mod's collisionfoci.lua)
+FOCI_RANGE_M = 50000.0          # ... within this of the anchor's origin
+FOCI_R_MAX_M = 640.0            # ... and radii at most this
+
+
+def parse_foci(raw):
+    """The pose's "foci" ([{x, y, r, trees}], the mod's collisionfoci.lua: other players' cars, traffic) as a tuple of
+    (x, y, r, trees), FOCI_MAX at most, bad entries left out."""
+    out = []
+    if not isinstance(raw, list):
+        return ()
+    for f in raw[:FOCI_MAX]:
+        try:
+            x, y, r = float(f["x"]), float(f["y"]), float(f["r"])
+        except (TypeError, KeyError, ValueError):
+            continue
+        if not all(math.isfinite(v) for v in (x, y, r)) or max(abs(x), abs(y)) > FOCI_RANGE_M or r <= 0:
+            continue
+        out.append((x, y, min(r, FOCI_R_MAX_M), bool(f.get("trees"))))
+    return tuple(out)
 GROUND_RESEND_M, GROUND_RESEND_S = 1.0, 1.5   # ground_ahead: sent on a change, else this often (the mod's
                                                # follow.GROUND_STALE_S is 3 s)
 DETAIL_RING_M = 128.0           # detail mode: L-1 tiles this far beyond the block (forced())
@@ -2233,6 +2253,7 @@ class Connection:
         self.predicted_block = None     # the terrain the prefetch expects next
         self.focus = (0.0, 0.0)         # player x, y in the active frame
         self.view_at = None             # the camera's x, y there when it is VIEW_AWAY_M or more from the car, else None
+        self.foci = ()                  # other vehicles' collision foci there ((x, y, r, trees), parse_foci)
         self.vel = (0.0, 0.0)
         self.cam = None                 # pose.cam (protocol 3), kept for diagnostics
         self.desired = {}               # key -> Tile (active anchor)
@@ -2878,6 +2899,7 @@ class Connection:
         if isinstance(msg.get("cam"), dict):
             self.cam, self.cam_aid = msg["cam"], aid
         self.view_at = self.camera_away(msg.get("cam")) if aid == self.active else None
+        self.foci = parse_foci(msg.get("foci")) if aid == self.active else ()
         if self.s.horizon:
             self.update_eye(self.s.anchors[aid].frame, *(self.view_at or (x, y)), msg)
         self.gravity.on_pose(self, self.s.anchors[aid].frame, x, y, _num(msg, "z", 0.0))
@@ -2917,14 +2939,15 @@ class Connection:
             self.base_refresh(aid)
         if self.s.mapdata is not None and aid == self.active:
             self.roads.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_roads_tile,
-                               vel=self.vel, ground_busy=self.terrain_wait > 0, view=self.view_at)
+                               vel=self.vel, ground_busy=self.terrain_wait > 0, view=self.view_at,
+                               foci=self.foci)
         if self.s.veg is not None and aid == self.active:
             anchor = self.s.anchors.get(aid)
             if anchor is not None:                            # a teleport's cells built at once, ahead
                 la, lo, _ = anchor.frame.enu_to_geodetic(*self.focus, 0.0)
                 self.s.veg.warm_around(float(la), float(lo))
             self.veg.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_veg_tile,
-                             view=self.view_at)
+                             view=self.view_at, foci=[f for f in self.foci if f[3]])
         if self.s.buildings and aid == self.active:
             self.bldfar.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_far_bld_tile,
                                 view=self.view_at)
