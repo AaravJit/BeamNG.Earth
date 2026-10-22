@@ -79,6 +79,7 @@ class OsmTags:
         self._remote = None         # (etag, RemoteFile)
         self._checked = 0.0
         self._reader = overture.Reader(raw_dir, fetcher)
+        self._meta = None           # (RemoteFile, row groups) of the version in use: _groups
 
     def version(self, kind="demand"):
         """(etag, RemoteFile) of the version in use: the one pinned on disk while fresh, else the server's."""
@@ -131,22 +132,29 @@ class OsmTags:
             except OSError:
                 pass
 
-    def query(self, bounds, kind="demand"):
-        """{way id: {column: value}} of the OSM highways whose bbox touches bounds (lon0, lat0, lon1, lat1). A version
-        that changed under the reads is dropped and the query asked once more on the new one."""
+    def cell(self, bounds, kind="demand"):
+        """({way id: {column: value}} of the OSM highways whose bbox touches bounds (lon0, lat0, lon1, lat1), [the
+        highway=raceway ways among them: {"id", "coords" (k, 2) lon/lat, tags...}]): one pass for both. A version that
+        changed under the reads is dropped and the cell asked once more on the new one."""
         for attempt in (0, 1):
             etag, remote = self.version(kind)
             try:
-                return self._query(remote, bounds, kind)
+                return self._cell(remote, bounds, kind)
             except rangeread.Changed:
                 if attempt:
                     raise
                 log.info("osmtags: %s changed (was %s), taking the new version", self.url, etag)
                 self._forget()
-        return {}
+        return {}, []
 
     def _groups(self, con, uri, remote, kind):
-        """{row group: {"first", "n", "bbox": {leaf: (min, max)}, "cols": {column: [byte ranges]}}} of the file."""
+        """{row group: {"first", "n", "bbox": {leaf: (min, max)}, "cols": {column: [byte ranges]}}} of the file,
+        parsed once per version (0.6 s of every cell's two queries, 2026-10-22: Central Park's first block waited
+        90 s for its cells)."""
+        with self._lock:
+            got = self._meta
+        if got is not None and got[0] is remote:
+            return got[1]
         tail = remote.read(max(0, remote.size - overture.FOOTER_GUESS), remote.size, kind)
         n = int.from_bytes(tail[-8:-4], "little")
         if n + 8 > len(tail):
@@ -167,6 +175,8 @@ class OsmTags:
             g["cols"].setdefault(top, []).append((min(offs), min(offs) + size))
             if top == "bbox":
                 g["bbox"][leaf] = (smin, smax)
+        with self._lock:
+            self._meta = (remote, groups)
         return groups
 
     @staticmethod
@@ -182,20 +192,7 @@ class OsmTags:
                 if stat(g, "xmin", 0, -1e9) <= lon1 and stat(g, "xmax", 1, 1e9) >= lon0
                 and stat(g, "ymin", 0, -1e9) <= lat1 and stat(g, "ymax", 1, 1e9) >= lat0]
 
-    def raceways(self, bounds, kind="demand"):
-        """[{"id", "coords" (k, 2) lon/lat, tags...}] of the highway=raceway ways whose bbox touches bounds; a version
-        that changed under the reads is dropped and asked once more (as query)."""
-        for attempt in (0, 1):
-            _etag, remote = self.version(kind)
-            try:
-                return self._raceways(remote, bounds, kind)
-            except rangeread.Changed:
-                if attempt:
-                    raise
-                self._forget()
-        return []
-
-    def _raceways(self, remote, bounds, kind):
+    def _cell(self, remote, bounds, kind):
         lon0, lat0, lon1, lat1 = bounds
         rd = self._reader
         files = {PATH: remote}
@@ -205,67 +202,32 @@ class OsmTags:
             groups = self._groups(con, uri, remote, kind)
             cand = self._candidates(groups, bounds)
             if not cand:
-                return []
+                return {}, []
+            want = {c for rg in cand for c in groups[rg]["cols"] if c in USED or c == "highway"}
+            rd._fetch(files, {PATH: [r for rg in cand for c, rs in groups[rg]["cols"].items() if c in want
+                                     for r in rs]}, kind)
+            only = " OR ".join(f"file_row_number BETWEEN {groups[rg]['first']} AND "
+                               f"{groups[rg]['first'] + groups[rg]['n'] - 1}" for rg in cand)
             box = (f"bbox.xmin <= {lon1!r} AND bbox.xmax >= {lon0!r} AND bbox.ymin <= {lat1!r} "
                    f"AND bbox.ymax >= {lat0!r}")
-            rd._fetch(files, {PATH: [r for rg in cand for c in ("highway", "bbox") for r in groups[rg]["cols"].get(c, [])]},
-                      kind)
-            only = " OR ".join(f"file_row_number BETWEEN {groups[rg]['first']} AND "
-                               f"{groups[rg]['first'] + groups[rg]['n'] - 1}" for rg in cand)
-            rows = con.execute(f"""SELECT file_row_number FROM read_parquet({uri}, file_row_number = true)
-                WHERE ({only}) AND highway = 'raceway' AND {box}""").fetchall()
-            if not rows:
-                return []
-            hit = sorted({rg for (r,) in rows for rg in cand
-                          if groups[rg]["first"] <= r < groups[rg]["first"] + groups[rg]["n"]})
-            rd._fetch(files, {PATH: [r for rg in hit for c in RACEWAY_COLUMNS + ("geometry",)
-                                     for r in groups[rg]["cols"].get(c, [])]}, kind)
-            only = " OR ".join(f"file_row_number BETWEEN {groups[rg]['first']} AND "
-                               f"{groups[rg]['first'] + groups[rg]['n'] - 1}" for rg in hit)
-            cols = ", ".join(f'"{c}"' for c in RACEWAY_COLUMNS)
-            try:                # (the geometry as its WKB bytes: no spatial extension needed)
-                con.execute("SET enable_geoparquet_conversion = false")
-            except Exception:
-                pass
-            got = con.execute(f"""SELECT {cols}, geometry FROM read_parquet({uri}, file_row_number = true)
-                WHERE ({only}) AND highway = 'raceway' AND {box}""").fetchall()
-        except Exception:
-            for e in errors:
-                if isinstance(e, rangeread.Changed):
-                    raise e
-            raise
-        finally:
-            con.close()
-        out = []
-        for row in got:
-            coords = _linestring(bytes(row[-1]))
-            if coords is None or len(coords) < 2:
-                continue
-            d = {c: v for c, v in zip(RACEWAY_COLUMNS, row[:-1]) if v is not None}
-            d["coords"] = coords
-            out.append(d)
-        return out
-
-    def _query(self, remote, bounds, kind):
-        lon0, lat0, lon1, lat1 = bounds
-        rd = self._reader
-        files = {PATH: remote}
-        con, proto, errors = rd._connect(files, kind)
-        try:
-            uri = f"'{proto}://{PATH}'"
-            groups = self._groups(con, uri, remote, kind)
-            cand = self._candidates(groups, bounds)
-            if not cand:
-                return {}
-            want = {c for rg in cand for c in groups[rg]["cols"] if c in USED}
-            wanted = {PATH: [r for rg in cand for c, rs in groups[rg]["cols"].items() if c in want for r in rs]}
-            rd._fetch(files, wanted, kind)
-            only = " OR ".join(f"file_row_number BETWEEN {groups[rg]['first']} AND "
-                               f"{groups[rg]['first'] + groups[rg]['n'] - 1}" for rg in cand)
             cols = ", ".join(f"{expr} AS \"{name}\"" for name, expr in COLUMNS.items())
-            rows = con.execute(f"""SELECT id, {cols} FROM read_parquet({uri}, file_row_number = true)
-                WHERE ({only}) AND bbox.xmin <= {lon1!r} AND bbox.xmax >= {lon0!r}
-                AND bbox.ymin <= {lat1!r} AND bbox.ymax >= {lat0!r}""").fetchall()
+            rows = con.execute(f"""SELECT id, highway = 'raceway', file_row_number, {cols}
+                FROM read_parquet({uri}, file_row_number = true) WHERE ({only}) AND {box}""").fetchall()
+            race = [r[2] for r in rows if r[1]]
+            got = []
+            if race:            # (rare: the raceways' own columns and geometry, of their row groups only)
+                hit = sorted({rg for r in race for rg in cand
+                              if groups[rg]["first"] <= r < groups[rg]["first"] + groups[rg]["n"]})
+                rd._fetch(files, {PATH: [r for rg in hit for c in RACEWAY_COLUMNS + ("geometry",)
+                                         for r in groups[rg]["cols"].get(c, [])]}, kind)
+                try:            # (the geometry as its WKB bytes: no spatial extension needed)
+                    con.execute("SET enable_geoparquet_conversion = false")
+                except Exception:
+                    pass
+                rcols = ", ".join(f'"{c}"' for c in RACEWAY_COLUMNS)
+                rows_in = ", ".join(str(int(r)) for r in race)
+                got = con.execute(f"""SELECT {rcols}, geometry FROM read_parquet({uri}, file_row_number = true)
+                    WHERE file_row_number IN ({rows_in})""").fetchall()
         except Exception:
             for e in errors:
                 if isinstance(e, rangeread.Changed):
@@ -274,8 +236,16 @@ class OsmTags:
         finally:
             con.close()
         names = list(COLUMNS)
-        return {int(r[0]): {k: v for k, v in zip(names, r[1:]) if v is not None} for r in rows}
-
+        tags = {int(r[0]): {k: v for k, v in zip(names, r[3:]) if v is not None} for r in rows}
+        ways = []
+        for row in got:
+            coords = _linestring(bytes(row[-1]))
+            if coords is None or len(coords) < 2:
+                continue
+            d = {c: v for c, v in zip(RACEWAY_COLUMNS, row[:-1]) if v is not None}
+            d["coords"] = coords
+            ways.append(d)
+        return tags, ways
 
 RACEWAY_PAVED = {"", "asphalt", "concrete", "paved", "chipseal"}
 
