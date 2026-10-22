@@ -67,6 +67,9 @@ CLASS_MATERIAL = {0: DIRT, 10: GRASS, 20: DUSTY, 30: GRASS, 40: DIRT, 50: DIRT, 
 LAWN_SHARE_HUMID = 0.9
 LAWN_SHARE_DRY = 0.75
 LAWN_PATCH_M = 30.0
+# Past Web Mercator's limit (+-85.05 deg) there are no map cells: all of it is ice, Antarctica's ice sheet and the
+# Arctic Ocean's year-round sea ice (the user, 2026-10-22: "add polar support"), WorldCover's "snow and ice".
+POLAR_CLASS = 70
 ROCK_SLOPE_DEG = 35.0       # steeper ground is rock (cliffs, scree), except snow
 # Organic borders (user 2026-10-11: rectangular grass in Monument Valley). WorldCover's 10 m square
 # pixels give stair-stepped, ruler-straight class borders, which the grass makes visible. Every
@@ -690,7 +693,7 @@ class Surface:
         lat = np.asarray(lat, np.float64)
         lon = np.asarray(lon, np.float64)
         out, complete = [], True
-        for key in mapcells.cells_for_bbox(float(lat.min()), float(lon.min()), float(lat.max()), float(lon.max())):
+        for key in mapcells.cells_for_points(lat, lon):
             if self.md._load(self.md.path(key, "roads")) is None:
                 self._queue(key, ("roads",))
                 complete = False
@@ -708,7 +711,7 @@ class Surface:
         lat = np.asarray(lat, np.float64)
         lon = np.asarray(lon, np.float64)
         out = []
-        for key in mapcells.cells_for_bbox(float(lat.min()), float(lon.min()), float(lat.max()), float(lon.max())):
+        for key in mapcells.cells_for_points(lat, lon):
             for layer in ("infrastructure", "land_use"):
                 if self.md._load(self.md.path(key, layer)) is None:
                     self._queue(key, (layer,))
@@ -730,7 +733,7 @@ class Surface:
         lat, lon = warp(lat, lon)
         out = np.zeros(lat.shape, np.uint8)
         complete = True
-        for key in mapcells.cells_for_bbox(float(lat.min()), float(lon.min()), float(lat.max()), float(lon.max())):
+        for key in mapcells.cells_for_points(lat, lon):
             r = self._cached(key)
             lon0, lat0, lon1, lat1 = key.bounds()
             inside = (lat >= lat0) & (lat < lat1) & (lon >= lon0) & (lon < lon1)
@@ -740,6 +743,7 @@ class Surface:
                 complete = complete and not self._is_queued(key)
                 continue
             out[inside] = r.sample(lon[inside], lat[inside])
+        out[np.abs(lat) > mapcells.MAX_LAT] = POLAR_CLASS
         return out, complete
 
     def _is_queued(self, key):

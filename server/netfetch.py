@@ -153,7 +153,8 @@ POLICIES = {
        for h in ("overturemaps-us-west-2.s3.us-west-2.amazonaws.com",
                  "overturemapswestus2.blob.core.windows.net",
                  "esa-worldcover.s3.eu-central-1.amazonaws.com",
-                 "dataforgood-fb-data.s3.amazonaws.com")},
+                 "dataforgood-fb-data.s3.amazonaws.com",
+                 "copernicus-dem-30m.s3.amazonaws.com")},      # the polar caps' DEM (polardem.py)
     # OurAirports' nightly CSV dump on GitHub Pages (airports.py): two files (~3 MB gzipped) once a week,
     # one request at a time, a hard cap well above a week's need; the copy on disk serves offline
     "davidmegginson.github.io": HostPolicy(rate=0.2, burst=2.0, max_conc=1, daily_budget=20, daily_hard=40,

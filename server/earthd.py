@@ -3601,7 +3601,8 @@ class Connection:
                 if fut.cancelled():
                     continue
                 if fut.exception() is not None:
-                    log.error("far tile %s of anchor %d failed: %r", t.key, ck[0], fut.exception())
+                    log.error("far tile %s of anchor %d failed: %r", t.key, ck[0], fut.exception(),
+                              exc_info=fut.exception() if t.key not in self.failed else None)   # (its first)
                     self.failed.add(t.key)
                     continue
                 if ck[0] != self.active or t.key not in self.desired or ck in self.shown or t.key in self.sent:

@@ -548,11 +548,14 @@ class DriveBase(unittest.TestCase):
                     nv = (lay.cells + 1) ** 2 + 4 * (lay.cells + 1)
                     good = (d["version"] == cdae.VERSION_WORD and len(d["meshes"]) == 1
                             and [x["name"] for x in d["materials"]] == [m.get("material") or MATERIAL]
-                            and len(mesh_["verts"]) == nv
-                            and len(mesh_["indices"]) == 3 * lay.tris      # 2304; 8704 with 64 cells
+                            # the full lattice: 2304 indices, 8704 with 64 cells; the adaptive 64-cell meshes
+                            # (rtin_mesh) keep fewer where the ground is flat
+                            and (len(mesh_["verts"]) == nv if lay.cells != 64 else 0 < len(mesh_["verts"]) <= nv)
+                            and (len(mesh_["indices"]) == 3 * lay.tris if lay.cells != 64
+                                 else 0 < len(mesh_["indices"]) <= 3 * lay.tris and len(mesh_["indices"]) % 3 == 0)
                             and abs(d["bounds"][3] - d["bounds"][0] - t.size) < 1e-3
                             # UV1 (detail map) exactly on textured tiles
-                            and len(mesh_["tverts2"]) == (nv if mesh else 0)
+                            and len(mesh_["tverts2"]) == (len(mesh_["verts"]) if mesh else 0)
                             # textured shapes carry UV1: 94 KB (V1_3 server report), 348 KB with 64 cells
                             and os.path.getsize(path) <= CDAE_MAX_KB[(lay.cells, mesh)] * 1024)
                     stats["cdae_parsed"] += 1

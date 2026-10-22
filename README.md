@@ -16,6 +16,8 @@ Status: beta (see VERSION). Tested on BeamNG.drive 0.40.1 on Linux (Vulkan) and 
   Austria, Poland, Czechia, Japan, parts of Australia and Canada, and more), Sentinel-2 cloudless everywhere else; shadows and
   colour seams taken out of the photos, the season's colours graded in, cliffs drawn as rock.
 - A real view distance out to the horizon, with the Earth's curvature.
+- Both poles: Antarctica's ice sheet up to the South Pole (2,835 m) from the Copernicus DEM, the Arctic's sea ice
+  at the North Pole, the polar day and night of the real sky, and a minimap compass that points to true north.
 - Ground materials from land cover (grass, dirt, rock, sand, snow, mud, lawns, paved squares and parking
   lots) with 3D grass and bushes.
 - Trees and forests from a canopy height model, regional species (conifers, broadleaf, palms, desert
@@ -165,7 +167,9 @@ The repository contains only code; all map data is downloaded at runtime and cac
   Canada, and more), USDA NAIP and USGS The National Map (public domain) in the US, and Sentinel-2
   cloudless by EOX IT Services GmbH everywhere (https://s2maps.eu, contains modified Copernicus Sentinel
   data; 2016 release CC BY 4.0, 2023 release CC BY-NC-SA 4.0, non-commercial).
-- Elevation: Mapterhorn (see https://mapterhorn.com/attribution), AWS Terrain Tiles / Mapzen.
+- Elevation: Mapterhorn (see https://mapterhorn.com/attribution), AWS Terrain Tiles / Mapzen; the polar caps from
+  85 deg on: Copernicus DEM GLO-30 (produced using Copernicus WorldDEM-30 (c) DLR e.V. 2010-2014 and (c) Airbus
+  Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA).
 - Roads, buildings, water and places: Overture Maps / OpenStreetMap contributors (lane counts, widths and speed limits from OpenStreetMap via OSM US Layercake); trees from a
   canopy height model; airports from OurAirports.
 Each source's terms apply to the downloaded data; the in-game window shows the attribution line.

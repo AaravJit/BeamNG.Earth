@@ -107,8 +107,9 @@ class RemoteFile:
     version the blocks must come from (a file that is rewritten in place: put the ETag into cache_dir too); a request
     the server answers for another version raises Changed."""
 
-    def __init__(self, urls, size, cache_dir, fetcher, if_match=None):
+    def __init__(self, urls, size, cache_dir, fetcher, if_match=None, block=None):
         self.if_match = if_match
+        self.block = block or BLOCK         # bytes per cached block (smaller for many small reads of many files)
         self.urls = (urls,) if isinstance(urls, str) else tuple(urls)
         self.cache_dir = cache_dir
         self.fetcher = fetcher
@@ -154,7 +155,7 @@ class RemoteFile:
             return None
         # a damaged block (a crash after os.replace but before the data reached the disk leaves it
         # short or empty): refetched. Without the file's size only a full block can be checked.
-        if len(b) != (self._block_len(i) if self.size is not None else BLOCK):
+        if len(b) != (self._block_len(i) if self.size is not None else self.block):
             return None
         with self._lock:
             self.stats["disk_blocks"] += 1
@@ -165,7 +166,7 @@ class RemoteFile:
         _mem_put((self._key, i), b)
 
     def _block_len(self, i):
-        return max(0, min(BLOCK, self.size - i * BLOCK))
+        return max(0, min(self.block, self.size - i * self.block))
 
     def _store(self, i, b):
         self._write(self._path(i), b)
@@ -173,8 +174,8 @@ class RemoteFile:
 
     def _fetch_run(self, i0, i1, kind):
         """Blocks i0..i1-1 in one Range request (mirrors in turn); stores and returns them."""
-        start = i0 * BLOCK
-        end = i1 * BLOCK if self.size is None else min(self.size, i1 * BLOCK)
+        start = i0 * self.block
+        end = i1 * self.block if self.size is None else min(self.size, i1 * self.block)
         marker = os.path.join(self.cache_dir, "404")
         if self.fetcher.miss_alive(marker, self.urls[0]):
             raise Missing(f"{self.urls[0]}: not found (remembered)")
@@ -222,7 +223,7 @@ class RemoteFile:
                 self.stats["net_bytes"] += len(body)
             out = {}
             for i in range(i0, i1):
-                b = body[(i - i0) * BLOCK:(i - i0 + 1) * BLOCK]
+                b = body[(i - i0) * self.block:(i - i0 + 1) * self.block]
                 if not b:
                     break
                 self._store(i, b)
@@ -235,7 +236,7 @@ class RemoteFile:
     def blocks(self, i0, i1, kind="demand"):
         """{i: bytes} for blocks i0..i1-1 (beyond the end of the file: absent)."""
         if self.size is not None:
-            i1 = min(i1, -(-self.size // BLOCK))
+            i1 = min(i1, -(-self.size // self.block))
         out, missing = {}, []
         for i in range(i0, i1):
             b = self._block_from_cache(i)
@@ -290,10 +291,10 @@ class RemoteFile:
             end = min(end, self.size)
         if end <= start:
             return b""
-        i0, i1 = start // BLOCK, (end - 1) // BLOCK + 1
+        i0, i1 = start // self.block, (end - 1) // self.block + 1
         got = self.blocks(i0, i1, kind)
         buf = b"".join(got[i] for i in range(i0, i1) if i in got)
-        return buf[start - i0 * BLOCK:end - i0 * BLOCK]
+        return buf[start - i0 * self.block:end - i0 * self.block]
 
 
 # --- fsspec filesystem for DuckDB ----------------------------------------------------------------

@@ -128,6 +128,18 @@ class CellKeyTest(unittest.TestCase):
         self.assertEqual(len(ring), n)
         self.assertEqual(len(set(ring)), n)
 
+    def test_cells_for_points(self):
+        """A road that runs to the South Pole: its vertices' longitudes go all round the globe, its box held over a
+        million cells (cells_for_bbox raised and the road tiles failed); the points' own cells instead."""
+        lat = np.array([-84.99, -84.995, -85.0, -86.0, -89.9, -89.99])
+        lon = np.array([-175.0, -175.001, -175.002, -160.0, 30.0, 120.0])
+        keys = mapcells.cells_for_points(lat, lon)
+        self.assertTrue(keys and len(keys) < 16, len(keys))
+        self.assertTrue(all(abs(k.bounds()[0] + 175.0) < 0.1 for k in keys), "only the cells by the inside points")
+        self.assertEqual(mapcells.cells_for_points(lat[3:], lon[3:]), [])          # all past the limit
+        small = mapcells.cells_for_points(np.array([39.28, 39.29]), np.array([-76.6, -76.59]))
+        self.assertEqual(small, mapcells.cells_for_bbox(39.28, -76.6, 39.29, -76.59))     # a small box: as before
+
     def test_edges_belong_east_and_south(self):
         """cell_of / owner agree with bounds() exactly: a point on an edge belongs to the cell east
         / south of it (the floating-point tile math alone puts ~1 in 7 north edges in the wrong cell)."""
@@ -290,6 +302,28 @@ class CogTest(unittest.TestCase):
         self.check(predictor=2)
         self.check(compress=False)
         self.check(big_endian=True)
+
+    def test_float_predictor(self):
+        """Predictor 3 (the Copernicus DEM): float32 byte planes, differenced along each row."""
+        w, h, t = 40, 30, 16
+        rr, cc = np.mgrid[0:h, 0:w]
+        img = (2834.5 + np.sin(cc * 0.3) * 40 - rr * 1.25).astype(np.float32)
+
+        def tile(tx, ty):
+            a = np.zeros((t, t), np.float32)
+            part = img[ty * t:(ty + 1) * t, tx * t:(tx + 1) * t]
+            a[:part.shape[0], :part.shape[1]] = part
+            return a
+        for big in (False, True):
+            data = mf.tiff_bytes(w, h, t, tile, np.float32, predictor=3, big_endian=big)
+            c = cog.Cog(rangeread.MemoryRange(data))
+            np.testing.assert_array_equal(c.read_window(0, 0, w, h), img)
+            cache = cog.TileCache(1 << 20)
+            c = cog.Cog(rangeread.MemoryRange(data), tiles=cache)
+            np.testing.assert_array_equal(c.read_window(3, 2, 20, 20), img[2:22, 3:23])
+            n = c.reads
+            np.testing.assert_array_equal(c.read_window(3, 2, 20, 20), img[2:22, 3:23])
+            self.assertEqual(c.reads, n, "decoded tiles come from the cache")
 
     def test_not_tiff(self):
         with self.assertRaises(cog.CogError):

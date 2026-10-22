@@ -45,7 +45,11 @@ class AirportGrader:
         lo0, lo1 = float(np.min(lon)), float(np.max(lon))
         try:
             keys = mapcells.cells_for_bbox(la0, lo0, la1, lo1, max_cells=MAX_CELLS)
-        except ValueError:          # a very large box: its corners' and centre's cells
+        except ValueError:          # a very large box: its corners' and centre's cells (within the map cells' rows)
+            if la0 > mapcells.MAX_LAT or la1 < -mapcells.MAX_LAT:
+                return []
+            m = mapcells.MAX_LAT - 1e-9
+            la0, la1 = max(la0, -m), min(la1, m)
             keys = list(dict.fromkeys(mapcells.cell_of(a, o) for a, o in
                                       ((la0, lo0), (la0, lo1), (la1, lo0), (la1, lo1), ((la0 + la1) / 2, (lo0 + lo1) / 2))))
         out = {}

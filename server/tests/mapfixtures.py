@@ -55,7 +55,12 @@ def tiff_bytes(width, height, tile, tile_fn, dtype=np.uint8, *, predictor=1, com
             a = np.asarray(a, dtype)
             if predictor == 2:
                 a = np.diff(a, axis=1, prepend=np.zeros((tile, 1), dtype)).astype(dtype)
-            raw = a.astype(dt).tobytes()
+            if predictor == 3:              # floating point: each row's bytes as planes (most significant first),
+                b = a.astype(np.dtype(dtype).newbyteorder(">")).view(np.uint8).reshape(tile, tile, -1)
+                b = b.transpose(0, 2, 1).reshape(tile, -1)      # ... differenced along the row
+                raw = np.diff(b, axis=1, prepend=np.zeros((tile, 1), np.uint8)).astype(np.uint8).tobytes()
+            else:
+                raw = a.astype(dt).tobytes()
             blobs.append(zlib.compress(raw) if compress else raw)
     entries = []                    # (tag, type, values)
     entries += [(256, 4, [width]), (257, 4, [height]), (258, 3, [8 * dt.itemsize]),

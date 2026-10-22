@@ -2,10 +2,11 @@
 
 Enough for the map-data rasters (ESA WorldCover 10 m, Meta/WRI canopy height): classic TIFF and
 BigTIFF, either byte order, tiled single-band images of 8/16/32-bit integers or 32/64-bit floats,
-compression none / Deflate (zlib, from the standard library) / PackBits, predictor 1 (none) or 2
-(horizontal differencing). The geotransform comes from ModelPixelScale + ModelTiepoint, the CRS
-from the GeoKeys (EPSG of the geographic or projected type), nodata from GDAL's tag 42113. Only
-the full-resolution image (the first IFD) is read; overviews and masks are skipped.
+compression none / Deflate (zlib, from the standard library) / PackBits, predictor 1 (none), 2
+(horizontal differencing) or 3 (floating point, float32: the Copernicus DEM). The geotransform
+comes from ModelPixelScale + ModelTiepoint, the CRS from the GeoKeys (EPSG of the geographic or
+projected type), nodata from GDAL's tag 42113. The full-resolution image (the first IFD) is read,
+or one of the overviews after it (level); masks are skipped. A TileCache keeps decoded tiles.
 
 Cog(remote) takes anything with .read(start, end, kind) and .size (rangeread.RemoteFile, or
 rangeread.MemoryRange for tests): the header is read once (HEADER bytes, more if an IFD array
@@ -14,9 +15,13 @@ one row in one read when they lie close together in the file (COGs store them in
 Missing tiles (offset 0, byte count 0: GDAL's sparse files) are nodata.
 """
 import struct
+import threading
 import zlib
+from collections import OrderedDict
 
 import numpy as np
+
+import fast
 
 HEADER = 64 * 1024          # bytes read first: every IFD of the files in use fits in it
 MERGE_GAP = 64 * 1024       # tiles closer than this in the file are read in one request
@@ -57,9 +62,39 @@ def _packbits(data, size):
     return bytes(out)
 
 
+class TileCache:
+    """Decoded tiles of any number of Cogs, least recently used out beyond max_bytes (thread-safe)."""
+
+    def __init__(self, max_bytes):
+        self.max_bytes, self.bytes = max_bytes, 0
+        self._d = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, key):
+        with self._lock:
+            a = self._d.get(key)
+            if a is not None:
+                self._d.move_to_end(key)
+            return a
+
+    def put(self, key, a):
+        with self._lock:
+            old = self._d.pop(key, None)
+            if old is not None:
+                self.bytes -= old.nbytes
+            self._d[key] = a
+            self.bytes += a.nbytes
+            while self.bytes > self.max_bytes and len(self._d) > 1:
+                _, gone = self._d.popitem(last=False)
+                self.bytes -= gone.nbytes
+
+
 class Cog:
-    def __init__(self, remote, kind="demand"):
-        self.remote, self.kind = remote, kind
+    def __init__(self, remote, kind="demand", level=0, tiles=None):
+        """level: 0 the full-resolution image, n the n-th overview after it (its pixels as many times larger as the
+        image is smaller; the georeferencing is the full image's, scaled). tiles: a TileCache that keeps decoded tiles (files read
+        again and again, the polar DEM), or None."""
+        self.remote, self.kind, self.level, self.tiles = remote, kind, level, tiles
         self._buf = remote.read(0, HEADER, kind)
         b = self._buf
         if b[:2] == b"II":
@@ -78,6 +113,11 @@ class Cog:
         else:
             raise CogError(f"bad TIFF magic {magic}")
         self.tags = self._ifd(first)
+        full = self.tags
+        for _ in range(level):
+            if not self._next:
+                raise CogError(f"no overview {level}")
+            self.tags = self._ifd(self._next)
         t = self.tags
         if TAGS["tile_w"] not in t:
             raise CogError("not tiled (strips are not supported)")
@@ -90,7 +130,7 @@ class Cog:
             raise CogError(f"unsupported compression {comp}")
         self.compression = COMPRESSIONS[comp]
         self.predictor = t.get(TAGS["predictor"], (1,))[0]
-        if self.predictor not in (1, 2):
+        if self.predictor not in (1, 2, 3):
             raise CogError(f"unsupported predictor {self.predictor}")
         self.dtype = _dtype(t[TAGS["bits"]][0], t.get(TAGS["sample_format"], (1,))[0], self.bo)
         self.offsets = np.asarray(t[TAGS["tile_offsets"]], np.int64)
@@ -99,7 +139,7 @@ class Cog:
         self.tiles_y = -(-self.height // self.tile_h)
         if len(self.offsets) < self.tiles_x * self.tiles_y:
             raise CogError("tile offset table too short")
-        nd = t.get(TAGS["nodata"])
+        nd = t.get(TAGS["nodata"], full.get(TAGS["nodata"]))
         self.nodata = None
         if nd:
             s = nd if isinstance(nd, str) else ""
@@ -109,14 +149,16 @@ class Cog:
             except ValueError:
                 self.nodata = None
         # georeferencing: pixel (col, row) corner -> (x0 + col * sx, y0 - row * sy)
-        ps, tp = t.get(TAGS["pixel_scale"]), t.get(TAGS["tiepoint"])
+        ps, tp = full.get(TAGS["pixel_scale"]), full.get(TAGS["tiepoint"])
         if ps and tp:
-            self.sx, self.sy = float(ps[0]), float(ps[1])
-            self.x0 = float(tp[3]) - float(tp[0]) * self.sx
-            self.y0 = float(tp[4]) + float(tp[1]) * self.sy
+            sx, sy = float(ps[0]), float(ps[1])
+            self.x0 = float(tp[3]) - float(tp[0]) * sx
+            self.y0 = float(tp[4]) + float(tp[1]) * sy
+            self.sx = sx * full[TAGS["width"]][0] / self.width
+            self.sy = sy * full[TAGS["height"]][0] / self.height
         else:
             self.sx = self.sy = self.x0 = self.y0 = None
-        self.epsg = self._epsg(t.get(TAGS["geokeys"]))
+        self.epsg = self._epsg(full.get(TAGS["geokeys"]))
         self.reads = 0
 
     # --- header parsing -----------------------------------------------------------------------
@@ -163,6 +205,8 @@ class Cog:
                 tags[tag] = data.decode("latin-1")
             else:
                 tags[tag] = struct.unpack(bo + fmt[0] * (cnt * len(fmt)), data)
+        nxt = p + n * esz
+        self._next = struct.unpack(bo + ("Q" if self.big else "I"), self._bytes(nxt, 8 if self.big else 4))[0]
         return tags
 
     @staticmethod
@@ -185,10 +229,20 @@ class Cog:
             data = zlib.decompress(data)
         elif self.compression == "packbits":
             data = _packbits(data, self.tile_w * self.tile_h * self.dtype.itemsize)
+        if self.predictor == 3:
+            return self._float_predictor(data)
         a = np.frombuffer(data, self.dtype, count=self.tile_w * self.tile_h).reshape(self.tile_h, self.tile_w)
         if self.predictor == 2:
             a = np.cumsum(a, axis=1, dtype=a.dtype)
         return a.astype(self.dtype.newbyteorder("="), copy=False)
+
+    def _float_predictor(self, data):
+        """TIFF's floating-point predictor (3; the Copernicus DEM): each row holds its values' bytes as planes, most
+        significant first whatever the file's byte order, differenced byte by byte along the row (earthfast)."""
+        if self.dtype.kind != "f" or self.dtype.itemsize != 4:
+            raise CogError("predictor 3 is read for float32 samples only")
+        fast.require(56, "float_predictor_f32")
+        return fast._ef.float_predictor_f32(data, self.tile_w, self.tile_h)
 
     def _fill(self):
         return self.nodata if self.nodata is not None else 0
@@ -202,8 +256,22 @@ class Cog:
             return out
         tx0, tx1 = c0 // self.tile_w, (c1 - 1) // self.tile_w
         ty0, ty1 = r0 // self.tile_h, (r1 - 1) // self.tile_h
+        def place(i, tile):
+            ty, tx = divmod(i, self.tiles_x)
+            x0, y0 = tx * self.tile_w, ty * self.tile_h
+            a0, a1 = max(c0, x0), min(c1, x0 + self.tile_w)
+            b0, b1 = max(r0, y0), min(r1, y0 + self.tile_h)
+            out[b0 - row0:b1 - row0, a0 - col0:a1 - col0] = tile[b0 - y0:b1 - y0, a0 - x0:a1 - x0]
+
         for ty in range(ty0, ty1 + 1):
-            idx = [ty * self.tiles_x + tx for tx in range(tx0, tx1 + 1)]
+            idx = []
+            for tx in range(tx0, tx1 + 1):
+                i = ty * self.tiles_x + tx
+                tile = self.tiles.get((self.remote, self.level, i)) if self.tiles is not None else None
+                if tile is not None:
+                    place(i, tile)
+                else:
+                    idx.append(i)
             for group in self._groups(idx):
                 start = int(self.offsets[group[0]])
                 end = max(int(self.offsets[i] + self.counts[i]) for i in group)
@@ -212,11 +280,12 @@ class Cog:
                 for i in group:
                     o, n = int(self.offsets[i]) - start, int(self.counts[i])
                     tile = self._decode(blob[o:o + n])
-                    tx = i - ty * self.tiles_x
-                    x0, y0 = tx * self.tile_w, ty * self.tile_h
-                    a0, a1 = max(c0, x0), min(c1, x0 + self.tile_w)
-                    b0, b1 = max(r0, y0), min(r1, y0 + self.tile_h)
-                    out[b0 - row0:b1 - row0, a0 - col0:a1 - col0] = tile[b0 - y0:b1 - y0, a0 - x0:a1 - x0]
+                    if self.tiles is not None:      # (the part inside the image: an overview's tile is mostly padding)
+                        ty_, tx_ = divmod(i, self.tiles_x)
+                        tile = np.ascontiguousarray(tile[:min(self.tile_h, self.height - ty_ * self.tile_h),
+                                                         :min(self.tile_w, self.width - tx_ * self.tile_w)])
+                        self.tiles.put((self.remote, self.level, i), tile)
+                    place(i, tile)
         return out
 
     def _groups(self, idx):

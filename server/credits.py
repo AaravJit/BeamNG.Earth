@@ -37,6 +37,7 @@ import numpy as np
 
 import colormatch as colormatchmod
 import dem as demmod
+import polardem
 import weather as weathermod
 
 log = logging.getLogger("earthd.credits")
@@ -65,6 +66,8 @@ IMAGERY.update({n: v[1] for n, v in __import__("imagery_regional").REGIONAL.item
 ELEVATION = {
     demmod.MAPTERHORN["name"]: "Mapterhorn (see mapterhorn.com/attribution)",
     demmod.AWS["name"]: "AWS Terrain Tiles / Mapzen",
+    polardem.SOURCE: "Produced using Copernicus WorldDEM-30 (c) DLR e.V. 2010-2014 and (c) Airbus Defence and Space GmbH "
+                     "2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved",
 }
 WEATHER_ID = "wx:open-meteo"
 
@@ -85,6 +88,7 @@ SHORT = {
     "img:japan": "GSI Japan", "img:au_nsw": "Spatial Services NSW", "img:au_tas": "theLIST Tasmania",
     "img:ontario": "Ontario GEO",
     f"dem:{demmod.MAPTERHORN['name']}": "Mapterhorn", f"dem:{demmod.AWS['name']}": "AWS Terrain Tiles / Mapzen",
+    f"dem:{polardem.SOURCE}": "Copernicus DEM (DLR, Airbus)",
     WEATHER_ID: "Open-Meteo",
 }
 # Every other source that built what is near the player (the user, 2026-10-18: "show all sources", not only those
@@ -109,7 +113,7 @@ ORDER = ([f"img:{n}" for n in IMAGERY] + [f"dem:{n}" for n in ELEVATION] + list(
 
 # Imagery.render's counts that are no source: the fallback colour, the relit and colour-matched shares, the leaf-off
 # imagery's share (a count of other sources' texels; it showed as "leafon" in the overlay, 2026-10-18)
-NOT_SOURCES = ("none", "deshadow", "colormatch", "leafon")
+NOT_SOURCES = ("none", "polar", "deshadow", "colormatch", "leafon")
 
 
 def _rank(i):
@@ -263,7 +267,24 @@ def tile_sources(frame, bbox, dem, zoom, used):
             p = served.get(k)
             if p:
                 ids.add(f"dem:{p}")
+    if callable(getattr(dem, "polar", None)) and polar_covered(frame, bbox, dem.polar()):
+        ids.add(f"dem:{polardem.SOURCE}")
     return frozenset(ids)
+
+
+def polar_covered(frame, bbox, polar):
+    """Whether an ENU footprint of `frame` reaches past the Web-Mercator limit onto a polar DEM file (Antarctica;
+    the Arctic Ocean has none), from a 5 x 5 grid of points on it."""
+    x0, y0, x1, y1 = bbox
+    E, N = np.meshgrid(np.linspace(x0, x1, 5), np.linspace(y0, y1, 5))
+    lat, lon, _ = frame.enu_to_geodetic(E, N, 0.0)
+    cap = np.abs(lat) > demmod.MAX_LAT
+    if not cap.any():
+        return False
+    try:
+        return polar.covers(lat[cap], lon[cap])
+    except (OSError, ValueError):
+        return False
 
 
 def bbox_distance(bb, x, y):
@@ -282,7 +303,8 @@ class Credits:
 
     def message(self, conn, near_before=()):
         """The 'credits' message for a connection's shown tiles around its player, or None before
-        anything is known (no anchor, no tile with sources). near_before: the ids near in the
+        anything is known (no anchor, no tile built; built tiles without sources, the polar ice, still send
+        one). near_before: the ids near in the
         last message (they stay near within the hysteresis band)."""
         if conn.active is None:
             return None
@@ -290,9 +312,11 @@ class Credits:
         tiles = conn.s.tiles
         near, far, kept = set(), set(), set()
         keep = frozenset(near_before)
+        known = False                   # a shown tile was built (its sources known, perhaps none: the polar ice)
         for ck, bb in list(conn.shown.items()):
             info = tiles.get(ck)
             ids = getattr(info, "credits", None)
+            known = known or ids is not None
             if not ids:
                 continue
             d = bbox_distance(bb, fx, fy)
@@ -303,7 +327,7 @@ class Credits:
                 if keep and d <= self.near_m + self.hyst_m:
                     kept |= ids & keep
         near |= kept
-        if not near and not far:
+        if not near and not far and not known:
             return None
         if conn.weather.msg is not None:
             near.add(WEATHER_ID)

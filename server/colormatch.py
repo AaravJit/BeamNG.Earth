@@ -69,6 +69,8 @@ from collections import OrderedDict
 
 import numpy as np
 
+import mercator
+
 import fast
 import pacer
 import staging
@@ -1038,14 +1040,16 @@ class ColorMatch:
     def prepare(self, lat, lon, radius=PREP_M):
         """Anchor set: queue the fields of the regions within radius, nearest first."""
         n = 2 ** self.rz
-        x = (lon / 360.0 + 0.5) * n * TILE
-        y = (0.5 - math.asinh(math.tan(math.radians(lat))) / (2 * math.pi)) * n * TILE
-        rpx = radius / (EARTH_CIRC * math.cos(math.radians(lat)) / (TILE * n))
         with self._lock:
             self._center = (lat, lon)
             self._queue = sorted((self._distance(rk), s, rk) for _, s, rk in self._queue)
-        for ry in range(int((y - rpx) // TILE), int((y + rpx) // TILE) + 1):
-            for rx in range(int((x - rpx) // TILE), int((x + rpx) // TILE) + 1):
+        if abs(lat) >= mercator.MAX_LAT:        # no Web-Mercator imagery to match (the poles)
+            return
+        x = (lon / 360.0 + 0.5) * n * TILE
+        y = (0.5 - math.asinh(math.tan(math.radians(lat))) / (2 * math.pi)) * n * TILE
+        rpx = radius / (EARTH_CIRC * math.cos(math.radians(lat)) / (TILE * n))
+        for ry in range(max(0, int((y - rpx) // TILE)), min(n - 1, int((y + rpx) // TILE)) + 1):
+            for rx in mercator.columns(x, rpx, TILE, n):
                 rk = (rx % n, ry)
                 if 0 <= ry < n and self._distance(rk) <= radius + 6000 and not self._peek(rk):
                     with self._lock:

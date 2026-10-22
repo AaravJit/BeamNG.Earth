@@ -13,7 +13,7 @@ image sits exactly on the terrain) -> Web-Mercator pixel at a zoom whose ground 
 about the texel size (never finer than the source's max zoom) -> bilinear. Each sample takes the
 first source of the chain that has data there: a source tile that is 404, or uniform (blank)
 while a later source remains, counts as missing, so the chain falls back per source tile.
-Samples no source covers (beyond +-85.05 deg, or 404 everywhere) get FALLBACK_RGB.
+Samples no source covers (404 everywhere) get FALLBACK_RGB; beyond +-85.05 deg (all ice) POLAR_RGB.
 
 Caching: raw tiles on disk under <cache>/<source>/<z>/<x>/<y>.jpg (whatever format the server
 sent), 404s remembered as <y>.404 markers (as dem.py does; they expire after the host's miss_ttl,
@@ -68,6 +68,7 @@ MEM_TILES = 512                    # decoded 256² RGB tiles kept in memory (~10
 MAX_MOSAIC = 81
 MESH_CELLS = 8                     # render(): exact reprojection on an 8 x 8 grid of texture cells
 FALLBACK_RGB = (100, 89, 69)       # no imagery anywhere: the terrain material's dirt colour
+POLAR_RGB = (226, 232, 240)        # ... past Web Mercator's limit, where it is all ice (polar ice sheet, sea ice): snow
 BLANK_RANGE = 2                    # a tile whose pixels all lie within this many levels is uniform
 NODATA_MAX, NODATA_SHARE = 6, 0.02   # an export tile with > 2 % texels this black is outside the data
 NODATA_WHITE_MIN, NODATA_WHITE_SHARE = 250, 0.25   # ... or (nodata "white") > 25 % this white: white roofs
@@ -970,8 +971,8 @@ class Imagery:
         cw = px // cells
         k = np.arange(cells + 1) * (size / cells)
         E, N = np.meshgrid(x0 + k, y0 + size - k)                 # [row (north first), col]
-        lat, lon, _ = frame.enu_to_geodetic(E, N, 0.0)
-        lat = np.clip(lat, -89.9, 89.9)
+        lat_raw, lon, _ = frame.enu_to_geodetic(E, N, 0.0)
+        lat = np.clip(lat_raw, -89.9, 89.9)
         zw = zoom_for(float(lat[cells // 2, cells // 2]), size / px)
         out = np.zeros((px, px, 3), np.uint8)
         filled = np.zeros((px, px), bool)
@@ -1033,7 +1034,17 @@ class Imagery:
             if error is not None:           # not known to be uncovered: do not bake a fallback
                 raise error
             out[~filled] = FALLBACK_RGB
-            used["none"] = int((~filled).sum())
+            if np.abs(lat_raw).max() > MAX_LAT:      # the polar caps: snow
+                i, j = np.nonzero(~filled)
+                t = size / px
+                la, _, _ = frame.enu_to_geodetic(x0 + (j + 0.5) * t, y0 + size - (i + 0.5) * t, 0.0)
+                cap = np.abs(la) > MAX_LAT
+                out[i[cap], j[cap]] = POLAR_RGB
+                if cap.any():
+                    used["polar"] = int(cap.sum())
+            used["none"] = int((~filled).sum()) - used.get("polar", 0)
+            if not used["none"]:
+                del used["none"]
         if relit is not None and relit.any():
             used["deshadow"] = int(relit.sum())
             res = self.lut[out]

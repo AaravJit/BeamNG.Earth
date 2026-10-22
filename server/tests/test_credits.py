@@ -27,6 +27,7 @@ import farfield as ff  # noqa: E402
 import geodesy  # noqa: E402
 import imagery  # noqa: E402
 import netfetch  # noqa: E402
+import polardem  # noqa: E402
 import test_server  # noqa: E402
 import test_weather  # noqa: E402
 import weather  # noqa: E402
@@ -61,8 +62,10 @@ class WordingTest(unittest.TestCase):
         self.assertEqual(set(credits.IMAGERY), set(imagery.SOURCES))
 
     def test_elevation_and_weather(self):
-        self.assertEqual(set(credits.ELEVATION), {demmod.MAPTERHORN["name"], demmod.AWS["name"]})
+        self.assertEqual(set(credits.ELEVATION), {demmod.MAPTERHORN["name"], demmod.AWS["name"], polardem.SOURCE})
         self.assertIn("mapterhorn.com/attribution", credits.ELEVATION["mapterhorn"])
+        # the Copernicus DEM's required wording (its licence)
+        self.assertIn("provided under COPERNICUS by the European Union and ESA", credits.ELEVATION[polardem.SOURCE])
         self.assertEqual(credits.full_label(credits.WEATHER_ID), weather.CREDIT)
         self.assertEqual(credits.label(credits.WEATHER_ID), "Open-Meteo")
         self.assertIn("Mapterhorn", earthd.ELEVATION_CREDIT)

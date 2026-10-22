@@ -721,8 +721,7 @@ class Grader:
         lam, lom, _ = self.frame.enu_to_geodetic(bridge[:, 0], bridge[:, 1], 0.0)
         pad = 50.0 / 111320.0
         padlon = pad / max(0.05, math.cos(math.radians(float(np.mean(lam)))))
-        keys = sorted(set(mapcells.cells_for_bbox(float(lam.min()) - pad, float(lom.min()) - padlon,
-                                                  float(lam.max()) + pad, float(lom.max()) + padlon)) | {home}, key=str)
+        keys = sorted(set(mapcells.cells_for_points(lam, lom, pad, padlon)) | {home}, key=str)
         cs = [self._cell_enu(k) for k in keys]
         bridges = [b for c in cs for b in c["bridges"]]
         lo_b, hi_b = bridge.min(0) - APPROACH_MAX_RUN - 50.0, bridge.max(0) + APPROACH_MAX_RUN + 50.0
@@ -896,8 +895,7 @@ class Grader:
         lon = np.asarray(lon, np.float64)
         pad = (T_MAX + 40.0) / 111320.0
         padlon = pad / max(0.05, math.cos(math.radians(float(np.mean(lat)))))
-        keys = mapcells.cells_for_bbox(float(lat.min()) - pad, float(lon.min()) - padlon,
-                                       float(lat.max()) + pad, float(lon.max()) + padlon)
+        keys = mapcells.cells_for_points(lat, lon, pad, padlon)
         if len(keys) > SPREAD_CELLS:        # points far apart: only the cells around them
             keys = mapcells.cells_near_points(lat, lon, pad, padlon)
         got = {}
@@ -947,7 +945,7 @@ class Grader:
         lon = np.asarray(lon, np.float64)
         if lat.size == 0:
             return []
-        for key in mapcells.cells_for_bbox(float(lat.min()), float(lon.min()), float(lat.max()), float(lon.max())):
+        for key in mapcells.cells_for_points(lat, lon):
             self._cell_plans(key)
         with self.lock:
             secs = [o for v in self.opens.values() for o in v]

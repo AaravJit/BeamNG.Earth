@@ -2354,8 +2354,7 @@ class BridgeProfiles:
             if self.infra_fn is not None:
                 pts = np.concatenate([np.asarray(xy, np.float64) for xy, _, _ in chain])
                 la, lo, _ = self.frame.enu_to_geodetic(pts[:, 0], pts[:, 1], 0.0)
-                infra = [self.infra_fn(k) for k in mapcells.cells_for_bbox(float(la.min()), float(lo.min()),
-                                                                           float(la.max()), float(lo.max()))]
+                infra = [self.infra_fn(k) for k in mapcells.cells_for_points(la, lo)]
             wet = self._wet_at if self.wet is not None else None
             beams, piers = [], []
             for info in bridgetypes.chain_structures(self.frame, chain, wet, infra):
@@ -2877,7 +2876,7 @@ def block_tunnel_holes(tunnels, cell_fn, frame, keep, cx, cy, square):
     """tunnel_hole_mask for a terrain block being built (heightmap.generate's keep: lat, lon, u), its tunnels from
     the map cells under it (cell_fn(key) -> roads Features) through the anchor's TunnelProfiles."""
     lat, lon, u = keep["lat"], keep["lon"], keep["u"]
-    keys = mapcells.cells_for_bbox(float(np.min(lat)), float(np.min(lon)), float(np.max(lat)), float(np.max(lon)))
+    keys = mapcells.cells_for_points(lat, lon)
     cells = []
     for k in keys:
         try:

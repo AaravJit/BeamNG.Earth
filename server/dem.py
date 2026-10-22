@@ -37,6 +37,7 @@ import cache as cachemod
 import dsmground
 import fast
 import netfetch
+import polardem
 import staging
 
 log = logging.getLogger("earthd.dem")
@@ -171,6 +172,16 @@ class Dem:
         # (z, x, y) -> the provider that served the tile ("mapterhorn" / "aws-terrarium"; None: no
         # data, zeros), for the data credits (credits.py). A few bytes per tile ever loaded.
         self.served = {}
+
+    def polar(self):
+        """The polar caps' DEM (made on first use)."""
+        p = getattr(self, "_polar", None)
+        if p is None:
+            with self._lock:
+                p = getattr(self, "_polar", None)
+                if p is None:
+                    p = self._polar = polardem.PolarDem(self.cache_dir, self.fetcher)
+        return p
 
     def _count(self, what):
         with self._lock:
@@ -603,8 +614,9 @@ class Dem:
 
     # --- sampling --------------------------------------------------------
     def sample(self, lat, lon, zoom, progress=None):
-        """Bilinear elevation (m) at arbitrary lat/lon arrays from zoom-level tiles.
-        Points beyond the Web Mercator limit (|lat| > 85.05) return 0."""
+        """Bilinear elevation (m) at arbitrary lat/lon arrays from zoom-level tiles. Points from polardem.FROM_LAT
+        (84.9 deg) on (Mapterhorn's heights stop short of 85, Web Mercator at 85.05) come from the Copernicus DEM
+        (polardem.py; 0 m on the Arctic Ocean)."""
         if zoom > max(MAX_ZOOM, FINE_ZOOM):
             raise ValueError(f"zoom {zoom} > {max(MAX_ZOOM, FINE_ZOOM)}")
         lat = np.asarray(lat, dtype=np.float64)
@@ -612,7 +624,13 @@ class Dem:
         shape = np.broadcast(lat, lon).shape
         lat, lon = np.broadcast_to(lat, shape).ravel(), np.broadcast_to(lon, shape).ravel()
         out = np.zeros(lat.shape, np.float64)
-        valid = np.abs(lat) <= MAX_LAT
+        valid = np.abs(lat) < polardem.FROM_LAT
+        if not valid.all():                 # the polar caps: the Copernicus DEM (polardem.py)
+            px = 40075016.686 * math.cos(math.radians(MAX_LAT)) / (TILE * 2 ** zoom)
+            try:
+                out[~valid] = self.polar().sample(lat[~valid], lon[~valid], px)
+            except (netfetch.FetchError, OSError, ValueError) as e:
+                log.warning("polar DEM unavailable (%s): sea level there", e)
         if not valid.any():
             return out.reshape(shape)
         lat, lon = lat[valid], lon[valid]
@@ -653,11 +671,6 @@ class Dem:
             mosaic[r:r + TILE, c:c + TILE] = got[k]
         fx -= tx0 * TILE
         fy -= ty0 * TILE
-        ix = np.clip(np.floor(fx).astype(np.int64), 0, nx * TILE - 2)
-        iy = np.clip(np.floor(fy).astype(np.int64), 0, ny * TILE - 2)
-        wx = np.clip(fx - ix, 0.0, 1.0)
-        wy = np.clip(fy - iy, 0.0, 1.0)
-        v00, v10 = mosaic[iy, ix], mosaic[iy, ix + 1]
-        v01, v11 = mosaic[iy + 1, ix], mosaic[iy + 1, ix + 1]
-        out[valid] = (v00 * (1 - wx) + v10 * wx) * (1 - wy) + (v01 * (1 - wx) + v11 * wx) * wy
+        fast.require(55, "bilinear_grid")
+        out[valid] = fast._ef.bilinear_grid(mosaic, fx, fy)
         return out.reshape(shape)

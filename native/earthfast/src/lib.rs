@@ -1821,6 +1821,69 @@ fn season_noise<'py>(py: Python<'py>, x: PyReadonlyArray2<'py, f32>, y: PyReadon
     out.into_pyarray(py)
 }
 
+/// A TIFF tile of float32 samples stored with the floating-point predictor (3; the Copernicus DEM): each row holds
+/// its w values' bytes as 4 planes, most significant first, differenced byte by byte along the row (cog.py). Returns
+/// the (h, w) values in native order.
+#[pyfunction]
+fn float_predictor_f32<'py>(py: Python<'py>, data: &[u8], w: usize, h: usize) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    let row = w * 4;
+    if data.len() < row * h {
+        return Err(pyo3::exceptions::PyValueError::new_err("float_predictor_f32: tile data too short"));
+    }
+    let out = py.allow_threads(|| {
+        let mut v = vec![0f32; w * h];
+        let mut b = vec![0u8; row];
+        for r in 0..h {
+            let src = &data[r * row..(r + 1) * row];
+            let mut acc = 0u8;
+            for (k, &x) in src.iter().enumerate() {
+                acc = acc.wrapping_add(x);
+                b[k] = acc;
+            }
+            for c in 0..w {
+                v[r * w + c] = f32::from_be_bytes([b[c], b[w + c], b[2 * w + c], b[3 * w + c]]);
+            }
+        }
+        v
+    });
+    Ok(numpy::ndarray::Array2::from_shape_vec((h, w), out).unwrap().into_pyarray(py))
+}
+
+/// Bilinear samples of a grid (h, w float32, h and w >= 2) at fractional pixel coordinates (fx, fy: column, row of
+/// pixel centres): the cell's corners clamped into the grid (ix in [0, w - 2]) and the weights into [0, 1], as
+/// dem.sample did in numpy (float64 arithmetic in its order). The DEM's Web-Mercator mosaics and the polar DEM's
+/// latitude / longitude grids (polardem.py).
+#[pyfunction]
+fn bilinear_grid<'py>(
+    py: Python<'py>,
+    grid: PyReadonlyArray2<'py, f32>,
+    fx: PyReadonlyArray1<'py, f64>,
+    fy: PyReadonlyArray1<'py, f64>,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let g = grid.as_array();
+    let (h, w) = (g.shape()[0], g.shape()[1]);
+    if h < 2 || w < 2 {
+        return Err(pyo3::exceptions::PyValueError::new_err("bilinear_grid: the grid needs 2 x 2 pixels"));
+    }
+    let (xs, ys) = (fx.as_array(), fy.as_array());
+    if xs.len() != ys.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err("bilinear_grid: fx and fy differ in length"));
+    }
+    let out = py.allow_threads(|| {
+        numpy::ndarray::Array1::from_shape_fn(xs.len(), |i| {
+            let (x, y) = (xs[i], ys[i]);
+            let ix = (x.floor() as i64).clamp(0, w as i64 - 2) as usize;
+            let iy = (y.floor() as i64).clamp(0, h as i64 - 2) as usize;
+            let wx = (x - ix as f64).clamp(0.0, 1.0);
+            let wy = (y - iy as f64).clamp(0.0, 1.0);
+            let (v00, v10) = (g[[iy, ix]] as f64, g[[iy, ix + 1]] as f64);
+            let (v01, v11) = (g[[iy + 1, ix]] as f64, g[[iy + 1, ix + 1]] as f64);
+            (v00 * (1.0 - wx) + v10 * wx) * (1.0 - wy) + (v01 * (1.0 - wx) + v11 * wx) * wy
+        })
+    });
+    Ok(out.into_pyarray(py))
+}
+
 /// dem.decode_terrarium's arithmetic on the decoded image (h, w, 3|4 uint8): R * 256 + G + B / 256 - 32768 in float32,
 /// in numpy's order, without the RGB conversion and float temporaries.
 #[pyfunction]
@@ -3626,6 +3689,8 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(tangents, m)?)?;
     m.add_function(wrap_pyfunction!(season_noise, m)?)?;
     m.add_function(wrap_pyfunction!(terrarium_heights, m)?)?;
+    m.add_function(wrap_pyfunction!(bilinear_grid, m)?)?;
+    m.add_function(wrap_pyfunction!(float_predictor_f32, m)?)?;
     m.add_function(wrap_pyfunction!(rf_pass, m)?)?;
     m.add_function(wrap_pyfunction!(vmedian, m)?)?;
     m.add_function(wrap_pyfunction!(bc1_encode, m)?)?;
@@ -3653,6 +3718,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(wet_run_inside, m)?)?;
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 54)?;
+    m.add("VERSION", 56)?;
     Ok(())
 }
