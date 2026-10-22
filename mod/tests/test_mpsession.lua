@@ -28,6 +28,7 @@ local function car(gid, owner, own)
   local o = S.newObject('BeamNGVehicle')
   o.active = 1
   function o:setActive(a) self.active = a end
+  function o:queueLuaCommand(c) self.cmds = self.cmds or {}; self.cmds[#self.cmds + 1] = c end
   S.objects[gid] = o
   cars[gid] = { gameVehicleID = gid, ownerID = owner, own = own }
   return o
@@ -69,6 +70,30 @@ T.check(asked.go and asked.go[1] == 36.7 and asked.go[2] > -118.3, 'go-to: besid
 asked.go = nil
 handlers.bngeGoTo('t')
 T.check(asked.go == nil, 'go-to once a session')
+
+-- damage: due when a player joins our group; after a change of DAMAGE_STEP that held DAMAGE_SETTLE_S
+T.check(ms.damageDue(true, 0, 0, 0, 0.5) == true, 'damage: a newcomer: sent')
+local due, settled = ms.damageDue(false, 10, 0, 0, 0.5)
+T.check(due == false and settled == 0, 'damage: a small change: not sent')
+due, settled = ms.damageDue(false, 500, 0, 0, 0.5)
+T.check(due == false and settled == 0.5, 'damage: a big change: waits to settle')
+due = ms.damageDue(false, 500, 0, ms.DAMAGE_SETTLE_S, 0.5)
+T.check(due == true, 'damage: settled: sent')
+-- sendDamage: our car's state asked of BeamMP's nodesVE when player 2 is (newly) in our group
+ms.reset()
+handlers.bngeGroups('g')
+local cmds = {}
+function mine:queueLuaCommand(c) cmds[#cmds + 1] = c end
+map = { objects = { [20] = { damage = 0 } } }
+ms.sendDamage({ [21] = 2 }, ms.key(36.5, -118.1), 0.5)
+T.check(#cmds == 1 and cmds[1]:find('nodesVE.getNodes', 1, true), 'damage: sent to a newcomer of our group')
+ms.sendDamage({ [21] = 2 }, ms.key(36.5, -118.1), 0.5)
+T.check(#cmds == 1, 'damage: not again while nothing changes')
+map.objects[20].damage = 900
+for _ = 1, 6 do ms.sendDamage({ [21] = 2 }, ms.key(36.5, -118.1), 0.5) end
+T.check(#cmds == 2, 'damage: sent once after it changed and settled: ' .. #cmds)
+ms.sendDamage({ [22] = 3 }, ms.key(36.5, -118.1), 0.5)
+T.check(#cmds == 2, 'damage: nobody else in our group: nothing sent')
 
 -- reset: every car back on
 ms.reset()

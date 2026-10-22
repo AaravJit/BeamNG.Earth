@@ -8,13 +8,19 @@
 --   - bngeRebase { aLat, aLon }: this player meets another group: the world moves to that anchor (core.rebaseTo: the
 --     smooth rebase, the player stays where it is on the ground);
 --   - bngeGoTo { lat, lon }: on joining, a teleport to where the others are.
--- Nothing of BeamMP is changed: its client events only (AddEventHandler, TriggerServerEvent).
+-- Damage: BeamMP sends parts that break off (break groups) but not dents; its own full-damage message (nodesVE.getNodes:
+-- every node and beam, applied on the other players' copies by its nodesGE) is never sent. This sends it for our own
+-- cars when another player joins our group (they see the car as it is) and DAMAGE_SETTLE_S after our car's damage
+-- changed by DAMAGE_STEP.
+-- Nothing of BeamMP is changed: its client events (AddEventHandler, TriggerServerEvent) and its own functions only.
 local M = {}
 
 M.PROTO = 1                 -- as the plugin's G.PROTO
 M.POSE_S = 2
 M.HIDE_S = 0.5
 M.GOTO_OFFSET_M = 12        -- a joining player lands this far from the one it goes to (not on top of it)
+M.DAMAGE_STEP = 50          -- (the game's damage figure, map.objects[id].damage)
+M.DAMAGE_SETTLE_S = 2
 
 local handlers = false
 local groups = {}           -- tostring(server player id) -> anchor key
@@ -24,6 +30,9 @@ local joined = false        -- BeamMP joined and no pose sent yet: the first pos
 local wentTo = false        -- the session's one bngeGoTo done
 local camPlaced = false     -- the free camera put on the ground once (BeamMP joins without a car)
 local lastGroups = ''       -- (the log: the groups as last logged)
+local members = {}          -- tostring(pid) -> true: the other players in our group at the last check
+local sentDamage = {}       -- own game vehicle id -> the damage its state was last sent at
+local damageSince = {}      -- own game vehicle id -> seconds its damage has differed from sentDamage
 
 function M.key(aLat, aLon) return string.format('%.6f,%.6f', aLat, aLon) end
 
@@ -36,6 +45,15 @@ function M.toHide(owners, grp, mine)
     if grp[tostring(owner)] ~= mine then out[gid] = true end
   end
   return out
+end
+
+-- Pure: should our car's full damage go out now? newcomer: a player joined our group; damage, sent: now and at the last
+-- send (nil: never); settled: seconds it has differed. -> send, settled (updated)
+function M.damageDue(newcomer, damage, sent, settled, dt)
+  if newcomer then return true, 0 end
+  if not damage or math.abs(damage - (sent or 0)) < M.DAMAGE_STEP then return false, 0 end
+  settled = (settled or 0) + dt
+  return settled >= M.DAMAGE_SETTLE_S, settled
 end
 
 local function mp() return rawget(_G, 'MPVehicleGE') end
@@ -136,7 +154,9 @@ function M.update(dt, anchor, player)
   hideIn = hideIn - (dt or 0)
   if hideIn > 0 then return end
   hideIn = M.HIDE_S
-  local hide = M.toHide(remoteOwners(), groups, mine)
+  local owners = remoteOwners()
+  local hide = M.toHide(owners, groups, mine)
+  M.sendDamage(owners, mine, M.HIDE_S)
   for gid in pairs(hide) do
     if not deactivated[gid] then
       local veh = scenetree.findObjectById(gid)
@@ -152,6 +172,39 @@ function M.update(dt, anchor, player)
   end
 end
 
+-- Our own cars' full damage to the players of our group (see the top), with BeamMP's own nodesVE.getNodes.
+function M.sendDamage(owners, mine, dt)
+  local now, newcomer, any = {}, false, false
+  for _, owner in pairs(owners) do
+    local k = tostring(owner)
+    if groups[k] == mine then
+      now[k] = true
+      any = true
+      if not members[k] then newcomer = true end
+    end
+  end
+  members = now
+  local v = mp()
+  if not any or not v or type(v.getVehicles) ~= 'function' then return end
+  local objs = rawget(_G, 'map') and map.objects or {}
+  local ok, all = pcall(v.getVehicles)
+  if not ok or type(all) ~= 'table' then return end
+  for _, veh in pairs(all) do
+    local gid = type(veh) == 'table' and veh.gameVehicleID
+    if gid and v.isOwn(gid) then
+      local o = objs[gid]
+      local dmg = o and tonumber(o.damage)
+      local send
+      send, damageSince[gid] = M.damageDue(newcomer, dmg, sentDamage[gid], damageSince[gid], dt)
+      local obj = send and scenetree.findObjectById(gid)
+      if obj then
+        obj:queueLuaCommand('if nodesVE and nodesVE.getNodes then nodesVE.getNodes() end')
+        sentDamage[gid] = dmg or 0
+      end
+    end
+  end
+end
+
 -- The session's end (BeamMP left, the level's end): the deactivated cars back on, everything forgotten.
 function M.reset()
   for gid in pairs(deactivated) do
@@ -159,6 +212,7 @@ function M.reset()
     if veh then veh:setActive(1) end
   end
   deactivated, groups, poseIn, hideIn, joined, wentTo, camPlaced, lastGroups = {}, {}, 0, 0, false, false, false, ''
+  members, sentDamage, damageSince = {}, {}, {}
 end
 
 -- (tests, the dev tools)
