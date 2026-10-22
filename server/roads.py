@@ -70,7 +70,10 @@ COBBLE = {"paving_stones", "sett", "cobblestone", "unhewn_cobblestone", "bricks"
 COBBLE_ALIASES = {"interlocking_pavers", "interlocking_stones", "pavers", "block_pavers", "paving_stone"}
 GRAVEL = {"gravel", "fine_gravel", "compacted", "pebblestone"}
 # ... and the values that do mean "no hard surface": an unrecognised one is not one of these (the class decides)
-UNPAVED = {"unpaved", "ground", "dirt", "earth", "mud", "grass", "sand", "soil"}
+UNPAVED = {"unpaved", "ground", "dirt", "earth", "mud", "grass", "grass_paver", "sand", "soil",
+           # the rock family: a rough, unpaved surface, never a marked asphalt street (gridmap v2's Rock is a
+           # TerrainMaterial — a heightfield shader, not a surface a decal can carry: 2026-10-22)
+           "rock", "rocky", "bedrock", "stone", "stones"}
 # kinds with a hard, built surface: carriageway extras (parking, strips, sidewalks) apply
 BUILT = {"paved", "cobble"}
 # surface kind -> DecalRoad look (stock materials, loaded by the mod from the official levels)

@@ -87,6 +87,10 @@ class RulesTest(unittest.TestCase):
         # interlocking concrete pavers, under the names the map gives them
         for v in ("interlocking_pavers", "interlocking_stones"):
             self.assertEqual(roads.surface_kind("residential", v), "cobble", v)
+        # the rock family and grass are unpaved, never a marked asphalt street (gridmap v2's Rock/Grass are
+        # TerrainMaterials: a heightfield shader, not something a road decal can carry)
+        for v in ("rock", "bedrock", "rocky", "stone", "stones", "grass", "grass_paver"):
+            self.assertEqual(roads.surface_kind("residential", v), "dirt", v)
         # a value not understood at all is the class's own surface, not the dirt road
         self.assertEqual(roads.surface_kind("residential", "whatever"), "paved")
         self.assertEqual(roads.surface_kind("track", "whatever"), "dirt")
