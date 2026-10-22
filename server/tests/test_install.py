@@ -91,6 +91,42 @@ class SetupVenv(unittest.TestCase):
         self.assertFalse(os.path.exists(self.venv))
 
 
+class ModActive(unittest.TestCase):
+    """ensure_mod_active: the mod turned back on in mods/db.json (a BeamMP server turns it off), nothing else."""
+
+    def write(self, d, db):
+        os.makedirs(os.path.join(d, "mods"), exist_ok=True)
+        with open(os.path.join(d, "mods", "db.json"), "w", encoding="utf-8") as f:
+            import json
+            json.dump(db, f)
+
+    def read(self, d):
+        import json
+        with open(os.path.join(d, "mods", "db.json"), encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_turned_back_on_others_untouched(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.write(d, {"header": {"version": 1.1}, "mods": {install.MOD_NAME: {"active": False, "modname": "x"},
+                                                                "other": {"active": False}}})
+            self.assertTrue(install.ensure_mod_active(d))
+            db = self.read(d)
+            self.assertIs(db["mods"][install.MOD_NAME]["active"], True)
+            self.assertEqual(db["mods"][install.MOD_NAME]["modname"], "x")
+            self.assertIs(db["mods"]["other"]["active"], False, "another mod stays as it was")
+            self.assertEqual(db["header"], {"version": 1.1})
+            self.assertFalse(install.ensure_mod_active(d), "already on: nothing written")
+
+    def test_no_list_or_no_entry(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertFalse(install.ensure_mod_active(d))
+            self.write(d, {"mods": {}})
+            self.assertFalse(install.ensure_mod_active(d))
+            with open(os.path.join(d, "mods", "db.json"), "w", encoding="utf-8") as f:
+                f.write("{broken")
+            self.assertFalse(install.ensure_mod_active(d))
+
+
 class ModUpdateTimes(unittest.TestCase):
     """The game repacks a terrain texture (seconds, on its main thread) when the file is newer than its cache entry:
     an update keeps an unchanged file's time and gives a changed one the current time."""
