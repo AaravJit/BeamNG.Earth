@@ -658,6 +658,8 @@ python3 server/airports.py --stats                                   # data-qual
 
 ```sh
 python3 -m unittest discover -s server/tests -v        # BNGE_SKIP_DRIVE=1 skips the drive test
+python3 tools/run_tests.py [module ...]                # the same, a process per module, 6 at a time, live
+                                                       # progress, an ETA, a timeout per module
 ```
 
 `test_airports.py`, `test_runwaygeom.py`, `test_runwaymarks.py`: the airport data (parsing, qualities, surfaces,

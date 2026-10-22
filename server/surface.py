@@ -263,7 +263,9 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, e
         # sits half a sample off the line (PIL), its one edge a metre short
         px = max(1, int(math.ceil(width / square - 1e-9)))
         px += 1 - px % 2
-        c, r = to_px(x, y)
+        # to a millionth of a sample: PIL floors, and a line on a sample row came out 63.99999999996 on Windows (its
+        # libm, the affine fit), drawn a sample north of where it lands on Linux
+        c, r = (np.round(v, 6) for v in to_px(x, y))
         vx = 0 if walks else 2 * int(math.ceil(VERGE_M / square))     # (even: the verge stays odd, centred)
         if c.max() < -px - vx or c.min() > w + px + vx or r.max() < -px - vx or r.min() > h + px + vx:
             return

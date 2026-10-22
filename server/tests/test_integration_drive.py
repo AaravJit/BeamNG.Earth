@@ -115,7 +115,7 @@ import heightmap  # noqa: E402
 import imagery  # noqa: E402
 import modsim  # noqa: E402
 from modsim import CORE, GOV, LATTICE, REBASE, cheb  # noqa: E402
-from netclient import Client  # noqa: E402
+from netclient import Client, stop_server  # noqa: E402
 
 LAT, LON = 36.5785, -118.2923
 SPEED = 30.0
@@ -430,14 +430,14 @@ class DriveBase(unittest.TestCase):
              # roads (and the grading under them) wait on Overture road data per block: own tests
              "--roads", "off", *self.server_args],
             stdout=subprocess.PIPE, stderr=self.errlog, text=True)
+        self.addCleanup(stop_server, self.proc)     # a failed start too: no server or workers left behind
         line = self.proc.stdout.readline()
         self.assertIn("listening on 127.0.0.1:", line)
         self.c = Client(int(line.split("127.0.0.1:")[1].split()[0]))
 
     def tearDown(self):
         self.c.close()
-        self.proc.terminate()
-        self.proc.wait(10)
+        stop_server(self.proc)
         self.proc.stdout.close()
         self.errlog.close()
         keep = os.environ.get("BNGE_DRIVE_KEEP_LOG")

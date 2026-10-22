@@ -277,7 +277,7 @@ def mod_sends():
     every send({...}) in terrainpatch.lua (core hands it net.send)."""
     out = {}
     for names, pattern in ((("core.lua", "places.lua"), r"net\.send\(\{"), (("terrainpatch.lua",), r"\bsend\(\{")):
-        text = "\n".join((LUA / n).read_text() for n in names)
+        text = "\n".join((LUA / n).read_text(encoding="utf-8") for n in names)
         for m in re.finditer(pattern, text):
             t = lua_tables(text, m.end() - 1)
             keys, nested = top_keys(t)
@@ -290,14 +290,14 @@ def mod_reads():
     """Fields the mod reads from server messages: msg.X / p.msg.X / tr.X (terrain) in its Lua."""
     out = set()
     for name in ("core.lua", "farfield.lua", "lattice.lua", "weather.lua", "credits.lua", "roads.lua"):
-        text = (LUA / name).read_text()
+        text = (LUA / name).read_text(encoding="utf-8")
         out |= set(re.findall(r"\bmsg\.(\w+)", text))
         out |= {"terrain." + f for f in re.findall(r"\btr\.(\w+)", text)}
     return out
 
 
 def server_reads():
-    text = (Path(earthd.__file__)).read_text()
+    text = (Path(earthd.__file__)).read_text(encoding="utf-8")
     out = set(re.findall(r"msg\.get\(\"(\w+)\"", text)) | set(re.findall(r"msg\[\"(\w+)\"\]", text))
     out |= set(re.findall(r"_num\(msg, \"(\w+)\"", text))
     return out
@@ -342,8 +342,8 @@ class SessionsAgreementTest(test_server.ServerHarness):
     earlier run's folder named in hello and releases it when a pose no longer names it."""
 
     def test_mod_side(self):
-        core = (LUA / "core.lua").read_text()
-        far = (LUA / "farfield.lua").read_text()
+        core = (LUA / "core.lua").read_text(encoding="utf-8")
+        far = (LUA / "farfield.lua").read_text(encoding="utf-8")
         for kind in ("hello", "pose"):
             t = next(lua_tables(core, m.end() - 1) for m in re.finditer(r"net\.send\(\{", core)
                      if f"type = '{kind}'" in lua_tables(core, m.end() - 1))
@@ -384,15 +384,15 @@ class CreditsAgreementTest(unittest.TestCase):
     def test_credits_in_the_mod(self):
         """core.lua hands 'credits' to credits.lua and clears the previous session's on hello; credits.lua
         reads near / far (the lines the server builds); the overlay is on by default (CC BY)."""
-        core = (LUA / "core.lua").read_text()
+        core = (LUA / "core.lua").read_text(encoding="utf-8")
         on_msg = lua_function(core, "onMessage")
         self.assertIn("credits.onMessage(msg)", on_msg[on_msg.index("t == 'credits'"):])
         hello = on_msg[on_msg.index("t == 'hello'"):on_msg.index("t == 'status'")]
         self.assertIn("credits.clear()", hello)
-        text = (LUA / "credits.lua").read_text()
+        text = (LUA / "credits.lua").read_text(encoding="utf-8")
         self.assertEqual(set(re.findall(r"\bmsg\.(\w+)", text)), {"near", "far"})
         self.assertIn("M.enabled = true", text)
-        settings = (LUA / "settings.lua").read_text()
+        settings = (LUA / "settings.lua").read_text(encoding="utf-8")
         self.assertRegex(settings, r"creditsVisible = \{ kind = 'bool', default = true")
         self.assertIn("M.onUiChangedState = onUiChangedState", core)
 
@@ -402,19 +402,19 @@ class CacheAgreementTest(unittest.TestCase):
         """core.lua sends the page's cap on hello (settings.cacheCapGb) and keeps the server's 'cache'
         for the page (cleared on hello / disconnect); settings.lua's cap values are the page's options
         and the page's default is the server's."""
-        core = (LUA / "core.lua").read_text()
+        core = (LUA / "core.lua").read_text(encoding="utf-8")
         on_msg = lua_function(core, "onMessage")
         hello = on_msg[on_msg.index("t == 'hello'"):on_msg.index("t == 'status'")]
         self.assertIn("net.send({ type = 'cache', capGb = settings.cacheCapGb() })", hello)
         self.assertIn("cacheInfo = nil", hello)
         self.assertIn("cacheInfo = nil", on_msg[on_msg.index("t == '_disconnected'"):on_msg.index("t == 'hello'")])
         self.assertIn("cacheInfo = { usedBytes = tonumber(msg.usedBytes)", on_msg[on_msg.index("t == 'cache'"):])
-        settings = (LUA / "settings.lua").read_text()
+        settings = (LUA / "settings.lua").read_text(encoding="utf-8")
         m = re.search(r"cacheCapGb = \{ kind = 'enum', default = '(\w+)', values = \{ ([^}]*) \}", settings)
         values = re.findall(r"'(\w+)'", m.group(2))
         self.assertEqual((m.group(1), values), ("20", ["5", "10", "20", "50", "unlimited"]))
         self.assertEqual(float(m.group(1)), cachemod.DEFAULT_CAP_GB, "the page's default is the server's")
-        page = (LUA.parents[3] / "ui" / "ui-vue" / "mods" / "beamngEarth" / "EarthSettings.vue").read_text()
+        page = (LUA.parents[3] / "ui" / "ui-vue" / "mods" / "beamngEarth" / "EarthSettings.vue").read_text(encoding="utf-8")
         row = re.search(r'\{ id: "cacheCapGb", type: "select", default: "(\w+)".*?options: \[(.*?)\] \}', page, re.S)
         self.assertEqual(row.group(1), m.group(1))
         self.assertEqual(re.findall(r'value: "(\w+)"', row.group(2)), values)
@@ -430,13 +430,13 @@ class HorizonAgreementTest(unittest.TestCase):
         H = modsim.lua_consts("horizon.lua")
         self.assertEqual(H["PLANET_RADIUS_KM"] * 1000.0, ff.R_EARTH)
         self.assertEqual(H["VISIBLE_MARGIN"], ff.VISIBLE_MARGIN)
-        core = (LUA / "core.lua").read_text()
+        core = (LUA / "core.lua").read_text(encoding="utf-8")
         on_msg = lua_function(core, "onMessage")
         hello = on_msg[on_msg.index("t == 'hello'"):on_msg.index("t == 'status'")]
         self.assertIn("M.setHorizon(msg.horizon == true)", hello)
         status = on_msg[on_msg.index("t == 'status'"):on_msg.index("t == 'anchor_ready'")]
         self.assertIn("M.setFarRadius(msg.radius)", status)
-        text = (LUA / "horizon.lua").read_text()
+        text = (LUA / "horizon.lua").read_text(encoding="utf-8")
         setter = lua_function(text, "setVisibleDistance")
         self.assertLess(setter.index("li.visibleDistance = v"), setter.index("li:postApply()"))
         self.assertIn("s.atmoPlanetRadius = M.PLANET_RADIUS_KM", lua_function(text, "applySky"))
@@ -454,7 +454,7 @@ class ConstantsTest(unittest.TestCase):
         self.assertEqual(set(modsim.CORE["FORMATS"]), set(ff.CONTENT_FORMAT.values()))
         self.assertEqual((ff.V131.format, ff.Layout(64).format), (3, 4))
         self.assertEqual(ff.Layout(earthd.CELLS_DEFAULT).format, 3)            # default: v1.3.1 until P8
-        core = (LUA / "core.lua").read_text()
+        core = (LUA / "core.lua").read_text(encoding="utf-8")
         on_msg = lua_function(core, "onMessage")
         self.assertIn("crossover.setCells(msg.cells)", on_msg)
         self.assertIn("farfield.setExactLevel(farfield.exactLevelFor(cells))", on_msg)
@@ -492,11 +492,11 @@ class ConstantsTest(unittest.TestCase):
             self.assertEqual(ff.level_size(lay.exact_level), cells * heightmap.SQUARE)
             self.assertEqual(modsim.exact_level_for(cells), lay.exact_level)      # farfield.exactLevelFor
             self.assertEqual(lay.exact_level, lay.min_level)
-        far = (LUA / "farfield.lua").read_text()
+        far = (LUA / "farfield.lua").read_text(encoding="utf-8")
         # the lookup key is the server's tile key (Tile.key: L_i_j, i = floor(x / S))
         self.assertIn("local k = l .. '_' .. floor(x / s) .. '_' .. floor(y / s)", lua_function(far, "shownAt"))
         self.assertEqual(ff.Tile(-2, 3, -1).key, "-2_3_-1")
-        core = (LUA / "core.lua").read_text()
+        core = (LUA / "core.lua").read_text(encoding="utf-8")
         self.assertIn("farfield.update(gov, (gov.w1 or dtReal * 1000) / 1000, st.cam, st.player)", core)
 
     @unittest.skipIf(shutil.which("luajit") is None, "luajit not installed")
@@ -581,14 +581,14 @@ class ConstantsTest(unittest.TestCase):
     def test_block_size_in_the_mod(self):
         """core.lua sets the block size from hello.blockSize before anything reads the lattice, every
         module's configure is called, and the mod ships the layer / flat maps of each size."""
-        core = (LUA / "core.lua").read_text()
+        core = (LUA / "core.lua").read_text(encoding="utf-8")
         on_msg = lua_function(core, "onMessage")
         hello = on_msg[on_msg.index("t == 'hello'"):]
         self.assertLess(hello.index("M.setBlockSize(msg.blockSize or 1024)"), hello.index("requestAnchor("))
         setter = lua_function(core, "setBlockSize")
         for call in ("lattice.configure(", "follow.configure(n)", "terrain.configure(n)", "rebase.configure(n)"):
             self.assertIn(call, setter)
-        terrain = (LUA / "terrain.lua").read_text()
+        terrain = (LUA / "terrain.lua").read_text(encoding="utf-8")
         for size in ff.BLOCK_SIZES:
             for kind, mode in (("layer", "RGB"), ("flat", "I;16")):
                 name = f"beamngEarth_{kind}_{size}.png"
@@ -602,7 +602,7 @@ class ConstantsTest(unittest.TestCase):
         vfs = modsim.lua_string("farfield.lua", "MATERIALS_FILE")
         self.assertEqual(vfs, "/" + "/".join(ff.MOD_SHAPES) + "/main.materials.json")
         local = modsim.MOD_ROOT / vfs.lstrip("/")
-        mats = json.loads(local.read_text())
+        mats = json.loads(local.read_text(encoding="utf-8"))
         self.assertEqual(mats[name]["mapTo"], name)                        # P2: mapTo overrides the shape's own
         self.assertEqual(mats[name]["class"], "Material")
         palette = mats[name]["Stages"][0]["baseColorMap"]
@@ -612,14 +612,14 @@ class ConstantsTest(unittest.TestCase):
         self.assertTrue(vfs.startswith("/levels/beamng_earth/"))
 
     def test_material_loaded_before_first_tile(self):
-        text = (LUA / "farfield.lua").read_text()
+        text = (LUA / "farfield.lua").read_text(encoding="utf-8")
         spawn = lua_function(text, "spawn")
         self.assertLess(spawn.index("ensureMaterial()"), spawn.index("createObject('TSStatic')"))
         self.assertIn("ensureMaterial()", lua_function(text, "switchAnchor"))
         ensure = lua_function(text, "ensureMaterial")
         self.assertIn("scenetree.findObject(M.MATERIAL)", ensure)          # loaded by the level already?
         self.assertIn("loadJsonMaterialsFile(M.MATERIALS_FILE)", ensure)
-        terrain = (LUA / "terrain.lua").read_text()
+        terrain = (LUA / "terrain.lua").read_text(encoding="utf-8")
         create = lua_function(terrain, "getOrCreate")
         self.assertLess(create.index("ensureMaterials()"), create.index("TerrainBlock()"))
 
@@ -630,20 +630,20 @@ class ConstantsTest(unittest.TestCase):
         self.assertEqual(set(earthd.NEAR_VISUALS), {"mesh", "terrain", "detail"})
         self.assertEqual(set(earthd.MESH_LAYOUT), {"mesh", "detail"})
         self.assertEqual(set(earthd.BLOCK_DRAWN), {"terrain", "detail"})
-        core = (LUA / "core.lua").read_text()
+        core = (LUA / "core.lua").read_text(encoding="utf-8")
         self.assertIn("nearVisual = (mode == 'mesh' or mode == 'detail') and mode or 'terrain'", lua_function(core, "setNearVisual"))
-        far = (LUA / "farfield.lua").read_text()
+        far = (LUA / "farfield.lua").read_text(encoding="utf-8")
         self.assertIn("mode = (mode == 'mesh' or mode == 'detail') and mode or 'terrain'", lua_function(far, "setNearVisual"))
 
     def test_detail_base_photo(self):
         """Detail mode: terrain.base / baseSize (earthd.terrain_msg) reach terrain.load through core's
         loadBlock; the base texture slot of the shipped texture set is the server's photo size."""
-        core = (LUA / "core.lua").read_text()
+        core = (LUA / "core.lua").read_text(encoding="utf-8")
         load = lua_function(core, "loadBlock")
         self.assertIn("tr.base", load)
         self.assertIn("tonumber(tr.baseSize)", load)
         level = LUA.parents[3] / "levels" / "beamng_earth" / "art" / "terrains" / "main.materials.json"
-        mats = json.loads(level.read_text())
+        mats = json.loads(level.read_text(encoding="utf-8"))
         ts = mats["beamngEarthTerrainMaterialTextureSet"]
         self.assertEqual(ts["baseTexSize"], [earthd.BASE_PX, earthd.BASE_PX])
 
@@ -653,7 +653,7 @@ class ConstantsTest(unittest.TestCase):
         UV1 at detailScale 0.5 (UV1 = metres / DETAIL_M, so one repeat per 2 * DETAIL_M); the
         detail texture ships with the mod (tools/make_detail_texture.py: mean 0.5 grey, fading
         mips)."""
-        text = (LUA / "satmat.lua").read_text()
+        text = (LUA / "satmat.lua").read_text(encoding="utf-8")
         create = lua_function(text, "create")
         self.assertIn("m:setField('mapTo', 0, name)", create)
         self.assertIn("m:setField('colorMap', 0, texture)", create)
@@ -662,7 +662,7 @@ class ConstantsTest(unittest.TestCase):
         self.assertRegex(text, r"\{ 'detailMapUseUV', '1' \}")
         self.assertRegex(text, r"\{ 'detailScale', '0.5 0.5' \}")
         # farfield passes the far_tile's fields straight through
-        far = (LUA / "farfield.lua").read_text()
+        far = (LUA / "farfield.lua").read_text(encoding="utf-8")
         self.assertIn("satmat.create, inst.material, inst.texture, inst.detail", far)
         detail = modsim.lua_string("satmat.lua", "DETAIL_MAP")
         mod_file = modsim.MOD_ROOT / detail.lstrip("/")      # mod root = the VFS root
@@ -672,7 +672,7 @@ class ConstantsTest(unittest.TestCase):
         self.assertGreater(struct.unpack_from("<I", data, 28)[0], 1)   # has mips (the fade)
 
     def test_shape_kind_from_extension(self):
-        text = (LUA / "farfield.lua").read_text()
+        text = (LUA / "farfield.lua").read_text(encoding="utf-8")
         self.assertIn("%.cdae$", lua_function(text, "kindOf"))
         self.assertLessEqual({"cdae", "dae"}, set(modsim.GOV["PRIOR"]))
         self.assertEqual(set(ff.FORMATS), {"cdae", "dae"})
@@ -681,7 +681,7 @@ class ConstantsTest(unittest.TestCase):
         """M1: far_tile.tex picks the governor kind; every texture size a layout uses by default has
         its own prior (cdaeTex128/256/512, measured in-game by P8: the shape dominates, so the priors
         are close and grow with the texture), and a FORMAT 3 tile (no tex) stays 'cdaeTex'."""
-        far = (LUA / "farfield.lua").read_text()
+        far = (LUA / "farfield.lua").read_text(encoding="utf-8")
         self.assertIn("inst.material and governor.texKind(inst.tex) or 'cdae'", lua_function(far, "kindOf"))
         self.assertIn("tex = tonumber(msg.tex)", far)
         prior = modsim.GOV["PRIOR"]
@@ -939,7 +939,7 @@ class MapPortHelloTest(test_server.ServerHarness):
         m, _ = self.c.until(lambda m: m["type"] == "hello", 10)
         self.assertEqual(m["mapPort"], 47999)
         self.assertIn("mapPort", SERVER_TO_MOD["hello"])
-        self.assertIn("msg.mapPort", (LUA / "core.lua").read_text())
+        self.assertIn("msg.mapPort", (LUA / "core.lua").read_text(encoding="utf-8"))
 
 
 class RetexMessagesTest(ServerMessagesTest):
@@ -979,9 +979,9 @@ class RetexMessagesTest(ServerMessagesTest):
             self.check(m)
         for m in retex:
             self.assertTrue(os.path.exists(self.fs(m["texture"])), m)
-        core = (LUA / "core.lua").read_text()
+        core = (LUA / "core.lua").read_text(encoding="utf-8")
         self.assertRegex(core, r"t == 'far_retex' then\s+farfield\.onRetex\(msg\)")
-        self.assertIn("function M.onRetex(msg)", (LUA / "farfield.lua").read_text())
+        self.assertIn("function M.onRetex(msg)", (LUA / "farfield.lua").read_text(encoding="utf-8"))
 
 
 class MeshImageryMessagesTest(ServerMessagesTest):

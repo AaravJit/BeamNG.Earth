@@ -880,15 +880,23 @@ class Server:
                 self._delete_one()
             return
         self._deleting = True
+        due = [loop.time() + self.delete_gap()]
 
         def step():
             if self.delete_queue:
                 self._delete_one()
             if self.delete_queue:
-                loop.call_later(self.delete_gap(), step)
+                # a gap after the last one was due, not after it ran: Windows' loop wakes up to ~16 ms late at every
+                # timer (a 25 ms gap took 33, 40 files/s became 30); behind by more than a gap (a stall): afresh,
+                # no burst to catch up
+                now = loop.time()
+                due[0] += self.delete_gap()
+                if due[0] < now:
+                    due[0] = now + self.delete_gap()
+                loop.call_later(due[0] - now, step)
             else:
                 self._deleting = False
-        loop.call_later(self.delete_gap(), step)
+        loop.call_later(due[0] - loop.time(), step)
 
     # --- heightmaps ------------------------------------------------------
     def hm_name(self, key):
