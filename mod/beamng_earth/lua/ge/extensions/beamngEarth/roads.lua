@@ -28,6 +28,7 @@ M.MATERIAL_FILES = { '/levels/west_coast_usa/art/road/main.materials.json',
   '/levels/johnson_valley/art/decalroad/main.materials.json',
   '/levels/italy/art/shapes/buildings/main.materials.json',        -- italy_cobblestone (paving stones)
   '/levels/driver_training/art/road/main.materials.json',          -- m_metal_grid_drain (storm drains)
+  '/levels/gridmap_v2/art/shapes/grid/main.materials.json',        -- m_gm_concrete_plain (concrete streets)
   '/levels/beamng_earth/art/shapes/beamngEarth/buildings.materials.json' }  -- buildings (server/buildings.py)
 M.FADE = '450 150'          -- distanceFade: start, range (m)
 M.enabled = true

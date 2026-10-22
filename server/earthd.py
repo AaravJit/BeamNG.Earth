@@ -1134,7 +1134,8 @@ class Server:
                                      structures=buildingsmod.centres(items, tx, ty) if items else (),
                                      tunnels=anchor.tunnels, walls=rwalls,
                                      ground=lambda x, y: roadmeshmod.drawn_ground(anchor.frame, drawn, np.c_[x, y],
-                                                                                  self.anchor_q(anchor)))
+                                                                                  self.anchor_q(anchor)),
+                                     terrain_paint=self.surface is not None)
         if self.airports is not None:   # runway markings, drawn by the road mesh like the lane lines
             chunks += self.airports.tile_chunks(anchor.frame, tx, ty, elev, roadsmod.tile_bbox)
         x0, y0, _, _ = roadsmod.tile_bbox(tx, ty)

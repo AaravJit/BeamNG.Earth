@@ -209,8 +209,9 @@ def warp(lat, lon):
 
 
 # road surface kind (roads.py) -> material; drawn in this order (paved last: it wins at junctions)
-ROAD_MATERIAL = {"dirt": DIRT, "gravel": LOOSE, "cobble": COBBLE, "paved": ASPHALT}
-ROAD_ORDER = ("dirt", "gravel", "cobble", "paved")
+ROAD_MATERIAL = {"dirt": DIRT, "gravel": LOOSE, "cobble": COBBLE, "paved": ASPHALT,
+                 "rock": ROCK, "grass": GRASS}     # rock and grass roads: the ground's own materials (roads.terrain_surface)
+ROAD_ORDER = ("dirt", "gravel", "rock", "grass", "cobble", "paved")
 
 
 def grid_affine(lat, lon):
@@ -251,7 +252,7 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, e
     seen = set()
 
     def line(x, y, spec, aisle):
-        width, kind = spec.width, spec.kind
+        width, kind = spec.width, roadsmod.surface_material_kind(spec)
         if aisle:
             width += 2 * AISLE_STALLS_M         # the stalls either side (parking.aisle_spots): no grass under cars
         walks = roadsmod.has_sidewalks(spec)

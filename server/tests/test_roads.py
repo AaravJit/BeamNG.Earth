@@ -79,6 +79,62 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(roads.surface_kind("track", "asphalt"), "paved")
         self.assertEqual(roads.surface_kind("primary", "gravel"), "gravel")
         self.assertEqual(roads.surface_kind("primary", "unpaved"), "dirt")
+        # the detail after a colon (or a second value after a semicolon) does not lose the base surface: İzmir's
+        # sett streets were drawn as dirt/gravel tracks (2026-10-22)
+        for v in ("cobblestone:flattened", "sett:pattern", "paving_stones:30", "sett;asphalt"):
+            self.assertEqual(roads.surface_kind("residential", v), "cobble", v)
+        self.assertEqual(roads.surface_kind("residential", "concrete:lanes"), "paved")
+        # interlocking concrete pavers, under the names the map gives them
+        for v in ("interlocking_pavers", "interlocking_stones"):
+            self.assertEqual(roads.surface_kind("residential", v), "cobble", v)
+        # the rock family and grass are unpaved, never a marked asphalt street (gridmap v2's Rock/Grass are
+        # TerrainMaterials: a heightfield shader, not something a road decal can carry)
+        for v in ("rock", "bedrock", "rocky", "grass", "grass_paver"):
+            self.assertEqual(roads.surface_kind("residential", v), "dirt", v)
+        for v in ("stone", "stones"):           # (OSM: mostly stone paving)
+            self.assertEqual(roads.surface_kind("residential", v), "cobble", v)
+        # a value not understood at all is the class's own surface, not the dirt road
+        self.assertEqual(roads.surface_kind("residential", "whatever"), "paved")
+        self.assertEqual(roads.surface_kind("track", "whatever"), "dirt")
+
+    def test_surface_token(self):
+        self.assertEqual(roads.surface_token("sett:pattern"), "sett")
+        self.assertEqual(roads.surface_token("sett;asphalt"), "sett")
+        self.assertEqual(roads.surface_token(" Concrete:Lanes "), "concrete")
+        self.assertIsNone(roads.surface_token(None))
+
+    def test_deferred_specs_keep_their_own_surface(self):
+        # no mapped width + an urban sample: these go through the deferred (ask) path, which used to reuse the
+        # surface token left over from the last feature scanned (Codex on PR #119)
+        f = features([[(0, 0), (10, 0)]] * 2, ["residential", "residential"],
+                     surfaces=[(0, "concrete"), (1, "asphalt")])
+        s = roads.road_specs(f, urban_fn=lambda lat, lon: np.ones(len(lat), bool))
+        self.assertEqual([sp.surf for sp in s], ["concrete", "asphalt"])
+
+    def test_rock_and_grass_live_in_the_ground_layer(self):
+        def spec(surf):
+            return roads.Spec(6.0, "dirt", False, "residential", False, 2.5, 0, None, surf=surf)
+
+        for v in ("rock", "rocky", "bedrock"):
+            self.assertEqual(roads.terrain_surface(spec(v)), "rock", v)
+            self.assertEqual(roads.surface_material_kind(spec(v)), "rock", v)
+        for v in ("grass", "grass_paver"):
+            self.assertEqual(roads.terrain_surface(spec(v)), "grass", v)
+            self.assertEqual(roads.surface_material_kind(spec(v)), "grass", v)
+        # everything else is drawn as a road decal, with its own mask material
+        self.assertIsNone(roads.terrain_surface(spec("asphalt")))
+        self.assertEqual(roads.surface_material_kind(spec("asphalt")), "dirt")
+        self.assertIsNone(roads.terrain_surface(spec("sett:pattern")))
+
+    def test_concrete_streets_get_gridmap_v2_concrete(self):
+        f = features([[(0, 0), (10, 0)]] * 2, ["residential", "secondary"],
+                     surfaces=[(0, "concrete"), (1, "asphalt")])
+        s = roads.road_specs(f)
+        self.assertEqual(s[0].surf, "concrete")
+        self.assertEqual(s[0].kind, "paved", "marks, widths and the tyres' feel stay a paved road's")
+        self.assertEqual(roads.look_of(s[0])["m"], "m_gm_concrete_plain")
+        self.assertEqual(roads.look_of(s[1])["m"], "road_asphalt_2lane")
+        self.assertEqual(roads.look_of(s[0])["tl"], roads.LOOK["paved"]["tl"], "the texture length is asphalt's")
 
     def test_specs_width_and_left_out(self):
         f = features([[(0, 0), (10, 0)]] * 6, ["residential", "footway", "primary", "tertiary", "track", "secondary"],

@@ -69,7 +69,20 @@ STYLE = {
 }
 PAVED = {"paved", "asphalt", "concrete", "metal", "wood"}
 COBBLE = {"paving_stones", "sett", "cobblestone", "unhewn_cobblestone", "bricks"}   # Overture: "paving_stones"
+# interlocking concrete pavers under the names the map gives them (surface_kind: a street paved with them is a
+# cobble street, not a gravel track)
+COBBLE_ALIASES = {"interlocking_pavers", "interlocking_stones", "pavers", "block_pavers", "paving_stone",
+                  # OSM's surface=stone is mostly stone paving (flagstones, slabs), not a rock track (merge review of
+                  # PR #119, 2026-10-22)
+                  "stone", "stones"}
 GRAVEL = {"gravel", "fine_gravel", "compacted", "pebblestone"}
+# ... and the values that do mean "no hard surface": an unrecognised one is not one of these (the class decides)
+UNPAVED = {"unpaved", "ground", "dirt", "earth", "mud", "grass", "grass_paver", "sand", "soil",
+           # the rock family: a rough, unpaved surface, never a marked asphalt street (gridmap v2's Rock is a
+           # TerrainMaterial — a heightfield shader, not a surface a decal can carry: 2026-10-22)
+           "rock", "rocky", "bedrock",
+           # more of OSM's recognised unpaved values, which an unrecognised value must not outrank
+           "clay", "shells", "woodchips"}
 # kinds with a hard, built surface: carriageway extras (parking, strips, sidewalks) apply
 BUILT = {"paved", "cobble"}
 # surface kind -> DecalRoad look (stock materials, loaded by the mod from the official levels)
@@ -82,9 +95,37 @@ LOOK = {
     "gravel": {"m": "m_dirt_road", "tl": 88.0, "p": 21},
     "dirt": {"m": "m_dirt_road", "tl": 88.0, "p": 21},
 }
-Spec = namedtuple("Spec", "width kind urban cls oneway walk dir kmh gap median lanes",
-                  defaults=(False, 2.5, 0, None, None, None, None))   # median: m to the other carriageway's centre line
-# (lanes: OpenStreetMap's lane count, both directions on a two-way road, None unknown: osmtags.py)
+# a `surface=concrete` street is still a paved one (markings, widths, the tyres' asphalt feel) but is drawn with
+# gridmap v2's plain concrete instead of asphalt (the user, 2026-10-22: "for concrete road surfaces")
+CONCRETE = {"m": "m_gm_concrete_plain", "tl": 11.0, "p": 20}
+
+
+def terrain_surface(spec):
+    """'rock', 'grass' or None: a spec whose surface belongs to the ground layer (surface.py) and must not be drawn
+    as a road decal. A decal is a smooth ribbon; these surfaces are not, and the terrain materials that describe them
+    (gridmap v2's Rock / Grass) cannot be carried by one."""
+    if spec.surf in ROCKISH:
+        return "rock"
+    if spec.surf in GRASSY:
+        return "grass"
+    return None
+
+
+def surface_material_kind(spec):
+    """The material the ground under a spec is painted with (surface.py): 'rock' / 'grass' for those surfaces, else
+    the spec's kind (paved, cobble, gravel, dirt)."""
+    return terrain_surface(spec) or spec.kind
+
+
+def look_of(spec):
+    """A spec's road look: gridmap v2's concrete for a `surface=concrete` street, else its kind's (LOOK)."""
+    if spec.kind == "paved" and spec.surf == "concrete":
+        return CONCRETE
+    return LOOK[spec.kind]
+Spec = namedtuple("Spec", "width kind urban cls oneway walk dir kmh gap median lanes surf",
+                  defaults=(False, 2.5, 0, None, None, None, None, None))   # median: m to the other carriageway's centre line
+# (lanes: OpenStreetMap's lane count, both directions on a two-way road, None unknown: osmtags.py; surf: the surface
+# rule value's base token, e.g. "concrete": the look's concrete, roads.py look_of)
 # road_specs' result per feature (walk: the sidewalk width, measured from the buildings where known: roadwidth.py;
 # dir: a one-way road's direction along its geometry, +1 / -1, 0 two-way; kmh: its speed limit, None unknown;
 # gap: m of road per junction along it (its connectors), None unknown)
@@ -463,17 +504,39 @@ def _clear_end(feats, i, rs, ring, at_start, half):
     return ring
 
 
+# surfaces that belong to the ground layer, not to a road decal: rock and grass are rough, mask-driven terrain
+# materials (gridmap v2 draws them exactly that way), so the mod paints their ground (surface.py) instead of laying
+# a smooth ribbon over it (2026-10-22)
+ROCKISH = frozenset({"rock", "rocky", "bedrock"})
+GRASSY = frozenset({"grass", "grass_paver"})
+
+
+def surface_token(surface):
+    """A surface rule value's base token: the detail after a colon and a second value after a semicolon dropped
+    (`sett:pattern` -> `sett`, `sett;asphalt` -> `sett`); None for no value. surface_kind and look_of read it."""
+    if surface is None:
+        return None
+    return str(surface).lower().split(";")[0].split(":")[0].strip()
+
+
 def surface_kind(cls, surface):
-    """'paved', 'cobble', 'gravel' or 'dirt' from the class and the surface rule value (None if unknown)."""
+    """'paved', 'cobble', 'gravel' or 'dirt' from the class and the surface rule value (None if unknown).
+
+    The value's base token decides: OSM writes the detail after a colon (`cobblestone:flattened`,
+    `paving_stones:30`, `sett:pattern`) and more than one value after a semicolon, and matched whole they all fell
+    through to "dirt", which is drawn with gravel's own material (LOOK) and painted DIRT: İzmir's sett streets read
+    as gravel tracks (2026-10-22). Interlocking pavers have their own names in the map. A value not understood at
+    all is the class's own surface, not dirt: an unknown tag must not turn a residential street into a track."""
     if surface is not None:
-        s = str(surface).lower()
+        s = surface_token(surface)
         if s in PAVED:
             return "paved"
-        if s in COBBLE:
+        if s in COBBLE or s in COBBLE_ALIASES:
             return "cobble"
         if s in GRAVEL:
             return "gravel"
-        return "dirt"
+        if s in UNPAVED:
+            return "dirt"
     return "paved" if STYLE.get(cls, STYLE["unknown"])[1] else "dirt"
 
 
@@ -708,7 +771,8 @@ def _road_specs(feats, urban_fn, widths, left_hand):
             rule_w = _osm(feats, "width", i, *OSM_WIDTH_M)      # OpenStreetMap's width (osmtags.py)
         lanes = _osm(feats, "lanes", i, *OSM_LANES)
         lanes = int(lanes) if lanes is not None else None
-        kind = surface_kind(cls, _rule_value(rules.get("surface"), i))
+        surf = _rule_value(rules.get("surface"), i)
+        kind = surface_kind(cls, surf)
         ow = _rule_value(rules.get("oneway"), i) is not None
         if rule_w is None and _rule_value(rules.get("subclass"), i) == "link" and lanes is None:
             rule_w = LINK_M[1] if ow else LINK_M[2]
@@ -721,19 +785,20 @@ def _road_specs(feats, urban_fn, widths, left_hand):
             a = feats.coord_off[feats.ring_off[feats.part_off[i]]]
             b = feats.coord_off[feats.ring_off[feats.part_off[i + 1]]]
             if b > a:
-                ask.append((len(out), cls, kind, a, b, ow, dk, lanes))
+                ask.append((len(out), cls, kind, a, b, ow, dk, lanes, surface_token(surf)))
                 out.append(None)
                 continue
         out.append(Spec(carriageway(cls, kind, False, rule_w, ow, lanes), kind, False, cls, ow, 2.5, *dk,
-                        lanes=lanes))
+                        lanes=lanes, surf=surface_token(surf)))
     if ask:
         ll = np.concatenate([feats.lonlat[a:b] for _, _, _, a, b, _, _, _ in ask])
         u = np.asarray(urban_fn(ll[:, 1], ll[:, 0]), bool)
         k = 0
-        for j, cls, kind, a, b, ow, dk, lanes in ask:
+        for j, cls, kind, a, b, ow, dk, lanes, token in ask:
             urban = float(np.mean(u[k:k + (b - a)])) >= URBAN_SHARE
             k += b - a
-            out[j] = Spec(carriageway(cls, kind, urban, None, ow, lanes), kind, urban, cls, ow, 2.5, *dk, lanes=lanes)
+            out[j] = Spec(carriageway(cls, kind, urban, None, ow, lanes), kind, urban, cls, ow, 2.5, *dk, lanes=lanes,
+                          surf=token)
     out = dual_carriageways(feats, out, left_hand)
     if widths is not None:                      # measured between the buildings (roadwidth.py)
         for j, sp in enumerate(out):
@@ -787,11 +852,13 @@ def _bridge_specs(feats, want="bridge"):
             continue
         width = _rule_value(rules.get("width"), i)
         rule_w = float(width) if width is not None and 1.0 <= float(width) <= 40.0 else None
-        kind = surface_kind(cls, _rule_value(rules.get("surface"), i))
+        surf = _rule_value(rules.get("surface"), i)
+        kind = surface_kind(cls, surf)
         ow = _rule_value(rules.get("oneway"), i) is not None
         if rule_w is None and _rule_value(rules.get("subclass"), i) == "link":
             rule_w = LINK_M[1] if ow else LINK_M[2]
-        out.append(Spec(carriageway(cls, kind, False, rule_w, ow), kind, False, cls, ow))
+        out.append(Spec(carriageway(cls, kind, False, rule_w, ow), kind, False, cls, ow,
+                        surf=surface_token(surf)))
     return out
 
 
@@ -1915,6 +1982,7 @@ DECK_CLEAR = 0.05       # m a deck stays above the ground under it (no z-fightin
 DECK_ROAD_CLEAR = 7.5
 DECK_GRADE = 0.05       # that requirement falls 5 % along the deck from the crossing
 DECK_MAX_GRADE = 0.06   # a deck climbs no steeper than this from an abutment
+CORNER_CONCRETE_M = 4.0  # m: a concrete street this close to a curb return fills its corner in concrete too
 AT_GRADE_M = 3.0        # m: a road crossing a deck within AT_GRADE_REACH_M of an abutment that cannot get this
 AT_GRADE_REACH_M = 12.0     # high over it is a junction at grade (the intersection a ramp starts from)
 CHAIN_CELLS = 12        # map cells read at most to close one bridge chain
@@ -3332,7 +3400,7 @@ def twin_tunnels(parts):
     return out
 
 
-def _tunnel_chunks(tunnels, cells, exact):
+def _tunnel_chunks(tunnels, cells, exact, terrain_paint=True):
     """The chunks of the tunnels crossing the tile box `exact`: the road surface ("deck", "tunnel": the tube is
     built around it, roadmesh.tunnel) and its lines, every one "fixed" at the floor's heights; a surface chunk
     ending at its part's end carries "portal": [start is one, end is one]. Twin tunnels (twin_tunnels): their surfaces
@@ -3344,7 +3412,7 @@ def _tunnel_chunks(tunnels, cells, exact):
             if not np.isfinite(z).all():
                 continue
             pts = np.c_[xy, z]
-            for look, w, line in [(LOOK[spec.kind], spec.width, pts)] + [
+            for look, w, line in [(look_of(spec), spec.width, pts)] + [
                     (lk, w2, ln) for lk, w2, ln in extras(spec, pts, lon)
                     if lk["m"] != SIDEWALK["m"] and lk["m"] != GUTTER["m"]]:
                 for piece in clip_polyline(line, *exact):
@@ -3363,7 +3431,10 @@ def _tunnel_chunks(tunnels, cells, exact):
             jobs.append((parts[i][0], (mid[0, :2], mid[-1, :2]), [({**TUNNEL, "tunnel": True, "tube_only": True}, width, mid)]))
     for n, (fid, spec, xy, z, lon) in enumerate(parts):
         pts = np.c_[xy, z]
-        lines = [({**TUNNEL, "deck": True, "tunnel": True, "no_tube": n in twinned}, spec.width, pts)]
+        look = _deck_look(spec) if not terrain_surface(spec) else None
+        if terrain_paint and terrain_surface(spec):
+            look = None                     # painted in the ground layer, as any other ground part
+        lines = [] if look is None else [({**look, "deck": True, "tunnel": True, "no_tube": n in twinned}, spec.width, pts)]
         for look, w, line in extras(spec, pts, lon):
             if look["m"] != SIDEWALK["m"] and look["m"] != GUTTER["m"]:
                 lines.append((look, w, line))
@@ -3450,6 +3521,26 @@ DECK_CONTEXT_M = 24.0   # m around a tile its bridges' decks are passed as conte
                         # in the next tile, Queensboro Bridge 2026-10-17)
 
 
+def _deck_look(spec):
+    """A bridge deck's look: the concrete of a `surface=concrete` street (it stays concrete over the bridge), else
+    asphalt — and asphalt for rock/grass surfaces, whose ground mask cannot be painted on a deck at all."""
+    if not terrain_surface(spec) and spec.kind == "paved" and spec.surf == "concrete":
+        return CONCRETE
+    return DECK
+
+
+def _corner_look(point, roads):
+    """A junction's corner-fill polygon look: the asphalt of the paved streets meeting there, or the concrete of
+    them when a concrete street is within CORNER_CONCRETE_M of the corner (its wedges would otherwise be asphalt
+    wedges in a concrete junction)."""
+    px, py = float(point[0]), float(point[1])
+    for _fid, spec, pts, _lon in roads:
+        if spec.kind == "paved" and spec.surf == "concrete":
+            if np.hypot(pts[:, 0] - px, pts[:, 1] - py).min() <= CORNER_CONCRETE_M:
+                return CONCRETE
+    return LOOK["paved"]
+
+
 def _deck_chunks(decks, exact):
     """Deck + line chunks of bridge parts [(fid, spec, pts (k, 3), lon)] clipped to the box `exact`, and their decks
     within DECK_CONTEXT_M of it as "ctx" chunks (not drawn: build_tile's caller hands them to roadmesh.deck)."""
@@ -3460,11 +3551,11 @@ def _deck_chunks(decks, exact):
         for piece in clip_polyline(pts, *wide):
             for c in split(densify(simplify(piece, ztol=SIMPLIFY_Z_M))):
                 if len(c) >= 2:
-                    ch = _chunk({**DECK, "deck": True}, spec.width, c)
+                    ch = _chunk({**_deck_look(spec), "deck": True}, spec.width, c)
                     ch.update(fixed=True, deck=True, fid=fid, ctx=True)
                     out.append(ch)
     for fid, spec, pts, lon in decks:
-        lines = [({**DECK, "deck": True}, spec.width, pts)]
+        lines = [({**_deck_look(spec), "deck": True}, spec.width, pts)]
         for look, w, line in extras(spec, pts, lon):
             if look["m"] != SIDEWALK["m"] and look["m"] != GUTTER["m"]:
                 lines.append((look, w, line))
@@ -3516,7 +3607,7 @@ def drains(run, side, caps, walk_w=None):
 
 def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=None, widths=None, props=None,
                lines=None, wires=None, town=None, park=None, left_hand=False, structures=(), mph=True, tunnels=None,
-               walls=None, deck_context=None, ground=None):
+               walls=None, deck_context=None, ground=None, terrain_paint=True):
     """The chunks of one tile. cells: the mapgeom.Features of the "roads" layer of every cell touching
     the tile; elev(lat, lon) -> metres (the DEM); urban_fn: as road_specs. Features in several cells are
     taken once (by id). The carriageways, then each road's sidewalks / gutters / markings (extras), cut
@@ -3568,7 +3659,11 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
     for fid, spec, pts, _ in roads:
         if ROADS_IN_GROUND:                     # the carriageway painted into the ground (surface.photo_roads)
             continue
-        look = LOOK[spec.kind]
+        # no smooth ribbon over rough ground — but only where the ground layer will paint it (--surface on); with
+        # the surface pass off there is no ROCK/GRASS mask, and the road would otherwise vanish entirely
+        if terrain_paint and terrain_surface(spec):
+            continue
+        look = look_of(spec)
         lanes = [(0.0, spec.width)]
         if look.get("strip"):                   # parallel strips across the width (see LOOK)
             n = max(1, int(round(spec.width / look["strip"])))
@@ -3589,7 +3684,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         elif deck_context is not None:          # the decks around the tile (roadmesh.deck's parapet test)
             deck_context.append(ch)
     if tunnels is not None:                     # TunnelProfiles: road surfaces and lines through tunnels
-        tch = _tunnel_chunks(tunnels, cells, (x0, y0, x1, y1))
+        tch = _tunnel_chunks(tunnels, cells, (x0, y0, x1, y1), terrain_paint)
         chunks.extend(tch)
         import roadmesh
         # (retaining walls: none in a tube either, its vault over them; between twin tunnels' carriageways one stood in
@@ -3641,8 +3736,9 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                 continue                        # a curb return inside a loop: its island has its own curb
             if x0 <= p[0] < x1 and y0 <= p[1] < y1:
                 walks.append({"corner": c})
+                fill_look = _corner_look(p, roads)
                 for fill in ([] if ROADS_IN_GROUND else ([c["fill"]] if c["fill"] is not None else []) + c.get("fills", [])):
-                    chunks.append({"m": LOOK["paved"]["m"], "w": 0.0, "tl": LOOK["paved"]["tl"], "p": LOOK["paved"]["p"],
+                    chunks.append({"m": fill_look["m"], "w": 0.0, "tl": fill_look["tl"], "p": fill_look["p"],
                                    "poly": [[round(float(v), 3) for v in q] for q in fill], "n": []})
         for cw in crosswalks:                   # crosswalks and stop lines
             mid = 0.5 * (cw["a"] + cw["b"])
