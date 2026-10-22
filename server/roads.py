@@ -1240,6 +1240,7 @@ TUNNEL_COVER = 8.0      # m from the floor up to the ground over it wanted insid
 TUNNEL_GRADE = 0.05     # a tunnel floor falls no steeper than this from a portal
 TUNNEL_STEP = 4.0       # m between tunnel profile points
 TUNNEL_WET_SHARE = 0.25 # a tunnel part with more of its points under water is left out (TunnelProfiles.wet)
+TUNNEL_WET_RUN_M = 20.0 # ... and a tunnel chain passing under water this far away from its ends (_mark_drowned)
 TUNNEL_OPEN_COVER = 4.0 # m: a 'tunnel' whose ground nowhere rises this far over the straight line between its portals
                         # is an underpass in the open (under a bridge the map does not draw as a deck over it): a road
                         # on the ground, no tube, portals or holes (Central Park's 86th Street Transverse under its
@@ -2289,6 +2290,7 @@ class TunnelProfiles(BridgeProfiles):
         self.mouths = {}            # sub-part fid -> (its start is a portal, its end is one): not where a low arch
                                     # meets a full tunnel inside the hill (no hole, no portal face there)
         self._tls = threading.local()   # a thread's solved sections, kept with its parts (_commit) or dropped
+        self._drowned = {}          # part id (fid.j) -> its chain has a part under water (drowned)
 
     def _raw_ground(self, xy):
         la, lo, _ = self.frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
@@ -2319,6 +2321,48 @@ class TunnelProfiles(BridgeProfiles):
             if caps is not None:
                 self.caps[sub] = caps
 
+    def _mark_drowned(self, comp, pool):
+        """Mark every part of the chain comp drowned when one of its parts is under water for more than
+        TUNNEL_WET_SHARE of its points: an underwater tunnel is left out whole. Overture splits one into pieces (the
+        Burnley Tunnel, Melbourne: the piece under the Yarra was left out, the dry piece from Batman Avenue to the
+        bank was built, an open trench across the avenue with its mouth at the river; GitHub #128)."""
+        if self.wet is None:
+            return
+        wet = False
+        for k in comp:
+            xy = np.asarray(pool[k][1], np.float64)
+            if len(xy) < 2:
+                continue
+            la, lo, _ = self.frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
+            w = np.asarray(self.wet(la, lo), np.float64) > 0.5
+            if w.mean() > TUNNEL_WET_SHARE or wet_run_inside(xy, w) >= TUNNEL_WET_RUN_M:
+                wet = True
+                break
+        with self.lock:
+            for k in comp:
+                self._drowned[self._part_id(k)] = wet
+
+    def drowned(self, key, ring):
+        """Is tunnel part key (fid, j) (ring: its lon/lat points) in a chain with a part under water
+        (_mark_drowned)? The grader asks the same (grading.Grader._tunnel_sections), so the ground under a left-out
+        tunnel is not cut for it either."""
+        pid = self._part_id(key)
+        with self.lock:
+            got = self._drowned.get(pid)
+        if got is not None or self.wet is None:
+            return bool(got)
+        pool, ground, loaded = {}, {}, set()
+        for p in (ring[0], ring[-1]):
+            ck = mapcells.cell_of(float(p[1]), float(p[0]))
+            if str(ck) not in loaded:
+                loaded.add(str(ck))
+                self._load(ck, pool, ground)
+        if key not in pool:
+            return False
+        self._mark_drowned(self._resolve(key, pool, ground, loaded), pool)
+        with self.lock:
+            return bool(self._drowned.get(pid))
+
     def _ends_ground(self, xy):
         if self.ends is None:
             return self._ground(xy)
@@ -2331,6 +2375,7 @@ class TunnelProfiles(BridgeProfiles):
         middle (a 20th percentile of the middle 60 %, less TUNNEL_SOIL_M; sized from the most, the ground came down
         into it and was cut away, a bare stone vault), a full tunnel's roadmesh.TUNNEL_H."""
         import roadmesh
+        self._mark_drowned(comp, pool)
         gfn = self._raw_ground if self.raw is not None else self._ground
         out = []
         self._tls.staged = {}           # (committed by parts() right after, the rest dropped with the next solve)
@@ -2499,11 +2544,14 @@ class TunnelProfiles(BridgeProfiles):
         return self._dry([p for p in out if p[0] not in opened])
 
     def _dry(self, out):
-        """The parts not under water for more than TUNNEL_WET_SHARE of their points."""
+        """The parts not under water for more than TUNNEL_WET_SHARE of their points, nor in a chain with one."""
         if self.wet is None or not out:
             return out
         keep = []
         for p in out:
+            with self.lock:
+                if self._drowned.get(str(p[0]).split("#")[0]):      # (its chain is under water: _mark_drowned)
+                    continue
             xy = np.asarray(p[2], np.float64)
             la, lo, _ = self.frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
             # under water for a good part of it (a portal on a river bank, Fort Pitt's east end 0.6 m "in" the
@@ -2511,6 +2559,15 @@ class TunnelProfiles(BridgeProfiles):
             if (np.asarray(self.wet(la, lo)) > 0.5).mean() <= TUNNEL_WET_SHARE:
                 keep.append(p)
         return keep
+
+
+def wet_run_inside(xy, wet):
+    """The longest run (m) of wet points along the line xy that touches neither end: a tunnel under a river (the
+    Burnley Tunnel's 70 m under the Yarra, 2 % of its 3.2 km, GitHub #128), not one whose portal is on a bank (Fort
+    Pitt's east end 0.6 m "in" the Monongahela). earthfast.wet_run_inside (Rust)."""
+    import fast
+    fast.require(48, "wet_run_inside")
+    return float(fast._ef.wet_run_inside(np.ascontiguousarray(xy, np.float64), np.ascontiguousarray(wet, bool)))
 
 
 TUNNEL = {"m": "road_asphalt_2lane", "tl": 11.0, "p": 20}     # the road surface in a tunnel (a deck: collides)

@@ -3343,6 +3343,41 @@ fn points_on_tris<'py>(py: Python<'py>, tris: PyReadonlyArray2<'py, f64>, pts: P
     Ok(out.into_pyarray(py))
 }
 
+/// The longest run (m) of wet points along the line xy (n, 2) that touches neither end, measured between the dry
+/// points either side of it (roads.wet_run_inside: a tunnel under a river, not a portal on its bank).
+#[pyfunction]
+fn wet_run_inside(xy: PyReadonlyArray2<f64>, wet: PyReadonlyArray1<bool>) -> PyResult<f64> {
+    let p = xy.as_array();
+    let w = wet.as_array();
+    let n = p.nrows();
+    if w.len() != n || p.ncols() != 2 {
+        return Err(pyo3::exceptions::PyValueError::new_err("wet_run_inside: xy (n, 2), wet (n,)"));
+    }
+    if n < 3 {
+        return Ok(0.0);
+    }
+    let mut s = vec![0.0f64; n];
+    for i in 1..n {
+        s[i] = s[i - 1] + ((p[[i, 0]] - p[[i - 1, 0]]).powi(2) + (p[[i, 1]] - p[[i - 1, 1]]).powi(2)).sqrt();
+    }
+    let (mut best, mut i) = (0.0f64, 0usize);
+    while i < n {
+        if !w[i] {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j + 1 < n && w[j + 1] {
+            j += 1;
+        }
+        if i > 0 && j < n - 1 {
+            best = best.max(s[j + 1] - s[i - 1]);
+        }
+        i = j + 1;
+    }
+    Ok(best)
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -3399,6 +3434,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(first_probe_near_lines, m)?)?;
     m.add_function(wrap_pyfunction!(grid_mesh, m)?)?;
     m.add_function(wrap_pyfunction!(points_on_tris, m)?)?;
-    m.add("VERSION", 47)?;
+    m.add_function(wrap_pyfunction!(wet_run_inside, m)?)?;
+    m.add("VERSION", 48)?;
     Ok(())
 }

@@ -342,3 +342,65 @@ class ShallowFullTest(unittest.TestCase):
         self.assertTrue((self.kinds(30.0, 9.0) == 1).all(), "under an embankment: a low arch")
         self.assertTrue((self.kinds(80.0, 9.0) == 2).all(), "long: a full tunnel")
         self.assertTrue((self.kinds(30.0, 20.0) == 2).all(), "deep: a full tunnel")
+
+
+class Underwater(unittest.TestCase):
+    """GitHub #128 (the Burnley Tunnel, Melbourne): an underwater tunnel split into a dry piece and a wet one is
+    left out whole; the dry piece alone was built as a trench ending at the river."""
+
+    def setup(self, wet_from_m):
+        from test_roads import features, FRAME, LON, M_LON
+        f = features([[(-200, 0), (0, 0)], [(0, 0), (200, 0)]], ["primary", "primary"],
+                     flags=[(0, "is_tunnel"), (1, "is_tunnel")])
+        tp = roads.TunnelProfiles(FRAME, lambda key: f, lambda la, lo: np.full(np.shape(la), 30.0))
+        tp.wet = lambda la, lo: np.where((np.asarray(lo) - LON) * M_LON > wet_from_m, 8.0, 0.0)
+        return tp, f
+
+    def fresh(self, tp, f):
+        t = roads.TunnelProfiles(tp.frame, lambda key: f, tp.elev)
+        t.wet = tp.wet
+        return t
+
+    def test_the_dry_piece_of_an_underwater_tunnel_goes_too(self):
+        tp, f = self.setup(20.0)                # the second piece is under water from 20 m on
+        box = (-256.0, -64.0, 0.0, 64.0)
+        self.assertEqual(tp.parts([f], box), [], "no piece of it on land")
+        self.assertEqual(tp.open_parts([f], box), [], "no open trench either")
+        self.assertTrue(self.fresh(tp, f).drowned((str(f.ids[0]), 0), roads.tunnel_parts(f, 0)[0]),
+                        "the grader's question gets the same answer")
+
+    def test_a_dry_tunnel_stays(self):
+        tp, f = self.setup(1000.0)              # no water near it
+        box = (-256.0, -64.0, 256.0, 64.0)
+        self.assertTrue(tp.parts([f], box) or tp.open_parts([f], box))
+        self.assertFalse(self.fresh(tp, f).drowned((str(f.ids[0]), 0), roads.tunnel_parts(f, 0)[0]))
+
+    def one_piece(self, wet_fn):
+        from test_roads import features, FRAME
+        f = features([[(-300, 0), (300, 0)]], ["motorway"], flags=[(0, "is_tunnel")])
+        tp = roads.TunnelProfiles(FRAME, lambda key: f, lambda la, lo: np.full(np.shape(la), 30.0))
+        tp.wet = wet_fn
+        return tp, f
+
+    def test_a_long_tunnel_under_a_river_goes(self):
+        # the Burnley Tunnel: 70 m under the Yarra in 3.2 km (2 %): under the share, but under water in its middle
+        from test_roads import LON, M_LON
+        tp, f = self.one_piece(lambda la, lo: np.where(np.abs((np.asarray(lo) - LON) * M_LON) < 20, 6.0, 0.0))
+        box = (-256.0, -64.0, 256.0, 64.0)
+        self.assertEqual(tp.parts([f], box) + tp.open_parts([f], box), [])
+
+    def test_a_portal_on_a_bank_stays(self):
+        # Fort Pitt: one end a little "in" the river, the tunnel itself under the hill
+        from test_roads import LON, M_LON
+        tp, f = self.one_piece(lambda la, lo: np.where((np.asarray(lo) - LON) * M_LON > 290, 6.0, 0.0))
+        box = (-256.0, -64.0, 256.0, 64.0)
+        self.assertTrue(tp.parts([f], box) + tp.open_parts([f], box))
+
+    def test_wet_run_inside(self):
+        xy = np.c_[np.arange(0, 100, 2.0), np.zeros(50)]
+        w = np.zeros(50, bool)
+        w[20:30] = True
+        self.assertAlmostEqual(roads.wet_run_inside(xy, w), 22.0)       # between the dry points either side
+        w = np.zeros(50, bool)
+        w[40:] = True
+        self.assertEqual(roads.wet_run_inside(xy, w), 0.0)              # at an end: a portal on a bank

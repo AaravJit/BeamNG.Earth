@@ -669,6 +669,17 @@ class Grader:
                 best = parts[j]
         return best
 
+    def _chains_for(self):
+        """A roads.TunnelProfiles of this frame for its chain questions (drowned): the same chains, from the same map
+        cells, as the road tiles' and terrain blocks' own."""
+        if getattr(self, "_chains", None) is None:
+            md = self.md
+            t = roadsmod.TunnelProfiles(self.frame, lambda key: md.cell(key, layers=("roads",), kind="demand")
+                                        .layers.get("roads"), self.elev)
+            t.wet = self.wet
+            self._chains = t
+        return self._chains
+
     def _tunnel_sections(self, feats, key=None, road_plans=()):
         """[(fid, spec, xy, z, kind)] of the tunnels' sections (roads.tunnel_sections on the ungraded ground, its
         ends graded by road_plans: the cell's road Plans, as roads.TunnelProfiles.ends grades them with the roads'
@@ -691,6 +702,8 @@ class Grader:
                 if self.wet is not None and \
                         (np.asarray(self.wet(la, lo)) > 0.5).mean() > roadsmod.TUNNEL_WET_SHARE:
                     continue
+                if self.wet is not None and self._chains_for().drowned((str(feats.ids[i]), j), ring):
+                    continue            # (a dry piece of an underwater tunnel: left out with it, GitHub #128)
                 g = np.asarray(self.elev(la, lo), np.float64)
                 if road_plans:
                     g = g.copy()
