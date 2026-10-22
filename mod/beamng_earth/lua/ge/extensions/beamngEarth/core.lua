@@ -77,7 +77,8 @@ local function poseFoci()
   return out
 end
 local beammp = require('beamngEarth/beammp')           -- BeamMP sessions: the install recommendation
-local mpsession = require('beamngEarth/mpsession')     -- BeamMP sessions by area (one anchor per group of players)
+local mpsession = require('beamngEarth/mpsession')     -- BeamMP sessions (the plugin's anchors, damage, joining)
+local mpanchor = require('beamngEarth/mpanchor')       -- BeamMP: other players' positions into our frame (PR #88)
 local seasonlook = require('beamngEarth/seasonlook')   -- the trees' leaves in the season (hello.season) -- the AI road graph for the stock traffic and AI (map.reset)
 
 local LEVEL_ID = 'beamng_earth'
@@ -417,6 +418,7 @@ local function commitTeleport(msg)
 
   st.anchor, st.anchorId, st.anchorKey = geodesy.newAnchor(msg.lat, msg.lon), msg.anchorId, msg.anchorKey
   st.anchorSession, st.resync = st.sessionId, false
+  mpanchor.announceOwn(msg.lat, msg.lon)
   st.block, st.terrainPending, st.terrainErrorAt = { cx = tr.cx, cy = tr.cy }, nil, nil
   edgeguard.newFrame(st.guard)
   sendCommits(msg.anchorId, tr.cx, tr.cy)
@@ -452,6 +454,7 @@ local function finishRebase()
 
   st.anchor, st.anchorId, st.anchorKey = rb.newAnchor, msg.anchorId, msg.anchorKey
   st.anchorSession, st.resync = st.sessionId, false
+  mpanchor.announceOwn(st.anchor.lat, st.anchor.lon)
   st.block, st.terrainPending, st.terrainErrorAt = { cx = tr.cx, cy = tr.cy }, nil, nil
   edgeguard.newFrame(st.guard)
   sendCommits(msg.anchorId, tr.cx, tr.cy)
@@ -1172,6 +1175,7 @@ local function serverHealthy()
 end
 
 M.serverHealthy = function() return serverHealthy() end
+M.mpStatus = function() return mpanchor.status() end -- console: beamngEarth_core.mpStatus()
 
 -- The collidable area of the block in use (the anchor's, else the level-start flat block), or nil.
 local function guardBox()
