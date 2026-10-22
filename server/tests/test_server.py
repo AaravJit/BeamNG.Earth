@@ -410,7 +410,8 @@ class ServerTest(ServerHarness):
         self.pose(aid2, 0, 0, held={})                      # empty Lua table: may encode as {}
         # Deleted gradually, not in one burst (a burst stalled the game ~300 ms, in-game 2026-10-10):
         # once deletion has started there are still files left for a while.
-        end = time.monotonic() + 5
+        # (delete_interval 2 ms: on Windows ~16 ms, its event loop's timer resolution)
+        end = time.monotonic() + 5 + 0.02 * before
         partial = False
         while time.monotonic() < end:
             n = len(glob.glob(os.path.join(self.server.out_dir, f"far_{aid}_*")))
