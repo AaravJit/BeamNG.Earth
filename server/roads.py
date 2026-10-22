@@ -91,6 +91,23 @@ LOOK = {
 CONCRETE = {"m": "m_gm_concrete_plain", "tl": 11.0, "p": 20}
 
 
+def terrain_surface(spec):
+    """'rock', 'grass' or None: a spec whose surface belongs to the ground layer (surface.py) and must not be drawn
+    as a road decal. A decal is a smooth ribbon; these surfaces are not, and the terrain materials that describe them
+    (gridmap v2's Rock / Grass) cannot be carried by one."""
+    if spec.surf in ROCKISH:
+        return "rock"
+    if spec.surf in GRASSY:
+        return "grass"
+    return None
+
+
+def surface_material_kind(spec):
+    """The material the ground under a spec is painted with (surface.py): 'rock' / 'grass' for those surfaces, else
+    the spec's kind (paved, cobble, gravel, dirt)."""
+    return terrain_surface(spec) or spec.kind
+
+
 def look_of(spec):
     """A spec's road look: gridmap v2's concrete for a `surface=concrete` street, else its kind's (LOOK)."""
     if spec.kind == "paved" and spec.surf == "concrete":
@@ -451,6 +468,13 @@ def _clear_end(feats, i, rs, ring, at_start, half):
             add = np.array([d * ext * (t / k) for t in range(1, k + 1)]) / [kx, ky] + p0
             return np.vstack([add[::-1], ring]) if at_start else np.vstack([ring, add])
     return ring
+
+
+# surfaces that belong to the ground layer, not to a road decal: rock and grass are rough, mask-driven terrain
+# materials (gridmap v2 draws them exactly that way), so the mod paints their ground (surface.py) instead of laying
+# a smooth ribbon over it (2026-10-22)
+ROCKISH = frozenset({"rock", "rocky", "bedrock", "stone", "stones"})
+GRASSY = frozenset({"grass", "grass_paver"})
 
 
 def surface_token(surface):
@@ -3447,6 +3471,8 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
             k += m
     chunks = []
     for fid, spec, pts, _ in roads:
+        if terrain_surface(spec):       # painted in the ground layer (surface.py): no smooth ribbon over rough ground
+            continue
         look = look_of(spec)
         lanes = [(0.0, spec.width)]
         if look.get("strip"):                   # parallel strips across the width (see LOOK)

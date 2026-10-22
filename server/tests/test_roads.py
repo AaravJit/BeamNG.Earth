@@ -101,6 +101,21 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(roads.surface_token(" Concrete:Lanes "), "concrete")
         self.assertIsNone(roads.surface_token(None))
 
+    def test_rock_and_grass_live_in_the_ground_layer(self):
+        def spec(surf):
+            return roads.Spec(6.0, "dirt", False, "residential", False, 2.5, 0, None, surf=surf)
+
+        for v in ("rock", "rocky", "bedrock", "stone", "stones"):
+            self.assertEqual(roads.terrain_surface(spec(v)), "rock", v)
+            self.assertEqual(roads.surface_material_kind(spec(v)), "rock", v)
+        for v in ("grass", "grass_paver"):
+            self.assertEqual(roads.terrain_surface(spec(v)), "grass", v)
+            self.assertEqual(roads.surface_material_kind(spec(v)), "grass", v)
+        # everything else is drawn as a road decal, with its own mask material
+        self.assertIsNone(roads.terrain_surface(spec("asphalt")))
+        self.assertEqual(roads.surface_material_kind(spec("asphalt")), "dirt")
+        self.assertIsNone(roads.terrain_surface(spec("sett:pattern")))
+
     def test_concrete_streets_get_gridmap_v2_concrete(self):
         f = features([[(0, 0), (10, 0)]] * 2, ["residential", "secondary"],
                      surfaces=[(0, "concrete"), (1, "asphalt")])
