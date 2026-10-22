@@ -62,6 +62,7 @@ local parking = require('beamngEarth/parking') -- parked cars on the road tiles'
 local navgraph = require('beamngEarth/navgraph')
 local postfx = require('beamngEarth/postfx')       -- no far depth-of-field blur in our level
 local gps = require('beamngEarth/gps')               -- the game's GPS route to a place picked on the world map
+local beammp = require('beamngEarth/beammp')           -- BeamMP sessions: the install recommendation
 local seasonlook = require('beamngEarth/seasonlook')   -- the trees' leaves in the season (hello.season) -- the AI road graph for the stock traffic and AI (map.reset)
 
 local LEVEL_ID = 'beamng_earth'
@@ -1292,6 +1293,7 @@ local function drawUpdateNotice()
   im.End()
 end
 
+local beammpBroken = false   -- an error in the BeamMP window turns it off for the session
 local function drawUi(dt)
   ui.draw(buildView(), { teleport = M.teleport, setRebaseDistance = M.setRebaseDistance })
   -- each element drawn by imgui unless its UI app is on screen (hudapps.lua)
@@ -1306,6 +1308,10 @@ local function drawUi(dt)
       and (st.clock or 0) > (st.loadingUntil or 0) then
     local ok, err = pcall(drawUpdateNotice)
     if not ok then updateInfo = nil; log('E', 'beamngEarth', 'update notice: ' .. tostring(err)) end
+  end
+  if not beammpBroken then
+    local ok, err = pcall(beammp.update, dt, st.inOurLevel, net.isConnected(), settings)
+    if not ok then beammpBroken = true; log('E', 'beamngEarth', 'BeamMP window: ' .. tostring(err)) end
   end
 end
 
@@ -1573,6 +1579,9 @@ local function onClientPostStartMission(levelPath)
   local gs = rawget(_G, 'core_gamestate')
   if gs and gs.setGameState then pcall(gs.setGameState, 'freeroam', M.APP_LAYOUT, 'freeroam') end
 end
+
+-- BeamMP finished joining a server (its own hook): the combined app layout (beammp.lua).
+function M.onBeamMPPostJoin() beammp.onPostJoin() end
 
 -- The UI apps (ui/modules/apps/BeamNGEarth*) say when they are on screen: hudapps.lua.
 function M.hudApp(name, on) return hudapps.setMounted(name, on) end
