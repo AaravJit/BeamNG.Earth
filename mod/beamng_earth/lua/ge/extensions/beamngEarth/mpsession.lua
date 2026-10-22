@@ -21,6 +21,8 @@ M.HIDE_S = 0.5
 M.GOTO_OFFSET_M = 12        -- a joining player lands this far from the one it goes to (not on top of it)
 M.DAMAGE_STEP = 50          -- (the game's damage figure, map.objects[id].damage)
 M.DAMAGE_SETTLE_S = 2
+M.STATUS_S = 5              -- the session's state to the log and STATUS_FILE this often
+M.STATUS_FILE = '/temp/beamngEarth/mpsession_status.json'
 
 local handlers = false
 local groups = {}           -- tostring(server player id) -> anchor key
@@ -30,6 +32,8 @@ local joined = false        -- BeamMP joined and no pose sent yet: the first pos
 local wentTo = false        -- the session's one bngeGoTo done
 local camPlaced = false     -- the free camera put on the ground once (BeamMP joins without a car)
 local lastGroups = ''       -- (the log: the groups as last logged)
+local stats = { groups = 0, rebase = 0, go = 0, poses = 0, refused = nil }
+local statusIn = 5
 local members = {}          -- tostring(pid) -> true: the other players in our group at the last check
 local sentDamage = {}       -- own game vehicle id -> the damage its state was last sent at
 local damageSince = {}      -- own game vehicle id -> seconds its damage has differed from sentDamage
@@ -78,6 +82,7 @@ local function core() return rawget(_G, 'beamngEarth_core') end
 local function onGroups(data)
   local ok, d = pcall(jsonDecode, data)
   if not ok or type(d) ~= 'table' then return end
+  stats.groups = stats.groups + 1
   groups = d
   local n, keys = 0, {}
   for _, k in pairs(d) do n = n + 1; keys[k] = true end
@@ -93,7 +98,11 @@ end
 local function onRebase(data)
   local ok, d = pcall(jsonDecode, data)
   local c = core()
-  if ok and type(d) == 'table' and c and c.rebaseTo and c.rebaseTo(d.aLat, d.aLon) then
+  stats.rebase = stats.rebase + 1
+  if not ok or type(d) ~= 'table' or not c or not c.rebaseTo then return end
+  local done, why = c.rebaseTo(d.aLat, d.aLon)
+  stats.refused = not done and why or nil
+  if done then
     log('I', 'beamngEarth', string.format('BeamMP: to the group\'s anchor %.6f, %.6f', tonumber(d.aLat) or 0,
       tonumber(d.aLon) or 0))
   end
@@ -102,6 +111,7 @@ end
 local function onGoTo(data)
   local ok, d = pcall(jsonDecode, data)
   local c = core()
+  stats.go = stats.go + 1
   if wentTo or not ok or type(d) ~= 'table' or not c then return end
   local lat, lon = tonumber(d.lat), tonumber(d.lon)
   if not lat or not lon then return end
@@ -113,14 +123,22 @@ local function onGoTo(data)
 end
 
 -- No car yet (BeamMP joins without one): the free camera, left at the level's spawn point under the generated
--- ground, put once on the ground at the origin (where the vehicle selector spawns the car).
-local function placeCamera()
-  if camPlaced or (getPlayerVehicle and getPlayerVehicle(0)) or not be or not be.getSurfaceHeightBelow then return end
-  local z = be:getSurfaceHeightBelow(vec3(0, 0, 9000))
+-- ground, put once on the ground at the origin (where the vehicle selector spawns the car); and lifted back over the
+-- ground whenever it is under it (a teleport moves the world under a free camera: from a valley to a mountain it
+-- ended 1400 m underground, a black screen).
+local function placeCamera(player)
+  if (getPlayerVehicle and getPlayerVehicle(0)) or not be or not be.getSurfaceHeightBelow then return end
+  local x, y = 0, -8
+  if camPlaced then
+    if not player or not player.x then return end
+    x, y = player.x, player.y
+  end
+  local z = be:getSurfaceHeightBelow(vec3(x, y, 9000))
   if type(z) ~= 'number' or z < -1e5 then return end      -- (the ground not there yet)
+  if camPlaced and player.z >= z - 0.5 then return end
   camPlaced = true
   local q = quatFromDir(vec3(0, 1, -0.15), vec3(0, 0, 1))
-  if core_camera and core_camera.setPosRot then core_camera.setPosRot(0, 0, -8, z + 3, q.x, q.y, q.z, q.w) end
+  if core_camera and core_camera.setPosRot then core_camera.setPosRot(0, x, y, z + 3, q.x, q.y, q.z, q.w) end
 end
 
 -- BeamMP's join done (core.lua onBeamMPPostJoin): the first pose asks the plugin where the others are.
@@ -138,8 +156,23 @@ function M.update(dt, anchor, player)
     AddEventHandler('bngeGoTo', onGoTo, 'beamngEarth')
     handlers = true
   end
+  statusIn = statusIn - (dt or 0)
+  if statusIn <= 0 then
+    statusIn = M.STATUS_S
+    local n = 0
+    for _ in pairs(groups) do n = n + 1 end
+    log('I', 'beamngEarth', string.format('BeamMP status: anchor %s, %d in the groups, events groups/rebase/goto %d/%d/%d, '
+      .. 'poses %d%s', anchor and M.key(anchor.lat, anchor.lon) or 'none', n, stats.groups, stats.rebase, stats.go,
+      stats.poses, stats.refused and (', rebase refused: ' .. stats.refused) or ''))
+    -- the same as a file (the game's log reaches the disk late; BeamMP turns the game's MCP off in a session)
+    local hidden = 0
+    for _ in pairs(deactivated) do hidden = hidden + 1 end
+    pcall(jsonWriteFile, M.STATUS_FILE, { t = os.time(), anchor = anchor and M.key(anchor.lat, anchor.lon) or nil,
+      groups = groups, stats = stats, hidden = hidden, player = player and { x = player.x, y = player.y, z = player.z,
+      camera = player.camera } or nil }, true)
+  end
   if not anchor then return end
-  placeCamera()
+  placeCamera(player)
   if not player then return end
   local mine = M.key(anchor.lat, anchor.lon)
   poseIn = poseIn - (dt or 0)
@@ -148,6 +181,7 @@ function M.update(dt, anchor, player)
     local lat, lon = anchor:enuToGeodetic(player.x, player.y, player.z or 0)
     TriggerServerEvent('bngePose', jsonEncode({ v = M.PROTO, aLat = anchor.lat, aLon = anchor.lon, lat = lat,
       lon = lon, joined = joined }))
+    stats.poses = stats.poses + 1
     if joined then log('I', 'beamngEarth', string.format('BeamMP: first pose sent (%.5f, %.5f)', lat, lon)) end
     joined = false
   end
@@ -213,6 +247,7 @@ function M.reset()
   end
   deactivated, groups, poseIn, hideIn, joined, wentTo, camPlaced, lastGroups = {}, {}, 0, 0, false, false, false, ''
   members, sentDamage, damageSince = {}, {}, {}
+  stats, statusIn = { groups = 0, rebase = 0, go = 0, poses = 0, refused = nil }, M.STATUS_S
 end
 
 -- (tests, the dev tools)

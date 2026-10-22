@@ -891,7 +891,18 @@ local function updatePlayer(dt)
   st.player = nil
   st.cam = cameraState()
   local veh = getPlayerVehicle(0)
-  if not veh or not st.anchor then return end
+  if not st.anchor then return end
+  if not veh then
+    -- no car at all (a BeamMP server is joined without one, a free camera after the car was removed): the world
+    -- follows the camera, standing still (poses, terrain, rebases; nothing moves a vehicle)
+    local c = st.cam
+    if not c then return end
+    local lat, lon = st.anchor:enuToGeodetic(c.x, c.y, c.z)
+    st.player = { x = c.x, y = c.y, z = c.z, vx = 0, vy = 0, vz = 0, lat = lat, lon = lon, dist = hypot(c.x, c.y),
+      speed = 0, camera = true }
+    st.slowFor = st.slowFor + dt
+    return
+  end
   local p = veh:getPosition()
   local v = veh:getVelocity()
   local lat, lon = st.anchor:enuToGeodetic(p.x, p.y, p.z)
@@ -1520,7 +1531,7 @@ local function onUpdate(dtReal, dtSim)
       ok, err = pcall(farcars.update, dtReal)
       if not ok then fociBroken = true; log('E', 'beamngEarth', 'far cars: ' .. tostring(err)) end
     end
-    parking.update(st.anchorId, st.player, pb)
+    parking.update(st.anchorId, not (st.player and st.player.camera) and st.player or nil, pb)   -- (no car: none parked)
     t = mark('parking', t)
     navgraph.update(st.anchorId, pb)
     t = mark('navgraph', t)
@@ -1724,8 +1735,12 @@ end
 -- the server is not connected or the anchor is already that one.
 function M.rebaseTo(lat, lon)
   lat, lon = tonumber(lat), tonumber(lon)
-  if not lat or not lon or not st.anchor or st.pending or st.rebasing or not net.isConnected() then return false end
-  if math.abs(st.anchor.lat - lat) < 1e-9 and math.abs(st.anchor.lon - lon) < 1e-9 then return false end
+  if not lat or not lon then return false, 'bad lat/lon' end
+  if not st.anchor then return false, 'no anchor' end
+  if st.pending then return false, 'anchor request under way (' .. tostring(st.pending.purpose) .. ')' end
+  if st.rebasing then return false, 'rebase under way' end
+  if not net.isConnected() then return false, 'server not connected' end
+  if math.abs(st.anchor.lat - lat) < 1e-9 and math.abs(st.anchor.lon - lon) < 1e-9 then return false, 'same anchor' end
   local pl = st.player
   local x, y, z = 0, 0, 0
   if pl then x, y, z = pl.x, pl.y, pl.z end

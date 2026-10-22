@@ -7,11 +7,12 @@
   mcp.py list                         list tools
 """
 import json
+import os
 import time
 import sys
 import urllib.request
 
-URL = "http://127.0.0.1:29292/mcp"
+URL = os.environ.get("BNGE_MCP_URL", "http://127.0.0.1:29292/mcp")   # (a second game: -mcpport)
 
 
 def rpc(method, params=None, timeout=120):
