@@ -164,9 +164,11 @@ SERVER_TO_MOD = {
     "anchor_ready": {"requestId": F(int), "anchorId": F(int), "lat": F(NUM), "lon": F(NUM),
                      "groundZ": F(NUM, NULL), "terrain": F(dict),
                      "floorZ": F(NUM, NULL, OPT),          # 2026-10-17: in a tunnel, its floor (core.floorCheck)
-                     "anchorKey": F(str, OPT)},            # phase 5 (lattice anchors): not sent yet
+                     "anchorKey": F(str, OPT),             # phase 5 (lattice anchors): not sent yet
+                     "provisional": F(bool, OPT)},         # 2026-10-22: a teleport's ungraded first block
     "anchor_error": {"requestId": F(int, NULL), "error": F(str)},
     "terrain_ready": {"requestId": F(int), "anchorId": F(int), **TERRAIN},
+    "terrain_refresh": {"anchorId": F(int), **TERRAIN},     # the graded block in place of the provisional one
     "terrain_error": {"requestId": F(int, NULL), "anchorId": F(int, NULL), "error": F(str)},
     "far_tile": {"anchorId": F(int), "key": F(str), "level": F(int), "shape": F(str), "pos": F(list),
                  "err": F(NUM), "skirt": F(NUM), "sink": F(NUM, OPT), "state": F(str),   # sink: exactly on L0
@@ -223,6 +225,7 @@ WEATHER_NESTED = {"cover": {"total", "low", "mid", "high"}, "wind": {"ms", "from
                   "aloft": {"ms", "fromDeg"}}
 # message types the plain session cannot produce (each has its own session test below)
 EXERCISED_ELSEWHERE = {"far_retex", "roads_tile", "roads_drop",   # roads: needs map data (roads tests)
+                       "terrain_refresh",                            # a provisional first block: --grading (map data)
                        "update_status",                              # the player's "Update now" (test_selfupdate)
                        "where_result",                               # the status bar: asked by the mod while driving
                        "random_place_result", "place_previews_ready",  # the level select: map data / imagery

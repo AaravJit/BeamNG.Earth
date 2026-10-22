@@ -44,6 +44,7 @@ log = logging.getLogger("earthd.dem")
 
 TILE = 512                  # sampling grid tile size (Mapterhorn)
 MEM_TILES = 512             # decoded tiles kept per process (Dem's default; budget.py: fewer on a small machine)
+PROBE_WORKERS = 16          # Dem._ahead(): raw downloads started ahead of the walk down the zooms
 URGENT_WORKERS = 16         # Dem.urgent(): its own fetch threads (with the 16 shared: Mapterhorn's 32 at once)
 # Decoded tiles mirrored on disk (<cache>/dem/decoded/...: float32 .npy), memory-mapped read-only: every server process
 # decoded the same tiles (WebP + Terrarium, ~3 ms a tile here, the z12 ground filter far more) and kept its own copy
@@ -163,6 +164,10 @@ class Dem:
         # The urgent lane (urgent()): the anchor's first block after a teleport needs ~10 tiles and waited ~33 s
         # behind hundreds queued by the far field, the road plans and the ground ahead (2026-10-16; alone 0.9 s).
         self.urgent_pool = ThreadPoolExecutor(URGENT_WORKERS, thread_name_prefix="dem-urgent")
+        # raw Mapterhorn downloads started ahead of need (_ahead): a fresh place's tiles walked z16 -> z15 -> z14 ->
+        # z13 -> z12 and its 8 neighbours one request at a time, ~1 s each before the CDN has them (2026-10-22)
+        self.probe_pool = ThreadPoolExecutor(PROBE_WORKERS, thread_name_prefix="dem-probe")
+        self._probing = {}              # (z, x, y) -> Future of its raw download
         self._local = threading.local()
         self.mem_tiles = MEM_TILES if mem_tiles is None else mem_tiles
         self._lru = OrderedDict()       # (z, x, y) -> float32 [TILE, TILE]
@@ -228,6 +233,36 @@ class Dem:
             self.disk.forget(miss)
         self._count(src["name"] + ":net")
         return data
+
+    def _ahead(self, keys):
+        """Start the raw Mapterhorn downloads of keys at once (on disk afterwards, or a .404 marker); one request
+        per tile however many ask. Returns their futures (result: the bytes or None; errors are left for the caller's
+        own _download to meet)."""
+        futs = []
+        with self._lock:
+            for k in keys:
+                f = self._probing.get(k)
+                if f is None:
+                    f = self._probing[k] = self.probe_pool.submit(self._probe, k)
+                futs.append(f)
+        return futs
+
+    def _probe(self, k):
+        try:
+            return self._download(MAPTERHORN, *k)
+        except netfetch.FetchError:
+            return None
+        finally:
+            with self._lock:
+                self._probing.pop(k, None)
+
+    @staticmethod
+    def _wait(futs):
+        for f in futs:
+            try:
+                f.result()
+            except Exception:
+                pass
 
     def prefetch(self, keys):
         """Download the Mapterhorn tiles (z, x, y) that are not on disk yet into the disk cache, at netfetch
@@ -397,6 +432,8 @@ class Dem:
 
     def _make_tile(self, key):
         z, x, y = key
+        if z > MAX_ZOOM:                # (most places have no z16: its z15 parent asked alongside)
+            self._ahead([(MAX_ZOOM, x >> (z - MAX_ZOOM), y >> (z - MAX_ZOOM))])
         try:
             data = self._download(MAPTERHORN, z, x, y)
             a = None if data is None else self._decode(MAPTERHORN, z, x, y, data)
@@ -456,7 +493,8 @@ class Dem:
     # --- the ground under the surface model ------------------------------
     def _lidar(self, x, y):
         """Has Mapterhorn deeper tiles (national lidar: a terrain model already) under z12 tile (x, y)? Two of
-        its z13 children asked (404s are remembered)."""
+        its z13 children asked, at once (404s are remembered)."""
+        self._wait(self._ahead([(GLOBAL_ZOOM + 1, 2 * x, 2 * y), (GLOBAL_ZOOM + 1, 2 * x + 1, 2 * y + 1)]))
         for cx, cy in ((2 * x, 2 * y), (2 * x + 1, 2 * y + 1)):
             try:
                 if self._download(MAPTERHORN, GLOBAL_ZOOM + 1, cx, cy) is not None:
@@ -483,6 +521,9 @@ class Dem:
     def _ground12(self, x, y, a):
         """z12 tile (x, y) (elevations a) with the surface objects taken out, its neighbours as context."""
         m = GROUND_MARGIN
+        n12 = 2 ** GLOBAL_ZOOM
+        self._wait(self._ahead([(GLOBAL_ZOOM, (x + dx) % n12, y + dy) for dy in (-1, 0, 1) for dx in (-1, 0, 1)
+                                if (dx or dy) and 0 <= y + dy < n12]))
         big = np.empty((TILE + 2 * m, TILE + 2 * m), np.float32)
         big[m:m + TILE, m:m + TILE] = a
         for dy in (-1, 0, 1):
@@ -510,6 +551,7 @@ class Dem:
     def _deepest_lidar(self, z, x, y):
         """The deepest zoom between GLOBAL_ZOOM + 1 and z - 1 at which Mapterhorn has the ancestor of tile (z, x, y)
         (national lidar), else None (404s are remembered, so a miss is asked once per tile)."""
+        self._wait(self._ahead([(az, x >> (z - az), y >> (z - az)) for az in range(z - 1, GLOBAL_ZOOM, -1)]))
         for az in range(z - 1, GLOBAL_ZOOM, -1):
             d = z - az
             try:
@@ -560,6 +602,10 @@ class Dem:
             yield
         finally:
             self._local.urgent = prev
+
+    def is_urgent(self):
+        """Whether this thread is in urgent() (a helper it starts carries the lane over: grading._plan_missing)."""
+        return getattr(self._local, "urgent", False)
 
     def tiles(self, keys, progress=None):
         """Fetch many tiles concurrently (deduplicated across callers)."""

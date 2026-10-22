@@ -24,6 +24,7 @@ import math
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
@@ -40,6 +41,7 @@ SHOULDER_M = 1.0            # m of flat shoulder beyond the carriageway, each si
 SIDEWALK_MARGIN_M = 0.5     # m of flat ground beyond a sidewalk (roads.SIDEWALK_CLASSES)
 LONG_PART_M = 3000.0        # a road part longer than this is planned per cell, only within CLIP_MARGIN_M of the cell
 CLIP_MARGIN_M = 400.0
+PLAN_THREADS = 4            # cells planned at once (_plan_missing)
 SPREAD_CELLS = 16           # plans(): more map cells in the points' bbox: only the cells around the points
 T_MIN, T_MAX = 5.0, 12.0    # m, transition back to the natural ground (5: roads close together meet gently)
 SLOPE_RUN = 2.0             # transition = SLOPE_RUN x the height difference (1:2 slope)
@@ -889,6 +891,25 @@ class Grader:
         """Make cell key's plans now (worker threads: the lookahead ahead of the player)."""
         self._cell_plans(key)
 
+    def _plan_missing(self, keys):
+        """The cells of keys not planned yet, planned at once on up to PLAN_THREADS threads (their map data and
+        elevation downloads overlap: a fresh place's first block planned its 3-4 cells one after another, 27-35 s of
+        its wait, 2026-10-22); the caller's urgent elevation lane (a teleport's first block) carried over."""
+        with self.lock:
+            missing = [k for k in keys if k not in self.cells]
+        if len(missing) < 2:
+            return
+        dem = getattr(self, "dem", None)
+        urgent = dem is not None and getattr(dem, "is_urgent", lambda: False)()
+
+        def one(k):
+            if urgent:
+                with dem.urgent():
+                    return self._cell_plans(k)
+            return self._cell_plans(k)
+        with ThreadPoolExecutor(min(len(missing), PLAN_THREADS), thread_name_prefix="plans") as ex:
+            list(ex.map(one, missing))
+
     def plans(self, lat, lon, roads_only=False):
         """The Plans touching the points' area (each road once); roads_only: not the tunnels' (TUNNEL_TAG)."""
         lat = np.asarray(lat, np.float64)
@@ -898,6 +919,7 @@ class Grader:
         keys = mapcells.cells_for_points(lat, lon, pad, padlon)
         if len(keys) > SPREAD_CELLS:        # points far apart: only the cells around them
             keys = mapcells.cells_near_points(lat, lon, pad, padlon)
+        self._plan_missing(keys)
         got = {}
         for key in keys:
             for fid_part, p in self._cell_plans(key):

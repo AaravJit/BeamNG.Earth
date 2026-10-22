@@ -403,6 +403,7 @@ class Anchor:
     chunks: object = field(default_factory=heightmap.ChunkCache)   # the physics blocks' heights per 128 m
     bridges: object = None                         # roads.BridgeProfiles: deck heights per chain
     tunnels: object = None                         # roads.TunnelProfiles: floor heights per chain
+    first_base: tuple = None                       # ((cx, cy), Future): a provisional first block's photo, reused
 
 
 @dataclass
@@ -1183,6 +1184,7 @@ class Server:
                                                   lambda la, lo: self.dem.sample(la, lo, gradingmod.PROFILE_ZOOM),
                                                   self.road_widths)
                 anchor.grader.wet = self.sea.depth if self.sea is not None else None    # (no dams: underwater tunnels)
+                anchor.grader.dem = self.dem                # (its urgent lane: _plan_missing)
             return anchor.grader
 
     def warm_roads(self, anchor, x, y, vx, vy):
@@ -1299,8 +1301,11 @@ class Server:
         if queued_at is not None and t0 - queued_at > 0.2:
             log.debug("terrain %s waited %.2f s for a heightmap worker", (anchor.id, cx, cy), t0 - queued_at)
         q = self.anchor_q(anchor)
-        base = (self.base_pool.submit(self._base_photo, anchor, cx, cy, self._base_process(lane))
-                if self.near_visual == "detail" and self.imagery is not None else None)
+        fb, base = anchor.first_base, None
+        if fb is not None and fb[0] == (cx, cy):        # the provisional first block's photo (make_provisional)
+            anchor.first_base, base = None, fb[1]
+        elif self.near_visual == "detail" and self.imagery is not None:
+            base = self.base_pool.submit(self._base_photo, anchor, cx, cy, self._base_process(lane))
         pool = self.block_pools[lane][0] if self.block_pools and progress is None else None
         if pool is not None:
             info = pool.submit(
@@ -1313,24 +1318,46 @@ class Server:
             # resync): ahead of every other download
             return self._make_heightmap_here(anchor, cx, cy, progress, t0, q, base)
 
-    def _make_heightmap_here(self, anchor, cx, cy, progress, t0, q, base=None):
+    def make_provisional(self, anchor, cx, cy, progress):
+        """Worker thread: a teleport's first block before its road plans (the user, 2026-10-22: "place the car as
+        soon as possible"): the DEM's ground with the runways (no road grading, tunnels, arches or sea floor, which
+        all wait on the map data of the cells around: 15-60 s of a fresh place's first block, ~5 s without), the
+        cached land cover and the photo. The graded block replaces it when it is built (Connection.refine_first:
+        terrain_refresh). Not kept in hm (the graded one is the block of its key), nor in anchor.chunks."""
+        t0 = time.perf_counter()
+        q = self.anchor_q(anchor)
+        base = None
+        if self.near_visual == "detail" and self.imagery is not None:
+            base = self.base_pool.submit(self._base_photo, anchor, cx, cy, self._base_process(LANE_REQUEST))
+            anchor.first_base = ((cx, cy), base)
+        urgent = getattr(self.dem, "urgent", None)     # (test DEMs have no lane)
+        with urgent() if urgent is not None else contextlib.nullcontext():
+            info = self._make_heightmap_here(anchor, cx, cy, progress, t0, q, base, provisional=True)
+        log.info("provisional first block %s in %.2f s (%s)", (anchor.id, cx, cy), time.perf_counter() - t0,
+                 " ".join(f"{k} {v:.2f}" for k, v in info.get("stages", {}).items()))
+        return info
+
+    def _make_heightmap_here(self, anchor, cx, cy, progress, t0, q, base=None, provisional=False):
         with self.hm_here_lock:
             self.hm_here += 1
         try:
-            return self._make_heightmap_here_(anchor, cx, cy, progress, t0, q, base)
+            return self._make_heightmap_here_(anchor, cx, cy, progress, t0, q, base, provisional)
         finally:
             with self.hm_here_lock:
                 self.hm_here -= 1
 
-    def _make_heightmap_here_(self, anchor, cx, cy, progress, t0, q, base=None):
+    def _make_heightmap_here_(self, anchor, cx, cy, progress, t0, q, base=None, provisional=False):
         keep = {}
-        g = self.grader_for(anchor)
+        g = None if provisional else self.grader_for(anchor)
         c0 = time.thread_time()
 
         grade_s = [0.0, 0.0]            # wall, this thread's CPU (the rest: waiting for map data, the interpreter)
 
         def elev(la, lo):
-            z = self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, anchor.hm_zoom, progress))
+            z = self.dem.sample(la, lo, anchor.hm_zoom, progress)
+            if provisional:             # the runways only (the sea floor waits on the water cells)
+                return self.airports.apply(la, lo, z) if self.airports is not None else z
+            z = self.ground(anchor.frame, la, lo, z)
             if g is None:
                 return z
             t1, c1 = time.perf_counter(), time.thread_time()
@@ -1339,7 +1366,7 @@ class Server:
             grade_s[1] += time.thread_time() - c1
             return z
         gen = elev
-        if self.mapdata is not None:
+        if self.mapdata is not None and not provisional:
             # (made here when not yet: an anchor's first block was built before any road tile made them, without
             # its arches' raise and flat mouths, 2026-10-17)
             tun = self.tunnels_of(anchor, elev, g)
@@ -1351,7 +1378,7 @@ class Server:
                                                  (cx - half, cy - half, cx + half, cy + half))
         info = heightmap.generate(anchor.frame, gen,
                                   os.path.join(self.out_dir, self.hm_name((anchor.id, cx, cy))), cx, cy, q=q,
-                                  size=self.layout.block, keep=keep, chunks=anchor.chunks)
+                                  size=self.layout.block, keep=keep, chunks=None if provisional else anchor.chunks)
         stages = {"heights": time.perf_counter() - t0, "grading": grade_s[0], "gradingCpu": grade_s[1],
                   "heightsCpu": time.thread_time() - c0}
         idx = None
@@ -1361,21 +1388,23 @@ class Server:
             t1 = time.perf_counter()
             classes, complete = self.surface.classes(keep["lat"], keep["lon"])
             idx = surfacemod.classify(classes, keep["u"], heightmap.SQUARE, keep["lat"], keep["lon"])
-            if self.sea is not None:    # under water: the bed (no grass through the surface)
+            if self.sea is not None and not provisional:    # under water: the bed (no grass through the surface)
                 idx[self.sea.depth(keep["lat"], keep["lon"]) > blockworker.WATER_BED_M] = surfacemod.MUD
             road_feats, roads_complete = self.surface.roads(keep["lat"], keep["lon"])
             stages["landcover"] = time.perf_counter() - t1
             t1 = time.perf_counter()
-            if road_feats:
+            if road_feats:              # (provisional: the widths' guesses, not measured between the buildings)
                 idx = surfacemod.paint_roads(idx, keep["lat"], keep["lon"], road_feats, heightmap.SQUARE,
-                                             self.surface.urban, self.road_widths, blockworker._open_tunnels(g, keep))
+                                             self.surface.urban, None if provisional else self.road_widths,
+                                             blockworker._open_tunnels(g, keep))
             idx = (surfacemod.paint_lots(idx, keep["lat"], keep["lon"], self.surface.lots(keep["lat"], keep["lon"]))
                 if hasattr(self.surface, "lots") else idx)
             stages["roadPaint"] = time.perf_counter() - t1
             complete = complete and roads_complete
             info["layers"] = surfacemod.write_masks(idx[::-1], self.out_dir, self.hm_name((anchor.id, cx, cy))[:-4])
             info["surfaceComplete"] = complete
-        idx = self._tunnel_holes(anchor, elev, keep, cx, cy, idx, info)
+        if not provisional:
+            idx = self._tunnel_holes(anchor, elev, keep, cx, cy, idx, info)
         info["ter"], mats = surfacemod.write_ter(self.out_dir, self.ter_name((anchor.id, cx, cy)), keep["qgrid"], idx)
         if mats is not None:          # the .ter's own material list (MATERIALS indices)
             info["mats"] = mats
@@ -2283,6 +2312,10 @@ class Server:
 
 
 # Per-anchor tile files (besides far_ / hm_) that prune() deletes with their anchor
+# A teleport's first block is built first without the road grading (make_provisional: the car is placed in ~5 s
+# instead of 15-60 s on a fresh place) and replaced by the graded one when that is built (terrain_refresh)
+PROVISIONAL_FIRST = os.environ.get("BNGE_PROVISIONAL", "1") != "0"
+PROVISIONAL_KEEP_S = 60.0   # the provisional .ter is deleted this long after its replacement was sent
 TELEPORT_PAUSE_M = 20000.0  # an anchor asked this far from the player is a teleport: the old place's work pauses
 TELEPORT_PAUSE_MAX_S = 120.0  # ... at most this long (the mod may never commit it)
 BOOST_MOVE_MS = 3.0         # the loading boost ends when the player moves faster than this (m/s) ...
@@ -2824,9 +2857,11 @@ class Connection:
             return
         lon = (lon + 180.0) % 360.0 - 180.0
         old = self.s.anchors.get(self.active)
+        teleport = old is None          # (a session's first place, or a jump: the provisional first block)
         if old is not None:
             la, lo, _ = old.frame.enu_to_geodetic(*self.focus, 0.0)
             if geodesy.haversine_m(float(la), float(lo), lat, lon) > TELEPORT_PAUSE_M:
+                teleport = True
                 self.teleport_pending, self.teleport_t0 = True, time.monotonic()
                 log.debug("teleport to %.5f, %.5f: the old place's work paused", lat, lon)
                 # the cores lent from the request on, not from the first block's arrival: that block is most of
@@ -2836,7 +2871,9 @@ class Connection:
         anchor = self.s.new_anchor(lat, lon)
         self.status(f"Building terrain at {lat:.5f}, {lon:.5f}...")
         t0 = time.perf_counter()
-        if self.s.surface is not None:
+        # a teleport's first block without its road plans, the graded one sent when built (make_provisional)
+        provisional = teleport and PROVISIONAL_FIRST and self.s.grading
+        if self.s.surface is not None and not provisional:
             # the anchor's first block is built once and kept while the player stands still: give the
             # land cover around it a moment to arrive (blocks built while driving never wait)
             # (on the map's threads: the default pool is full of the old place's road / vegetation builds after a
@@ -2846,7 +2883,11 @@ class Connection:
             log.info("anchor %s: land cover wait %.2f s", anchor.id, time.perf_counter() - tw)
         pacer.foreground_begin()        # the player waits for this block: the background loops hold (pacer.hold)
         try:
-            info = await self.s.terrain(anchor, cx, cy, self._progress())
+            if provisional:
+                info = await asyncio.get_running_loop().run_in_executor(
+                    self.s.hm_pool, self.s.make_provisional, anchor, cx, cy, self._progress())
+            else:
+                info = await self.s.terrain(anchor, cx, cy, self._progress())
         except Exception as e:
             log.exception("terrain for anchor request %s failed", req)
             self.teleport_pending = False
@@ -2862,7 +2903,7 @@ class Connection:
         # groundZ is None when (0, 0) lies outside the block (a resync around a distant player)
         gz = info["groundZ"]
         floor_z = None                  # in a tunnel: its floor under the ground (the mod moves the car down onto it
-        if gz is not None:              # once the tube's collision is there: set down in it at once, it fell)
+        if gz is not None and not provisional:  # once the tube's collision is there: set down in it at once, it fell)
             fl = await asyncio.get_running_loop().run_in_executor(self.s.ui_pool, self.s.tunnel_floor, anchor)
             if fl is not None and fl < gz - TUNNEL_FLOOR_UNDER_M:
                 floor_z = round(fl + gradingmod.ROAD_LIFT, 3)
@@ -2872,8 +2913,28 @@ class Connection:
                  "n/a" if gz is None else f"{gz:.1f}",
                  self.s.dem.stats_snapshot())
         self.send({"type": "anchor_ready", "requestId": req, "anchorId": anchor.id, "lat": lat, "lon": lon,
-                   "groundZ": info["groundZ"], "floorZ": floor_z, "terrain": self.terrain_msg(key, info)})
+                   "groundZ": info["groundZ"], "floorZ": floor_z, "terrain": self.terrain_msg(key, info),
+                   "provisional": provisional})
         self.status(f"Terrain ready ({time.perf_counter() - t0:.1f} s)")
+        if provisional:
+            self.spawn(self.refine_first(anchor, cx, cy, info.get("ter"), t0))
+
+    async def refine_first(self, anchor, cx, cy, provisional_ter, t0):
+        """The graded first block (roads levelled, tunnels, the sea floor) in place of the provisional one: built as
+        any block, sent as terrain_refresh (the mod swaps it in while that block is still its own). The provisional
+        .ter is deleted a while later (the game may still be reading it)."""
+        key = (anchor.id, cx, cy)
+        try:
+            info = await self.s.terrain(anchor, cx, cy)
+        except Exception:
+            log.exception("graded first block %s failed (the provisional one stays)", key)
+            return
+        self.s.hm_sent.append(key)
+        log.info("anchor %d: graded first block in %.2f s after the request", anchor.id, time.perf_counter() - t0)
+        self.send({"type": "terrain_refresh", "anchorId": anchor.id, **self.terrain_msg(key, info)})
+        if provisional_ter and provisional_ter != info.get("ter"):
+            await asyncio.sleep(PROVISIONAL_KEEP_S)
+            self.s._remove(os.path.join(self.s.out_dir, provisional_ter))
 
     async def prepare_terrain(self, msg):
         req = msg.get("requestId")

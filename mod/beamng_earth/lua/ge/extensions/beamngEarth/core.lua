@@ -752,6 +752,14 @@ local function onMessage(msg)
     p.ready, p.msg = true, msg -- committed by the distance rule in updateWorld()
     if p.sentAt then st.terrainLatency = st.clock - p.sentAt end
     st.terrainErrorAt = nil
+  elseif t == 'terrain_refresh' then
+    -- the graded block in place of a teleport's provisional one (server make_provisional; the user, 2026-10-22:
+    -- "place the car as soon as possible"): swapped in while that block is still ours, else dropped (the block
+    -- moved on: its replacements are built graded anyway)
+    if msg.anchorId == st.anchorId and st.block and msg.cx == st.block.cx and msg.cy == st.block.cy
+        and msg.size == terrain.SIZE then
+      commitTerrain(msg)
+    end
   elseif t == 'terrain_error' then
     local p = st.terrainPending
     if not p or msg.requestId ~= p.requestId then return end
