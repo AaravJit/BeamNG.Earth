@@ -184,17 +184,23 @@ def _height_grid(frame, elev, xy, q=None, cell=GRID_M):
     return np.ascontiguousarray(u), i0, j0
 
 
+FOLLOW_STEP_M = 0.9     # a terrain cell whose corners are further apart holds a step (a cutting's wall, the lattice's
+FOLLOW_MAX_UP = 0.1     # teeth): a draped surface goes at most this over its lowest corner there (the McGraw-Graben's
+                        # edge lines climbed the teeth as white tents up to 1.3 m, 2026-10-22). A road would need a
+                        # ~32 % grade along a cell's diagonal to count as a step.
+
+
 def follow_ground(P, UV, T, grid, i0, j0, tol=None, cell=GRID_M):
     """(points (m, 3), uvs, triangles, source triangle) of the triangles T over P (n, 2) on the drawn ground (grid:
-    _height_grid): earthfast.follow_tris."""
+    _height_grid), held down in the cells holding a step (FOLLOW_STEP_M): earthfast.follow_tris."""
     import fast
     tol = FOLLOW_TOL if tol is None else tol
     P = np.ascontiguousarray(np.asarray(P, np.float64)[:, :2])
     UV = np.ascontiguousarray(UV, np.float64)
     T = np.ascontiguousarray(T, np.int64)
-    fast.require(1, "follow_tris")
+    fast.require(52, "follow_tris")
     a, b, c, d = fast._ef.follow_tris(P, UV, T, float(cell), np.ascontiguousarray(grid, np.float64), int(i0), int(j0),
-                                      float(tol))
+                                      float(tol), FOLLOW_STEP_M, FOLLOW_MAX_UP)
     return np.asarray(a), np.asarray(b), np.asarray(c), np.asarray(d)
 
 

@@ -3124,7 +3124,8 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
             for o in steps:
                 pts_all.append(xy + nl * side * o)
             info.append((xy, z, nl * side, core, inside, width / 2, steps, spec.cls in CONCRETE_WALL_CLASSES,
-                         fid, not spec.urban, not spec.urban and spec.cls not in NO_PARAPET_CLASSES))
+                         fid, not spec.urban, not spec.urban and spec.cls not in NO_PARAPET_CLASSES,
+                         grading.wall_max_h(spec)))
     if not pts_all:
         return []
     P = np.concatenate(pts_all)
@@ -3133,7 +3134,7 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
     out, k = [], 0
     others = {fid: (np.asarray(pts, np.float64)[:, :2], spec.width / 2) for fid, spec, pts, _ in roads if len(pts) >= 2}
     bend_of = {}
-    for xy, z, out_n, core, inside, rh, steps, concrete, fid, rural, parapets in info:
+    for xy, z, out_n, core, inside, rh, steps, concrete, fid, rural, parapets, max_h in info:
         key = (id(xy), len(xy))
         if key not in bend_of:          # (a tight bend: no wall into it, grading.bend_zone)
             bend_of[key] = grading.bend_zone(xy)
@@ -3193,7 +3194,7 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
                 # (never over another road: a hairpin's wall top covered the road above, the Stelvio Pass, the user's
                 # report 2026-10-21)
                 th = np.minimum(th, _clear_depth(base, out_n[sl], th, others, fid))
-                tp = np.minimum(top_g[sl], z[sl] + grading.WALL_MAX_H_M) + WALL_TOP_M      # (no taller than that)
+                tp = np.minimum(top_g[sl], z[sl] + max_h) + WALL_TOP_M      # (no taller than that)
                 tp = z[sl] + WALL_TAPER_LOW_M + (tp - z[sl] - WALL_TAPER_LOW_M).clip(0) * taper[sl]
                 # (rock faces only as an experiment, BNE_CLIFF_WALLS=on, for tall rural cuts: the Stelvio's hairpins are
                 # walled in dry stone, tall cuts too, Mapillary 2026-10-21; the user chose stone walls for passes)

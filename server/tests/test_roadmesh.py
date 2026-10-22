@@ -138,6 +138,22 @@ class FollowTest(unittest.TestCase):
         self.assertTrue((e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0] > 0).all(), "facing up")
 
 
+    def test_no_climbing_a_step(self):
+        """A strip beside a cutting's wall: in the lattice cells holding the step it stays at the road's level instead
+        of climbing the lattice's teeth (FOLLOW_STEP_M / FOLLOW_MAX_UP), elsewhere it follows the ground."""
+        grid = np.zeros((10, 10))
+        grid[:, 5:] = 4.0                                   # a 4 m step between x = 8 and x = 10
+        grid[:, :5] += np.arange(5) * 0.1                   # a gentle slope before it (followed)
+        P = np.array([[1.0, 1.0], [9.5, 1.0], [9.5, 15.0], [1.0, 15.0]])
+        T = np.array([[0, 1, 2], [0, 2, 3]])
+        UV = np.zeros((4, 2))
+        Q, _, U, _ = roadmesh.follow_ground(P, UV, T, grid, 0, 0)
+        step = Q[:, 0] > 8.0
+        self.assertTrue(step.any())
+        self.assertLessEqual(Q[step, 2].max(), 0.4 + roadmesh.FOLLOW_MAX_UP + 1e-9, "held down at the step")
+        flat = Q[:, 0] < 7.9
+        self.assertGreater(Q[flat, 2].max(), 0.25, "the slope before it followed")
+
 if __name__ == "__main__":
     unittest.main()
 

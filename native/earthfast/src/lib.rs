@@ -2763,12 +2763,16 @@ fn terrain_at(grid: &numpy::ndarray::ArrayView2<f64>, i0: i64, j0: i64, cell: f6
 /// the terrain's heights at its corners (grid: as terrain_at); where the ground inside departs from that plane by more
 /// than tol (checked at the grid points inside and where its edges cross the terrain's edges) it is cut along the
 /// terrain's edges and every piece takes the terrain's heights: within tol of the drawn ground
-/// everywhere. Returns (points (m, 3), uvs (m, 2), triangles (r, 3), source triangle (r,)); points not shared.
+/// everywhere. In a terrain cell whose corners are more than step_m apart (a cutting's wall: the lattice draws it as teeth)
+/// no point goes over the cell's lowest corner + max_up (an edge line climbed those teeth in front of the wall as tents
+/// of white up to 1.3 m tall, the McGraw-Graben 2026-10-22: it stays at the road's level, the teeth over it).
+/// Returns (points (m, 3), uvs (m, 2), triangles (r, 3), source triangle (r,)); points not shared.
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (pts, uv, tris, cell, grid, i0, j0, tol, step_m=f64::INFINITY, max_up=f64::INFINITY))]
 fn follow_tris<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>, uv: PyReadonlyArray2<'py, f64>,
                     tris: PyReadonlyArray2<'py, i64>, cell: f64, grid: PyReadonlyArray2<'py, f64>, i0: i64, j0: i64,
-                    tol: f64)
+                    tol: f64, step_m: f64, max_up: f64)
                     -> (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<i64>>,
                         Bound<'py, PyArray1<i64>>) {
     let (pv, uvv, tv, gv) = (pts.as_array(), uv.as_array(), tris.as_array(), grid.as_array());
@@ -2829,10 +2833,23 @@ fn follow_tris<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>, uv: PyRead
                     }
                 }
             }
+            // the triangle's own plane (own heights at its corners): the cap over it
+            // in a terrain cell holding a step (corners more than step_m apart: a cutting's wall drawn by the lattice as
+            // teeth) no point over its lowest corner + max_up
+            let cap = |x: f64, y: f64| -> f64 {
+                if !step_m.is_finite() { return f64::INFINITY; }
+                let (gx, gy) = (x / cell - i0 as f64, y / cell - j0 as f64);
+                let (ny, nx) = (gv.shape()[0] as i64, gv.shape()[1] as i64);
+                let li = (gx.floor() as i64).clamp(0, nx - 2) as usize;
+                let lj = (gy.floor() as i64).clamp(0, ny - 2) as usize;
+                let c = [gv[[lj, li]], gv[[lj, li + 1]], gv[[lj + 1, li]], gv[[lj + 1, li + 1]]];
+                let (lo, hi) = c.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |a, &v| (a.0.min(v), a.1.max(v)));
+                if hi - lo > step_m { lo + max_up } else { f64::INFINITY }
+            };
             if !split {
                 let base = p_out.len() as i64;
                 for (k, q) in tri.iter().enumerate() {
-                    p_out.push([q[0], q[1], z[k]]);
+                    p_out.push([q[0], q[1], z[k].min(cap(q[0], q[1]))]);
                     uv_out.push([q[2], q[3]]);
                 }
                 t_out.push([base, base + 1, base + 2]);
@@ -2879,7 +2896,7 @@ fn follow_tris<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>, uv: PyRead
                 if area.abs() < 1e-8 { continue; }
                 let base = p_out.len() as i64;
                 for q in poly.iter() {
-                    p_out.push([q[0], q[1], ter(q[0], q[1])]);
+                    p_out.push([q[0], q[1], ter(q[0], q[1]).min(cap(q[0], q[1]))]);
                     uv_out.push([q[2], q[3]]);
                 }
                 for a in 1..(poly.len() as i64 - 1) {
@@ -3454,7 +3471,8 @@ fn paint_lines<'py>(py: Python<'py>, rgb: PyReadonlyArray3<'py, u8>, segs: PyRea
 }
 
 /// farfield.build_tile's adaptive mesh: the right-triangulated irregular network (RTIN, a 4-8 hierarchy, as Mapbox's
-/// Martini) of a (2^k + 1)² height grid h [j, i] (j north) whose surface is within max_err (m) of every grid height.
+/// Martini, but with each triangle's true error: every grid point inside it) of a (2^k + 1)² height grid h [j, i]
+/// (j north) whose surface is within max_err (m) of every grid height.
 /// Returns (tris (m, 3) int64: grid indices j * n + i, counter-clockwise from +Z; surf (n, n): the mesh's surface at
 /// every grid point; the largest |surf - h|). The top split is the SW-NE diagonal and the finest cells split SW-NE
 /// where i + j is even, SE-NW where odd (the TerrainBlock's pattern, farfield.torque_split45), so surf on the regular
@@ -3503,7 +3521,28 @@ fn rtin_mesh<'py>(py: Python<'py>, h: PyReadonlyArray2<'py, f64>, max_err: f64)
             let cx = (mx + my) as isize - ay as isize;
             let cy = (my + ax) as isize - mx as isize;
             let mid = my * n + mx;
-            let e = ((at(ax, ay) + at(bx, by)) / 2.0 - hv[mid]).abs();
+            // the triangle's true error: every grid point inside it against its plane (the hypotenuse midpoint alone
+            // let big flat triangles reach up a wall's step: spikes in front of the McGraw-Graben's walls, 2026-10-22)
+            let (cxu, cyu) = (cx as usize, cy as usize);
+            let (za, zb, zc) = (at(ax, ay), at(bx, by), at(cxu, cyu));
+            let (fax, fay, fbx, fby, fcx, fcy) = (ax as f64, ay as f64, bx as f64, by as f64, cx as f64, cy as f64);
+            let det = (fbx - fax) * (fcy - fay) - (fby - fay) * (fcx - fax);
+            let mut e = 0f64;
+            if det != 0.0 {
+                let (x0, x1) = (ax.min(bx).min(cxu), ax.max(bx).max(cxu));
+                let (y0, y1) = (ay.min(by).min(cyu), ay.max(by).max(cyu));
+                for y in y0..=y1 {
+                    for x in x0..=x1 {
+                        let (fx, fy) = (x as f64, y as f64);
+                        let w1 = ((fx - fax) * (fcy - fay) - (fy - fay) * (fcx - fax)) / det;
+                        let w2 = ((fbx - fax) * (fy - fay) - (fby - fay) * (fx - fax)) / det;
+                        let w0 = 1.0 - w1 - w2;
+                        if w0 < -1e-9 || w1 < -1e-9 || w2 < -1e-9 { continue; }
+                        let d = (w0 * za + w1 * zb + w2 * zc - hv[y * n + x]).abs();
+                        if d > e { e = d; }
+                    }
+                }
+            }
             if e > errors[mid] { errors[mid] = e; }
             if i < parents {
                 let (cx, cy) = (cx as usize, cy as usize);
@@ -3614,6 +3653,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(wet_run_inside, m)?)?;
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 50)?;
+    m.add("VERSION", 52)?;
     Ok(())
 }

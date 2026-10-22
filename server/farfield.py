@@ -873,7 +873,7 @@ def build_tile(frame, dem, tile, zoom, q=None, ref_zoom=None, with_sink=True, la
     shade = U                           # the vertex normals: the whole grid's (its detail in the light)
     adaptive = None
     if fine:
-        fast.require(50, "fine near ground")
+        fast.require(51, "fine near ground")
         eps = NEAR_FINE_EPS
         while True:
             adaptive, surf, worst = fast._ef.rtin_mesh(np.ascontiguousarray(U), eps)
@@ -882,7 +882,7 @@ def build_tile(frame, dem, tile, zoom, q=None, ref_zoom=None, with_sink=True, la
             eps *= 2
         U = surf
     elif tile.level >= ADAPT_MIN_LEVEL and ADAPT_EPS > 0:
-        fast.require(50, "adaptive far tiles")
+        fast.require(51, "adaptive far tiles")
         adaptive, U, _ = fast._ef.rtin_mesh(np.ascontiguousarray(U), ADAPT_EPS * sp)     # U: the mesh's surface
 
     # Geometric error: the reference against the triangulated tile, on the 2x grid (fine: the samples themselves).

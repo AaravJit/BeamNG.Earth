@@ -141,7 +141,7 @@ def resample(xy, step):
 class Plan:
     """One road's grading: vertices (n, 2) in the frame's ENU metres, their target heights, core half width; abut: does
     it lead onto a bridge at its (first, last) vertex (grade_points)."""
-    __slots__ = ("xy", "z", "half", "bbox", "abut", "cut", "road_half", "rid")
+    __slots__ = ("xy", "z", "half", "bbox", "abut", "cut", "road_half", "rid", "max_wall")
 
     def __init__(self, xy, z, half, abut=(False, False), cut=None, road_half=None):
         self.xy, self.z, self.half, self.abut = xy, z, float(half), (bool(abut[0]), bool(abut[1]))
@@ -150,6 +150,7 @@ class Plan:
         self.cut = cut
         self.road_half = float(road_half) if road_half is not None else float(half)    # the carriageway's half width
         self.rid = -1           # the road (map feature) it is part of: _plan_cell (each cell plans its own stretch of it)
+        self.max_wall = WALL_MAX_H_M    # its cuttings' walls at most this tall (wall_max_h)
         pad = half + T_MAX
         self.bbox = (xy[:, 0].min() - pad, xy[:, 1].min() - pad, xy[:, 0].max() + pad, xy[:, 1].max() + pad)
 
@@ -245,7 +246,16 @@ def plan_roads(frame, parts, elev, abut=None):
     return out
 
 
-WALL_MAX_H_M = 4.0      # m a sharp cutting's wall stands over the road at most (the slope above it is graded)
+WALL_MAX_H_M = 4.0      # m a sharp cutting's wall stands over the road at most (the slope above it is graded) ...
+WALL_MAX_H_CITY_M = 10.0  # ... a major road's in town (concrete): the full depth of its trench (Munich's McGraw-Graben:
+                        # vertical concrete walls the whole way up, Mapillary 2026-10-21; with the 4 m cap the bank above
+                        # stood as a bare cliff over the wall once the near ground was drawn sharp, 2026-10-22)
+
+
+def wall_max_h(spec):
+    """How tall a sharp cutting's wall beside road spec (roads.Spec) may stand: WALL_MAX_H_CITY_M for a major road in
+    town (roads.CONCRETE_WALL_CLASSES, the concrete walls), else WALL_MAX_H_M (stone walls, mountain passes)."""
+    return WALL_MAX_H_CITY_M if (spec.urban and spec.cls in roadsmod.CONCRETE_WALL_CLASSES) else WALL_MAX_H_M
 HAIRPIN_SPAN_M = 20.0   # a road's direction this far back and on ...
 HAIRPIN_TURN_DEG = 90.0  # ... turned this much: a tight bend (earthfast.tight_bends) ...
 HAIRPIN_PAD_M = 15.0    # ... and this far either side of it: no sharp cutting, no retaining wall
@@ -300,7 +310,7 @@ def _add_cuts(frame, plans, elev):
             # walls do; a 12 m wall stood between the Stelvio's hairpin legs, 2026-10-21)
             zmin = np.minimum(p.z[:-1], p.z[1:])
             for c in (1, 4):
-                cut[:, c] = np.minimum(cut[:, c], zmin + WALL_MAX_H_M)
+                cut[:, c] = np.minimum(cut[:, c], zmin + getattr(p, "max_wall", WALL_MAX_H_M))
             if np.isfinite(cut[:, 0]).any() or np.isfinite(cut[:, 3]).any():
                 p.cut = cut
 
@@ -315,7 +325,9 @@ def _plan(xy, z, spec, abut=(False, False)):
     width = max(spec.width, roadsmod.carriageway(spec.cls, spec.kind, True, None, spec.oneway)) if built else spec.width
     if spec.median:             # a divided road's carriageway: never over the other one
         width = max(spec.width, roadsmod.dual_cap(spec.median, width))
-    return Plan(xy[keep], zs[keep], width / 2 + shoulder(spec), abut, road_half=width / 2)
+    plan = Plan(xy[keep], zs[keep], width / 2 + shoulder(spec), abut, road_half=width / 2)
+    plan.max_wall = wall_max_h(spec)
+    return plan
 
 
 def shoulder(spec):
@@ -510,7 +522,7 @@ class Grader:
                     add = a if add is None else np.maximum(add, a)
             if add is not None:
                 np_ = Plan(p.xy, p.z + add, p.half, p.abut, p.cut, p.road_half)
-                np_.rid = p.rid
+                np_.rid, np_.max_wall = p.rid, p.max_wall
                 plans[i] = (fid, np_)
 
     def _abut_ends(self, key, pe, ok=None):
@@ -898,6 +910,7 @@ def trim_plan(p, box):
             q = Plan(pxy, pz, p.half, (p.abut[0] and i == 0 and t0 == 0.0, p.abut[1] and j == n - 1 and t1 == 1.0),
                      None if p.cut is None else np.asarray(p.cut)[i:j + 1].copy(), p.road_half)
             q.rid = getattr(p, "rid", -1)
+            q.max_wall = getattr(p, "max_wall", WALL_MAX_H_M)
             out.append(q)
         i = j + 1
     return out

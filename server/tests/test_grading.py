@@ -351,5 +351,18 @@ class OverTunnels(unittest.TestCase):
         self.assertIsNone(grading.Grader._over_tunnels(g, np.array([50.0]), np.array([30.0])))
 
 
+class WallHeightTest(unittest.TestCase):
+    def test_city_concrete_walls_full_height(self):
+        """A major road's cutting in town keeps a full-height concrete wall (McGraw-Graben); stone walls elsewhere
+        stop at WALL_MAX_H_M with the slope above them (mountain passes)."""
+        import roads
+        city = roads.Spec(width=12.0, kind="paved", urban=True, cls="primary", oneway=False)
+        rural = roads.Spec(width=7.0, kind="paved", urban=False, cls="primary", oneway=False)
+        street = roads.Spec(width=7.0, kind="paved", urban=True, cls="residential", oneway=False)
+        self.assertEqual(grading.wall_max_h(city), grading.WALL_MAX_H_CITY_M)
+        self.assertEqual(grading.wall_max_h(rural), grading.WALL_MAX_H_M)
+        self.assertEqual(grading.wall_max_h(street), grading.WALL_MAX_H_M)
+
+
 if __name__ == "__main__":
     unittest.main()
