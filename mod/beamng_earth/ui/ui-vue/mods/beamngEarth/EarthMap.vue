@@ -474,7 +474,9 @@ const countryLabels = computed(() => {
 })
 const placeLabels = computed(() => {
   const v = view.value
-  return layersOn.value && v.z < 15 ? mm.visibleLabels(placePoints, v.lat, v.lon, v.z, w.value, h.value, { max: 80, norm: placeNorm }) : []
+  // no z < 15 cap (the user, 2026-10-22: zoomed in past it, every place's name should stay, not just vanish):
+  // placeMinZoom's highest value is ~9.7 (scalerank 8, not a capital), so nothing new appears past z ~10 anyway
+  return layersOn.value ? mm.visibleLabels(placePoints, v.lat, v.lon, v.z, w.value, h.value, { max: 80, norm: placeNorm }) : []
 })
 
 // the lat/lon grid: a step that gives lines ~120-300 px apart
