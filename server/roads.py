@@ -1990,25 +1990,17 @@ CHAIN_CELLS = 12        # map cells read at most to close one bridge chain
 
 def _crossings(lines, ground_lines):
     """(part index, arc m, point xy) where a ground road (polylines in metres) crosses under a deck
-    part. Pure."""
-    out = []
-    for pi, ln in enumerate(lines):
-        lo, hi = ln.min(axis=0), ln.max(axis=0)
-        s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(ln, axis=0).T))]
-        P, Q = ln[:-1], ln[1:]
-        for gl in ground_lines:
-            if gl[:, 0].max() < lo[0] or gl[:, 0].min() > hi[0] or gl[:, 1].max() < lo[1] or gl[:, 1].min() > hi[1]:
-                continue
-            for a, b in zip(gl[:-1], gl[1:]):
-                r, d = Q - P, b - a
-                den = r[:, 0] * d[1] - r[:, 1] * d[0]
-                ok = np.abs(den) > 1e-12
-                ap = a - P
-                t = np.where(ok, (ap[:, 0] * d[1] - ap[:, 1] * d[0]) / np.where(ok, den, 1), -1)
-                u = np.where(ok, (ap[:, 0] * r[:, 1] - ap[:, 1] * r[:, 0]) / np.where(ok, den, 1), -1)
-                for j in np.nonzero(ok & (t >= 0) & (t <= 1) & (u >= 0) & (u <= 1))[0]:
-                    out.append((pi, s[j] + t[j] * (s[j + 1] - s[j]), P[j] + t[j] * r[j]))
-    return out
+    part (earthfast.segment_crossings). Pure."""
+    import fast
+    lp = [np.asarray(ln, np.float64)[:, :2] for ln in lines]
+    gp = [np.asarray(gl, np.float64)[:, :2] for gl in ground_lines]
+    if not lp or not gp:
+        return []
+    fast.require(57, "segment_crossings")
+    starts = lambda ps: np.r_[0, np.cumsum([len(p) for p in ps])].astype(np.int64)
+    got = fast._ef.segment_crossings(np.ascontiguousarray(np.vstack(lp)), starts(lp),
+                                     np.ascontiguousarray(np.vstack(gp)), starts(gp))
+    return [(pi, arc, np.array([x, y])) for pi, arc, x, y in got]
 
 
 def _deck_crossings(lines):

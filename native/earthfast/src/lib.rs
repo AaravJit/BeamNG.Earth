@@ -222,6 +222,71 @@ fn dual_side(a: PyReadonlyArray2<f64>, b: PyReadonlyArray2<f64>, gap_min: f64, g
     (ok_n as f64 / n as f64, side_sum / ok_n as f64)
 }
 
+/// roads._crossings: (part index, arc m along it, x, y) where a ground road crosses a deck part. Parts and ground
+/// lines are polylines one after another (pts (n, 2), starts (L + 1,), the last: n); per part, per ground line whose
+/// box meets the part's, per ground segment in order, the part's segments in order: numpy's float64 arithmetic of the
+/// Python it replaces (the underpass and bridge-approach planning's hot loop, 2026-10-22).
+#[pyfunction]
+fn segment_crossings(
+    py: Python<'_>,
+    parts: PyReadonlyArray2<f64>,
+    part_starts: PyReadonlyArray1<i64>,
+    ground: PyReadonlyArray2<f64>,
+    ground_starts: PyReadonlyArray1<i64>,
+) -> Vec<(usize, f64, f64, f64)> {
+    let pa = parts.as_array();
+    let ps = part_starts.as_array();
+    let ga = ground.as_array();
+    let gs = ground_starts.as_array();
+    let np_ = ps.len().saturating_sub(1);
+    let ng = gs.len().saturating_sub(1);
+    py.allow_threads(|| {
+        let bbox = |a: &numpy::ndarray::ArrayView2<f64>, i0: usize, i1: usize| {
+            let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+            for k in i0..i1 {
+                x0 = x0.min(a[[k, 0]]); x1 = x1.max(a[[k, 0]]);
+                y0 = y0.min(a[[k, 1]]); y1 = y1.max(a[[k, 1]]);
+            }
+            (x0, y0, x1, y1)
+        };
+        let gbox: Vec<_> = (0..ng).map(|g| bbox(&ga, gs[g] as usize, gs[g + 1] as usize)).collect();
+        let mut out = Vec::new();
+        for pi in 0..np_ {
+            let (i0, i1) = (ps[pi] as usize, ps[pi + 1] as usize);
+            if i1 < i0 + 2 { continue; }
+            let (lx0, ly0, lx1, ly1) = bbox(&pa, i0, i1);
+            let mut s = vec![0.0f64; i1 - i0];
+            for k in 1..(i1 - i0) {
+                let dx = pa[[i0 + k, 0]] - pa[[i0 + k - 1, 0]];
+                let dy = pa[[i0 + k, 1]] - pa[[i0 + k - 1, 1]];
+                s[k] = s[k - 1] + dx.hypot(dy);
+            }
+            for g in 0..ng {
+                let (gx0, gy0, gx1, gy1) = gbox[g];
+                if gx1 < lx0 || gx0 > lx1 || gy1 < ly0 || gy0 > ly1 { continue; }
+                let (j0, j1) = (gs[g] as usize, gs[g + 1] as usize);
+                for k in j0..j1.saturating_sub(1) {
+                    let (ax, ay) = (ga[[k, 0]], ga[[k, 1]]);
+                    let (dx, dy) = (ga[[k + 1, 0]] - ax, ga[[k + 1, 1]] - ay);
+                    for j in 0..(i1 - i0 - 1) {
+                        let (px, py_) = (pa[[i0 + j, 0]], pa[[i0 + j, 1]]);
+                        let (rx, ry) = (pa[[i0 + j + 1, 0]] - px, pa[[i0 + j + 1, 1]] - py_);
+                        let den = rx * dy - ry * dx;
+                        if !(den.abs() > 1e-12) { continue; }
+                        let (apx, apy) = (ax - px, ay - py_);
+                        let t = (apx * dy - apy * dx) / den;
+                        let u = (apx * ry - apy * rx) / den;
+                        if t >= 0.0 && t <= 1.0 && u >= 0.0 && u <= 1.0 {
+                            out.push((pi, s[j] + t * (s[j + 1] - s[j]), px + t * rx, py_ + t * ry));
+                        }
+                    }
+                }
+            }
+        }
+        out
+    })
+}
+
 /// roads._deck_crossings: (i, j, arc on i, arc on j) where polylines i < j cross away from their end points.
 /// pts (n, 2) all lines one after another, starts (L + 1,) where each begins (the last: n).
 #[pyfunction]
@@ -3691,6 +3756,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(terrarium_heights, m)?)?;
     m.add_function(wrap_pyfunction!(bilinear_grid, m)?)?;
     m.add_function(wrap_pyfunction!(float_predictor_f32, m)?)?;
+    m.add_function(wrap_pyfunction!(segment_crossings, m)?)?;
     m.add_function(wrap_pyfunction!(rf_pass, m)?)?;
     m.add_function(wrap_pyfunction!(vmedian, m)?)?;
     m.add_function(wrap_pyfunction!(bc1_encode, m)?)?;
@@ -3718,6 +3784,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(wet_run_inside, m)?)?;
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 56)?;
+    m.add("VERSION", 57)?;
     Ok(())
 }

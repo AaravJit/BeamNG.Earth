@@ -150,9 +150,14 @@ SOURCES["md6in"] = Source(
 BASE_CHAIN = ("md6in", "naipusda", "naip", "usgs", "eox2023", "eox2016")     # the chain before the regional sources
 # Regional aerial imagery (imagery_regional.py: state and national orthophoto services, each within its box)
 import imagery_regional  # noqa: E402
+# A state's tile cache serves the far rings from this zoom on; coarser rings (texels of ~15 m and more, kilometres
+# away) take USGS / Sentinel-2 (the user, 2026-10-22: "the world gen is really slow": Columbus's far field waited
+# 4 minutes on Ohio's cache at its 6 requests/s, ~1,000 tiles for the 2-4 km tiles: z15 / z14).  z16: L2 and nearer.
+REGIONAL_XYZ_MIN_ZOOM = 16
 for _n, (_url, _attr, _bounds, _kind, _leaf) in imagery_regional.REGIONAL.items():
-    if _kind == "xyz":          # a fast tile cache: also on the nearer far rings (z13+); blank z12 parents skipped
-        SOURCES[_n] = Source(_n, _url, 17, _attr, probe_zooms=(12,), min_zoom=13, bounds=_bounds, leaf_off=_leaf)
+    if _kind == "xyz":          # a tile cache: also on the nearer far rings (REGIONAL_XYZ_MIN_ZOOM+)
+        SOURCES[_n] = Source(_n, _url, 17, _attr, probe_zooms=(12,), min_zoom=REGIONAL_XYZ_MIN_ZOOM, bounds=_bounds,
+                             leaf_off=_leaf)
     else:                       # a WMS / ArcGIS export: one 1024 px image per z15 parent, ahead of the player
         SOURCES[_n] = Source(_n, _url, 17, _attr, min_zoom=17, export=2, lazy=True, bounds=_bounds, nodata="white",
                              leaf_off=_leaf)
