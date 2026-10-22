@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cdae  # noqa: E402
 import farfield as ff  # noqa: E402
 import heightmap  # noqa: E402
-from netclient import Client, FarState  # noqa: E402
+from netclient import Client, FarState, stop_server  # noqa: E402
 
 LAT, LON = 36.5785, -118.2923       # Mt Whitney summit, 4421 m
 CACHE = os.path.join(tempfile.gettempdir(), "beamng-earth-test-cache")
@@ -38,6 +38,7 @@ class EndToEndTest(unittest.TestCase):
              "--user-dir", self.user, "--cache-dir", CACHE, "--weather", "off", "--gravity", "off",
              "--update-check", "off"] + self.args,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        self.addCleanup(stop_server, self.proc)     # a failed start too: no server or workers left behind
         line = self.proc.stdout.readline()
         self.assertIn("listening on 127.0.0.1:", line)
         self.port = int(line.split("127.0.0.1:")[1].split()[0])
@@ -45,8 +46,7 @@ class EndToEndTest(unittest.TestCase):
 
     def tearDown(self):
         self.c.close()
-        self.proc.terminate()
-        self.proc.wait(10)
+        stop_server(self.proc)
         self.proc.stdout.close()
         self.tmp.cleanup()
 
