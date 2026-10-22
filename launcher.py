@@ -786,10 +786,36 @@ def user_folder():
     return d
 
 
+def hand_over():
+    """A packaged copy with a newer one downloaded beside it by the in-game "Update now" (server selfupdate.py,
+    GitHub #140): start that one with these arguments instead. True when it was started."""
+    if not (FROZEN or os.environ.get("APPIMAGE")):
+        return False
+    try:
+        sys.path.insert(0, os.path.join(ROOT, "server"))
+        import install
+        import selfupdate
+        new = selfupdate.staged(install.version())
+    except Exception:                   # the old copy runs as before
+        return False
+    if not new:
+        return False
+    env = {k: v for k, v in os.environ.items() if k not in ("APPDIR", "APPIMAGE", "ARGV0", "OWD")}
+    try:
+        subprocess.Popen([new] + sys.argv[1:], env=env, cwd=os.path.dirname(new),
+                         **({"creationflags": subprocess.CREATE_NEW_CONSOLE} if IS_WIN else {"start_new_session": True}))
+    except OSError:
+        return False
+    print(f"Starting the updated BeamNG.Earth: {os.path.basename(new)}", flush=True)
+    return True
+
+
 def main():
     ensure_ca_certs()
     if len(sys.argv) > 1 and sys.argv[1] == "--server":
         run_server(sys.argv[2:])
+        return
+    if hand_over():
         return
     ap = argparse.ArgumentParser(description="Start the BeamNG.Earth world server and BeamNG.drive.")
     ap.add_argument("--no-game", action="store_true", help="only the server (start the game yourself)")

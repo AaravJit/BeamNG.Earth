@@ -128,6 +128,7 @@ local horizonOn = false       -- hello.horizon (M1h); outlives levels like the c
 local farRadius = nil         -- status.radius: the server's far-field radius (m), horizon mode only
 local cacheInfo = nil         -- the server's last 'cache' message (download cache usage); outlives levels
 local updateInfo = nil       -- a newer version on GitHub: { current, latest, url } (server updates.py)
+local updateHidden = false   -- the notice closed for this session (its releases-page button)
 local cacheClears = 0         -- answers to a clear so far (the settings page waits for the next one)
 
 local function resetState()
@@ -835,6 +836,13 @@ local function onMessage(msg)
     if type(msg.latest) == 'string' then
       updateInfo = { current = tostring(msg.current or ''), latest = msg.latest, url = tostring(msg.url or '') }
     end
+  elseif t == 'update_status' then
+    -- the "Update now" download (server selfupdate.py): progress, ready, error; shown in the update notice
+    if updateInfo then
+      updateInfo.status = { state = tostring(msg.state or ''), text = tostring(msg.text or ''),
+        done = tonumber(msg.done) or 0, total = tonumber(msg.total) or 0 }
+      if msg.state == 'ready' or msg.state == 'error' then updateHidden = false end
+    end
   elseif t == 'cache' then
     -- the download cache (server cache.py): its usage for the settings page; clearedBytes answers a clear
     local prev = cacheInfo
@@ -1297,7 +1305,6 @@ end
 -- a 15 s toast (the user, 2026-10-18: "Make it persistant and add a dismiss buttion or a buttion to open the releases
 -- page").
 M.RELEASES_URL = 'https://github.com/TecnaGamer/BeamNG.Earth/releases/latest'
-local updateHidden = false
 local function drawUpdateNotice()
   if updateHidden or not updateInfo or settings.get('updateDismissed') == tostring(updateInfo.latest) then return end
   local im = ui_imgui
@@ -1312,6 +1319,22 @@ local function drawUpdateNotice()
   if im.Begin('BeamNG.Earth update##beamngEarthUpdate', nil, flags) then
     im.Text(string.format('BeamNG.Earth %s is available (you have %s).', tostring(updateInfo.latest),
       tostring(updateInfo.current)))
+    local us = updateInfo.status
+    if us and us.text ~= '' then
+      if us.state == 'progress' and us.total > 0 then
+        im.Text(string.format('%s %d of %d MB', us.text, math.floor(us.done / 1048576), math.floor(us.total / 1048576)))
+      else
+        im.TextWrapped(us.text)
+      end
+    end
+    -- the packaged app downloads and checks the new version itself (GitHub #140); a git copy pulls
+    if not (us and (us.state == 'progress' or us.state == 'ready')) and net.isConnected() then
+      if im.Button('Update now') then
+        updateInfo.status = { state = 'progress', text = 'Asking GitHub...', done = 0, total = 0 }
+        net.send({ type = 'update_now' })
+      end
+      im.SameLine()
+    end
     if im.Button('Open releases page') then
       local url = (updateInfo.url ~= '' and updateInfo.url) or M.RELEASES_URL
       -- the server opens it (the game's openWebBrowser does nothing in the native Linux build); the game's own

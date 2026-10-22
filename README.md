@@ -80,8 +80,10 @@ Status: beta (see VERSION). Tested on BeamNG.drive 0.40.1 on Linux (Vulkan) and 
   and the game; from the source, `install.py` installs everything and `start.py` keeps the mod in sync.
 - Runs on a Steam Deck (aim: 30 fps on the Handheld graphics preset).
 - Offline play from the download cache (with a size cap and "clear cache").
-- Update check: the mod tells you in game (and on its settings page, with a link) when a newer version is on
-  GitHub.
+- Updates: the mod tells you in game (and on its settings page, with a link) when a newer version is on GitHub;
+  with the downloaded app (.exe / AppImage), **Update now** downloads it next to your copy, checks it against
+  GitHub's checksum, and the next time you start BeamNG.Earth the new version starts (your old file and shortcut
+  keep working).
 
 ## How it works
 - A **companion server** (`server/`: Python, with its heavy work in a Rust module, `native/earthfast`) downloads

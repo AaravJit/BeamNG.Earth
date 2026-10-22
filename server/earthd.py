@@ -2447,6 +2447,36 @@ class Connection:
             log.info("update available: %s -> %s (%s)", r["current"], r["latest"], r["url"])
             self.send({"type": "update", **r})
 
+    async def update_now(self):
+        """The update notice's "Update now": the latest release's file for this packaged app downloaded beside it and
+        checked (selfupdate.download), with update_status {state: progress | ready | error, text, done, total}."""
+        import selfupdate
+        loop = asyncio.get_running_loop()
+        last = [0.0]
+
+        def progress(done, total):
+            now = time.monotonic()
+            if now - last[0] >= 0.5:
+                last[0] = now
+                loop.call_soon_threadsafe(self.send, {"type": "update_status", "state": "progress", "done": done,
+                                                      "total": total, "text": "Downloading the update..."})
+        self.send({"type": "update_status", "state": "progress", "done": 0, "total": 0, "text": "Asking GitHub..."})
+        try:
+            version, path = await loop.run_in_executor(self.s.ui_pool, selfupdate.download, self.s.net,
+                                                       updatesmod.local_version(), None, progress)
+        except selfupdate.UpdateError as e:
+            log.info("update now: %s", e)
+            self.send({"type": "update_status", "state": "error", "text": str(e)})
+            return
+        except Exception as e:          # never a reason to drop the connection
+            log.warning("update now: %s: %s", type(e).__name__, e)
+            self.send({"type": "update_status", "state": "error", "text": f"{type(e).__name__}: {e}"[:200]})
+            return
+        log.info("update now: %s downloaded to %s", version, path)
+        self.send({"type": "update_status", "state": "ready", "version": version,
+                   "text": f"BeamNG.Earth {version} is downloaded. Close the game: the next time you start "
+                           f"BeamNG.Earth it starts {os.path.basename(path)}."})
+
     async def place_previews(self, msg):
         """{"places": [{"key", "lat", "lon"}]} -> place_previews_ready {"keys"}: each place's picture for the level
         select, written into the game's user folder (placepreview.write) when the server has imagery."""
@@ -2683,6 +2713,8 @@ class Connection:
             self.spawn(self.random_place(msg))
         elif kind == "place_previews":          # the level select's place pictures (placepreview.py)
             self.spawn(self.place_previews(msg))
+        elif kind == "update_now":              # the update notice's "Update now" (selfupdate.py)
+            self.spawn(self.update_now())
         elif kind == "open_page":               # the update notice's button: the releases page (updates.open_page)
             if not updatesmod.open_page(msg.get("url")):
                 log.info("open_page: refused %r", msg.get("url"))
