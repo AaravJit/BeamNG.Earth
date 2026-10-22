@@ -77,6 +77,7 @@ local function poseFoci()
   return out
 end
 local beammp = require('beamngEarth/beammp')           -- BeamMP sessions: the install recommendation
+local mpsession = require('beamngEarth/mpsession')     -- BeamMP sessions by area (one anchor per group of players)
 local seasonlook = require('beamngEarth/seasonlook')   -- the trees' leaves in the season (hello.season) -- the AI road graph for the stock traffic and AI (map.reset)
 
 local LEVEL_ID = 'beamng_earth'
@@ -1311,6 +1312,7 @@ local function drawUpdateNotice()
 end
 
 local beammpBroken = false   -- an error in the BeamMP window turns it off for the session
+local mpsessionBroken = false -- the same for the BeamMP session by area (mpsession.lua)
 local function drawUi(dt)
   ui.draw(buildView(), { teleport = M.teleport, setRebaseDistance = M.setRebaseDistance })
   -- each element drawn by imgui unless its UI app is on screen (hudapps.lua)
@@ -1329,6 +1331,10 @@ local function drawUi(dt)
   if not beammpBroken then
     local ok, err = pcall(beammp.update, dt, st.inOurLevel, net.isConnected(), settings)
     if not ok then beammpBroken = true; log('E', 'beamngEarth', 'BeamMP window: ' .. tostring(err)) end
+  end
+  if not mpsessionBroken and st.inOurLevel and net.isConnected() and beammp.inSession() then
+    local ok, err = pcall(mpsession.update, dt, st.anchor, st.player)
+    if not ok then mpsessionBroken = true; log('E', 'beamngEarth', 'BeamMP session: ' .. tostring(err)) end
   end
 end
 
@@ -1605,8 +1611,12 @@ local function onClientPostStartMission(levelPath)
   if gs and gs.setGameState then pcall(gs.setGameState, 'freeroam', M.APP_LAYOUT, 'freeroam') end
 end
 
--- BeamMP finished joining a server (its own hook): the combined app layout (beammp.lua).
-function M.onBeamMPPostJoin() beammp.onPostJoin() end
+-- BeamMP finished joining a server (its own hook): the combined app layout (beammp.lua); the first pose asks where
+-- the others are (mpsession.lua).
+function M.onBeamMPPostJoin() beammp.onPostJoin(); mpsession.onPostJoin() end
+
+-- BeamMP left the server (its own hook): the other players' cars we deactivated back on.
+function M.onBeamMPServerLeave() pcall(mpsession.reset) end
 
 -- The UI apps (ui/modules/apps/BeamNGEarth*) say when they are on screen: hudapps.lua.
 function M.hudApp(name, on) return hudapps.setMounted(name, on) end
@@ -1623,6 +1633,7 @@ local function onClientEndMission()
   postfx.restore()
   pcall(terrainpatch.clear)
   pcall(farcars.reset)
+  pcall(mpsession.reset)
   gps.reset()
   do local stg = rawget(_G, 'beamngEarth_settings') if stg and stg.redirectBigMap then stg.redirectBigMap(false) end end
   seasonlook.restore()
@@ -1705,6 +1716,22 @@ teleportTo = function(lat, lon, name, kind)
     return true
   end
   return false
+end
+
+-- Move the world's origin to (lat, lon) where the player is (BeamMP: every player of a group shares one anchor,
+-- beammp.lua). The same smooth two-phase change as a rebase (commitRebase), asked as a resync so it commits as soon as
+-- the server has it ready; the terrain centred where the player will be in the new frame. False if one is under way,
+-- the server is not connected or the anchor is already that one.
+function M.rebaseTo(lat, lon)
+  lat, lon = tonumber(lat), tonumber(lon)
+  if not lat or not lon or not st.anchor or st.pending or st.rebasing or not net.isConnected() then return false end
+  if math.abs(st.anchor.lat - lat) < 1e-9 and math.abs(st.anchor.lon - lon) < 1e-9 then return false end
+  local pl = st.player
+  local x, y, z = 0, 0, 0
+  if pl then x, y, z = pl.x, pl.y, pl.z end
+  local nx, ny = st.anchor:transformTo(geodesy.newAnchor(lat, lon)):apply(x, y, z)
+  local cx, cy = follow.target(nx, ny, pl and pl.vx or 0, pl and pl.vy or 0)
+  return requestAnchor(lat, lon, 'resync', cx, cy)
 end
 
 -- name (optional): the place's name for the recent places (places.lua; the settings page's Go);
