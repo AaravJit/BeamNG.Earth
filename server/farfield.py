@@ -887,7 +887,7 @@ def build_tile(frame, dem, tile, zoom, q=None, ref_zoom=None, with_sink=True, la
                 break
             eps *= 2
         U = surf
-    elif tile.level >= ADAPT_MIN_LEVEL and ADAPT_EPS > 0:
+    elif tile.level >= ADAPT_MIN_LEVEL and ADAPT_EPS > 0 and layout.cells == 64:    # (the v1.3.1 layout: its grid)
         fast.require(51, "adaptive far tiles")
         adaptive, U, _ = fast._ef.rtin_mesh(np.ascontiguousarray(U), ADAPT_EPS * sp)     # U: the mesh's surface
 

@@ -791,7 +791,7 @@ def _road_specs(feats, urban_fn, widths, left_hand):
         out.append(Spec(carriageway(cls, kind, False, rule_w, ow, lanes), kind, False, cls, ow, 2.5, *dk,
                         lanes=lanes, surf=surface_token(surf)))
     if ask:
-        ll = np.concatenate([feats.lonlat[a:b] for _, _, _, a, b, _, _, _ in ask])
+        ll = np.concatenate([feats.lonlat[a:b] for _, _, _, a, b, *_ in ask])
         u = np.asarray(urban_fn(ll[:, 1], ll[:, 0]), bool)
         k = 0
         for j, cls, kind, a, b, ow, dk, lanes, token in ask:

@@ -81,12 +81,12 @@ function M.maskOf(texture)
   return (base:gsub('%.dds$', '_road.dds'))
 end
 
--- Point material m at texture, with the asphalt layer where the tile has a road mask (and without it otherwise:
--- a pooled material moves between tiles).
-local function setTexture(m, texture)
+-- Point material m at texture, with the asphalt layer where the tile has a road mask and world-locked UV1 (detail:
+-- the layer's grain is laid out on it), and without it otherwise (a pooled material moves between tiles).
+local function setTexture(m, texture, detail)
   m:setField('colorMap', 0, texture)
   local mask = M.maskOf(texture)
-  local on = M.ASPHALT_LAYER and mask ~= nil and FS:fileExists(mask)
+  local on = M.ASPHALT_LAYER and detail ~= false and mask ~= nil and FS:fileExists(mask)
   local v15 = tostring(m:getField('version', 0)) == '1.5'
   if not on and not v15 then return end
   m:setField('version', 0, '1.5')
@@ -160,12 +160,12 @@ function M.create(name, texture, detail)
   local m = scenetree.findObject(name)
   local fallback = false
   if m then
-    if texture and FS:fileExists(texture) then setTexture(m, texture) end
+    if texture and FS:fileExists(texture) then setTexture(m, texture, detail) end
   else
     m = createObject('Material')
     m:setField('mapTo', 0, name)
     if texture and FS:fileExists(texture) then
-      setTexture(m, texture)
+      setTexture(m, texture, detail)
     else
       warnOnce('tex:' .. tostring(texture), 'imagery texture missing: ' .. tostring(texture))
       m:setField('diffuseColor', 0, M.FALLBACK_COLOR)
@@ -179,7 +179,7 @@ function M.create(name, texture, detail)
     m.canSave = false
     m:registerObject(name)
   end
-  mats[name] = { refs = 0, texture = texture, fallback = fallback }
+  mats[name] = { refs = 0, texture = texture, fallback = fallback, detail = detail }
   nMats = nMats + 1
   return true
 end
@@ -213,7 +213,7 @@ function M.ref(name, texture)
     local gone = not FS:fileExists(e.texture)
     local m = (e.refs == 0 or gone) and scenetree.findObject(name)
     if m and FS:fileExists(texture) then
-      setTexture(m, texture)
+      setTexture(m, texture, e.detail)
       if e.fallback then -- created without its file: the fallback colour would tint the imagery
         m:setField('diffuseColor', 0, '1 1 1 1')
         e.fallback = false
@@ -289,7 +289,7 @@ function M.retexNext()
   end
   local m = scenetree.findObject(name)
   if not m then return false end
-  setTexture(m, want)
+  setTexture(m, want, e.detail)
   if e.fallback then -- created without its file: the fallback colour would tint the imagery
     m:setField('diffuseColor', 0, '1 1 1 1')
     e.fallback = false

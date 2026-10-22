@@ -121,6 +121,7 @@ MOD_TO_SERVER = {
     "where": {"id": F(int), "lat": F(NUM), "lon": F(NUM), "online": F(bool)},   # the status bar (geocode.py)
     # the update notice's button: the server opens the releases page (updates.open_page; additive)
     "open_page": {"url": F(str)},
+    "update_now": {},                   # the update notice's "Update now" (selfupdate.py)
     # the level select's "Random location" (randomplace.py; additive)
     "random_place": {"id": F(int)},
     # the level select's place pictures (placepreview.py; additive): [{key, lat, lon}]
@@ -136,6 +137,8 @@ SERVER_TO_MOD = {
     "geocode_result": {"id": F(int), "results": F(list), "error": F(str, OPT)},   # geocode.py (Photon)
     "route_result": {"id": F(int), "points": F(list), "dist": F(NUM), "dur": F(NUM), "error": F(str, OPT)},  # OSRM
     "update": {"current": F(str), "latest": F(str), "url": F(str)},   # a newer version on GitHub (updates.py)
+    "update_status": {"state": F(str), "text": F(str), "done": F(int, OPT), "total": F(int, OPT),
+                      "version": F(str, OPT)},      # the "Update now" download (selfupdate.py)
     "where_result": {"id": F(int), "street": F(str), "place": F(str, OPT), "region": F(str, OPT),
                      "country": F(str, OPT)},   # the status bar's location
     "random_place_result": {"id": F(int), "lat": F(NUM, OPT), "lon": F(NUM, OPT), "name": F(str, OPT)},
@@ -220,6 +223,7 @@ WEATHER_NESTED = {"cover": {"total", "low", "mid", "high"}, "wind": {"ms", "from
                   "aloft": {"ms", "fromDeg"}}
 # message types the plain session cannot produce (each has its own session test below)
 EXERCISED_ELSEWHERE = {"far_retex", "roads_tile", "roads_drop",   # roads: needs map data (roads tests)
+                       "update_status",                              # the player's "Update now" (test_selfupdate)
                        "where_result",                               # the status bar: asked by the mod while driving
                        "random_place_result", "place_previews_ready",  # the level select: map data / imagery
                                                                      # (test_randomplace)
@@ -656,7 +660,8 @@ class ConstantsTest(unittest.TestCase):
         text = (LUA / "satmat.lua").read_text(encoding="utf-8")
         create = lua_function(text, "create")
         self.assertIn("m:setField('mapTo', 0, name)", create)
-        self.assertIn("m:setField('colorMap', 0, texture)", create)
+        self.assertIn("setTexture(m, texture, detail)", create)          # (the near tiles' asphalt layer with it)
+        self.assertIn("m:setField('colorMap', 0, texture)", lua_function(text, "setTexture"))
         self.assertIn("m:registerObject(name)", create)
         self.assertIn("m:setField('detailMap', 0, M.DETAIL_MAP)", create)
         self.assertRegex(text, r"\{ 'detailMapUseUV', '1' \}")
