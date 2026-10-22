@@ -1351,6 +1351,8 @@ end
 
 local beammpBroken = false   -- an error in the BeamMP window turns it off for the session
 local mpsessionBroken = false -- the same for the BeamMP session by area (mpsession.lua)
+-- the minimap's label (hudapps.hookCityZone)
+local function minimapName() return hudapps.minimapName(statusbar.location()) end
 local function drawUi(dt)
   ui.draw(buildView(), { teleport = M.teleport, setRebaseDistance = M.setRebaseDistance })
   -- each element drawn by imgui unless its UI app is on screen (hudapps.lua)
@@ -1361,6 +1363,7 @@ local function drawUi(dt)
     statusbar.draw(st.inOurLevel and st.active, credits.hiddenByUi(), st.status)
   end
   hudapps.update(st.clock or 0, hudTexts)
+  if st.inOurLevel then hudapps.hookCityZone(minimapName) end
   if updateInfo and st.inOurLevel and st.active and not credits.hiddenByUi()
       and (st.clock or 0) > (st.loadingUntil or 0) then
     local ok, err = pcall(drawUpdateNotice)
@@ -1668,6 +1671,7 @@ local function onClientPreStartMission(levelPath)
 end
 
 local function onClientEndMission()
+  hudapps.unhookCityZone()
   postfx.restore()
   pcall(terrainpatch.clear)
   pcall(farcars.reset)
@@ -1717,6 +1721,7 @@ end
 M.onFilesChanged = onFilesChanged
 
 local function onExtensionUnloaded()
+  hudapps.unhookCityZone()
   groundcover.enginePatch(false)
   net.close()
   farfield.clear()

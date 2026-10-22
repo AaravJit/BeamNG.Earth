@@ -64,6 +64,46 @@ function M.update(now, get)
   return true
 end
 
+-- The minimap's label (BeamNG 0.40's navigation app; the user, 2026-10-22: "change the text on top of the minimap"):
+-- the stock app shows the name of the level's city zone the camera is in (gameplay_city.getHighestPrioZone), else the
+-- level's title, "BeamNG.Earth" in our level, which has no zones. The town of the status bar's location takes the
+-- zones' place (the street until the town is known): getHighestPrioZone is wrapped while in our level, a level's own
+-- zone still first. Its callers (the minimap, photo mode's speed camera) only read the zone's name.
+-- Pure: the label for a location { street, place, region, country }, or nil (the stock fallback).
+function M.minimapName(l)
+  if not l then return nil end
+  if l.place ~= nil and l.place ~= '' then return l.place end
+  if l.street ~= nil and l.street ~= '' then return l.street end
+  return nil
+end
+
+local zoneOrig, zoneWrap = nil, nil
+-- getName(): the label now (or nil). Installed again if the city extension was reloaded since.
+function M.hookCityZone(getName)
+  local city = rawget(_G, 'gameplay_city')
+  if not city or type(city.getHighestPrioZone) ~= 'function' then return false end
+  if city.getHighestPrioZone == zoneWrap then return true end
+  local orig = city.getHighestPrioZone
+  local zone = { name = '' }
+  zoneOrig = orig
+  zoneWrap = function(pos, ...)
+    local z = orig(pos, ...)
+    if z ~= nil then return z end
+    local name = getName()
+    if not name then return nil end
+    zone.name = name
+    return zone
+  end
+  city.getHighestPrioZone = zoneWrap
+  return true
+end
+
+function M.unhookCityZone()
+  local city = rawget(_G, 'gameplay_city')
+  if city and zoneWrap and city.getHighestPrioZone == zoneWrap then city.getHighestPrioZone = zoneOrig end
+  zoneOrig, zoneWrap = nil, nil
+end
+
 function M._reset()
   mounted, nMounted, lastSend, lastKey, lastFull, M.sends = {}, 0, -math.huge, nil, -math.huge, 0
 end
