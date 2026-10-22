@@ -697,9 +697,9 @@ class CacheTest(Sources, SmallBlocks, unittest.TestCase):
         self.assertTrue(all(not s["hit"] for s in cd.stats.values()))
         n = t.count()
         self.assertGreater(n, 0)
-        rel = os.path.relpath(md.path(mf.CELL, "roads"), cache)
+        rel = Path(os.path.relpath(md.path(mf.CELL, "roads"), cache)).as_posix()
         self.assertEqual(rel, f"mapdata/v{mapdata.VERSION}/overture/{mf.RELEASE}/roads.{mapdata.LAYER_VERSIONS['roads']}/14/4706/6244.npz")
-        self.assertTrue(os.path.relpath(md.path(mf.CELL, "landcover"), cache).startswith(
+        self.assertTrue(Path(os.path.relpath(md.path(mf.CELL, "landcover"), cache)).as_posix().startswith(
             f"mapdata/v{mapdata.VERSION}/worldcover/{maprasters.WORLDCOVER_RELEASE}/landcover/14/"))
         self.assertTrue(os.path.isdir(os.path.join(cache, "mapdata", "raw", "overture", mf.RELEASE, "stac")))
         cd2 = md.cell(mf.CELL)
@@ -849,7 +849,7 @@ class ProvenanceTest(Sources, SmallBlocks, unittest.TestCase):
         self.assertIn("© OpenStreetMap contributors, Overture Maps Foundation", cd.credit_line())
 
     def test_credits_md_has_the_wordings(self):
-        text = (REPO / "CREDITS.md").read_text()
+        text = (REPO / "CREDITS.md").read_text(encoding="utf-8")
         for line in list(mapdata.CREDIT_LINES.values()) + [mapdata.WORLDCOVER["attribution"],
                                                             mapdata.CANOPY["attribution"]]:
             self.assertIn(line, text)
@@ -857,7 +857,7 @@ class ProvenanceTest(Sources, SmallBlocks, unittest.TestCase):
     def test_theme_licences_are_whole(self):
         """Overture's per-theme licence texts word for word (docs.overturemaps.org/attribution/, read
         2026-10-11), not cut off with '...': the CC BY sources at the end need their credit too."""
-        text = " ".join((REPO / "CREDITS.md").read_text().split())
+        text = " ".join((REPO / "CREDITS.md").read_text(encoding="utf-8").split())
         for theme, lic in overture.THEME_LICENCES.items():
             self.assertNotIn("...", lic, theme)
             self.assertIn(lic, text, theme)
