@@ -169,8 +169,18 @@ if MP and MP.RegisterEvent then
   function BNGE_onPose(pid, data)
     local ok, d = pcall(Util.JsonDecode, data)
     if not ok then return end
+    local known = G.players[pid] ~= nil
     local place = G.onPose(pid, d, MP.GetPlayerName(pid))
-    if place then MP.TriggerClientEvent(pid, 'bngeGoTo', encode(place)) end
+    local p = G.players[pid]
+    if p and not known then
+      print(string.format('[BeamNG.Earth] %s at %.5f, %.5f (anchor %s)', tostring(p.name), p.lat, p.lon,
+        G.key(p.aLat, p.aLon)))
+    end
+    if place then
+      print(string.format('[BeamNG.Earth] %s sent to the others at %.5f, %.5f', tostring(p and p.name), place.lat,
+        place.lon))
+      MP.TriggerClientEvent(pid, 'bngeGoTo', encode(place))
+    end
   end
 
   function BNGE_onLeave(pid) G.onLeave(pid) end
@@ -180,7 +190,15 @@ if MP and MP.RegisterEvent then
     local g = {}
     for pid, k in pairs(groups) do g[tostring(pid)] = k end
     MP.TriggerClientEvent(-1, 'bngeGroups', encode(g))
-    for pid, a in pairs(moves) do MP.TriggerClientEvent(pid, 'bngeRebase', encode(a)) end
+    for pid, a in pairs(moves) do
+      local k = G.key(a.aLat, a.aLon)
+      local p = G.players[pid]
+      if p and p.told ~= k then
+        p.told = k
+        print(string.format('[BeamNG.Earth] %s joins the group at anchor %s', tostring(p.name), k))
+      end
+      MP.TriggerClientEvent(pid, 'bngeRebase', encode(a))
+    end
   end
 
   MP.RegisterEvent('bngePose', 'BNGE_onPose')

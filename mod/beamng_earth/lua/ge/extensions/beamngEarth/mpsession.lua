@@ -22,6 +22,8 @@ local deactivated = {}      -- game vehicle id -> true: deactivated here
 local poseIn, hideIn = 0, 0
 local joined = false        -- BeamMP joined and no pose sent yet: the first pose asks for the meeting place
 local wentTo = false        -- the session's one bngeGoTo done
+local camPlaced = false     -- the free camera put on the ground once (BeamMP joins without a car)
+local lastGroups = ''       -- (the log: the groups as last logged)
 
 function M.key(aLat, aLon) return string.format('%.6f,%.6f', aLat, aLon) end
 
@@ -57,13 +59,26 @@ local function core() return rawget(_G, 'beamngEarth_core') end
 
 local function onGroups(data)
   local ok, d = pcall(jsonDecode, data)
-  if ok and type(d) == 'table' then groups = d end
+  if not ok or type(d) ~= 'table' then return end
+  groups = d
+  local n, keys = 0, {}
+  for _, k in pairs(d) do n = n + 1; keys[k] = true end
+  local g = 0
+  for _ in pairs(keys) do g = g + 1 end
+  local line = string.format('%d player(s) in %d group(s)', n, g)
+  if line ~= lastGroups then
+    lastGroups = line
+    log('I', 'beamngEarth', 'BeamMP: ' .. line)
+  end
 end
 
 local function onRebase(data)
   local ok, d = pcall(jsonDecode, data)
   local c = core()
-  if ok and type(d) == 'table' and c and c.rebaseTo then c.rebaseTo(d.aLat, d.aLon) end
+  if ok and type(d) == 'table' and c and c.rebaseTo and c.rebaseTo(d.aLat, d.aLon) then
+    log('I', 'beamngEarth', string.format('BeamMP: to the group\'s anchor %.6f, %.6f', tonumber(d.aLat) or 0,
+      tonumber(d.aLon) or 0))
+  end
 end
 
 local function onGoTo(data)
@@ -75,16 +90,29 @@ local function onGoTo(data)
   wentTo = true
   -- beside the other player, not on it (12 m east)
   lon = lon + M.GOTO_OFFSET_M / (111320 * math.max(0.01, math.cos(math.rad(lat))))
+  log('I', 'beamngEarth', string.format('BeamMP: to the other players at %.5f, %.5f', lat, lon))
   c.teleport(lat, lon, nil, { record = false })
+end
+
+-- No car yet (BeamMP joins without one): the free camera, left at the level's spawn point under the generated
+-- ground, put once on the ground at the origin (where the vehicle selector spawns the car).
+local function placeCamera()
+  if camPlaced or (getPlayerVehicle and getPlayerVehicle(0)) or not be or not be.getSurfaceHeightBelow then return end
+  local z = be:getSurfaceHeightBelow(vec3(0, 0, 9000))
+  if type(z) ~= 'number' or z < -1e5 then return end      -- (the ground not there yet)
+  camPlaced = true
+  local q = quatFromDir(vec3(0, 1, -0.15), vec3(0, 0, 1))
+  if core_camera and core_camera.setPosRot then core_camera.setPosRot(0, 0, -8, z + 3, q.x, q.y, q.z, q.w) end
 end
 
 -- BeamMP's join done (core.lua onBeamMPPostJoin): the first pose asks the plugin where the others are.
 function M.onPostJoin()
-  joined, wentTo = true, false
+  joined, wentTo, camPlaced = true, false, false
   groups = {}
 end
 
--- Each frame (core.lua) in a BeamMP session in our level: anchor (core's st.anchor), player { x, y, z } in its frame.
+-- Each frame (core.lua) in a BeamMP session in our level: anchor (core's st.anchor), player { x, y, z } in its frame
+-- (the car; the camera when there is none).
 function M.update(dt, anchor, player)
   if not handlers and rawget(_G, 'AddEventHandler') then
     AddEventHandler('bngeGroups', onGroups, 'beamngEarth')
@@ -92,7 +120,9 @@ function M.update(dt, anchor, player)
     AddEventHandler('bngeGoTo', onGoTo, 'beamngEarth')
     handlers = true
   end
-  if not anchor or not player then return end
+  if not anchor then return end
+  placeCamera()
+  if not player then return end
   local mine = M.key(anchor.lat, anchor.lon)
   poseIn = poseIn - (dt or 0)
   if poseIn <= 0 and rawget(_G, 'TriggerServerEvent') then
@@ -100,6 +130,7 @@ function M.update(dt, anchor, player)
     local lat, lon = anchor:enuToGeodetic(player.x, player.y, player.z or 0)
     TriggerServerEvent('bngePose', jsonEncode({ v = M.PROTO, aLat = anchor.lat, aLon = anchor.lon, lat = lat,
       lon = lon, joined = joined }))
+    if joined then log('I', 'beamngEarth', string.format('BeamMP: first pose sent (%.5f, %.5f)', lat, lon)) end
     joined = false
   end
   hideIn = hideIn - (dt or 0)
@@ -127,7 +158,7 @@ function M.reset()
     local veh = scenetree.findObjectById(gid)
     if veh then veh:setActive(1) end
   end
-  deactivated, groups, poseIn, hideIn, joined, wentTo = {}, {}, 0, 0, false, false
+  deactivated, groups, poseIn, hideIn, joined, wentTo, camPlaced, lastGroups = {}, {}, 0, 0, false, false, false, ''
 end
 
 -- (tests, the dev tools)

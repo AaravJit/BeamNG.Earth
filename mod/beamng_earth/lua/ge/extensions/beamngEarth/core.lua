@@ -1333,7 +1333,7 @@ local function drawUi(dt)
     if not ok then beammpBroken = true; log('E', 'beamngEarth', 'BeamMP window: ' .. tostring(err)) end
   end
   if not mpsessionBroken and st.inOurLevel and net.isConnected() and beammp.inSession() then
-    local ok, err = pcall(mpsession.update, dt, st.anchor, st.player)
+    local ok, err = pcall(mpsession.update, dt, st.anchor, st.player or st.cam)
     if not ok then mpsessionBroken = true; log('E', 'beamngEarth', 'BeamMP session: ' .. tostring(err)) end
   end
 end
