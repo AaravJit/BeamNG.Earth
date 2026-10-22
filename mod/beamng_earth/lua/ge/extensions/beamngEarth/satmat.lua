@@ -52,6 +52,53 @@ M.DETAIL_FIELDS = {
 }
 M.FALLBACK_COLOR = '0.39 0.35 0.27 1' -- texture file missing: the terrain's macro dirt colour
 
+-- The near tiles' asphalt (mesh near-visual mode: the tiles are the ground seen, and the roads are painted into their
+-- photos, server surface.road_mask): where the server wrote a road mask beside the texture (far_<a>_<key>_road.dds)
+-- the material gets a second layer, shown through the mask: the same photo with the stock asphalt's grain and bumps on
+-- UV1 (world-locked, DETAIL_M = 2 m), the rest the ground's grain. No mask: one layer.
+-- Off (2026-10-22): the second layer drew the road pale grey (~178 for the photo's 95) whatever its maps were, a
+-- version 1.5 layering detail not found yet; the masks are written, the layer waits for that.
+M.ASPHALT_LAYER = false
+M.ASPHALT_FIELDS = {
+  { 'detailMap', '/assets/materials/tileable/road/road_asphalt_light/asphalt1_detail.data.png' },
+  { 'detailMapUseUV', '1' },
+  { 'detailScale', '1 1' },
+  { 'normalMap', '/assets/materials/tileable/road/road_asphalt_light/t_road_asphalt1_nm.normal.png' },
+  { 'normalMapUseUV', '1' },
+  { 'detailNormalMap', '/assets/materials/tileable/road/road_asphalt/t_asphalt_track_nm.normal.png' },
+  { 'normalDetailMapUseUV', '1' },
+  { 'opacityMapUseUV', '0' },
+  { 'opacityFactor', '1' },
+}
+
+-- The road mask beside a far tile's texture (its revision suffix dropped), or nil.
+function M.maskOf(texture)
+  if type(texture) ~= 'string' then return nil end
+  local base = texture:gsub('_r%d+%.dds$', '.dds')
+  return (base:gsub('%.dds$', '_road.dds'))
+end
+
+-- Point material m at texture, with the asphalt layer where the tile has a road mask (and without it otherwise:
+-- a pooled material moves between tiles).
+local function setTexture(m, texture)
+  m:setField('colorMap', 0, texture)
+  local mask = M.maskOf(texture)
+  local on = M.ASPHALT_LAYER and mask ~= nil and FS:fileExists(mask)
+  local v15 = tostring(m:getField('version', 0)) == '1.5'
+  if not on and not v15 then return end
+  m:setField('version', 0, '1.5')
+  m:setField('baseColorMap', 0, texture)
+  if on then
+    m:setField('activeLayers', 0, '2')
+    m:setField('baseColorMap', 1, texture)
+    m:setField('opacityMap', 1, mask)
+    for _, f in ipairs(M.ASPHALT_FIELDS) do m:setField(f[1], 1, f[2]) end
+  else
+    m:setField('activeLayers', 0, '1')
+  end
+end
+M._setTexture = setTexture  -- (tests)
+
 local mats = {}       -- name -> { refs = n, texture = path, fallback = diffuse set for a missing file }
 local delQ = {}       -- names whose refs reached 0, to delete (FIFO); checked again when run
 local queued = {}     -- name -> true while in delQ
@@ -111,12 +158,12 @@ function M.create(name, texture, detail)
   local m = scenetree.findObject(name)
   local fallback = false
   if m then
-    if texture and FS:fileExists(texture) then m:setField('colorMap', 0, texture) end
+    if texture and FS:fileExists(texture) then setTexture(m, texture) end
   else
     m = createObject('Material')
     m:setField('mapTo', 0, name)
     if texture and FS:fileExists(texture) then
-      m:setField('colorMap', 0, texture)
+      setTexture(m, texture)
     else
       warnOnce('tex:' .. tostring(texture), 'imagery texture missing: ' .. tostring(texture))
       m:setField('diffuseColor', 0, M.FALLBACK_COLOR)
@@ -164,7 +211,7 @@ function M.ref(name, texture)
     local gone = not FS:fileExists(e.texture)
     local m = (e.refs == 0 or gone) and scenetree.findObject(name)
     if m and FS:fileExists(texture) then
-      m:setField('colorMap', 0, texture)
+      setTexture(m, texture)
       if e.fallback then -- created without its file: the fallback colour would tint the imagery
         m:setField('diffuseColor', 0, '1 1 1 1')
         e.fallback = false
@@ -240,7 +287,7 @@ function M.retexNext()
   end
   local m = scenetree.findObject(name)
   if not m then return false end
-  m:setField('colorMap', 0, want)
+  setTexture(m, want)
   if e.fallback then -- created without its file: the fallback colour would tint the imagery
     m:setField('diffuseColor', 0, '1 1 1 1')
     e.fallback = false

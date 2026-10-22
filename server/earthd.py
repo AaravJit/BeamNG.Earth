@@ -534,6 +534,8 @@ class Server:
             raise ValueError(f"unknown near-visual mode {near_visual!r}")
         # mesh: the TerrainBlock is physics only, the ground is drawn by the finest tiles (§B)
         self.near_visual = near_visual
+        # the near tiles' asphalt layer (mesh mode: the tiles are the ground seen; surface.road_mask)
+        self.road_masks = roadsmod.ROADS_IN_GROUND and near_visual not in BLOCK_DRAWN
         if tex is None and cells == 32:
             tex = (tex_near, tex_near, tex_far)         # the v1.3.1 rule: the two finest levels are near
         # Every layout-dependent rule reads self.layout (terrain mode: frozen at 32 cells)
@@ -1689,7 +1691,8 @@ class Server:
         earlier revision's texture up to `rev` (a tile retextured live left them behind) and the
         engine's .cdae cache of it (DAE tiles)."""
         stem = os.path.splitext(name)[0]
-        out = [os.path.join(self.out_dir, name), os.path.join(self.out_dir, stem + ".dds")]
+        out = [os.path.join(self.out_dir, name), os.path.join(self.out_dir, stem + ".dds"),
+               os.path.join(self.out_dir, stem + "_road.dds")]
         out += [os.path.join(self.out_dir, f"{stem}_r{r}.dds") for r in range(1, rev + 1)]
         if texture is not None and os.path.join(self.out_dir, texture) not in out:
             out.append(os.path.join(self.out_dir, texture))
@@ -1787,6 +1790,7 @@ class Server:
             texture = self.texture_name(anchor.id, tile.key, self.tex_rev.get((anchor.id, tile.key), 0))
             im = self.imagery
             tex = {"path": os.path.join(self.out_dir, texture), "px": self.tex_size(lvl),
+                   "mask": os.path.join(self.out_dir, surfacemod.road_mask_name(texture)) if self.road_masks else None,
                    "chain": [s.name for s in im.chain], "tone": self.tone, "leaf_on": im.leaf_on,
                    "season_mode": im.season_mode}
             built, got = self.far_pool.submit(blockworker.far_tile, anchor.id, anchor.lat, anchor.lon, tile,
@@ -1820,6 +1824,7 @@ class Server:
                 rgb = self.rock_faces(anchor, tile, px, rgb, built.grid)
                 rgb = self.road_faces(anchor, tile, px, rgb)
                 texture = self.texture_name(anchor.id, tile.key, self.tex_rev.get((anchor.id, tile.key), 0))
+                self.write_road_mask(anchor, tile, px, texture)
                 tex_bytes = imagerymod.write_dds(os.path.join(self.out_dir, texture), rgb)
                 material = self.matslots.take(ck)
                 self.degraded.discard(ck)
@@ -1877,6 +1882,21 @@ class Server:
             log.debug("road faces of %s: %s", tile.key, e)
             return rgb
 
+    def write_road_mask(self, anchor, tile, px, texture):
+        """The near tile's road mask beside its texture (self.road_masks: mesh mode; surface.road_mask), written
+        before the texture (the mod looks for it when it sets the texture). None to write: nothing."""
+        if not self.road_masks:
+            return
+        try:
+            x0, y0, _, _ = tile.bbox
+            mask = surfacemod.road_mask(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px), px,
+                                        self.surface, self.road_widths)
+            if mask is not None:
+                imagerymod.write_dds(os.path.join(self.out_dir, surfacemod.road_mask_name(texture)),
+                                     np.repeat(mask[..., None], 3, axis=2))
+        except Exception as e:          # the tile without its asphalt layer
+            log.debug("road mask of %s: %s", tile.key, e)
+
     def retexture(self, anchor, tile, prev):
         """Worker thread: render a stale tile's texture again (its colour-match regions are ready now)
         under the next revision's file name; the shape and its material name stay. Network trouble:
@@ -1894,6 +1914,7 @@ class Server:
         rgb = self.rock_faces(anchor, tile, px, rgb, prev.grid)
         rgb = self.road_faces(anchor, tile, px, rgb)
         texture = self.texture_name(anchor.id, tile.key, prev.rev + 1)
+        self.write_road_mask(anchor, tile, px, texture)
         tex_bytes = imagerymod.write_dds(os.path.join(self.out_dir, texture), rgb)
         sources = prev.credits
         if self.credits is not None:        # the new texture's sources (the corrected one names S2 too)

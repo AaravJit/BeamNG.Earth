@@ -321,12 +321,9 @@ PHOTO_ROAD_RGBA = {"dirt": (122, 104, 82, 0.45), "gravel": (128, 118, 102, 0.6),
 PHOTO_ROADS_MAX_TEXEL = 2.0     # m per texel: coarser far tiles keep the photo's own roads (far, under a pixel wide)
 
 
-def photo_roads(rgb, frame, x0, y0, size, feats_list, urban_fn=None, widths=None):
-    """The photo rgb (H x W x 3, row 0 = north, covering [x0, x0 + size] x [y0, y0 + size] of frame) with the
-    carriageways of feats_list (road Features: roads.road_specs widths, ground parts only) painted in, antialiased
-    (earthfast.paint_lines, PHOTO_ROAD_RGBA). Pure (a new array)."""
-    fast.require(49, "roads in the ground")
-    h, w = rgb.shape[:2]
+def _road_segments(frame, x0, y0, size, w, h, feats_list, urban_fn=None, widths=None):
+    """(segs (m, 4), half widths (m,), kind index into PHOTO_ROAD_RGBA (m,)) of the carriageways of feats_list in pixel
+    coordinates of a w x h photo over [x0, x0 + size] x [y0, y0 + size] (row 0 north), or None when none is in it."""
     px_m = w / size
     kinds = list(PHOTO_ROAD_RGBA)
     segs, hws, kind = [], [], []
@@ -352,10 +349,30 @@ def photo_roads(rgb, frame, x0, y0, size, feats_list, urban_fn=None, widths=None
                 hws.append(np.full(len(c) - 1, hw))
                 kind.append(np.full(len(c) - 1, kinds.index(sp.kind), np.uint8))
     if not segs:
+        return None
+    return np.concatenate(segs), np.concatenate(hws), np.concatenate(kind)
+
+
+def photo_roads(rgb, frame, x0, y0, size, feats_list, urban_fn=None, widths=None):
+    """The photo rgb (H x W x 3, row 0 = north, covering [x0, x0 + size] x [y0, y0 + size] of frame) with the
+    carriageways of feats_list (road Features: roads.road_specs widths, ground parts only) painted in, antialiased
+    (earthfast.paint_lines, PHOTO_ROAD_RGBA). Pure (a new array)."""
+    fast.require(49, "roads in the ground")
+    h, w = rgb.shape[:2]
+    got = _road_segments(frame, x0, y0, size, w, h, feats_list, urban_fn, widths)
+    if got is None:
         return rgb
-    colors = np.array([PHOTO_ROAD_RGBA[k] for k in kinds], np.float32)
-    return fast._ef.paint_lines(np.ascontiguousarray(rgb, np.uint8), np.concatenate(segs), np.concatenate(hws),
-                                np.concatenate(kind), colors)
+    colors = np.array([PHOTO_ROAD_RGBA[k] for k in PHOTO_ROAD_RGBA], np.float32)
+    return fast._ef.paint_lines(np.ascontiguousarray(rgb, np.uint8), *got, colors)
+
+
+def _square_roads(frame, x0, y0, size, surface):
+    """The road Features of surface's cached cells around [x0, x0 + size]² of frame (never waits)."""
+    gx = x0 + np.array([0.0, size, 0.0, size, size / 2])
+    gy = y0 + np.array([0.0, 0.0, size, size, size / 2])
+    la, lo, _ = frame.enu_to_geodetic(gx, gy, np.zeros(5))
+    feats, _ = surface.roads(np.asarray(la), np.asarray(lo))
+    return feats
 
 
 def paint_square(rgb, frame, x0, y0, size, surface, widths=None):
@@ -363,13 +380,40 @@ def paint_square(rgb, frame, x0, y0, size, surface, widths=None):
     Surface; never waits); as it was when its texels are coarser than PHOTO_ROADS_MAX_TEXEL or no cell is cached."""
     if surface is None or size / max(rgb.shape[1], 1) > PHOTO_ROADS_MAX_TEXEL:
         return rgb
-    gx = x0 + np.array([0.0, size, 0.0, size, size / 2])
-    gy = y0 + np.array([0.0, 0.0, size, size, size / 2])
-    la, lo, _ = frame.enu_to_geodetic(gx, gy, np.zeros(5))
-    feats, _ = surface.roads(np.asarray(la), np.asarray(lo))
+    feats = _square_roads(frame, x0, y0, size, surface)
     if not feats:
         return rgb
     return photo_roads(rgb, frame, x0, y0, size, feats, surface.urban, widths)
+
+
+# The near tiles' asphalt (mesh near-visual mode, where the tiles are the ground seen): a mask of the built
+# carriageways (paved, cobble) beside the tile's texture, far_<a>_<key>_road.dds (road_mask_name); the mod's material
+# gives the masked part a second layer with the stock asphalt's grain and bumps (satmat.lua), the rest the ground's.
+ROAD_MASK_MAX_TEXEL = 1.0       # m per texel: the near levels (L-1 0.5 m, L0 1 m)
+ROAD_MASK_KINDS = ("paved", "cobble")
+
+
+def road_mask_name(texture):
+    """The road mask file beside a far tile's texture (far_<a>_<key>[_r<n>].dds -> far_<a>_<key>_road.dds)."""
+    import re
+    return re.sub(r"(_r\d+)?\.dds$", "_road.dds", texture)
+
+
+def road_mask(frame, x0, y0, size, px, surface, widths=None):
+    """The built carriageways' coverage (px x px uint8, 255 on the road, antialiased) of a tile photo over
+    [x0, x0 + size]², or None (texels coarser than ROAD_MASK_MAX_TEXEL, no roads, no cell cached)."""
+    if surface is None or size / max(px, 1) > ROAD_MASK_MAX_TEXEL:
+        return None
+    feats = _square_roads(frame, x0, y0, size, surface)
+    if not feats:
+        return None
+    got = _road_segments(frame, x0, y0, size, px, px, feats, surface.urban, widths)
+    if got is None:
+        return None
+    colors = np.array([(255.0, 255.0, 255.0, 1.0 if k in ROAD_MASK_KINDS else 0.0) for k in PHOTO_ROAD_RGBA],
+                      np.float32)
+    out = fast._ef.paint_lines(np.zeros((px, px, 3), np.uint8), *got, colors)[..., 0]
+    return out if out.any() else None
 
 
 # A road without sidewalks gets a verge of VERGE_M a side painted bare where the ground would carry grass or shrubs:
