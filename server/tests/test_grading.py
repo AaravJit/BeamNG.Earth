@@ -274,8 +274,9 @@ class GraderTest(unittest.TestCase):
         bbox = mapcells.cells_for_bbox(float(la.min()), float(lo.min()), float(la.max()), float(lo.max()))
         self.assertGreater(len(bbox), 100)
         out = g.apply(la, lo, np.zeros(2))
-        # (each point's own cells and those whose plans reach it: a cell plans CLIP_MARGIN_M past its edges)
-        self.assertLessEqual(md.calls, 18, "the cells around the two points")
+        # (each point's own cells and those whose plans reach it: a cell plans CLIP_MARGIN_M past its edges; and the
+        # bridges of their neighbours, read for the underpasses: grading.UNDER_*)
+        self.assertLessEqual(md.calls, 30, "the cells around the two points")
         self.assertAlmostEqual(float(out[0]), 10.0, delta=0.05)
         near = mapcells.cells_near_points(la, lo, 1e-4, 1e-4)
         self.assertTrue(set(near) <= set(bbox))
@@ -362,6 +363,20 @@ class WallHeightTest(unittest.TestCase):
         self.assertEqual(grading.wall_max_h(city), grading.WALL_MAX_H_CITY_M)
         self.assertEqual(grading.wall_max_h(rural), grading.WALL_MAX_H_M)
         self.assertEqual(grading.wall_max_h(street), grading.WALL_MAX_H_M)
+
+
+class UnderpassTest(unittest.TestCase):
+    def test_road_dips_under_a_motorway_overpass(self):
+        """A local road crossing under a short motorway bridge whose terrain was interpolated at deck height (lidar
+        with the bridge removed) dips to the deck minus UNDER_CLEAR_M; a road crossing nothing is left alone."""
+        f = features([[(-200, 0), (200, 0)], [(0, -20), (0, 20)], [(-200, 300), (200, 300)]],
+                     ["residential", "motorway", "residential"], flags=[(1, "is_bridge")])
+        g = grading.Grader(FRAME, FakeMD(f), lambda la, lo: np.full(np.shape(la), 10.0))
+        la, lo, _ = FRAME.enu_to_geodetic(np.array([0.0, 150.0, 0.0]), np.array([0.0, 0.0, 300.0]), 0.0)
+        out = g.apply(la, lo, np.full(3, 10.0))
+        self.assertAlmostEqual(float(out[0]), 10.0 - grading.UNDER_CLEAR_M, delta=0.3, msg="under the deck")
+        self.assertAlmostEqual(float(out[1]), 10.0, delta=0.1, msg="back up past the ramp")
+        self.assertAlmostEqual(float(out[2]), 10.0, delta=0.1, msg="another road untouched")
 
 
 if __name__ == "__main__":
