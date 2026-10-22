@@ -63,6 +63,7 @@ local navgraph = require('beamngEarth/navgraph')
 local postfx = require('beamngEarth/postfx')       -- no far depth-of-field blur in our level
 local gps = require('beamngEarth/gps')               -- the game's GPS route to a place picked on the world map
 local collisionfoci = require('beamngEarth/collisionfoci') -- other vehicles' collision islands
+local terrainpatch = require('beamngEarth/terrainpatch')   -- ground under the islands off the terrain block
 local fociBroken = false
 -- The pose's foci: the last collision foci (collisionfoci.lua), rounded, at most 16 (earthd FOCI_MAX); nil when none.
 local function poseFoci()
@@ -716,6 +717,8 @@ local function onMessage(msg)
     st.serverBacklog = tonumber(msg.backlog)
     -- M1h: the far-field radius rides on every status in horizon mode (the view distance follows it)
     if msg.radius ~= nil then M.setFarRadius(msg.radius) end
+  elseif t == 'terrain_patch' then
+    pcall(terrainpatch.onPatch, msg)
   elseif t == 'anchor_ready' then
     local p = st.pending
     if not p or msg.requestId ~= p.requestId then return end -- stale answer
@@ -1505,6 +1508,8 @@ local function onUpdate(dtReal, dtSim)
     if not fociBroken then
       local ok, err = pcall(collisionfoci.update, dtReal, { roads.setFoci, trees.setFoci })
       if not ok then fociBroken = true; log('E', 'beamngEarth', 'collision foci: ' .. tostring(err)) end
+      ok, err = pcall(terrainpatch.update, dtReal, st.anchorId, collisionfoci.last, st.player, pb, net.send)
+      if not ok then fociBroken = true; log('E', 'beamngEarth', 'terrain patches: ' .. tostring(err)) end
     end
     parking.update(st.anchorId, st.player, pb)
     t = mark('parking', t)
@@ -1613,6 +1618,7 @@ end
 
 local function onClientEndMission()
   postfx.restore()
+  pcall(terrainpatch.clear)
   gps.reset()
   do local stg = rawget(_G, 'beamngEarth_settings') if stg and stg.redirectBigMap then stg.redirectBigMap(false) end end
   seasonlook.restore()

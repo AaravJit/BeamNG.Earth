@@ -110,6 +110,8 @@ MOD_TO_SERVER = {
     # the download cache (cache.py; additive): the page's size cap (GB, 0 = unlimited), a clear, or
     # neither (fresh usage numbers); always answered with a 'cache'
     "cache": {"capGb": F(NUM, OPT), "clear": F(bool, OPT)},
+    # the ground's collision patch under another vehicle's collision island off the block (terrainpatch.lua / .py)
+    "terrain_patch": {"anchorId": F(int), "key": F(str), "x0": F(NUM), "y0": F(NUM), "x1": F(NUM), "y1": F(NUM)},
     # roads (roads.py; additive): the mod removed its roads (switched off and on again): send them again
     "roads_reset": {},
     "map_tiles": {"tiles": F(list)},       # the world map's basemap tiles as files (settings.mapTiles)
@@ -208,6 +210,9 @@ SERVER_TO_MOD = {
     "navgraph": {"anchorId": F(int), "path": F(str), "cx": F(NUM), "cy": F(NUM), "nodes": F(int), "edges": F(int),
                  "serial": F(int)},
     # the download cache's usage (cache.py; additive, with a Cache only): after hello and every mod 'cache'
+    # ... its answer: the patch's shape and centre, or an error (the mod asks again later)
+    "terrain_patch": {"anchorId": F(int), "key": F(str), "path": F(str, OPT), "x": F(NUM, OPT), "y": F(NUM, OPT),
+                      "tris": F(int, OPT), "error": F(str, OPT)},
     "cache": {"v": F(int), "usedBytes": F(int), "capBytes": F(int), "files": F(int), "ready": F(bool),
               "managed": F(bool), "clearedBytes": F(int, OPT)},
 }
@@ -268,14 +273,16 @@ def top_keys(table):
 
 
 def mod_sends():
-    """{type: (keys, nested)} of every net.send({...}) in core.lua and places.lua (the level select's pictures)."""
-    text = (LUA / "core.lua").read_text() + "\n" + (LUA / "places.lua").read_text()
+    """{type: (keys, nested)} of every net.send({...}) in core.lua and places.lua (the level select's pictures), and
+    every send({...}) in terrainpatch.lua (core hands it net.send)."""
     out = {}
-    for m in re.finditer(r"net\.send\(\{", text):
-        t = lua_tables(text, m.end() - 1)
-        keys, nested = top_keys(t)
-        kind = re.search(r"type\s*=\s*'(\w+)'", t).group(1)
-        out.setdefault(kind, []).append((keys - {"type"}, nested))
+    for names, pattern in ((("core.lua", "places.lua"), r"net\.send\(\{"), (("terrainpatch.lua",), r"\bsend\(\{")):
+        text = "\n".join((LUA / n).read_text() for n in names)
+        for m in re.finditer(pattern, text):
+            t = lua_tables(text, m.end() - 1)
+            keys, nested = top_keys(t)
+            kind = re.search(r"type\s*=\s*'(\w+)'", t).group(1)
+            out.setdefault(kind, []).append((keys - {"type"}, nested))
     return out
 
 
@@ -834,6 +841,10 @@ class ServerMessagesTest(test_server.ServerHarness):
         seen.extend(c.drain(0.3))                       # a commit changes no far tile: nothing to wait for
         c.send({"type": "prepare_terrain", "requestId": 3, "anchorId": 999, "cx": 0, "cy": 0})
         until(lambda m: m["type"] == "terrain_error")
+        # the ground's collision patch under another vehicle's island off the block (terrainpatch.lua / .py)
+        c.send({"type": "terrain_patch", "anchorId": aid, "key": "t1", "x0": 900, "y0": -100, "x1": 1100, "y1": 100})
+        patch = until(lambda m: m["type"] == "terrain_patch")
+        self.assertTrue(patch.get("path") and os.path.exists(self.fs(patch["path"])) and patch["tris"] > 0, patch)
         c.send({"type": "prepare_anchor", "requestId": 4, "lat": 123.0, "lon": 0})
         until(lambda m: m["type"] == "anchor_error")
         # a second anchor 2 km east (a rebase): the previous anchor's tiles get far_removes

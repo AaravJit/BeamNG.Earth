@@ -64,6 +64,7 @@ import glob  # noqa: E402
 import itertools  # noqa: E402
 import logging  # noqa: E402
 import math  # noqa: E402
+import re  # noqa: E402
 import secrets  # noqa: E402
 import sys  # noqa: E402
 import shutil  # noqa: E402
@@ -101,6 +102,7 @@ import pacer  # noqa: E402
 import deshadow as deshadowmod  # noqa: E402
 import farfield  # noqa: E402
 import terraincache  # noqa: E402
+import terrainpatch as terrainpatchmod  # noqa: E402
 import geodesy  # noqa: E402
 import gravity as gravitymod  # noqa: E402
 import airportgrade as airportgrademod  # noqa: E402
@@ -180,6 +182,7 @@ TUNNEL_FLOOR_UNDER_M = 2.0     # a tunnel floor this far under the ground at a t
 SEA_CHECK_S = 15.0          # sea (--sea on): the water tiles planned again when the player enters another
                             # 512 m square, or after this long (cells built meanwhile; seatiles.py)
 VIEW_AWAY_M = 50.0              # m: a camera this far from the car centres what is drawn (Conn.camera_away)
+PATCH_KEY = re.compile(r"[A-Za-z0-9_-]{1,64}")   # a terrain patch key (terrainpatch.lua)
 FOCI_MAX = 16                   # other vehicles' collision foci taken from a pose (the mod's collisionfoci.lua)
 FOCI_RANGE_M = 50000.0          # ... within this of the anchor's origin
 FOCI_R_MAX_M = 640.0            # ... and radii at most this
@@ -1035,6 +1038,28 @@ class Server:
         return buildingsmod.far_tile(anchor.frame, tx, ty, self.mapdata,
                                      lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom)),
                                      self.out_dir, self.vfs_dir, aid)
+
+    def build_terrain_patch(self, aid, key, box):
+        """terrainpatch.py: the collision patch of the ground under a collision island off the terrain block (the
+        mod's terrainpatch.lua), written to the session folder. (vfs path, (cx, cy), triangles) or None if the anchor
+        is gone. Worker threads."""
+        anchor = self.anchors.get(aid)
+        if anchor is None:
+            return None
+        box = terrainpatchmod.snap_box(*box)
+        name = f"patch_{aid}_{key}.cdae"
+        path = os.path.join(self.out_dir, name)
+        if self.road_pool is not None:
+            _, centre, n = self.road_pool.submit(blockworker.terrain_patch, aid, anchor.lat, anchor.lon,
+                                                 anchor.zooms[0], box, path).result()
+        else:
+            zoom, g = anchor.zooms[0], self.grader_for(anchor)
+
+            def elev(la, lo):
+                z = self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom))
+                return g.apply(la, lo, z, gradingmod.ROAD_LIFT) if g is not None else z
+            _, centre, n = terrainpatchmod.build(anchor.frame, elev, box, path)
+        return f"{self.vfs_dir}/{name}", centre, n
 
     def build_roads_tile(self, aid, tx, ty):
         """roads.py: one road tile of anchor aid, written to the session folder. Returns (vfs path,
@@ -2613,6 +2638,8 @@ class Connection:
         elif kind == "open_page":               # the update notice's button: the releases page (updates.open_page)
             if not updatesmod.open_page(msg.get("url")):
                 log.info("open_page: refused %r", msg.get("url"))
+        elif kind == "terrain_patch":           # ground under another vehicle's collision island (terrainpatch.lua)
+            self.spawn(self.terrain_patch(msg))
         elif kind == "cache":
             self.on_cache(msg)
         elif kind == "roads_reset":             # the mod dropped its roads (settings): send them all again
@@ -2620,6 +2647,29 @@ class Connection:
             self.roads = roadsmod.Tracker()
         else:
             log.debug("ignoring message type %r", kind)
+
+    async def terrain_patch(self, msg):
+        """The mod's terrainpatch.lua: the ground's collision patch over box (x0, y0, x1, y1, the active anchor's
+        frame) under a collision island off the terrain block (collisionfoci.lua); answered with its path and centre
+        (or an error)."""
+        aid, key = msg.get("anchorId"), msg.get("key")
+        try:
+            box = tuple(float(msg[k]) for k in ("x0", "y0", "x1", "y1"))
+        except (KeyError, TypeError, ValueError):
+            return
+        if (aid not in self.s.anchors or not isinstance(key, str) or not PATCH_KEY.fullmatch(key)
+                or not all(math.isfinite(v) for v in box) or box[2] <= box[0] or box[3] <= box[1]
+                or max(abs(v) for v in box) > FOCI_RANGE_M):
+            return
+        try:
+            res = await asyncio.get_running_loop().run_in_executor(None, self.s.build_terrain_patch, aid, key, box)
+        except Exception as e:      # the ground not at hand (offline): the mod asks again later
+            log.warning("terrain patch %s: %s: %s", key, type(e).__name__, e)
+            self.send({"type": "terrain_patch", "anchorId": aid, "key": key, "error": f"{type(e).__name__}: {e}"[:200]})
+            return
+        if res is not None:
+            vfs, (cx, cy), n = res
+            self.send({"type": "terrain_patch", "anchorId": aid, "key": key, "path": vfs, "x": cx, "y": cy, "tris": n})
 
     def on_cache(self, msg):
         """The settings page: capGb sets the cap (0 = unlimited), clear: true empties the cache (but this

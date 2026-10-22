@@ -312,6 +312,19 @@ def navgraph(aid, lat, lon, zoom, x, y, out_dir, vfs_dir, serial, left_hand, mph
     return path, len(graph["nodes"]), len(graph["edges"])
 
 
+def terrain_patch(aid, lat, lon, zoom, box, path):
+    """earthd.Server.build_terrain_patch here (road-tile pool): the collision patch of the ground over box under a
+    collision island off the terrain block (terrainpatch.py), the block's own ground (graded, lifted under roads)."""
+    import terrainpatch
+    g, _ = _s.anchor(aid, lat, lon)
+    frame = geodesy.EnuFrame(lat, lon)
+
+    def elev(la, lo):
+        z = ground(frame, la, lo, _s.dem.sample(la, lo, zoom))
+        return g.apply(la, lo, z, gradingmod.ROAD_LIFT) if g is not None else z
+    return terrainpatch.build(frame, elev, box, path)
+
+
 def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, buildings=False, left_hand=False,
                mph=True, q=None):
     """earthd.Server.build_roads_tile here (road-tile pool): the anchor's road tile (tx, ty) built and
@@ -611,6 +624,7 @@ def _accounted(fn):
 
 
 build = _accounted(build)
+terrain_patch = _accounted(terrain_patch)
 roads_tile = _accounted(roads_tile)
 far_buildings_tile = _accounted(far_buildings_tile)
 base_entry = _accounted(base_entry)

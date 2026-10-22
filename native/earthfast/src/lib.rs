@@ -3244,6 +3244,44 @@ fn first_probe_near_lines(pts: PyReadonlyArray2<f64>, starts: PyReadonlyArray1<i
     None
 }
 
+/// terrainpatch.mesh: a height grid z (ny, nx) over xs (nx,) and ys (ny,) as a mesh relative to (ox, oy, 0):
+/// positions (nx*ny, 3) float32 row-major (y rows, x columns), triangles (2*(nx-1)*(ny-1), 3) int32, two a quad
+/// (a b d, a d c: counter-clockwise from above), the first of every quad, then the second.
+#[pyfunction]
+fn grid_mesh<'py>(py: Python<'py>, xs: PyReadonlyArray1<'py, f64>, ys: PyReadonlyArray1<'py, f64>,
+                  z: PyReadonlyArray2<'py, f64>, ox: f64, oy: f64)
+                  -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i32>>)> {
+    let (xv, yv, zv) = (xs.as_array(), ys.as_array(), z.as_array());
+    let (nx, ny) = (xv.len(), yv.len());
+    if zv.shape() != [ny, nx] {
+        return Err(pyo3::exceptions::PyValueError::new_err("grid_mesh: z must be (len(ys), len(xs))"));
+    }
+    let mut pos = numpy::ndarray::Array2::<f32>::zeros((nx * ny, 3));
+    for j in 0..ny {
+        for i in 0..nx {
+            let k = j * nx + i;
+            pos[[k, 0]] = (xv[i] - ox) as f32;
+            pos[[k, 1]] = (yv[j] - oy) as f32;
+            pos[[k, 2]] = zv[[j, i]] as f32;
+        }
+    }
+    let q = nx.saturating_sub(1) * ny.saturating_sub(1);
+    let mut tris = numpy::ndarray::Array2::<i32>::zeros((2 * q, 3));
+    let mut t = 0;
+    for half in 0..2 {
+        for j in 0..ny.saturating_sub(1) {
+            for i in 0..nx.saturating_sub(1) {
+                let a = (j * nx + i) as i32;
+                let (b, c, d) = (a + 1, a + nx as i32, a + nx as i32 + 1);
+                let row = if half == 0 { [a, b, d] } else { [a, d, c] };
+                for m in 0..3 { tris[[t, m]] = row[m]; }
+                t += 1;
+            }
+        }
+    }
+    Ok((pos.into_pyarray(py), tris.into_pyarray(py)))
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -3298,6 +3336,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(regional_groups, m)?)?;
     m.add_function(wrap_pyfunction!(clip_segments, m)?)?;
     m.add_function(wrap_pyfunction!(first_probe_near_lines, m)?)?;
-    m.add("VERSION", 45)?;
+    m.add_function(wrap_pyfunction!(grid_mesh, m)?)?;
+    m.add("VERSION", 46)?;
     Ok(())
 }
