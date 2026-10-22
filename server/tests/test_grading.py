@@ -379,5 +379,21 @@ class UnderpassTest(unittest.TestCase):
         self.assertAlmostEqual(float(out[2]), 10.0, delta=0.1, msg="another road untouched")
 
 
+class RacewayKeepTest(unittest.TestCase):
+    def test_track_surface_is_the_terrain(self):
+        """A road crossing a racetrack at grade: on the track (its carriageway + margin) the terrain stays as it is
+        (a banked oval's slope), off it the road is graded as usual."""
+        f = features([[(-200, 0), (200, 0)], [(0, -100), (0, 100)]], ["raceway", "residential"])
+
+        def sloped(la, lo):         # a banking: the ground rising to the north
+            _e, n, _ = FRAME.geodetic_to_enu(np.asarray(la), np.asarray(lo), 0.0)
+            return 10.0 + 0.3 * np.asarray(n)
+        g = grading.Grader(FRAME, FakeMD(f), sloped)
+        la, lo, _ = FRAME.enu_to_geodetic(np.array([0.0, 0.0]), np.array([3.0, 60.0]), 0.0)
+        base = sloped(la, lo)
+        out = g.apply(la, lo, base)
+        self.assertAlmostEqual(float(out[0]), float(base[0]), places=6, msg="on the track: the terrain")
+
+
 if __name__ == "__main__":
     unittest.main()

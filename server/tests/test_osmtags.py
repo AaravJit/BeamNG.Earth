@@ -65,5 +65,44 @@ class SpecTest(unittest.TestCase):
         self.assertEqual(navgraph._lanes(7.0, False), navgraph._lanes(7.0, False, None))
 
 
+class RacewayTest(unittest.TestCase):
+    """GitHub #143: OpenStreetMap's raceways appended to Overture's roads (which have none), drawn as 12 m paved
+    roads unless mapped wider, never graded flat (an oval's banking is the terrain's)."""
+
+    def ways(self):
+        return [{"id": 352070316, "name": "Speedway", "surface": "asphalt", "width": "18 m",
+                 "coords": np.array([[-81.07, 29.18], [-81.06, 29.18], [-81.06, 29.19]])},
+                {"id": 7, "coords": np.array([[-81.08, 29.18], [-81.075, 29.18]])},
+                {"id": 8, "bridge": "yes", "coords": np.array([[-81.08, 29.185], [-81.075, 29.185]])}]
+
+    def test_features_and_concat(self):
+        import mapgeom
+        rw = osmtags.raceway_features(self.ways())
+        self.assertEqual(list(rw.ids), ["osm-raceway-000000000007", "osm-raceway-000000000008",
+                                        "osm-raceway-000352070316"])
+        base = features([[(0, 0), (100, 0)]], ["residential"])
+        both = mapgeom.concat(base, rw)
+        self.assertEqual(len(both), 4)
+        self.assertEqual(list(both.ids), sorted(both.ids), "ids ascending")
+        self.assertEqual(str(both.attrs["class"][3]), "raceway")
+        self.assertEqual(str(both.attrs["subtype"][0]), "road", "the base keeps its columns")
+        sp = roads.road_specs(both)
+        self.assertEqual(sp[3].kind, "paved")
+        self.assertAlmostEqual(sp[3].width, 18.0, msg="the mapped width")
+        self.assertGreaterEqual(sp[1].width, roads.STYLE["raceway"][0])
+        self.assertTrue(roads.bridge_specs(both)[2] is not None, "a raceway bridge")
+        self.assertEqual(len(both.parts(3)[0][0]), 3)
+
+    def test_not_graded(self):
+        import grading
+        self.assertIn("raceway", grading.UNGRADED)
+
+    def test_wkb_linestring(self):
+        import struct
+        wkb = struct.pack("<BII", 1, 2, 2) + struct.pack("<4d", 1.0, 2.0, 3.0, 4.0)
+        np.testing.assert_allclose(osmtags._linestring(wkb), [[1, 2], [3, 4]])
+        self.assertIsNone(osmtags._linestring(struct.pack("<BI", 1, 3) + b"x" * 20), "a polygon is not a line")
+
+
 if __name__ == "__main__":
     unittest.main()

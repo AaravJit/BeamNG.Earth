@@ -58,6 +58,12 @@ FLOATS = ("lanes", "width", "maxspeed", "osm_layer")
 TEXTS = ("sidewalk", "lit", "smoothness", "osm_surface", "osm_oneway")
 
 
+# Racetracks (GitHub #143): Overture's transportation theme has no highway=raceway (Daytona's oval and road course, the
+# Nordschleife: nothing), so the cell's raceways come from the same Layercake file with their geometry: ways that are
+# highway=raceway, read only from the row groups whose highway column has one (raceways()).
+RACEWAY_COLUMNS = ("id", "highway", "name", "surface", "width", "lanes", "layer", "bridge", "tunnel", "oneway")
+
+
 def way_id(record):
     """The OSM way id of an Overture source record ("w1360453999@2" -> 1360453999), else None."""
     m = re.match(r"^w(\d+)", record or "")
@@ -139,6 +145,107 @@ class OsmTags:
                 self._forget()
         return {}
 
+    def _groups(self, con, uri, remote, kind):
+        """{row group: {"first", "n", "bbox": {leaf: (min, max)}, "cols": {column: [byte ranges]}}} of the file."""
+        tail = remote.read(max(0, remote.size - overture.FOOTER_GUESS), remote.size, kind)
+        n = int.from_bytes(tail[-8:-4], "little")
+        if n + 8 > len(tail):
+            remote.read(remote.size - n - 8, remote.size, kind)
+        meta = con.execute(f"""SELECT row_group_id, row_group_num_rows, path_in_schema, stats_min, stats_max,
+            dictionary_page_offset, data_page_offset, total_compressed_size FROM parquet_metadata({uri})
+            ORDER BY row_group_id, column_id""").fetchall()
+        groups, first = {}, 0
+        for rg, nrows, col, smin, smax, dict_off, data_off, size in meta:
+            g = groups.get(rg)
+            if g is None:
+                g = groups[rg] = {"first": first, "n": nrows, "bbox": {}, "cols": {}}
+                first += nrows
+            offs = [o for o in (dict_off, data_off) if o]
+            if not offs:
+                continue
+            top, leaf = col.split(", ")[0], col.split(", ")[-1]
+            g["cols"].setdefault(top, []).append((min(offs), min(offs) + size))
+            if top == "bbox":
+                g["bbox"][leaf] = (smin, smax)
+        return groups
+
+    @staticmethod
+    def _candidates(groups, bounds):
+        lon0, lat0, lon1, lat1 = bounds
+
+        def stat(g, leaf, i, default):
+            try:
+                return float(g["bbox"][leaf][i])
+            except (KeyError, TypeError, ValueError):
+                return default
+        return [rg for rg, g in sorted(groups.items())
+                if stat(g, "xmin", 0, -1e9) <= lon1 and stat(g, "xmax", 1, 1e9) >= lon0
+                and stat(g, "ymin", 0, -1e9) <= lat1 and stat(g, "ymax", 1, 1e9) >= lat0]
+
+    def raceways(self, bounds, kind="demand"):
+        """[{"id", "coords" (k, 2) lon/lat, tags...}] of the highway=raceway ways whose bbox touches bounds; a version
+        that changed under the reads is dropped and asked once more (as query)."""
+        for attempt in (0, 1):
+            _etag, remote = self.version(kind)
+            try:
+                return self._raceways(remote, bounds, kind)
+            except rangeread.Changed:
+                if attempt:
+                    raise
+                self._forget()
+        return []
+
+    def _raceways(self, remote, bounds, kind):
+        lon0, lat0, lon1, lat1 = bounds
+        rd = self._reader
+        files = {PATH: remote}
+        con, proto, errors = rd._connect(files, kind)
+        try:
+            uri = f"'{proto}://{PATH}'"
+            groups = self._groups(con, uri, remote, kind)
+            cand = self._candidates(groups, bounds)
+            if not cand:
+                return []
+            box = (f"bbox.xmin <= {lon1!r} AND bbox.xmax >= {lon0!r} AND bbox.ymin <= {lat1!r} "
+                   f"AND bbox.ymax >= {lat0!r}")
+            rd._fetch(files, {PATH: [r for rg in cand for c in ("highway", "bbox") for r in groups[rg]["cols"].get(c, [])]},
+                      kind)
+            only = " OR ".join(f"file_row_number BETWEEN {groups[rg]['first']} AND "
+                               f"{groups[rg]['first'] + groups[rg]['n'] - 1}" for rg in cand)
+            rows = con.execute(f"""SELECT file_row_number FROM read_parquet({uri}, file_row_number = true)
+                WHERE ({only}) AND highway = 'raceway' AND {box}""").fetchall()
+            if not rows:
+                return []
+            hit = sorted({rg for (r,) in rows for rg in cand
+                          if groups[rg]["first"] <= r < groups[rg]["first"] + groups[rg]["n"]})
+            rd._fetch(files, {PATH: [r for rg in hit for c in RACEWAY_COLUMNS + ("geometry",)
+                                     for r in groups[rg]["cols"].get(c, [])]}, kind)
+            only = " OR ".join(f"file_row_number BETWEEN {groups[rg]['first']} AND "
+                               f"{groups[rg]['first'] + groups[rg]['n'] - 1}" for rg in hit)
+            cols = ", ".join(f'"{c}"' for c in RACEWAY_COLUMNS)
+            try:                # (the geometry as its WKB bytes: no spatial extension needed)
+                con.execute("SET enable_geoparquet_conversion = false")
+            except Exception:
+                pass
+            got = con.execute(f"""SELECT {cols}, geometry FROM read_parquet({uri}, file_row_number = true)
+                WHERE ({only}) AND highway = 'raceway' AND {box}""").fetchall()
+        except Exception:
+            for e in errors:
+                if isinstance(e, rangeread.Changed):
+                    raise e
+            raise
+        finally:
+            con.close()
+        out = []
+        for row in got:
+            coords = _linestring(bytes(row[-1]))
+            if coords is None or len(coords) < 2:
+                continue
+            d = {c: v for c, v in zip(RACEWAY_COLUMNS, row[:-1]) if v is not None}
+            d["coords"] = coords
+            out.append(d)
+        return out
+
     def _query(self, remote, bounds, kind):
         lon0, lat0, lon1, lat1 = bounds
         rd = self._reader
@@ -146,35 +253,8 @@ class OsmTags:
         con, proto, errors = rd._connect(files, kind)
         try:
             uri = f"'{proto}://{PATH}'"
-            tail = remote.read(max(0, remote.size - overture.FOOTER_GUESS), remote.size, kind)
-            n = int.from_bytes(tail[-8:-4], "little")
-            if n + 8 > len(tail):
-                remote.read(remote.size - n - 8, remote.size, kind)
-            meta = con.execute(f"""SELECT row_group_id, row_group_num_rows, path_in_schema, stats_min, stats_max,
-                dictionary_page_offset, data_page_offset, total_compressed_size FROM parquet_metadata({uri})
-                ORDER BY row_group_id, column_id""").fetchall()
-            groups, first = {}, 0
-            for rg, nrows, col, smin, smax, dict_off, data_off, size in meta:
-                g = groups.get(rg)
-                if g is None:
-                    g = groups[rg] = {"first": first, "n": nrows, "bbox": {}, "cols": {}}
-                    first += nrows
-                offs = [o for o in (dict_off, data_off) if o]
-                if not offs:
-                    continue
-                top, leaf = col.split(", ")[0], col.split(", ")[-1]
-                g["cols"].setdefault(top, []).append((min(offs), min(offs) + size))
-                if top == "bbox":
-                    g["bbox"][leaf] = (smin, smax)
-
-            def stat(g, leaf, i, default):
-                try:
-                    return float(g["bbox"][leaf][i])
-                except (KeyError, TypeError, ValueError):
-                    return default
-            cand = [rg for rg, g in sorted(groups.items())
-                    if stat(g, "xmin", 0, -1e9) <= lon1 and stat(g, "xmax", 1, 1e9) >= lon0
-                    and stat(g, "ymin", 0, -1e9) <= lat1 and stat(g, "ymax", 1, 1e9) >= lat0]
+            groups = self._groups(con, uri, remote, kind)
+            cand = self._candidates(groups, bounds)
             if not cand:
                 return {}
             want = {c for rg in cand for c in groups[rg]["cols"] if c in USED}
@@ -195,6 +275,71 @@ class OsmTags:
             con.close()
         names = list(COLUMNS)
         return {int(r[0]): {k: v for k, v in zip(names, r[1:]) if v is not None} for r in rows}
+
+
+RACEWAY_PAVED = {"", "asphalt", "concrete", "paved", "chipseal"}
+
+
+def raceway_features(ways):
+    """The raceways (raceways()) as road Features: class "raceway", ids "osm-raceway-<way id>" (after every Overture
+    GERS id: mapgeom.concat appends them), OSM's surface / width / lanes / layer / bridge / tunnel as Overture's rules
+    and the osm_* columns."""
+    import mapgeom as mg
+    ways = sorted(ways, key=lambda w: int(w["id"]))
+    if not ways:
+        return mg.empty("roads")
+    coords, coord_off, flags, levels, surfaces, widths = [], [0], [], [], [], []
+    for i, w in enumerate(ways):
+        c = np.asarray(w["coords"], np.float64)
+        coords.append(c)
+        coord_off.append(coord_off[-1] + len(c))
+        if str(w.get("bridge") or "no") not in ("no", ""):
+            flags.append((i, "is_bridge", None))
+        if str(w.get("tunnel") or "no") not in ("no", ""):
+            flags.append((i, "is_tunnel", None))
+        try:
+            lv = float(w.get("layer"))
+            if lv:
+                levels.append((i, lv, None))
+        except (TypeError, ValueError):
+            pass
+        sf = str(w.get("surface") or "").lower()
+        surfaces.append((i, "paved" if sf in RACEWAY_PAVED else sf, None))
+        try:
+            wd = float(re.match(r"^\s*([0-9]+(?:\.[0-9]+)?)", str(w.get("width") or "")).group(1))
+            widths.append((i, wd, None))
+        except (AttributeError, ValueError):
+            pass
+    n = len(ways)
+    lonlat = np.concatenate(coords)
+    f = mg.Features("roads", mg.text_column([f"osm-raceway-{int(w['id']):012d}" for w in ways]),
+                    np.full(n, mg.LINE, np.uint8), np.arange(n + 1, dtype=np.int64), np.arange(n + 1, dtype=np.int64),
+                    np.array(coord_off, np.int64), lonlat)
+    f.attrs = {"class": mg.text_column(["raceway"] * n), "subtype": mg.text_column(["road"] * n),
+               "subclass": mg.text_column([""] * n), "name": mg.text_column([w.get("name") for w in ways]),
+               "src_dataset": mg.text_column(["OpenStreetMap"] * n),
+               "src_record": mg.text_column([f"w{int(w['id'])}@0" for w in ways]),
+               "cx": np.array([float(c[:, 0].min() + c[:, 0].max()) / 2 for c in coords]),
+               "cy": np.array([float(c[:, 1].min() + c[:, 1].max()) / 2 for c in coords])}
+    f.rules = {"flags": mg.rule_table(flags), "level": mg.rule_table(levels, "float"),
+               "surface": mg.rule_table(surfaces), "width": mg.rule_table(widths, "float")}
+    f.clipped = np.zeros(n, bool)
+    return f
+
+
+def _linestring(wkb):
+    """(k, 2) lon/lat of a WKB LineString (2D, either byte order), else None."""
+    import struct
+    if len(wkb) < 9:
+        return None
+    end = "<" if wkb[0] == 1 else ">"
+    typ = struct.unpack_from(end + "I", wkb, 1)[0]
+    if typ % 1000 != 2 or typ >= 1000 or typ & 0x20000000:
+        return None
+    n = struct.unpack_from(end + "I", wkb, 5)[0]
+    if 9 + 16 * n > len(wkb):
+        return None
+    return np.frombuffer(wkb, dtype=end + "f8", count=2 * n, offset=9).reshape(n, 2).astype(np.float64)
 
 
 def join(feats, tags):

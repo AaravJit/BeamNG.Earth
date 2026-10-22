@@ -121,6 +121,9 @@ ABUT_FILL_ON = os.environ.get("BNE_ABUT_FILL", "on") != "off"
 # removes bridges and interpolates across the gap, at about the deck's height: the road under ran 0.7-2.5 m under the
 # girders (A28 near Zwolle, I-84 over NE 181st Ave in Portland, I-395 in Springfield VA, 2026-10-22). Never raises.
 UNDER_ON = os.environ.get("BNE_UNDERPASS", "on") != "off"
+UNGRADED = {"raceway"}      # classes planned by nobody: the terrain is their surface (an oval's banking, GitHub #143) ...
+UNGRADED_MARGIN_M = 2.0     # ... and nothing else grades their carriageway (+ this: kerbs, apron): a road crossing a
+                            # track, or a tunnel's open approach under one, cut a flat trench through Daytona's banking
 UNDER_CLEAR_M = 6.7         # deck surface to the road under: slab + girders (roadmesh DECK_DEPTH + GIRDER_D) + 4.5 m
 UNDER_GRADE = 0.06          # the dip's ramps
 UNDER_MAX_BRIDGE_M = 120.0  # only single short spans (both ends on the ground): a chain's inner ends are no abutments
@@ -387,6 +390,7 @@ class Grader:
         self.lock = threading.Lock()
         self.key_locks = {}     # cell key -> Lock: one thread plans a cell, the others wait for it
         self.covers = {}        # cell key -> [(xy (k, 2), half width)]: the tunnels whose ground over them stays
+        self.keeps = {}         # cell key -> [(xy (k, 2), half width)]: the UNGRADED roads' carriageways
         self.opens = {}         # cell key -> [(xy (k, 2), Spec)]: the tunnels' open sections (roads in the open)
         self.wet = None         # wet(lat, lon) -> water depth (m): tunnels under water are left out, as
                                 # roads.TunnelProfiles leaves them (their "open" sections graded a dam across the river:
@@ -421,7 +425,14 @@ class Grader:
             specs = roadsmod.road_specs(feats, None, self.widths)
             parts, ids, clipped = [], [], []
             box = self._clip_box(key)
+            keeps = []
             for i in range(len(feats)):
+                if specs[i] is not None and specs[i].cls in UNGRADED:
+                    for ring in roadsmod.ground_parts(feats, i):
+                        e, n, _ = self.frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
+                        keeps.append((np.stack([np.asarray(e), np.asarray(n)], axis=1),
+                                      specs[i].width / 2 + UNGRADED_MARGIN_M))
+                    continue
                 if specs[i] is None:
                     continue
                 for ring in roadsmod.ground_parts(feats, i):     # not bridges / tunnels
@@ -473,9 +484,10 @@ class Grader:
             covers = [(xy, spec.width / 2 + TUNNEL_KEEP_M) for _f, spec, xy, _z, k in _twin_trimmed(secs) if k]
             opens = [(xy, spec) for _f, spec, xy, _z, k in secs if k == 0]
         else:
-            covers, opens = [], []
+            covers, opens, keeps = [], [], []
         with self.lock:
             self.cells.setdefault(key, plans)
+            self.keeps.setdefault(key, keeps)
             self.covers.setdefault(key, covers)
             self.opens.setdefault(key, opens)
             return self.cells[key]
@@ -916,6 +928,9 @@ class Grader:
         e, n, _ = self.frame.geodetic_to_enu(lat.ravel(), lon.ravel(), 0.0)
         e, n = np.asarray(e), np.asarray(n)
         out = grade_points(e, n, base.ravel(), plans, lift)
+        race = self._on_kept(e, n)
+        if race is not None:                # (the terrain is a racetrack's surface: GitHub #143)
+            out[race] = base.ravel()[race]
         keep = self._over_tunnels(e, n)
         if keep is not None:
             # (a small change stays: a road over the tunnel lies on its own graded profile, the ground over the tunnel
@@ -949,6 +964,20 @@ class Grader:
                 continue
             out.append((la, lo, spec))
         return out
+
+    def _on_kept(self, e, n):
+        """Which points lie on an UNGRADED road's carriageway (+ UNGRADED_MARGIN_M), or None."""
+        with self.lock:
+            zones = [z for v in self.keeps.values() for z in v]
+        if not zones or not len(e):
+            return None
+        import fast
+        fast.require(0, "over_tunnel")
+        mask = np.zeros(len(e), bool)
+        ee, nn = np.ascontiguousarray(e, np.float64), np.ascontiguousarray(n, np.float64)
+        for xy, hw in zones:
+            fast._ef.over_tunnel(mask, ee, nn, np.ascontiguousarray(xy[:, :2], np.float64), float(hw), 0.0)
+        return mask if mask.any() else None
 
     def _over_tunnels(self, e, n):
         """Which points lie over a covered tunnel (its half width + TUNNEL_KEEP_M), or None."""

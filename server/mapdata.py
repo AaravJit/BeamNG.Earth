@@ -76,7 +76,8 @@ VERSION = 2                     # pipeline version: bump when what a cell's laye
 # per layer, on top of VERSION (a layer's own change without re-fetching the others): roads 2 adds
 # the "oneway" rule (Overture access_restrictions by heading)
 # roads 3: OpenStreetMap's lanes, width, sidewalk, maxspeed... joined by way id (osmtags.py)
-LAYER_VERSIONS = {"roads": 3}
+# roads 4: OpenStreetMap's raceways appended (osmtags.raceways, GitHub #143)
+LAYER_VERSIONS = {"roads": 4}
                                 # (2: clipped polygon pieces `own`ed by their cell, exact cell edges,
                                 # the exact no-area test of clipped rings)
 VECTOR_LAYERS = ("roads", "connectors", "buildings", "water", "land_use", "infrastructure", "building_parts")
@@ -317,6 +318,7 @@ class MapData:
         if layer in VECTOR_LAYERS:
             feats, sources = self.overture.query(layer, key, kind)
             if layer == "roads":
+                feats = self._raceways(feats, key, kind)
                 self._osm_tags(feats, key, kind)
             ox, oy = mapcells.owner(feats.attrs.get("cx", np.zeros(0)), feats.attrs.get("cy", np.zeros(0)), key.z)
             feats.own = (ox == key.x) & (oy == key.y)
@@ -336,6 +338,25 @@ class MapData:
             prov = dict(CANOPY, files=r.files) if r is not None else None
         arrays["provenance"] = np.array(json.dumps(prov, sort_keys=True))
         return arrays
+
+    def _raceways(self, feats, key, kind):
+        """The roads with the cell's OpenStreetMap raceways appended (osmtags.raceways: Overture has none, GitHub
+        #143); as they were when the source fails."""
+        import mapgeom
+        import osmtags
+        if self.fetcher is None:
+            return feats
+        try:
+            with self._lock:
+                if getattr(self, "osmtags", None) is None:
+                    self.osmtags = osmtags.OsmTags(self.raw_dir, self.fetcher)
+            ways = self.osmtags.raceways(key.bounds(), kind)
+        except Exception as e:          # optional: no racetracks this time
+            log.warning("mapdata: OSM raceways of %s: %s: %s", key, type(e).__name__, e)
+            return feats
+        if not ways:
+            return feats
+        return mapgeom.concat(feats, osmtags.raceway_features(ways))
 
     def _osm_tags(self, feats, key, kind):
         """The roads' OpenStreetMap tags (osmtags.py) joined in; none (the width guesses) when the source fails."""
