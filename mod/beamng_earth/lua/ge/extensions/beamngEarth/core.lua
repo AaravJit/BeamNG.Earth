@@ -62,6 +62,8 @@ local parking = require('beamngEarth/parking') -- parked cars on the road tiles'
 local navgraph = require('beamngEarth/navgraph')
 local postfx = require('beamngEarth/postfx')       -- no far depth-of-field blur in our level
 local gps = require('beamngEarth/gps')               -- the game's GPS route to a place picked on the world map
+local collisionfoci = require('beamngEarth/collisionfoci') -- other vehicles' collision islands
+local fociBroken = false
 local beammp = require('beamngEarth/beammp')           -- BeamMP sessions: the install recommendation
 local seasonlook = require('beamngEarth/seasonlook')   -- the trees' leaves in the season (hello.season) -- the AI road graph for the stock traffic and AI (map.reset)
 
@@ -1488,6 +1490,10 @@ local function onUpdate(dtReal, dtSim)
       pb = st.parkBox or {}
       st.parkBox = pb
       pb[1], pb[2], pb[3], pb[4] = lattice.groundBox(st.block.cx, st.block.cy)
+    end
+    if not fociBroken then
+      local ok, err = pcall(collisionfoci.update, dtReal, { roads.setFoci, trees.setFoci })
+      if not ok then fociBroken = true; log('E', 'beamngEarth', 'collision foci: ' .. tostring(err)) end
     end
     parking.update(st.anchorId, st.player, pb)
     t = mark('parking', t)

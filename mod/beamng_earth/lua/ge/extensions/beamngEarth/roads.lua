@@ -292,6 +292,8 @@ function M.collideRadius(speed)
 end
 
 local lastRadius = M.COLLIDE_M[1]
+local foci = {}             -- other vehicles' collision islands { x, y, r } (M.setFoci)
+local collisionfoci = require('beamngEarth/collisionfoci')
 local lastSpeed = 0
 local holdActive = false
 local swapQuiet = nil       -- { frames left, stopwatch } after a terrain swap (M.terrainSwapped)    -- core's drop hold: the game paused, the car frozen where it was dropped (M.setHold)
@@ -311,8 +313,13 @@ function M.collideNear(t, extra)
   local veh = getPlayerVehicle and getPlayerVehicle(0)
   if not veh then return true end
   local r = M.radiusToward(veh:getPosition(), t.cx, t.cy, lastRadius, lastDir)
-  return M.nearPlayer(vec3(t.cx, t.cy, 0), r + (extra or 0) + M.TILE_M * 0.71)
+  if M.nearPlayer(vec3(t.cx, t.cy, 0), r + (extra or 0) + M.TILE_M * 0.71) then return true end
+  -- or near another vehicle's collision island (collisionfoci.lua: other players' cars, traffic)
+  return #foci > 0 and collisionfoci.near(foci, t.cx, t.cy, (extra or 0) + M.TILE_M * 0.71) or false
 end
+
+-- Other vehicles' collision foci (collisionfoci.lua, through core.lua): their tiles' colliders are made too.
+function M.setFoci(f) foci = f or {} end
 
 -- Every COLLIDE_CHECK_S: parked colliders whose tile came near queued; far tiles' colliders dropped.
 local function updateCollideRange()
