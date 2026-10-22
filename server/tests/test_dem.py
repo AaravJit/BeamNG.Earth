@@ -149,6 +149,13 @@ class DemPrefetchTest(unittest.TestCase):
             dem = demmod.Dem(d, fetcher=f)
             self.assertEqual(dem.prefetch([(15, 1, 1), (15, 2, 1), (15, 3, 1)]), (1, True))
 
+    def test_has_is_a_cheap_exists_check(self):
+        with tempfile.TemporaryDirectory() as d:
+            dem = demmod.Dem(d, fetcher=FakeFetcher())
+            self.assertFalse(dem.has(15, 100, 200))
+            dem.prefetch([(15, 100, 200)])
+            self.assertTrue(dem.has(15, 100, 200))
+
     def test_keys_around(self):
         with tempfile.TemporaryDirectory() as d:
             dem = demmod.Dem(d, fetcher=FakeFetcher())

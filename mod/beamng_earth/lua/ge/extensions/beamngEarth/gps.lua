@@ -57,6 +57,7 @@ local paused = false    -- the AI holds the car (world server away)
 local vehGraph = {}     -- vehicle id -> the game's map buildSerial when its mapmgr last took the graph
 local pathWait = nil    -- os.clock() since a path waits for the car to have the graph it was planned on
 local targetS = nil     -- the route distance of the arrows' target
+local downloadProgress = nil   -- { total, done, active } | nil: the route's corridor prefetch (server routeahead.py)
 
 -- Pure: the id and position {x, y, z} of the node in `nodes` (map.getMap().nodes: id -> { pos = {x, y, z} })
 -- nearest (tx, ty), and its distance; nil when there are none.
@@ -167,13 +168,20 @@ function M.setDestination(lat, lon, name)
   dest = { lat = lat, lon = lon, name = name }
   route, routeError, pendingId, enu, progress, info = nil, nil, nil, nil, 1, nil
   routedTo, lastCheck, lastRequest = nil, -math.huge, -math.huge     -- plan and route at the next update
+  downloadProgress = nil         -- the previous destination's bar, not this one's (its own push is coming)
   return true
 end
 
 function M.clear()
   if auto then M.setAutodrive(false) end
   dest, route, routeError, pendingId, enu, info = nil, nil, nil, nil, nil, nil
+  downloadProgress = nil
   clearArrows()
+end
+
+-- The server's route_download push (routeahead.py): { total, done, active }.
+function M.onRouteDownload(msg)
+  downloadProgress = { total = tonumber(msg.total) or 0, done = tonumber(msg.done) or 0, active = msg.active == true }
 end
 
 function M.status()
@@ -181,7 +189,8 @@ function M.status()
   return { lat = dest.lat, lon = dest.lon, name = dest.name, dist = info and info.dist, bearing = info and info.bearing,
            remaining = info and info.remaining, eta = info and info.eta, routeVersion = route and route.version or 0,
            progress = progress, planning = pendingId ~= nil, routeError = routeError, pendingId = pendingId,
-           autodrive = auto, autoNodes = autoPath and #autoPath or nil, off = info and info.off, arrows = routedTo }
+           autodrive = auto, autoNodes = autoPath and #autoPath or nil, off = info and info.off, arrows = routedTo,
+           routeDownload = downloadProgress }
 end
 
 -- The planned route for the map: { version, points = {{lat, lon}...}, dist, dur } or nil.

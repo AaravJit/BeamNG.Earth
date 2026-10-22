@@ -189,6 +189,11 @@ class Dem:
                 continue
         return got, False
 
+    def has(self, z, x, y):
+        """True when the Mapterhorn tile is on disk already (cheap: Mapdata.has's counterpart, for
+        routeahead.py's progress count -- never fetches)."""
+        return os.path.exists(self._path(MAPTERHORN, z, x, y))
+
     def keys_around(self, lat, lon, radius_m, zoom):
         """The tile keys (z, x, y) of zoom covering radius_m around lat/lon, nearest first; with the ground
         filter also their z12 parents (a z15 tile without lidar is made from z12 ground)."""

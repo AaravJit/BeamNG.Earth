@@ -11,6 +11,14 @@ T.check(G.setDestination(39.28, -76.59, 'x') and G.status().name == 'x', 'destin
 T.check(not G.setDestination(nil, 1), 'a bad destination refused')
 G.clear()
 T.check(G.status() == nil, 'cleared')
+T.check(G.setDestination(39.28, -76.59, 'x'), 'destination set again')
+G.onRouteDownload({ total = 10, done = 3, active = true })
+local rd = G.status().routeDownload
+T.check(rd.total == 10 and rd.done == 3 and rd.active == true, 'the route_download push reaches status()')
+G.clear()
+T.check(G.status() == nil, 'cleared again (routeDownload gone with the rest)')
+T.check(G.setDestination(39.28, -76.59, 'y') and G.status().routeDownload == nil,
+  'a fresh destination starts without the previous one\'s download bar')
 local xs, ys = { 0, 100, 100 }, { 0, 0, 100 }
 local si, st, sd = G.nearestSegment(xs, ys, 50, 10)
 T.check(si == 1 and math.abs(st - 0.5) < 1e-9 and math.abs(sd - 10) < 1e-9, 'on the first segment, halfway, 10 m off')
