@@ -115,8 +115,10 @@ LINK_M = {1: 6.0, 2: 9.0}
 LINK_LANE_M = 3.7       # a one-lane ramp's lane between its shoulders
 URBAN_ARTERIAL = {"trunk": 13.2}     # primaries in towns are often 2 lanes (Lancaster County's PA-340)
 LANE_M = 3.3            # m per lane when counting the lanes a carriageway holds
-# (experiment, 2026-10-22) carriageways painted into the drawn ground instead of meshes (surface.photo_roads); detail mode
-ROADS_IN_GROUND = os.environ.get("BNGE_ROADS_IN_GROUND") == "1"
+# carriageways painted into the drawn ground instead of meshes (surface.photo_roads; the user, 2026-10-22: "I dont love
+# that we are applying a floating road texture over the normal terrain"; it also ended the white diamonds on the
+# Stelvio's hairpins, GitHub #135). BNGE_ROADS_IN_GROUND=0: the carriageway meshes as before
+ROADS_IN_GROUND = os.environ.get("BNGE_ROADS_IN_GROUND", "1") != "0"
 # m per driving lane by class when OpenStreetMap gives the lane count (osmtags.py; typical design widths)
 LANE_W = {"motorway": 3.6, "trunk": 3.5, "primary": 3.3, "secondary": 3.3, "tertiary": 3.1}
 LANE_W_DEFAULT = 3.0

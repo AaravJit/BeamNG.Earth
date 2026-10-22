@@ -309,7 +309,7 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, e
 
 
 # Roads in the ground (the user, 2026-10-22: "I dont love that we are applying a floating road texture over the normal
-# terrain"): with BNGE_ROADS_IN_GROUND=1 the road tiles carry no carriageway mesh (roads.ROADS_IN_GROUND) and the
+# terrain"): by default (BNGE_ROADS_IN_GROUND=0 turns it off) the road tiles carry no carriageway mesh (roads.ROADS_IN_GROUND) and the
 # ground's photos have the carriageways painted in at their width (photo_roads): the drawn block's base photo and the
 # far tiles' textures down to PHOTO_ROADS_MAX_TEXEL (the near ring the block does not cover, where the meshes were);
 # the asphalt / cobble terrain layer (paint_roads) gives them their grain up close. Markings, curbs and sidewalks stay

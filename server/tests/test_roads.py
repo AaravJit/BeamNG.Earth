@@ -190,6 +190,14 @@ class GeometryTest(unittest.TestCase):
 
 
 class BuildTileTest(unittest.TestCase):
+    """The road tiles with their carriageway meshes (BNGE_ROADS_IN_GROUND=0; InGroundTest: the default)."""
+
+    def setUp(self):
+        self._rig, roads.ROADS_IN_GROUND = roads.ROADS_IN_GROUND, False
+
+    def tearDown(self):
+        roads.ROADS_IN_GROUND = self._rig
+
     def test_build_clips_and_styles(self):
         f = features([[(-300, 50), (300, 50)], [(100, 10), (100, 200)]], ["primary", "track"])
         chunks = [c for c in roads.build_tile(FRAME, 0, 0, [f], flat) if c["m"] in {l["m"] for l in roads.LOOK.values()}]
@@ -857,6 +865,24 @@ class PaintRoadsTest(unittest.TestCase):
         lo = LON + np.array([-200.0, 200.0]) / M_LON
         out = sf.paint_roads(idx, lat, lon, [f], 2.0, extra=[(la, lo, roads.Spec(7.0, "paved", False, "residential"))])
         self.assertEqual(int(out[64, 10]), sf.ASPHALT)
+
+
+class InGroundTest(unittest.TestCase):
+    """Carriageways painted into the ground (roads.ROADS_IN_GROUND, the default): no carriageway meshes, the markings
+    kept."""
+
+    def setUp(self):
+        self._rig, roads.ROADS_IN_GROUND = roads.ROADS_IN_GROUND, True
+
+    def tearDown(self):
+        roads.ROADS_IN_GROUND = self._rig
+
+    def test_no_carriageway_mesh_markings_kept(self):
+        f = features([[(-300, 50), (300, 50)]], ["primary"])
+        chunks = roads.build_tile(FRAME, 0, 0, [f], flat)
+        surfaces = {l["m"] for l in roads.LOOK.values()}
+        self.assertFalse([c for c in chunks if c["m"] in surfaces], "no carriageway mesh")
+        self.assertTrue([c for c in chunks if c["m"] not in surfaces], "its lines stay")
 
 
 if __name__ == "__main__":

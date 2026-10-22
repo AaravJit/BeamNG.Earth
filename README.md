@@ -23,7 +23,7 @@ Status: beta (see VERSION). Tested on BeamNG.drive 0.40.1 on Linux (Vulkan) and 
 - Buildings from Overture / OpenStreetMap with regional styles (US siding and brick, Alpine chalets, Nordic
   wood, Mediterranean stucco, East Asian and Latin American looks), real heights, roofs, windows, shopfronts,
   porches, churches with steeples, glass towers, far-away buildings drawn as a skyline.
-- Roads as meshes with lane markings, sidewalks and curbs, curb ramps, storm drains, cobblestone streets,
+- Roads painted into the ground itself (no floating road surface), with lane markings, sidewalks and curbs, curb ramps, storm drains, cobblestone streets,
   traffic islands, roundabouts, rural motorways with shoulders and toll booths; the ground graded under them, with
   retaining walls where a road is cut into a hill (dry stone in the mountains and towns, concrete along major roads)
   and stone parapets along mountain roads' drops; street lights, utility poles with wires, traffic signals,
@@ -74,7 +74,8 @@ Status: beta (see VERSION). Tested on BeamNG.drive 0.40.1 on Linux (Vulkan) and 
 - A slim status bar (street, town, country, world loading), a connection banner when something is
   wrong and the data credits on screen, as BeamNG UI apps in a ".Earth" app layout (based on Freeroam's;
   move or resize them in the UI apps editor), and a one-time welcome page about the project.
-- Settings in the pause menu, keybinds, in-game reports (notes and performance recordings to share).
+- Settings in the pause menu, keybinds, in-game reports (notes and performance recordings to share), and a
+  wireframe view (Ctrl+Alt+W) that shows how the ground, the distant terrain and the roads are built.
 - Easy setup: one download per system (Windows .exe, Linux AppImage) that installs the mod and starts the server
   and the game; from the source, `install.py` installs everything and `start.py` keeps the mod in sync.
 - Runs on a Steam Deck (aim: 30 fps on the Handheld graphics preset).

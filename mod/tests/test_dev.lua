@@ -401,4 +401,14 @@ for _ = 1, 20 do dev.onUpdate(DT, DT) end
 T.check(not dev._busy() and dev._index() == nil, 'off at the end')
 farfield.clear()
 
+-- the wireframe view: the engine's switch on and off again
+GFXDevice = { renderWireframe = false }
+dev.toggleWireframe()
+T.check(GFXDevice.renderWireframe == true, 'wireframe: on')
+dev.toggleWireframe()
+T.check(GFXDevice.renderWireframe == false, 'wireframe: off again')
+for _ = 1, 20 do dev.onUpdate(DT, DT) end
+T.check(not dev._busy(), 'wireframe: nothing left running')
+GFXDevice = nil
+
 T.done('test_dev')
