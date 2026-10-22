@@ -66,7 +66,8 @@ Status: beta (see VERSION). Tested on BeamNG.drive 0.40.1 on Linux (Vulkan) and 
 - World map (**M**): pan and zoom the globe, satellite or street map (EOX) with a roads & labels overlay,
   borders and place names (the **Layers** button), search for addresses and places as you type, teleport
   anywhere. Works with a controller, laid out like the stock map.
-- GPS routes to any destination (OSRM on OpenStreetMap), with the stock route arrows on the road.
+- GPS routes to any destination (OSRM on OpenStreetMap), with the stock route arrows on the road and the route
+  on the game's minimap (bottom left), which shows the roads around you.
 - **Autodrive**: the car drives itself along the GPS route (in lane, legal speed, minding traffic).
 - Saved places and recent places.
 

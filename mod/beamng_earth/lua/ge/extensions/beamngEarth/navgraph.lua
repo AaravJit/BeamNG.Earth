@@ -288,6 +288,10 @@ local function apply(b)
   end
   if keep then pcall(gps.afterGraph, keep, m.nodes) end    -- before the vehicles' new map
   be:queueAllObjectLua('mapmgr.requestMap()')
+  -- the minimap (the navigation app, in 0.40's freeroam layout and ours) indexes the map's roads once and keeps them:
+  -- it showed the first graph's streets, or none, as the player drove on (the user, 2026-10-22)
+  local mr = rawget(_G, 'ui_apps_minimap_roads')
+  if mr and mr.reset then pcall(mr.reset) end
   pendingSignals = ts and nodes or nil     -- next frame: a second, smaller hitch instead of one big one
   cuts = cl
   stats.applies, stats.lastMs, stats.nodes, stats.edges = stats.applies + 1, (os.clock() - t0) * 1000, nn, ne
