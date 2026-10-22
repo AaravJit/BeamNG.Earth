@@ -101,4 +101,12 @@ T.check(terrain.load('/t/fallback.png', 2, 512, 256, 0, 0,
 T.check(calls.updateMaterial == updates + 2 and asphalt.fields.baseColorBaseTex == '/t/fallback_base.png'
   and grass.fields.baseColorBaseTex == '/t/fallback_base.png', 'PNG import still rebinds every slot after a failed swap')
 
+-- Windows (GitHub #115): every slot rebound after the swap, as 1.5.4
+grass.setField = grassSetField
+terrain.REBIND_AFTER_SWAP = true
+local before = calls.updateMaterial or 0
+T.check(terrain.swap('/t/g.ter', 2, 512, 256, 0, 0, { materials = otherMats }, '/t/g_base.png', 512)
+  and calls.updateMaterial == before + #otherMats, 'Windows: one updateMaterial per slot after the swap: '
+  .. tostring((calls.updateMaterial or 0) - before))
+terrain.REBIND_AFTER_SWAP = false
 T.done('test_terrain_swap')

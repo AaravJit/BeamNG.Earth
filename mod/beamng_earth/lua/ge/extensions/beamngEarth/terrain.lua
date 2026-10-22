@@ -99,6 +99,7 @@ M.square = 2.0   -- the block's square size (m per sample), from the last load
 M.runtimeMade = {}
 M.seenMats = {}         -- material names some block of this session listed (M.swap)
 M.looked = {}   -- material name -> the square size its look was applied for
+M.REBIND_AFTER_SWAP = rawget(_G, 'jit') ~= nil and jit.os == 'Windows'   -- (M.swap; GitHub #115)
 local baseNow = nil
 local function toSamples(metres) return math.max(1, math.floor(metres / M.square + 0.5)) end
 
@@ -349,6 +350,10 @@ function M.swap(terPath, squareSize, maxHeight, x, y, z, layers, base, baseSize)
   if base ~= nil then baseNow = base or nil end
   M.swaps = (M.swaps or 0) + 1
   applyRender(tb)
+  -- Windows (and the Windows build under Proton): every slot rebound after the swap again, as 1.5.4 did. Without it
+  -- players on Windows saw red / blue normal-map stripes over the distant ground (GitHub #115, 1.5.5; worst at Low
+  -- texture quality, z-fighting with the photo); not seen on Linux, which keeps the ~18 ms cheaper swap.
+  if base ~= nil and M.REBIND_AFTER_SWAP then M.setBase(base or nil, baseSize) end
   -- ms of the last swap: the base fields' preparation and the .ter's application, then the whole call; its materials
   M.lastSwap = { apply = tApply, total = sw(), mats = #slots, fresh = #fresh > 0 and fresh or nil }
   return true
