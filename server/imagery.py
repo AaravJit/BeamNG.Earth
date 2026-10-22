@@ -54,13 +54,18 @@ log = logging.getLogger("earthd.imagery")
 TILE = 256
 MAX_LAT = demmod.MAX_LAT
 EARTH_CIRC = 40075016.686          # m, equatorial circumference (Web-Mercator scale)
+R_MERC = EARTH_CIRC / (2 * math.pi)  # m, the Web-Mercator sphere
 FETCH_WORKERS = 12      # (the photo hosts allow 12 / 6 at once, 2026-10-16)
 MEM_TILES = 512                    # decoded 256² RGB tiles kept in memory (~100 MB)
 # Attempts, retry delays, timeouts and the "source unreachable" backoff are the host's netfetch
 # policy now: once its circuit is open, its tiles fail at once instead of each paying the attempts
 # and timeouts (offline, every texture took ~10 s before the backoff existed), and fall back to
 # the next source or, with none left, to the palette material.
-MAX_MOSAIC = 36                    # source tiles per texture and source (zoom is lowered beyond)
+# source tiles per texture and source (zoom is lowered beyond). A 1024 m ground block at z17 takes 6 x 6 at 39 deg, 7 x 7
+# north of ~47.5 deg, 8 x 8 north of ~57 deg: at 36 every z17-only regional source (Germany, Poland, Czechia, the
+# Netherlands...) was skipped for the near ground there (found adding Poland, 2026-10-22); 81 = 9 x 9 (~64 deg),
+# a 2304 px RGBA mosaic (~21 MB) while one texture renders
+MAX_MOSAIC = 81
 MESH_CELLS = 8                     # render(): exact reprojection on an 8 x 8 grid of texture cells
 FALLBACK_RGB = (100, 89, 69)       # no imagery anywhere: the terrain material's dirt colour
 BLANK_RANGE = 2                    # a tile whose pixels all lie within this many levels is uniform
@@ -281,6 +286,16 @@ def range_in_bounds(src, z, tx0, tx1, ty0, ty1):
     return lon1 > w and lon0 < e and lat1 > s and lat0 < n
 
 
+def lat_lon_bbox(mb):
+    """An EPSG:3857 extent (minx, miny, maxx, maxy) as WMS 1.3.0's EPSG:4326 BBOX: "south,west,north,east" (latitude
+    first). The source draws it in plate carree: over an export parent (~1 km) its rows are within ~1e-4 of the
+    tile's Mercator rows (a fraction of a pixel)."""
+    x0, y0, x1, y1 = mb
+    lon = lambda x: math.degrees(x / R_MERC)                                            # noqa: E731
+    lat = lambda y: math.degrees(2.0 * math.atan(math.exp(y / R_MERC)) - math.pi / 2)  # noqa: E731
+    return f"{lat(y0):.7f},{lon(x0):.7f},{lat(y1):.7f},{lon(x1):.7f}"
+
+
 def mercator_bbox(z, x, y):
     """EPSG:3857 extent (minx, miny, maxx, maxy) of XYZ tile (z, x, y)."""
     size = EARTH_CIRC / 2 ** z
@@ -459,8 +474,8 @@ class Imagery:
             if data is not None:
                 self._count(src.name + ":disk")
                 return data
-            url = src.url.format(bbox=",".join(f"{v:.3f}" for v in mercator_bbox(z - k, x >> k, y >> k)),
-                                 size=TILE << k)
+            mb = mercator_bbox(z - k, x >> k, y >> k)
+            url = src.url.format(bbox=",".join(f"{v:.3f}" for v in mb), bbox4326=lat_lon_bbox(mb), size=TILE << k)
             if self.fetcher.miss_alive(miss, url):
                 return None
             kind = getattr(self._local, "kind", "demand")
