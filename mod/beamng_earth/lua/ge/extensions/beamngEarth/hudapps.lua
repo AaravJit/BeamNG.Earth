@@ -104,6 +104,47 @@ function M.unhookCityZone()
   zoneOrig, zoneWrap = nil, nil
 end
 
+-- The minimap's compass (the user, 2026-10-22: "fix the minimap north"): the stock compass points along the world's +y,
+-- which is north only at our anchor (geodesy Anchor:northAt). Its drawCompass reads the minimap's world-to-map
+-- transform (ui_apps_minimap_utils.getWorldToMapTransform: the 2nd and 4th values are where world +y points on the
+-- map); while in our level that call, and only that caller's, gets true north at the camera turned through the same
+-- transform. The roads, route and vehicles keep the plain transform.
+-- Pure: the map direction of world direction (tx, ty) under the transform's linear part.
+function M.mapNorth(xx, xy, yx, yy, tx, ty)
+  return xx * tx + xy * ty, yx * tx + yy * ty
+end
+
+local northOrig, northWrap = nil, nil
+-- getNorth(): true north at the camera as a world direction (x, y), or nil (leave the compass as it is).
+function M.hookMinimapNorth(getNorth)
+  local utils = rawget(_G, 'ui_apps_minimap_utils')
+  local dbg = rawget(_G, 'debug')
+  if not utils or type(utils.getWorldToMapTransform) ~= 'function' or not dbg or not dbg.getinfo then return false end
+  if utils.getWorldToMapTransform == northWrap then return true end
+  local orig = utils.getWorldToMapTransform
+  northOrig = orig
+  northWrap = function(...)
+    local xx, xy, yx, yy, ox, oy = orig(...)
+    local info = dbg.getinfo(2, 'n')
+    if info and info.name == 'drawCompass' and xx then
+      local tx, ty = getNorth()
+      if tx then
+        local nx, ny = M.mapNorth(xx, xy, yx, yy, tx, ty)
+        return xx, nx, yx, ny, ox, oy
+      end
+    end
+    return xx, xy, yx, yy, ox, oy
+  end
+  utils.getWorldToMapTransform = northWrap
+  return true
+end
+
+function M.unhookMinimapNorth()
+  local utils = rawget(_G, 'ui_apps_minimap_utils')
+  if utils and northWrap and utils.getWorldToMapTransform == northWrap then utils.getWorldToMapTransform = northOrig end
+  northOrig, northWrap = nil, nil
+end
+
 function M._reset()
   mounted, nMounted, lastSend, lastKey, lastFull, M.sends = {}, 0, -math.huge, nil, -math.huge, 0
 end

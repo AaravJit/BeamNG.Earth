@@ -40,4 +40,22 @@ H.unhookCityZone()
 T.check(gameplay_city.getHighestPrioZone == orig, 'unhooked: the original back')
 gameplay_city = nil
 T.check(not H.hookCityZone(function() return 'x' end), 'no city extension: nothing hooked')
+-- the minimap compass: true north for drawCompass only
+do
+  local nx, ny = H.mapNorth(2, 0, 0, -2, 1, 0)
+  T.check(nx == 2 and ny == 0, 'mapNorth: the linear part of the transform')
+  local function xf() return 2, 0, 0, -2, 10, 20 end
+  ui_apps_minimap_utils = { getWorldToMapTransform = xf }
+  local plainOrig = ui_apps_minimap_utils.getWorldToMapTransform
+  T.check(H.hookMinimapNorth(function() return 1, 0 end), 'compass hooked')
+  local get = ui_apps_minimap_utils.getWorldToMapTransform
+  local function drawCompass() local _, a, _, b = get(); return a, b end
+  local function drawRoads() return select(2, get()) end
+  local a, b = drawCompass()
+  T.check(a == 2 and b == 0, 'the compass gets true north through the transform')
+  T.check(drawRoads() == 0, 'other callers get the plain transform')
+  H.unhookMinimapNorth()
+  T.check(ui_apps_minimap_utils.getWorldToMapTransform == plainOrig, 'unhooked: the original back')
+  ui_apps_minimap_utils = nil
+end
 T.done('test_hudapps')
