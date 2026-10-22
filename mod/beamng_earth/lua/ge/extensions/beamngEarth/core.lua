@@ -64,6 +64,7 @@ local postfx = require('beamngEarth/postfx')       -- no far depth-of-field blur
 local gps = require('beamngEarth/gps')               -- the game's GPS route to a place picked on the world map
 local collisionfoci = require('beamngEarth/collisionfoci') -- other vehicles' collision islands
 local terrainpatch = require('beamngEarth/terrainpatch')   -- ground under the islands off the terrain block
+local farcars = require('beamngEarth/farcars')             -- far player cars saved, taken out and put back
 local fociBroken = false
 -- The pose's foci: the last collision foci (collisionfoci.lua), rounded, at most 16 (earthd FOCI_MAX); nil when none.
 local function poseFoci()
@@ -1506,10 +1507,12 @@ local function onUpdate(dtReal, dtSim)
       pb[1], pb[2], pb[3], pb[4] = lattice.groundBox(st.block.cx, st.block.cy)
     end
     if not fociBroken then
-      local ok, err = pcall(collisionfoci.update, dtReal, { roads.setFoci, trees.setFoci })
+      local ok, err = pcall(collisionfoci.update, dtReal, { roads.setFoci, trees.setFoci }, farcars.foci)
       if not ok then fociBroken = true; log('E', 'beamngEarth', 'collision foci: ' .. tostring(err)) end
       ok, err = pcall(terrainpatch.update, dtReal, st.anchorId, collisionfoci.last, st.player, pb, net.send)
       if not ok then fociBroken = true; log('E', 'beamngEarth', 'terrain patches: ' .. tostring(err)) end
+      ok, err = pcall(farcars.update, dtReal)
+      if not ok then fociBroken = true; log('E', 'beamngEarth', 'far cars: ' .. tostring(err)) end
     end
     parking.update(st.anchorId, st.player, pb)
     t = mark('parking', t)
@@ -1619,6 +1622,7 @@ end
 local function onClientEndMission()
   postfx.restore()
   pcall(terrainpatch.clear)
+  pcall(farcars.reset)
   gps.reset()
   do local stg = rawget(_G, 'beamngEarth_settings') if stg and stg.redirectBigMap then stg.redirectBigMap(false) end end
   seasonlook.restore()
@@ -1692,6 +1696,7 @@ teleportTo = function(lat, lon, name, kind)
     setStatus(string.format('Preparing terrain at %.5f, %.5f ...', lat, lon))
     parking.onTeleport()
     navgraph.onTeleport()
+    do local ok, err = pcall(farcars.onTeleport) if not ok then log('W', 'beamngEarth', 'far cars: ' .. tostring(err)) end end
     if kind ~= 'tool' then
       statusbar.reset()
       local ok, err = pcall(places.noteTeleport, lat, lon, name, kind)

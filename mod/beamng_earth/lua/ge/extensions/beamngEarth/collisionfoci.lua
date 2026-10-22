@@ -108,15 +108,19 @@ function M.vehicles()
 end
 
 local since = math.huge
--- Each frame (core.lua): every UPDATE_S the foci of the vehicles other than the active car, handed to the modules
--- that make collision (consumers: functions taking the foci list).
-function M.update(dt, consumers)
+-- Each frame (core.lua): every UPDATE_S the foci of the vehicles other than the active car, plus extra() (the stored
+-- far cars about to come back, farcars.lua), handed to the modules that make collision (consumers: functions taking
+-- the foci list).
+function M.update(dt, consumers, extra)
   since = since + (dt or 0)
   if since < M.UPDATE_S then return end
   since = 0
   local active = getPlayerVehicle and getPlayerVehicle(0)
   local ap = active and active:getPosition()
   local foci = M.compute(M.vehicles(), active and active:getId(), ap and ap.x, ap and ap.y)
+  if extra then
+    for _, f in ipairs(extra()) do foci[#foci + 1] = f end
+  end
   M.last = foci
   for _, f in ipairs(consumers or {}) do f(foci) end
 end
