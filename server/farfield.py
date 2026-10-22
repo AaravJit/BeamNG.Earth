@@ -114,11 +114,12 @@ ADAPT_EPS = 0.0 if os.environ.get("BNGE_FAR_ADAPT") == "0" else 0.04
 # Fine near ground (prototype, BNGE_NEAR_FINE=1; the user, 2026-10-22: "up close sharp features (like walls) more
 # detailed and sharper ... instead of the mesh being forced to a grid it can be more fluid"): in mesh mode (the tiles
 # drawn, the terrain block physics only) the finest near level is sampled every NEAR_FINE_M of the graded ground and
-# simplified like the far tiles (rtin_mesh within NEAR_FINE_EPS, doubled until the mesh has at most NEAR_FINE_VERTS
+# simplified like the far tiles (rtin_mesh within NEAR_FINE_EPS of the spacing, doubled until the mesh has at most NEAR_FINE_VERTS
 # vertices: the engine's 16-bit indices): a cutting's wall is a 0.5 m step instead of a 2-4 m ramp of lattice teeth,
 # flat ground a few triangles. The physics stays the 2 m lattice (the walls' own colliders hold the steps).
 NEAR_FINE_M = 0.5 if os.environ.get("BNGE_NEAR_FINE") == "1" else 0.0
-NEAR_FINE_EPS = 0.05
+NEAR_FINE_NEXT_M = 1.0          # ... and the level after it (L0, to ~400 m) every this
+NEAR_FINE_EPS = 0.1             # of the sample spacing (5 cm at 0.5 m, 10 cm at 1 m)
 NEAR_FINE_VERTS = 60000
 LATTICE = int(BASE / heightmap.SQUARE) + 1      # 129 terrain samples per L0 tile edge
 PALETTE_W, PALETTE_H = 256, 32
@@ -861,20 +862,22 @@ def build_tile(frame, dem, tile, zoom, q=None, ref_zoom=None, with_sink=True, la
         rxs = x0 + np.arange(2 * cells + 1) * (sp / 2)
         rys = y0 + np.arange(2 * cells + 1) * (sp / 2)
         ref = heightmap.surface_u(frame, lambda la, lo: dem.sample(la, lo, rz), rxs, rys)
-    fine = (NEAR_FINE_M > 0 and not with_sink and tile.level <= 0 and tile.level == layout.exact_level
-            and (int(round(S / NEAR_FINE_M)) & (int(round(S / NEAR_FINE_M)) - 1)) == 0)
-    if fine:                            # (the finest near level, mesh mode: NEAR_FINE_M)
-        nf = int(round(S / NEAR_FINE_M)) + 1
-        xs = x0 + np.arange(nf) * NEAR_FINE_M
-        ys = y0 + np.arange(nf) * NEAR_FINE_M
+    step_f = (NEAR_FINE_M if tile.level == layout.exact_level else
+              NEAR_FINE_NEXT_M if tile.level == layout.exact_level + 1 else 0.0) if NEAR_FINE_M > 0 else 0.0
+    fine = (step_f > 0 and not with_sink and tile.level <= 0
+            and (int(round(S / step_f)) & (int(round(S / step_f)) - 1)) == 0)
+    if fine:                            # (the two finest near levels, mesh mode: NEAR_FINE_M, NEAR_FINE_NEXT_M)
+        nf = int(round(S / step_f)) + 1
+        xs = x0 + np.arange(nf) * step_f
+        ys = y0 + np.arange(nf) * step_f
         elev, U = heightmap.surface(frame, elev_fn, xs, ys)
-        sp, cells = NEAR_FINE_M, nf - 1
+        sp, cells = step_f, nf - 1
     U = np.asarray(U, np.float64)
     shade = U                           # the vertex normals: the whole grid's (its detail in the light)
     adaptive = None
     if fine:
         fast.require(51, "fine near ground")
-        eps = NEAR_FINE_EPS
+        eps = NEAR_FINE_EPS * step_f
         while True:
             adaptive, surf, worst = fast._ef.rtin_mesh(np.ascontiguousarray(U), eps)
             if len(np.unique(adaptive)) + 4 * nf <= NEAR_FINE_VERTS:
