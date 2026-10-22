@@ -88,15 +88,24 @@ do
   end
 end
 local testClock, testCarAt, testDamaged = 0, nil, false
+local lateGoTo = nil         -- (test 'late': the go-to held until TEST_LATE_S)
+M.TEST_LATE_S = 45
 local brokenOf = {}         -- (test) remote game vehicle id -> broken beams
 
 -- (test) a remote car's broken beams, from its vehicle Lua
 local deformedOf = {}
 function M.onBroken(gid, n, d) brokenOf[tonumber(gid)] = tonumber(n); deformedOf[tonumber(gid)] = tonumber(d) end
 
+local onGoToRef = nil
 local function testStep(dt)
   if not next(test) then return end
   testClock = testClock + (dt or 0)
+  if lateGoTo and testClock >= M.TEST_LATE_S and onGoToRef then
+    local d = lateGoTo
+    lateGoTo = nil
+    log('I', 'beamngEarth', 'BeamMP test: going to the others now')
+    onGoToRef(d)
+  end
   local veh = getPlayerVehicle and getPlayerVehicle(0)
   if test.car and not testCarAt and not veh and stats.poses > 0 and testClock > M.TEST_CAR_S then
     testCarAt = testClock
@@ -174,6 +183,7 @@ local function onGoTo(data)
   local ok, d = pcall(jsonDecode, data)
   local c = core()
   stats.go = stats.go + 1
+  if test.late and testClock < M.TEST_LATE_S then lateGoTo = data; return end
   if wentTo or not ok or type(d) ~= 'table' or not c then return end
   local lat, lon = tonumber(d.lat), tonumber(d.lon)
   if not lat or not lon then return end
@@ -183,6 +193,8 @@ local function onGoTo(data)
   log('I', 'beamngEarth', string.format('BeamMP: to the other players at %.5f, %.5f', lat, lon))
   c.teleport(lat, lon, nil, { record = false })
 end
+
+onGoToRef = onGoTo
 
 -- No car yet (BeamMP joins without one): the free camera, left at the level's spawn point under the generated
 -- ground, put once on the ground at the origin (where the vehicle selector spawns the car); and lifted back over the
