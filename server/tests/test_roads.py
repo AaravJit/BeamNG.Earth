@@ -342,7 +342,9 @@ class BuildTileTest(unittest.TestCase):
         f = features([[(-300, 100), (300, 100)]], ["secondary"])
         walks = []
         chunks = roads.build_tile(FRAME, 0, 0, [f], dip, lambda la, lo: np.ones(np.shape(la), bool), walks=walks)
-        self.assertEqual(len(walks), 2)
+        # both sides (1.5.5 leaves a sidewalk out where the ground falls away from the road, so a side can be in
+        # pieces); every piece is checked below
+        self.assertEqual({w["side"] for w in walks}, {1, -1})
         for w in walks:
             curb, _ = sidewalks.run_geometry(w["pts"], w["side"], w["w"])
             s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(curb[:, :2], axis=0).T))]
@@ -373,7 +375,9 @@ class BuildTileTest(unittest.TestCase):
         walks = []
         chunks = roads.build_tile(FRAME, 0, 0, [f], hill, lambda la, lo: np.ones(np.shape(la), bool), walks=walks,
                                   ground=ground)
-        self.assertEqual(len(walks), 2)
+        # both sides (1.5.5 leaves a sidewalk out where the ground falls away from the road, so a side can be in
+        # pieces); every piece is checked below
+        self.assertEqual({w["side"] for w in walks}, {1, -1})
         for w in walks:
             curb, _ = sidewalks.run_geometry(w["pts"], w["side"], w["w"])
             s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(curb[:, :2], axis=0).T))]
