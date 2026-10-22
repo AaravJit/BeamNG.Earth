@@ -723,7 +723,7 @@ class MeshServerTest(ServerHarness):
         self.assertEqual(tiles[0]["level"], ex)
         # textures: DXT1 with mips, the layout's size per level (32 cells: TEX_NEAR for the two
         # finest levels, TEX_FAR beyond; 64: 256 px to L1, 512 from L2); shapes name the material
-        # and have the layout's triangle count (8704 with 64 cells)
+        # and have the layout's triangle count (8704 with 64 cells) up to L0
         for m in tiles[:3] + [t for t in tiles if t["level"] >= 0][:3] + [t for t in tiles if t["level"] >= 2][:2]:
             with open(self.fs(m["texture"]), "rb") as f:
                 w, h, mips, fourcc, _ = imagery.read_dds_info(f.read())
@@ -736,7 +736,10 @@ class MeshServerTest(ServerHarness):
             shape = cdae.read(self.fs(m["shape"]))
             self.assertEqual(shape["materials"][0]["name"], m["material"])
             self.assertEqual(shape["meshes"][0]["tverts2"][0], shape["meshes"][0]["verts"][0])
-            self.assertEqual(shape["meshes"][0]["indices"][0], 3 * lay.tris)
+            if m["level"] < ff.ADAPT_MIN_LEVEL:      # the lattice; adaptive meshes beyond (no more)
+                self.assertEqual(shape["meshes"][0]["indices"][0], 3 * lay.tris)
+            else:
+                self.assertLessEqual(shape["meshes"][0]["indices"][0], 3 * lay.tris)
         # the terrain block is physics only: following it changes no tile
         c.send({"type": "prepare_terrain", "requestId": 5, "anchorId": aid, "cx": 512, "cy": 0})
         tr, seen = c.until(lambda m: m["type"] == "terrain_ready", timeout=60)

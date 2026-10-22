@@ -3453,6 +3453,108 @@ fn paint_lines<'py>(py: Python<'py>, rgb: PyReadonlyArray3<'py, u8>, segs: PyRea
     Ok(out.into_pyarray(py))
 }
 
+/// farfield.build_tile's adaptive mesh: the right-triangulated irregular network (RTIN, a 4-8 hierarchy, as Mapbox's
+/// Martini) of a (2^k + 1)² height grid h [j, i] (j north) whose surface is within max_err (m) of every grid height.
+/// Returns (tris (m, 3) int64: grid indices j * n + i, counter-clockwise from +Z; surf (n, n): the mesh's surface at
+/// every grid point; the largest |surf - h|). The top split is the SW-NE diagonal and the finest cells split SW-NE
+/// where i + j is even, SE-NW where odd (the TerrainBlock's pattern, farfield.torque_split45), so surf on the regular
+/// grid triangulation is the mesh's surface exactly. The mesh has no T-junctions (a midpoint's error is at least its
+/// children's).
+#[pyfunction]
+fn rtin_mesh<'py>(py: Python<'py>, h: PyReadonlyArray2<'py, f64>, max_err: f64)
+                  -> PyResult<(Bound<'py, PyArray2<i64>>, Bound<'py, PyArray2<f64>>, f64)> {
+    let g = h.as_array();
+    let n = g.nrows();
+    let t = n.wrapping_sub(1);
+    if g.ncols() != n || n < 3 || !t.is_power_of_two() {
+        return Err(pyo3::exceptions::PyValueError::new_err("rtin_mesh: a (2^k + 1)² grid"));
+    }
+    let hv: Vec<f64> = g.iter().copied().collect();
+    let (tris, surf, worst) = py.allow_threads(|| {
+        let at = |x: usize, y: usize| hv[y * n + x];
+        let num = t * t * 2 - 2;
+        let parents = num - t * t;
+        let mut coords = vec![0usize; num * 4];
+        for i in 0..num {
+            let mut id = i + 2;
+            let (mut ax, mut ay, mut bx, mut by, mut cx, mut cy);
+            if id & 1 != 0 {
+                ax = 0; ay = 0; bx = t; by = t; cx = t; cy = 0;
+            } else {
+                ax = t; ay = t; bx = 0; by = 0; cx = 0; cy = t;
+            }
+            id >>= 1;
+            while id > 1 {
+                let (mx, my) = ((ax + bx) >> 1, (ay + by) >> 1);
+                if id & 1 != 0 {
+                    bx = ax; by = ay; ax = cx; ay = cy;
+                } else {
+                    ax = bx; ay = by; bx = cx; by = cy;
+                }
+                cx = mx; cy = my;
+                id >>= 1;
+            }
+            coords[i * 4..i * 4 + 4].copy_from_slice(&[ax, ay, bx, by]);
+        }
+        let mut errors = vec![0f64; n * n];
+        for i in (0..num).rev() {
+            let (ax, ay, bx, by) = (coords[i * 4], coords[i * 4 + 1], coords[i * 4 + 2], coords[i * 4 + 3]);
+            let (mx, my) = ((ax + bx) >> 1, (ay + by) >> 1);
+            let cx = (mx + my) as isize - ay as isize;
+            let cy = (my + ax) as isize - mx as isize;
+            let mid = my * n + mx;
+            let e = ((at(ax, ay) + at(bx, by)) / 2.0 - hv[mid]).abs();
+            if e > errors[mid] { errors[mid] = e; }
+            if i < parents {
+                let (cx, cy) = (cx as usize, cy as usize);
+                let l = ((ay + cy) >> 1) * n + ((ax + cx) >> 1);
+                let r = ((by + cy) >> 1) * n + ((bx + cx) >> 1);
+                errors[mid] = errors[mid].max(errors[l]).max(errors[r]);
+            }
+        }
+        let mut tris: Vec<[i64; 3]> = Vec::new();
+        let mut surf = vec![f64::NAN; n * n];
+        let mut stack = vec![(0usize, 0usize, t, t, t, 0usize), (t, t, 0, 0, 0, t)];
+        while let Some((ax, ay, bx, by, cx, cy)) = stack.pop() {
+            let (mx, my) = ((ax + bx) >> 1, (ay + by) >> 1);
+            let leg = (ax as isize - cx as isize).abs() + (ay as isize - cy as isize).abs();
+            if leg > 1 && errors[my * n + mx] > max_err {
+                stack.push((cx, cy, ax, ay, mx, my));
+                stack.push((bx, by, cx, cy, mx, my));
+                continue;
+            }
+            let p = [(ax, ay), (bx, by), (cx, cy)];
+            let z = [at(ax, ay), at(bx, by), at(cx, cy)];
+            let cross = (bx as f64 - ax as f64) * (cy as f64 - ay as f64) - (by as f64 - ay as f64) * (cx as f64 - ax as f64);
+            let idx = |k: usize| (p[k].1 * n + p[k].0) as i64;
+            tris.push(if cross > 0.0 { [idx(0), idx(1), idx(2)] } else { [idx(0), idx(2), idx(1)] });
+            // the plane over the grid points of this triangle (barycentric; edges shared, the same value both sides)
+            let (x0, x1) = (ax.min(bx).min(cx), ax.max(bx).max(cx));
+            let (y0, y1) = (ay.min(by).min(cy), ay.max(by).max(cy));
+            let det = cross;
+            for y in y0..=y1 {
+                for x in x0..=x1 {
+                    let (fx, fy) = (x as f64, y as f64);
+                    let w1 = ((fx - ax as f64) * (cy as f64 - ay as f64) - (fy - ay as f64) * (cx as f64 - ax as f64)) / det;
+                    let w2 = ((bx as f64 - ax as f64) * (fy - ay as f64) - (by as f64 - ay as f64) * (fx - ax as f64)) / det;
+                    let w0 = 1.0 - w1 - w2;
+                    if w0 < -1e-9 || w1 < -1e-9 || w2 < -1e-9 { continue; }
+                    surf[y * n + x] = w0 * z[0] + w1 * z[1] + w2 * z[2];
+                }
+            }
+        }
+        let mut worst = 0f64;
+        for k in 0..n * n {
+            worst = worst.max((surf[k] - hv[k]).abs());
+        }
+        (tris, surf, worst)
+    });
+    let m = tris.len();
+    let tris = numpy::ndarray::Array2::from_shape_vec((m, 3), tris.into_iter().flatten().collect()).unwrap();
+    let surf = numpy::ndarray::Array2::from_shape_vec((n, n), surf).unwrap();
+    Ok((tris.into_pyarray(py), surf.into_pyarray(py), worst))
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -3511,6 +3613,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(points_on_tris, m)?)?;
     m.add_function(wrap_pyfunction!(wet_run_inside, m)?)?;
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
-    m.add("VERSION", 49)?;
+    m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
+    m.add("VERSION", 50)?;
     Ok(())
 }

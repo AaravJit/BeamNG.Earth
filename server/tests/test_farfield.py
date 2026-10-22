@@ -315,6 +315,12 @@ class TileGeometryTest(unittest.TestCase):
         cls.dem = FakeDem()
         cls.n = cls.LAYOUT.cells
 
+    def setUp(self):                    # the regular grid (AdaptiveTileTest: the adaptive meshes)
+        self._eps, ff.ADAPT_EPS = ff.ADAPT_EPS, 0.0
+
+    def tearDown(self):
+        ff.ADAPT_EPS = self._eps
+
     def build(self, tile, dem=None, q=None, zoom=None):
         z = ff.zoom_for_level(self.LAYOUT, LAT0, max(tile.level, 1)) if zoom is None else zoom
         b = ff.build_tile(self.frame, dem or self.dem, tile, z, q, layout=self.LAYOUT)
@@ -530,6 +536,55 @@ class AssetsTest(unittest.TestCase):
         vfs = "/" + "/".join(ff.MOD_SHAPES) + "/" + ff.MOD_PALETTE
         self.assertEqual(mats, ff.material_json(vfs))
         self.assertEqual(mats[ff.MATERIAL]["mapTo"], ff.MATERIAL)
+
+
+class AdaptiveTileTest(unittest.TestCase):
+    """Far tiles from ADAPT_MIN_LEVEL up as adaptive meshes (earthfast.rtin_mesh)."""
+    LAYOUT = ff.Layout(64, 1024, True, (256, 256, 256, 512))
+
+    def setUp(self):
+        self._eps, ff.ADAPT_EPS = ff.ADAPT_EPS, 0.04
+        self.frame = g.EnuFrame(LAT0, LON0)
+
+    def tearDown(self):
+        ff.ADAPT_EPS = self._eps
+
+    def build(self, tile, dem):
+        return ff.build_tile(self.frame, dem, tile, ff.zoom_for_level(self.LAYOUT, LAT0, tile.level), layout=self.LAYOUT)
+
+    def test_flat_ground_is_few_triangles(self):
+        b = self.build(ff.Tile(2, 0, 0), FakeDem())
+        self.assertLess(len(b.tris), 8192 // 4)
+        self.assertLess(len(b.positions), 65 * 65 // 4)
+
+    def test_rough_ground_keeps_its_detail(self):
+        b = self.build(ff.Tile(2, 0, 0), RoughDem())
+        ff.ADAPT_EPS = 0.0
+        full = self.build(ff.Tile(2, 0, 0), RoughDem())
+        self.assertGreater(len(b.tris), len(full.tris) // 3)
+        self.assertLessEqual(b.err, full.err + 0.15 * b.size / 64, "a few hundredths of a spacing more error")
+
+    def test_mesh_is_whole_and_upright(self):
+        b = self.build(ff.Tile(2, 0, 0), RoughDem())
+        self.assertEqual(set(np.unique(b.tris)), set(range(len(b.positions))), "every vertex in a triangle")
+        P = b.positions
+        a, c, d = P[b.tris[:, 0]], P[b.tris[:, 1]], P[b.tris[:, 2]]
+        up = (c[:, 0] - a[:, 0]) * (d[:, 1] - a[:, 1]) - (c[:, 1] - a[:, 1]) * (d[:, 0] - a[:, 0])
+        flat = np.abs(up) > 1e-6        # (skirt quads stand vertical)
+        self.assertTrue(np.all(up[flat] > 0), "counter-clockwise from +Z")
+
+    def test_grid_is_the_mesh_surface(self):
+        """Built.grid (swap deltas, rock faces) is the adaptive surface: surface_at agrees with the mesh's vertices."""
+        b = self.build(ff.Tile(2, 0, 0), RoughDem())
+        grid = np.asarray(b.grid, np.float64)
+        top = b.positions[:, 2] + b.pos[2]
+        xy = b.positions[:, :2]
+        z = ff.surface_at(grid, b.size / 64, xy[:, 0], xy[:, 1])
+        inside = top >= z - 1.0          # (the skirt vertices hang under it)
+        np.testing.assert_allclose(top[inside], z[inside], atol=0.02)
+
+    def test_near_levels_stay_the_lattice(self):
+        self.assertEqual(ff.ADAPT_MIN_LEVEL, 1)
 
 
 if __name__ == "__main__":

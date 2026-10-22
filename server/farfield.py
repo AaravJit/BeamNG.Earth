@@ -100,6 +100,15 @@ HOLD_S = 2.0                # a node changes state at most once per HOLD_S secon
 DETAIL_M = 2.0              # UV1 (detail map) repeat in metres; must divide 64 (see module doc)
 FAR_MAX_ZOOM = 14           # DEM zoom cap for L1+ (L0 uses the heightmap's zoom)
 SINK_MARGIN = 0.3           # m below the terrain everywhere for a sunk L0 tile
+# Adaptive far meshes (the user, 2026-10-22: "Only use the highest resolution available when needed ... Large flat
+# areas can use lower resolutions ... and far away of course uses low res"): from ADAPT_MIN_LEVEL up a tile is the
+# right-triangulated irregular network of its grid (earthfast.rtin_mesh) within ADAPT_EPS of its vertex spacing of
+# every grid height: flat ground a few large triangles, cliffs the whole grid. 2026-10-22, 64 cells: 75-85 % fewer
+# triangles on Baltimore's and Kansas's tiles, 50-70 % at Whitney Portal, 25-35 % in Yosemite, for ~0.06 spacings
+# of error (under a pixel at a level's switch distance; the grid's own sampling error is 0.3-5 spacings). Levels <= 0
+# stay the 2 m lattice the roads and the terrain block meet. BNGE_FAR_ADAPT=0 turns it off.
+ADAPT_MIN_LEVEL = 1
+ADAPT_EPS = 0.0 if os.environ.get("BNGE_FAR_ADAPT") == "0" else 0.04
 LATTICE = int(BASE / heightmap.SQUARE) + 1      # 129 terrain samples per L0 tile edge
 PALETTE_W, PALETTE_H = 256, 32
 WATER_U = 0.02
@@ -842,6 +851,11 @@ def build_tile(frame, dem, tile, zoom, q=None, ref_zoom=None, with_sink=True, la
         rys = y0 + np.arange(2 * cells + 1) * (sp / 2)
         ref = heightmap.surface_u(frame, lambda la, lo: dem.sample(la, lo, rz), rxs, rys)
     U = np.asarray(U, np.float64)
+    shade = U                           # the vertex normals: the whole grid's (its detail in the light)
+    adaptive = None
+    if tile.level >= ADAPT_MIN_LEVEL and ADAPT_EPS > 0:
+        fast.require(50, "adaptive far tiles")
+        adaptive, U, _ = fast._ef.rtin_mesh(np.ascontiguousarray(U), ADAPT_EPS * sp)     # U: the mesh's surface
 
     # Geometric error: the reference against the triangulated tile, on the 2x grid.
     rf = np.arange(2 * cells + 1) * (sp / 2)
@@ -862,21 +876,31 @@ def build_tile(frame, dem, tile, zoom, q=None, ref_zoom=None, with_sink=True, la
     vv = 0.5 - 0.47 * slope_t
 
     # Vertex normals from the grid (central differences).
-    P = np.stack([X, Y, U], -1)
-    di = np.gradient(P, axis=1)
-    dj = np.gradient(P, axis=0)
+    Ps = np.stack([X, Y, shade], -1)
+    di = np.gradient(Ps, axis=1)
+    dj = np.gradient(Ps, axis=0)
     nrm = np.cross(di, dj)
     nrm /= np.linalg.norm(nrm, axis=-1, keepdims=True)
+    P = np.stack([X, Y, U], -1)
 
     ny, nx = X.shape
-    tris = [grid_triangles(nx - 1)]     # CCW from +Z, the TerrainBlock's diagonals
-
-    # Skirts: copies of the edge vertices, lowered; same normal and uv as the edge.
     P, nrm = P.reshape(-1, 3), nrm.reshape(-1, 3)
     uv = np.stack([uu, vv], -1).reshape(-1, 2)
+    runs = _skirt(nx, ny)
+    if adaptive is None:
+        tris = [grid_triangles(nx - 1)]     # CCW from +Z, the TerrainBlock's diagonals
+    else:                               # the mesh's vertices only; the skirts along its edge vertices
+        used = np.unique(adaptive)
+        new_of = np.full(nx * ny, -1, np.int64)
+        new_of[used] = np.arange(len(used))
+        tris = [new_of[adaptive]]
+        P, nrm, uv = P[used], nrm[used], uv[used]
+        runs = [new_of[r[new_of[r] >= 0]] for r in runs]
+
+    # Skirts: copies of the edge vertices, lowered; same normal and uv as the edge.
     depth = skirt_depth(S, err)
-    extra_p, extra_n, extra_uv, nv = [], [], [], nx * ny
-    for run in _skirt(nx, ny):
+    extra_p, extra_n, extra_uv, nv = [], [], [], len(P)
+    for run in runs:
         low = P[run] - (0.0, 0.0, depth)
         t0, t1 = run[:-1], run[1:]
         lo0 = nv + np.arange(len(run) - 1)
