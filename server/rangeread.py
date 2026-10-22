@@ -50,6 +50,11 @@ class RangeError(IOError):
     """A remote range could not be read (no mirror could deliver, or a bad answer)."""
 
 
+class Changed(RangeError):
+    """A file pinned to an ETag (RemoteFile if_match) changed on the server: the cached blocks are of the old version
+    (osmtags.py: a file rewritten in place)."""
+
+
 class Missing(RangeError):
     """The file does not exist (404 / 410; remembered by a marker <cache_dir>/404 for the host's
     miss_ttl, as dem.py and imagery.py remember missing tiles)."""
@@ -98,9 +103,12 @@ class RemoteFile:
     """See the module docstring. size: the file's length in bytes (from an index, e.g. the STAC
     item's file:size), or None to learn it from the first answer's Content-Range (then kept in
     <cache_dir>/size, so a later session can check the length of every cached block too). cache_dir
-    is the file's own directory (it also keys its blocks in the shared memory LRU)."""
+    is the file's own directory (it also keys its blocks in the shared memory LRU). if_match: the ETag of the
+    version the blocks must come from (a file that is rewritten in place: put the ETag into cache_dir too); a request
+    the server answers for another version raises Changed."""
 
-    def __init__(self, urls, size, cache_dir, fetcher):
+    def __init__(self, urls, size, cache_dir, fetcher, if_match=None):
+        self.if_match = if_match
         self.urls = (urls,) if isinstance(urls, str) else tuple(urls)
         self.cache_dir = cache_dir
         self.fetcher = fetcher
@@ -172,8 +180,16 @@ class RemoteFile:
             raise Missing(f"{self.urls[0]}: not found (remembered)")
         err = None
         for url in self.urls:
+            hd = {"Range": f"bytes={start}-{end - 1}"}
+            if self.if_match:
+                hd["If-Match"] = self.if_match
             try:
-                r = self.fetcher.get(url, kind=kind, headers={"Range": f"bytes={start}-{end - 1}"})
+                r = self.fetcher.get(url, kind=kind, headers=hd)
+            except netfetch.FetchFailed as e:
+                if self.if_match and getattr(e, "status", None) == 412:
+                    raise Changed(f"{url}: no longer {self.if_match}") from e
+                err = e
+                continue
             except netfetch.NotFound as e:
                 os.makedirs(self.cache_dir, exist_ok=True)
                 open(marker, "wb").close()
@@ -182,6 +198,8 @@ class RemoteFile:
                 err = e
                 continue
             body = r.body
+            if self.if_match and r.headers.get("etag", self.if_match).strip() != self.if_match:
+                raise Changed(f"{url}: {r.headers.get('etag')} is not {self.if_match}")
             if r.status == 206:
                 m = CONTENT_RANGE.match(r.headers.get("content-range", ""))
                 if not m or int(m.group(1)) != start:

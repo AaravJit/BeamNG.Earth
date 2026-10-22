@@ -75,7 +75,8 @@ LAYER_THREADS = 4               # layers of a cell built at once (each fetches t
 VERSION = 2                     # pipeline version: bump when what a cell's layers contain changes
 # per layer, on top of VERSION (a layer's own change without re-fetching the others): roads 2 adds
 # the "oneway" rule (Overture access_restrictions by heading)
-LAYER_VERSIONS = {"roads": 2}
+# roads 3: OpenStreetMap's lanes, width, sidewalk, maxspeed... joined by way id (osmtags.py)
+LAYER_VERSIONS = {"roads": 3}
                                 # (2: clipped polygon pieces `own`ed by their cell, exact cell edges,
                                 # the exact no-area test of clipped rings)
 VECTOR_LAYERS = ("roads", "connectors", "buildings", "water", "land_use", "infrastructure", "building_parts")
@@ -315,6 +316,8 @@ class MapData:
         """(content arrays, provenance record or None) of one layer, from the sources."""
         if layer in VECTOR_LAYERS:
             feats, sources = self.overture.query(layer, key, kind)
+            if layer == "roads":
+                self._osm_tags(feats, key, kind)
             ox, oy = mapcells.owner(feats.attrs.get("cx", np.zeros(0)), feats.attrs.get("cy", np.zeros(0)), key.z)
             feats.own = (ox == key.x) & (oy == key.y)
             if feats.clipped is not None:
@@ -333,6 +336,20 @@ class MapData:
             prov = dict(CANOPY, files=r.files) if r is not None else None
         arrays["provenance"] = np.array(json.dumps(prov, sort_keys=True))
         return arrays
+
+    def _osm_tags(self, feats, key, kind):
+        """The roads' OpenStreetMap tags (osmtags.py) joined in; none (the width guesses) when the source fails."""
+        import osmtags
+        tags = {}
+        if len(feats) and self.fetcher is not None:
+            try:
+                with self._lock:
+                    if getattr(self, "osmtags", None) is None:
+                        self.osmtags = osmtags.OsmTags(self.raw_dir, self.fetcher)
+                tags = self.osmtags.query(key.bounds(), kind)
+            except Exception as e:          # optional: the roads go on with their guesses
+                log.warning("mapdata: OSM road tags of %s: %s: %s", key, type(e).__name__, e)
+        osmtags.join(feats, tags)
 
     def layer_arrays(self, key, layer, kind="demand"):
         """(arrays, hit) of one cell's layer: from the cache, or built and cached."""

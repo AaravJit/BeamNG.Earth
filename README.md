@@ -162,7 +162,7 @@ The repository contains only code; all map data is downloaded at runtime and cac
   cloudless by EOX IT Services GmbH everywhere (https://s2maps.eu, contains modified Copernicus Sentinel
   data; 2016 release CC BY 4.0, 2023 release CC BY-NC-SA 4.0, non-commercial).
 - Elevation: Mapterhorn (see https://mapterhorn.com/attribution), AWS Terrain Tiles / Mapzen.
-- Roads, buildings, water and places: Overture Maps / OpenStreetMap contributors; trees from a
+- Roads, buildings, water and places: Overture Maps / OpenStreetMap contributors (lane counts, widths and speed limits from OpenStreetMap via OSM US Layercake); trees from a
   canopy height model; airports from OurAirports.
 Each source's terms apply to the downloaded data; the in-game window shows the attribution line.
 The full list of data sources, services, libraries, tools and references, with licences and the
