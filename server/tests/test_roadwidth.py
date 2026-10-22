@@ -1,5 +1,6 @@
 """Street widths between the buildings (roadwidth.py) and their use by the roads (roads.road_specs, the
 sidewalks of build_tile)."""
+import gc
 import os
 import sys
 import unittest
@@ -120,6 +121,8 @@ class StoreTest(unittest.TestCase):
             np.testing.assert_array_equal(walls.rays(p, dd), fresh.rays(p, dd))
             np.testing.assert_array_equal(fresh.rays(p, dd),
                                           roadwidth.Walls(np.asarray(walls.segs, np.float64)).rays(p, dd))
+            del rw, walls, fresh
+            gc.collect()  # the file's mappings closed: Windows deletes no mapped file
 
             def flaky(key):
                 if (key.x, key.y) != (home.x, home.y):
