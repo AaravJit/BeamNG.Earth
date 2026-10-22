@@ -65,7 +65,12 @@ STYLE = {
 }
 PAVED = {"paved", "asphalt", "concrete", "metal", "wood"}
 COBBLE = {"paving_stones", "sett", "cobblestone", "unhewn_cobblestone", "bricks"}   # Overture: "paving_stones"
+# interlocking concrete pavers under the names the map gives them (surface_kind: a street paved with them is a
+# cobble street, not a gravel track)
+COBBLE_ALIASES = {"interlocking_pavers", "interlocking_stones", "pavers", "block_pavers", "paving_stone"}
 GRAVEL = {"gravel", "fine_gravel", "compacted", "pebblestone"}
+# ... and the values that do mean "no hard surface": an unrecognised one is not one of these (the class decides)
+UNPAVED = {"unpaved", "ground", "dirt", "earth", "mud", "grass", "sand", "soil"}
 # kinds with a hard, built surface: carriageway extras (parking, strips, sidewalks) apply
 BUILT = {"paved", "cobble"}
 # surface kind -> DecalRoad look (stock materials, loaded by the mod from the official levels)
@@ -435,16 +440,23 @@ def _clear_end(feats, i, rs, ring, at_start, half):
 
 
 def surface_kind(cls, surface):
-    """'paved', 'cobble', 'gravel' or 'dirt' from the class and the surface rule value (None if unknown)."""
+    """'paved', 'cobble', 'gravel' or 'dirt' from the class and the surface rule value (None if unknown).
+
+    The value's base token decides: OSM writes the detail after a colon (`cobblestone:flattened`,
+    `paving_stones:30`, `sett:pattern`) and more than one value after a semicolon, and matched whole they all fell
+    through to "dirt", which is drawn with gravel's own material (LOOK) and painted DIRT: İzmir's sett streets read
+    as gravel tracks (2026-10-22). Interlocking pavers have their own names in the map. A value not understood at
+    all is the class's own surface, not dirt: an unknown tag must not turn a residential street into a track."""
     if surface is not None:
-        s = str(surface).lower()
+        s = str(surface).lower().split(";")[0].split(":")[0].strip()
         if s in PAVED:
             return "paved"
-        if s in COBBLE:
+        if s in COBBLE or s in COBBLE_ALIASES:
             return "cobble"
         if s in GRAVEL:
             return "gravel"
-        return "dirt"
+        if s in UNPAVED:
+            return "dirt"
     return "paved" if STYLE.get(cls, STYLE["unknown"])[1] else "dirt"
 
 

@@ -79,6 +79,17 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(roads.surface_kind("track", "asphalt"), "paved")
         self.assertEqual(roads.surface_kind("primary", "gravel"), "gravel")
         self.assertEqual(roads.surface_kind("primary", "unpaved"), "dirt")
+        # the detail after a colon (or a second value after a semicolon) does not lose the base surface: İzmir's
+        # sett streets were drawn as dirt/gravel tracks (2026-10-22)
+        for v in ("cobblestone:flattened", "sett:pattern", "paving_stones:30", "sett;asphalt"):
+            self.assertEqual(roads.surface_kind("residential", v), "cobble", v)
+        self.assertEqual(roads.surface_kind("residential", "concrete:lanes"), "paved")
+        # interlocking concrete pavers, under the names the map gives them
+        for v in ("interlocking_pavers", "interlocking_stones"):
+            self.assertEqual(roads.surface_kind("residential", v), "cobble", v)
+        # a value not understood at all is the class's own surface, not the dirt road
+        self.assertEqual(roads.surface_kind("residential", "whatever"), "paved")
+        self.assertEqual(roads.surface_kind("track", "whatever"), "dirt")
 
     def test_specs_width_and_left_out(self):
         f = features([[(0, 0), (10, 0)]] * 6, ["residential", "footway", "primary", "tertiary", "track", "secondary"],
