@@ -73,7 +73,9 @@ GRAVEL = {"gravel", "fine_gravel", "compacted", "pebblestone"}
 UNPAVED = {"unpaved", "ground", "dirt", "earth", "mud", "grass", "grass_paver", "sand", "soil",
            # the rock family: a rough, unpaved surface, never a marked asphalt street (gridmap v2's Rock is a
            # TerrainMaterial — a heightfield shader, not a surface a decal can carry: 2026-10-22)
-           "rock", "rocky", "bedrock", "stone", "stones"}
+           "rock", "rocky", "bedrock", "stone", "stones",
+           # more of OSM's recognised unpaved values, which an unrecognised value must not outrank
+           "clay", "shells", "woodchips"}
 # kinds with a hard, built surface: carriageway extras (parking, strips, sidewalks) apply
 BUILT = {"paved", "cobble"}
 # surface kind -> DecalRoad look (stock materials, loaded by the mod from the official levels)
@@ -739,20 +741,20 @@ def _road_specs(feats, urban_fn, widths, left_hand):
             a = feats.coord_off[feats.ring_off[feats.part_off[i]]]
             b = feats.coord_off[feats.ring_off[feats.part_off[i + 1]]]
             if b > a:
-                ask.append((len(out), cls, kind, a, b, ow, dk))
+                ask.append((len(out), cls, kind, a, b, ow, dk, surface_token(surf)))
                 out.append(None)
                 continue
         out.append(Spec(carriageway(cls, kind, False, rule_w, ow), kind, False, cls, ow, 2.5, *dk,
                         surf=surface_token(surf)))
     if ask:
-        ll = np.concatenate([feats.lonlat[a:b] for _, _, _, a, b, _, _ in ask])
+        ll = np.concatenate([feats.lonlat[a:b] for _, _, _, a, b, _, _, _ in ask])
         u = np.asarray(urban_fn(ll[:, 1], ll[:, 0]), bool)
         k = 0
-        for j, cls, kind, a, b, ow, dk in ask:
+        for j, cls, kind, a, b, ow, dk, token in ask:
             urban = float(np.mean(u[k:k + (b - a)])) >= URBAN_SHARE
             k += b - a
             out[j] = Spec(carriageway(cls, kind, urban, None, ow), kind, urban, cls, ow, 2.5, *dk,
-                          surf=surface_token(surf))
+                          surf=token)
     out = dual_carriageways(feats, out, left_hand)
     if widths is not None:                      # measured between the buildings (roadwidth.py)
         for j, sp in enumerate(out):
@@ -1878,6 +1880,7 @@ DECK_CLEAR = 0.05       # m a deck stays above the ground under it (no z-fightin
 DECK_ROAD_CLEAR = 7.5
 DECK_GRADE = 0.05       # that requirement falls 5 % along the deck from the crossing
 DECK_MAX_GRADE = 0.06   # a deck climbs no steeper than this from an abutment
+CORNER_CONCRETE_M = 4.0  # m: a concrete street this close to a curb return fills its corner in concrete too
 AT_GRADE_M = 3.0        # m: a road crossing a deck within AT_GRADE_REACH_M of an abutment that cannot get this
 AT_GRADE_REACH_M = 12.0     # high over it is a junction at grade (the intersection a ramp starts from)
 CHAIN_CELLS = 12        # map cells read at most to close one bridge chain
@@ -3238,7 +3241,7 @@ def twin_tunnels(parts):
     return out
 
 
-def _tunnel_chunks(tunnels, cells, exact):
+def _tunnel_chunks(tunnels, cells, exact, terrain_paint=True):
     """The chunks of the tunnels crossing the tile box `exact`: the road surface ("deck", "tunnel": the tube is
     built around it, roadmesh.tunnel) and its lines, every one "fixed" at the floor's heights; a surface chunk
     ending at its part's end carries "portal": [start is one, end is one]. Twin tunnels (twin_tunnels): their surfaces
@@ -3269,7 +3272,10 @@ def _tunnel_chunks(tunnels, cells, exact):
             jobs.append((parts[i][0], (mid[0, :2], mid[-1, :2]), [({**TUNNEL, "tunnel": True, "tube_only": True}, width, mid)]))
     for n, (fid, spec, xy, z, lon) in enumerate(parts):
         pts = np.c_[xy, z]
-        lines = [({**TUNNEL, "deck": True, "tunnel": True, "no_tube": n in twinned}, spec.width, pts)]
+        look = _deck_look(spec) if not terrain_surface(spec) else None
+        if terrain_paint and terrain_surface(spec):
+            look = None                     # painted in the ground layer, as any other ground part
+        lines = [] if look is None else [({**look, "deck": True, "tunnel": True, "no_tube": n in twinned}, spec.width, pts)]
         for look, w, line in extras(spec, pts, lon):
             if look["m"] != SIDEWALK["m"] and look["m"] != GUTTER["m"]:
                 lines.append((look, w, line))
@@ -3356,6 +3362,26 @@ DECK_CONTEXT_M = 24.0   # m around a tile its bridges' decks are passed as conte
                         # in the next tile, Queensboro Bridge 2026-10-17)
 
 
+def _deck_look(spec):
+    """A bridge deck's look: the concrete of a `surface=concrete` street (it stays concrete over the bridge), else
+    asphalt — and asphalt for rock/grass surfaces, whose ground mask cannot be painted on a deck at all."""
+    if not terrain_surface(spec) and spec.kind == "paved" and spec.surf == "concrete":
+        return CONCRETE
+    return DECK
+
+
+def _corner_look(point, roads):
+    """A junction's corner-fill polygon look: the asphalt of the paved streets meeting there, or the concrete of
+    them when a concrete street is within CORNER_CONCRETE_M of the corner (its wedges would otherwise be asphalt
+    wedges in a concrete junction)."""
+    px, py = float(point[0]), float(point[1])
+    for _fid, spec, pts, _lon in roads:
+        if spec.kind == "paved" and spec.surf == "concrete":
+            if np.hypot(pts[:, 0] - px, pts[:, 1] - py).min() <= CORNER_CONCRETE_M:
+                return CONCRETE
+    return LOOK["paved"]
+
+
 def _deck_chunks(decks, exact):
     """Deck + line chunks of bridge parts [(fid, spec, pts (k, 3), lon)] clipped to the box `exact`, and their decks
     within DECK_CONTEXT_M of it as "ctx" chunks (not drawn: build_tile's caller hands them to roadmesh.deck)."""
@@ -3366,11 +3392,11 @@ def _deck_chunks(decks, exact):
         for piece in clip_polyline(pts, *wide):
             for c in split(densify(simplify(piece, ztol=SIMPLIFY_Z_M))):
                 if len(c) >= 2:
-                    ch = _chunk({**DECK, "deck": True}, spec.width, c)
+                    ch = _chunk({**_deck_look(spec), "deck": True}, spec.width, c)
                     ch.update(fixed=True, deck=True, fid=fid, ctx=True)
                     out.append(ch)
     for fid, spec, pts, lon in decks:
-        lines = [({**DECK, "deck": True}, spec.width, pts)]
+        lines = [({**_deck_look(spec), "deck": True}, spec.width, pts)]
         for look, w, line in extras(spec, pts, lon):
             if look["m"] != SIDEWALK["m"] and look["m"] != GUTTER["m"]:
                 lines.append((look, w, line))
@@ -3422,7 +3448,7 @@ def drains(run, side, caps, walk_w=None):
 
 def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=None, widths=None, props=None,
                lines=None, wires=None, town=None, park=None, left_hand=False, structures=(), mph=True, tunnels=None,
-               walls=None, deck_context=None):
+               walls=None, deck_context=None, terrain_paint=True):
     """The chunks of one tile. cells: the mapgeom.Features of the "roads" layer of every cell touching
     the tile; elev(lat, lon) -> metres (the DEM); urban_fn: as road_specs. Features in several cells are
     taken once (by id). The carriageways, then each road's sidewalks / gutters / markings (extras), cut
@@ -3471,7 +3497,9 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
             k += m
     chunks = []
     for fid, spec, pts, _ in roads:
-        if terrain_surface(spec):       # painted in the ground layer (surface.py): no smooth ribbon over rough ground
+        # no smooth ribbon over rough ground — but only where the ground layer will paint it (--surface on); with
+        # the surface pass off there is no ROCK/GRASS mask, and the road would otherwise vanish entirely
+        if terrain_paint and terrain_surface(spec):
             continue
         look = look_of(spec)
         lanes = [(0.0, spec.width)]
@@ -3494,7 +3522,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         elif deck_context is not None:          # the decks around the tile (roadmesh.deck's parapet test)
             deck_context.append(ch)
     if tunnels is not None:                     # TunnelProfiles: road surfaces and lines through tunnels
-        tch = _tunnel_chunks(tunnels, cells, (x0, y0, x1, y1))
+        tch = _tunnel_chunks(tunnels, cells, (x0, y0, x1, y1), terrain_paint)
         chunks.extend(tch)
         import roadmesh
         # (retaining walls: none in a tube either, its vault over them; between twin tunnels' carriageways one stood in
@@ -3546,8 +3574,9 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                 continue                        # a curb return inside a loop: its island has its own curb
             if x0 <= p[0] < x1 and y0 <= p[1] < y1:
                 walks.append({"corner": c})
+                fill_look = _corner_look(p, roads)
                 for fill in ([c["fill"]] if c["fill"] is not None else []) + c.get("fills", []):
-                    chunks.append({"m": LOOK["paved"]["m"], "w": 0.0, "tl": LOOK["paved"]["tl"], "p": LOOK["paved"]["p"],
+                    chunks.append({"m": fill_look["m"], "w": 0.0, "tl": fill_look["tl"], "p": fill_look["p"],
                                    "poly": [[round(float(v), 3) for v in q] for q in fill], "n": []})
         for cw in crosswalks:                   # crosswalks and stop lines
             mid = 0.5 * (cw["a"] + cw["b"])

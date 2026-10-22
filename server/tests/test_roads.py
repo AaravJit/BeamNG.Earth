@@ -101,6 +101,14 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(roads.surface_token(" Concrete:Lanes "), "concrete")
         self.assertIsNone(roads.surface_token(None))
 
+    def test_deferred_specs_keep_their_own_surface(self):
+        # no mapped width + an urban sample: these go through the deferred (ask) path, which used to reuse the
+        # surface token left over from the last feature scanned (Codex on PR #119)
+        f = features([[(0, 0), (10, 0)]] * 2, ["residential", "residential"],
+                     surfaces=[(0, "concrete"), (1, "asphalt")])
+        s = roads.road_specs(f, urban_fn=lambda lat, lon: np.ones(len(lat), bool))
+        self.assertEqual([sp.surf for sp in s], ["concrete", "asphalt"])
+
     def test_rock_and_grass_live_in_the_ground_layer(self):
         def spec(surf):
             return roads.Spec(6.0, "dirt", False, "residential", False, 2.5, 0, None, surf=surf)
