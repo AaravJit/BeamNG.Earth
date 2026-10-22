@@ -4,6 +4,7 @@ far split around the player, the wording against the sources' own credits, chang
 the one-per-second throttle, the re-send on hello, and the default server without any of it. No
 network: synthetic DEM and imagery, fake weather fetches."""
 import asyncio
+import gc
 import io
 import json
 import math
@@ -167,6 +168,8 @@ class DemServedTest(unittest.TestCase):
         self.assertEqual(dem.served, {(12, 1, 7): "mapterhorn", (12, 2, 7): "aws-terrarium", (12, 3, 7): None})
         self.assertEqual(float(got[(12, 1, 7)][0, 0]), 128 * 256 + 10 - 32768)
         dem.pool.shutdown()
+        del dem, got
+        gc.collect()  # the decoded mirror's mappings closed: Windows deletes no mapped file
         tmp.cleanup()
 
     def test_served_through_the_failover(self):
