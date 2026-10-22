@@ -387,9 +387,10 @@ def paint_square(rgb, frame, x0, y0, size, surface, widths=None):
 
 
 # The near tiles' asphalt (mesh near-visual mode, where the tiles are the ground seen): a mask of the built
-# carriageways (paved, cobble) beside the tile's texture, far_<a>_<key>_road.dds (road_mask_name); the mod's material
-# gives the masked part a second layer with the stock asphalt's grain and bumps (satmat.lua), the rest the ground's.
-ROAD_MASK_MAX_TEXEL = 1.0       # m per texel: the near levels (L-1 0.5 m, L0 1 m)
+# carriageways (paved, cobble) beside the tile's texture, far_<a>_<key>_road.dds (road_mask_name), finer than the photo
+# (farfield.NEAR_MASK_PX; the GPU has room, the CPU less, the user 2026-10-22); the mod's material gives the masked
+# part a second layer of the stock asphalt (its colour, grain and bumps, world-locked; satmat.lua), the rest the photo.
+ROAD_MASK_MAX_TEXEL = 1.0       # m per texel of the mask
 ROAD_MASK_KINDS = ("paved", "cobble")
 
 
@@ -400,8 +401,9 @@ def road_mask_name(texture):
 
 
 def road_mask(frame, x0, y0, size, px, surface, widths=None):
-    """The built carriageways' coverage (px x px uint8, 255 on the road, antialiased) of a tile photo over
-    [x0, x0 + size]², or None (texels coarser than ROAD_MASK_MAX_TEXEL, no roads, no cell cached)."""
+    """The built carriageways' coverage (px x px uint8, 255 on the road, antialiased) of a tile photo's square
+    [x0, x0 + size]² (its gutter included: the mask lines up with it on UV0), or None (texels coarser than
+    ROAD_MASK_MAX_TEXEL, no roads, no cell cached)."""
     if surface is None or size / max(px, 1) > ROAD_MASK_MAX_TEXEL:
         return None
     feats = _square_roads(frame, x0, y0, size, surface)

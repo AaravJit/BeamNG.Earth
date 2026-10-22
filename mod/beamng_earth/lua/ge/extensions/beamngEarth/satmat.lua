@@ -53,22 +53,25 @@ M.DETAIL_FIELDS = {
 M.FALLBACK_COLOR = '0.39 0.35 0.27 1' -- texture file missing: the terrain's macro dirt colour
 
 -- The near tiles' asphalt (mesh near-visual mode: the tiles are the ground seen, and the roads are painted into their
--- photos, server surface.road_mask): where the server wrote a road mask beside the texture (far_<a>_<key>_road.dds)
--- the material gets a second layer, shown through the mask: the same photo with the stock asphalt's grain and bumps on
--- UV1 (world-locked, DETAIL_M = 2 m), the rest the ground's grain. No mask: one layer.
--- Off (2026-10-22): the second layer drew the road pale grey (~178 for the photo's 95) whatever its maps were, a
--- version 1.5 layering detail not found yet; the masks are written, the layer waits for that.
-M.ASPHALT_LAYER = false
+-- photos, server surface.road_mask): where the server wrote a road mask beside the texture (far_<a>_<key>_road.dds,
+-- finer than the photo) the material gets a second layer, shown through the mask: the terrain block's own asphalt
+-- (bngEarthGroundAsphalt's t_asphalt_b / _nm) as detail maps on UV1 (world-locked, DETAIL_M = 2 m) scaled to its 5 m
+-- repeat over a flat grey, as West Coast USA's island_terrain layers its grass and dirt. Tried 2026-10-22: the tile's
+-- photo as the layer's base drew the road pale grey; the decal road's colour map tiled every 2 m as dense streaks.
+-- In the Fells Point street view: 114 grey vs the terrain asphalt's 126 in detail mode. No mask: one layer.
+M.ASPHALT_LAYER = true
 M.ASPHALT_FIELDS = {
-  { 'detailMap', '/assets/materials/tileable/road/road_asphalt_light/asphalt1_detail.data.png' },
+  { 'baseColorMap', '' },
+  { 'baseColorFactor', '0.35 0.35 0.35 1' },
+  { 'detailMap', '/assets/materials/terrain/asphalt/asphalt/t_asphalt_b.png' },
   { 'detailMapUseUV', '1' },
-  { 'detailScale', '1 1' },
-  { 'normalMap', '/assets/materials/tileable/road/road_asphalt_light/t_road_asphalt1_nm.normal.png' },
-  { 'normalMapUseUV', '1' },
-  { 'detailNormalMap', '/assets/materials/tileable/road/road_asphalt/t_asphalt_track_nm.normal.png' },
+  { 'detailScale', '0.4 0.4' },
+  { 'detailBaseColorMapStrength', '1' },
+  { 'detailNormalMap', '/assets/materials/terrain/asphalt/asphalt/t_asphalt_nm.png' },
   { 'normalDetailMapUseUV', '1' },
-  { 'opacityMapUseUV', '0' },
-  { 'opacityFactor', '1' },
+  { 'detailNormalMapStrength', '0.8' },
+  { 'roughnessFactor', '0.9' },
+  { 'useAnisotropic', '1' },
 }
 
 -- The road mask beside a far tile's texture (its revision suffix dropped), or nil.
@@ -90,7 +93,6 @@ local function setTexture(m, texture)
   m:setField('baseColorMap', 0, texture)
   if on then
     m:setField('activeLayers', 0, '2')
-    m:setField('baseColorMap', 1, texture)
     m:setField('opacityMap', 1, mask)
     for _, f in ipairs(M.ASPHALT_FIELDS) do m:setField(f[1], 1, f[2]) end
   else

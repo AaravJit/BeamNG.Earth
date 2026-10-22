@@ -613,12 +613,12 @@ def far_tile(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout, tex):
             rgb = surfacemod.paint_square(rgb, frame, *sq, getattr(_s, "surface", None), _s.widths)
         except Exception as e:
             log.debug("road faces of %s: %s", tile.key, e)
-    if tex.get("mask"):                   # (earthd.Server.write_road_mask)
+    if tex.get("mask") and tex["mask"][1]:  # (earthd.Server.write_road_mask)
         try:
             import surface as surfacemod
-            mask = surfacemod.road_mask(frame, *sq, px, getattr(_s, "surface", None), _s.widths)
+            mask = surfacemod.road_mask(frame, *sq, tex["mask"][1], getattr(_s, "surface", None), _s.widths)
             if mask is not None:
-                imagerymod.write_dds(tex["mask"], np.repeat(mask[..., None], 3, axis=2))
+                imagerymod.write_dds(tex["mask"][0], np.repeat(mask[..., None], 3, axis=2))
         except Exception as e:
             log.debug("road mask of %s: %s", tile.key, e)
     return built, (imagerymod.write_dds(tex["path"], rgb), used)

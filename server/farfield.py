@@ -119,6 +119,9 @@ ADAPT_EPS = 0.0 if os.environ.get("BNGE_FAR_ADAPT") == "0" else 0.04
 # flat ground a few triangles. The physics stays the 2 m lattice (the walls' own colliders hold the steps).
 NEAR_FINE_M = 0.5 if os.environ.get("BNGE_NEAR_FINE") == "1" else 0.0
 NEAR_FINE_NEXT_M = 1.0          # ... and the level after it (L0, to ~400 m) every this
+# ... and their road masks (surface.road_mask: the mod's asphalt layer) this fine, by level past the exact one: 12.5 cm
+# on the 128 m tiles, 50 cm on the 256 m ones
+NEAR_MASK_PX = {0: 1024, 1: 512}
 NEAR_FINE_EPS = 0.1             # of the sample spacing (5 cm at 0.5 m, 10 cm at 1 m)
 NEAR_FINE_VERTS = 60000
 LATTICE = int(BASE / heightmap.SQUARE) + 1      # 129 terrain samples per L0 tile edge

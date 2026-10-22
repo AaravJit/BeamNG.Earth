@@ -1790,7 +1790,8 @@ class Server:
             texture = self.texture_name(anchor.id, tile.key, self.tex_rev.get((anchor.id, tile.key), 0))
             im = self.imagery
             tex = {"path": os.path.join(self.out_dir, texture), "px": self.tex_size(lvl),
-                   "mask": os.path.join(self.out_dir, surfacemod.road_mask_name(texture)) if self.road_masks else None,
+                   "mask": (os.path.join(self.out_dir, surfacemod.road_mask_name(texture)),
+                            self.road_mask_px(lvl)) if self.road_masks else None,
                    "chain": [s.name for s in im.chain], "tone": self.tone, "leaf_on": im.leaf_on,
                    "season_mode": im.season_mode}
             built, got = self.far_pool.submit(blockworker.far_tile, anchor.id, anchor.lat, anchor.lon, tile,
@@ -1882,14 +1883,20 @@ class Server:
             log.debug("road faces of %s: %s", tile.key, e)
             return rgb
 
+    def road_mask_px(self, level):
+        """The road mask's edge for a near level (farfield.NEAR_MASK_PX), or 0 (none)."""
+        return farfield.NEAR_MASK_PX.get(level - self.layout.exact_level, 0)
+
     def write_road_mask(self, anchor, tile, px, texture):
-        """The near tile's road mask beside its texture (self.road_masks: mesh mode; surface.road_mask), written
-        before the texture (the mod looks for it when it sets the texture). None to write: nothing."""
-        if not self.road_masks:
+        """The near tile's road mask beside its texture (self.road_masks: mesh mode; surface.road_mask, over the
+        photo's square with its gutter, at road_mask_px), written before the texture (the mod looks for it when it
+        sets the texture)."""
+        mpx = self.road_mask_px(tile.level)
+        if not self.road_masks or not mpx:
             return
         try:
             x0, y0, _, _ = tile.bbox
-            mask = surfacemod.road_mask(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px), px,
+            mask = surfacemod.road_mask(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px), mpx,
                                         self.surface, self.road_widths)
             if mask is not None:
                 imagerymod.write_dds(os.path.join(self.out_dir, surfacemod.road_mask_name(texture)),

@@ -5,7 +5,6 @@ local dir = (arg[0]:match('^(.*)[/\\]') or '.')
 local T = dofile(dir .. '/testlib.lua')
 dofile(dir .. '/stubs.lua')
 local satmat = require('beamngEarth/satmat')
-satmat.ASPHALT_LAYER = true   -- (off in play for now)
 
 local exists = {}
 FS = { fileExists = function(_, p) return exists[p] == true end }
@@ -27,8 +26,8 @@ exists['/temp/s/far_3_-1_0_-1_road.dds'] = true
 satmat._setTexture(m, '/temp/s/far_3_-1_0_-1.dds')
 T.check(m.f['activeLayers/0'] == '2' and m.f['version/0'] == '1.5', 'a mask: two layers')
 T.check(m.f['opacityMap/1'] == '/temp/s/far_3_-1_0_-1_road.dds', 'the mask is the second layer\'s opacity')
-T.check(m.f['baseColorMap/0'] == '/temp/s/far_3_-1_0_-1.dds' and m.f['baseColorMap/1'] == '/temp/s/far_3_-1_0_-1.dds',
-  'both layers show the photo')
+T.check(m.f['baseColorMap/0'] == '/temp/s/far_3_-1_0_-1.dds', 'the photo underneath')
+T.check(m.f['detailMap/1'] ~= nil and m.f['detailMapUseUV/1'] == '1', 'the asphalt layer tiled on UV1')
 T.check(m.f['detailMap/1'] ~= nil, 'the asphalt grain on the second layer')
 
 satmat._setTexture(m, '/temp/s/far_3_1_0_0.dds')       -- the pooled material moves on to a tile without a mask
