@@ -72,7 +72,7 @@ def write_grid_dae(path, positions, uvs, tris, material="bngEarthDae", texture=N
 </COLLADA>
 '''
     tmp = staging.tmp_for(path)
-    with open(tmp, "w") as f:
+    with open(tmp, "w", newline="\n") as f:     # the same bytes on Windows (no CRLF)
         f.write(xml)
     staging.replace(tmp, path)
 
