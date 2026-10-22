@@ -93,8 +93,10 @@ CONTENT_FORMAT = {32: 3, 64: 4}     # the protocol's FORMAT (hello.format) of ea
 TEX_DEFAULT = {32: (256, 256, 256), 64: (256, 256, 256, 512)}
 BLOCK_SIZES = (1024, 512)   # terrain block samples per edge (M4, docs/V1_4_SPEC.md §3.5: 512, mesh mode only)
 # Triangles per tile shape: 8192 + 512 at 64 cells. The old 8192 was the ProceduralMesh rule;
-# .cdae has no such cliff and the 65k-vertex engine limit is far away (§3.1).
+# .cdae has no such cliff (§3.1): its limit is the engine's 16-bit vertex indices (VERTS_MAX), which the fine near
+# tiles (NEAR_FINE_M, up to ~2x the grid's triangles at a cutting) keep under.
 TRIS_MAX = 9000
+VERTS_MAX = 65535
 HYSTERESIS = 0.25           # a refined node stays refined while d < (1 + h) * its switch distance
 HOLD_S = 2.0                # a node changes state at most once per HOLD_S seconds (§2.4)
 DETAIL_M = 2.0              # UV1 (detail map) repeat in metres; must divide 64 (see module doc)
@@ -109,6 +111,15 @@ SINK_MARGIN = 0.3           # m below the terrain everywhere for a sunk L0 tile
 # stay the 2 m lattice the roads and the terrain block meet. BNGE_FAR_ADAPT=0 turns it off.
 ADAPT_MIN_LEVEL = 1
 ADAPT_EPS = 0.0 if os.environ.get("BNGE_FAR_ADAPT") == "0" else 0.04
+# Fine near ground (prototype, BNGE_NEAR_FINE=1; the user, 2026-10-22: "up close sharp features (like walls) more
+# detailed and sharper ... instead of the mesh being forced to a grid it can be more fluid"): in mesh mode (the tiles
+# drawn, the terrain block physics only) the finest near level is sampled every NEAR_FINE_M of the graded ground and
+# simplified like the far tiles (rtin_mesh within NEAR_FINE_EPS, doubled until the mesh has at most NEAR_FINE_VERTS
+# vertices: the engine's 16-bit indices): a cutting's wall is a 0.5 m step instead of a 2-4 m ramp of lattice teeth,
+# flat ground a few triangles. The physics stays the 2 m lattice (the walls' own colliders hold the steps).
+NEAR_FINE_M = 0.5 if os.environ.get("BNGE_NEAR_FINE") == "1" else 0.0
+NEAR_FINE_EPS = 0.05
+NEAR_FINE_VERTS = 60000
 LATTICE = int(BASE / heightmap.SQUARE) + 1      # 129 terrain samples per L0 tile edge
 PALETTE_W, PALETTE_H = 256, 32
 WATER_U = 0.02
@@ -850,17 +861,37 @@ def build_tile(frame, dem, tile, zoom, q=None, ref_zoom=None, with_sink=True, la
         rxs = x0 + np.arange(2 * cells + 1) * (sp / 2)
         rys = y0 + np.arange(2 * cells + 1) * (sp / 2)
         ref = heightmap.surface_u(frame, lambda la, lo: dem.sample(la, lo, rz), rxs, rys)
+    fine = (NEAR_FINE_M > 0 and not with_sink and tile.level <= 0 and tile.level == layout.exact_level
+            and (int(round(S / NEAR_FINE_M)) & (int(round(S / NEAR_FINE_M)) - 1)) == 0)
+    if fine:                            # (the finest near level, mesh mode: NEAR_FINE_M)
+        nf = int(round(S / NEAR_FINE_M)) + 1
+        xs = x0 + np.arange(nf) * NEAR_FINE_M
+        ys = y0 + np.arange(nf) * NEAR_FINE_M
+        elev, U = heightmap.surface(frame, elev_fn, xs, ys)
+        sp, cells = NEAR_FINE_M, nf - 1
     U = np.asarray(U, np.float64)
     shade = U                           # the vertex normals: the whole grid's (its detail in the light)
     adaptive = None
-    if tile.level >= ADAPT_MIN_LEVEL and ADAPT_EPS > 0:
+    if fine:
+        fast.require(50, "fine near ground")
+        eps = NEAR_FINE_EPS
+        while True:
+            adaptive, surf, worst = fast._ef.rtin_mesh(np.ascontiguousarray(U), eps)
+            if len(np.unique(adaptive)) + 4 * nf <= NEAR_FINE_VERTS:
+                break
+            eps *= 2
+        U = surf
+    elif tile.level >= ADAPT_MIN_LEVEL and ADAPT_EPS > 0:
         fast.require(50, "adaptive far tiles")
         adaptive, U, _ = fast._ef.rtin_mesh(np.ascontiguousarray(U), ADAPT_EPS * sp)     # U: the mesh's surface
 
-    # Geometric error: the reference against the triangulated tile, on the 2x grid.
-    rf = np.arange(2 * cells + 1) * (sp / 2)
-    RX, RY = np.meshgrid(rf, rf)
-    err = float(np.abs(ref - surface_at(U, sp, RX, RY)).max())
+    # Geometric error: the reference against the triangulated tile, on the 2x grid (fine: the samples themselves).
+    if fine:
+        err = float(worst)
+    else:
+        rf = np.arange(2 * cells + 1) * (sp / 2)
+        RX, RY = np.meshgrid(rf, rf)
+        err = float(np.abs(ref - surface_at(U, sp, RX, RY)).max())
     sink = None
     if terrain is not None:
         lf = np.arange(terrain.shape[0]) * heightmap.SQUARE
@@ -925,7 +956,7 @@ def write_built(path, built, fmt="cdae", material=MATERIAL, textured=False, tex_
     has its own imagery texture (UV0 = footprint, UV1 = world-locked detail); otherwise UV0 is
     the shared palette coordinate and there is no UV1. tex_px: the texture has a border of
     imagery.gutter(tex_px) texels around the footprint (UV0 is inset to match)."""
-    assert len(built.tris) <= TRIS_MAX
+    assert len(built.positions) <= VERTS_MAX
     uvs = built.uvs
     if textured:
         uvs = built.planar if tex_px is None else imagery.gutter_uv(built.planar, tex_px)
