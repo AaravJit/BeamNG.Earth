@@ -484,6 +484,8 @@ def windows_game_dir():
 def start_game(use_gcpatch, build="native", gfx="", user_dir=None):
     """Start the game; returns a Popen when this process started it directly, else None (through Steam)."""
     win_args = ["-gfx", gfx] if gfx else []
+    extra = os.environ.get("BNGE_GAME_ARGS", "").split()     # (tests: e.g. "-bngetest car,damage")
+    win_args += extra
     if IS_WIN:
         # as BeamMP's launcher: the game's own launcher (BeamNG.drive.exe) in its folder, waited on. Works under
         # Wine / Proton too (the .exe started with protontricks), where Steam's links do not reach Steam
@@ -519,7 +521,7 @@ def start_game(use_gcpatch, build="native", gfx="", user_dir=None):
                     env["BNGEARTH_USER_DIR"] = user_dir
             runtime = steam_runtime(exe)
             row("Game", "starting" + ("  (with the grass patch)" if lib else ""))
-            proc = subprocess.Popen(([runtime, "--verb=waitforexitandrun", "--"] if runtime else []) + [exe],
+            proc = subprocess.Popen(([runtime, "--verb=waitforexitandrun", "--"] if runtime else []) + [exe] + extra,
                                     cwd=os.path.dirname(os.path.dirname(exe)), env=env,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
             t0 = time.time()
