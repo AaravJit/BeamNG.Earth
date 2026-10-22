@@ -5,8 +5,10 @@ pavilion, where the terrain showed the aerial photo's blur).
 Each Overture land_use polygon of subtype "pedestrian" (surface.PLAZA_CLASSES) is triangulated, its triangles split
 until no edge is longer than STEP_M (earthfast.subdivide_tris, Rust) so it follows the graded ground, and draped
 LIFT_M over it with the brick pavers tiled in world metres. A road tile gets the triangles whose centre lies in it
-(no overlap between tiles). Render only (the terrain under it collides); the road mesh draws over it (a road's lift
-is higher). Pure given its inputs (elev)."""
+(no overlap between tiles). Overlapping areas are paved once: the smaller (the more specific) keeps the ground it
+shares with a larger one (GitHub #127: Melbourne's Federation Square, two pavings at one height flickered through
+each other). Render only (the terrain under it collides); the road mesh draws over it (a road's lift is higher). Pure
+given its inputs (elev)."""
 import numpy as np
 
 STEP_M = 2.0            # m: the longest edge after subdivision (the physics block's 2 m lattice)
@@ -35,16 +37,14 @@ def _subdivide(pts, tris, step):
     return np.asarray(P), np.asarray(T)
 
 def _inside_many(ring, pts):
-    """Which points pts (k, 2) lie inside the ring (m, 2) (even-odd), all at once (blocks of points). Pure."""
-    xs, ys = ring[:, 0], ring[:, 1]
-    xj, yj = np.roll(xs, 1), np.roll(ys, 1)
-    dy = np.where(yj - ys == 0, 1e-12, yj - ys)
-    out = np.zeros(len(pts), bool)
-    for a in range(0, len(pts), 4096):
-        x, y = pts[a:a + 4096, 0:1], pts[a:a + 4096, 1:2]
-        cross = ((ys > y) != (yj > y)) & (x < (xj - xs) * (y - ys) / dy + xs)
-        out[a:a + 4096] = (np.count_nonzero(cross, axis=1) % 2) == 1
-    return out
+    """Which points pts (k, 2) lie inside the ring (m, 2) (even-odd; polygon.contains_points, Rust)."""
+    import polygon
+    return polygon.contains_points(np.asarray(ring, np.float64), np.asarray(pts, np.float64))
+
+
+def _overlaps(a, b):
+    """Do the boxes (x0, y0, x1, y1) a and b overlap?"""
+    return a[0] <= b[2] and b[0] <= a[2] and a[1] <= b[3] and b[1] <= a[3]
 
 
 def polygons(feats_list):
@@ -79,13 +79,24 @@ def paving(surface_value, lat, lon):
     return PAVING.get(surface_value, STONE)
 
 
-def mesh(frame, box, rings, elev, origin):
+def _covered(cover, pts):
+    """Which points (k, 2) lie on the triangles cover (n, 6: x0 y0 x1 y1 x2 y2; earthfast.points_on_tris, Rust)."""
+    import fast
+    fast.require(47, "points_on_tris")
+    return np.asarray(fast._ef.points_on_tris(np.ascontiguousarray(cover, np.float64),
+                                               np.ascontiguousarray(pts, np.float64), 8.0))
+
+
+def mesh(frame, box, rings, elev, origin, cover=None):
     """The paved mesh of the plaza rings (lon/lat) in the tile box (x0, y0, x1, y1) of the anchor frame:
     (positions relative to origin (k, 3), tris, uvs, [material], tri material index) or None. elev(lat, lon) -> m
-    (the graded ground the physics block has)."""
+    (the graded ground the physics block has). cover: the road mesh's triangles in the frame (n, 6: x0 y0 x1 y1 x2
+    y2) or None: the ground they cover is left to them (a pedestrian street mapped over a square drew its cobbles
+    1 cm over the paving, and the two flickered at a distance; GitHub #127)."""
     import buildings
     x0, y0, x1, y1 = box
     Ps, Ts, Ms, n0 = [], [], [], 0
+    areas = []                          # (area, xy, holes, look) of the areas in the tile, the smallest first
     for item in rings:
         ring, holes, sv = (item, [], "bricks") if isinstance(item, np.ndarray) else item
         look = paving(sv, float(np.mean(ring[:, 1])), float(np.mean(ring[:, 0])))
@@ -103,6 +114,11 @@ def mesh(frame, box, rings, elev, origin):
             continue
         if area2 < 0:
             xy = xy[::-1]
+        areas.append((abs(area2) / 2, xy, holes, look))
+    areas.sort(key=lambda a: a[0])
+    done = []                           # (ring xy, its box) of the areas paved so far (smaller ones)
+    for _, xy, holes, look in areas:
+        xbox = (xy[:, 0].min(), xy[:, 1].min(), xy[:, 0].max(), xy[:, 1].max())
         tris = np.asarray(buildings.triangulate(xy), np.int64).reshape(-1, 3)
         if not len(tris):
             continue
@@ -118,6 +134,14 @@ def mesh(frame, box, rings, elev, origin):
                     continue
                 k = np.flatnonzero(keep)
                 keep[k[_inside_many(hxy, c[k])]] = False
+        if cover is not None and len(cover) and keep.any():
+            k = np.flatnonzero(keep)
+            keep[k[_covered(cover, c[k])]] = False
+        for dxy, dbox in done:          # (a smaller area over this one: its ground paved once, by it)
+            if keep.any() and _overlaps(xbox, dbox):
+                k = np.flatnonzero(keep)
+                keep[k[_inside_many(dxy, c[k])]] = False
+        done.append((xy, xbox))
         if not keep.any():
             continue
         T = T[keep]

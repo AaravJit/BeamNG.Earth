@@ -407,7 +407,13 @@ def _with_plazas(mesh, frame, tx, ty, elev, origin, surface):
         box = roadsmod.tile_bbox(tx, ty)
         la, lo, _ = frame.enu_to_geodetic(np.array([box[0], box[2]]), np.array([box[1], box[3]]), np.zeros(2))
         rings = plazas.polygons(surface.lots(la, lo))
-        return plazas.merge(mesh, plazas.mesh(frame, box, rings, elev, origin)) if rings else mesh
+        if not rings:
+            return mesh
+        cover = None
+        if mesh is not None and len(mesh[1]):
+            P, T = np.asarray(mesh[0], np.float64), np.asarray(mesh[1], np.int64)
+            cover = (P[T][:, :, :2] + np.asarray(origin, np.float64)[:2]).reshape(-1, 6)
+        return plazas.merge(mesh, plazas.mesh(frame, box, rings, elev, origin, cover))
     except Exception:                   # no plazas rather than no road tile
         log.exception("plazas of tile %s_%s", tx, ty)
         return mesh

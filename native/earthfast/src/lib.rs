@@ -3282,6 +3282,67 @@ fn grid_mesh<'py>(py: Python<'py>, xs: PyReadonlyArray1<'py, f64>, ys: PyReadonl
     Ok((pos.into_pyarray(py), tris.into_pyarray(py)))
 }
 
+/// Which points lie on any of the triangles (2D): tris (n, 6) as x0 y0 x1 y1 x2 y2, pts (m, 2) -> bool (m,).
+/// The triangles are bucketed by their boxes in square cells of `cell` m; a point on an edge counts as on it.
+/// (plazas.py: a paved area's ground the road mesh already covers is left out.)
+#[pyfunction]
+fn points_on_tris<'py>(py: Python<'py>, tris: PyReadonlyArray2<'py, f64>, pts: PyReadonlyArray2<'py, f64>, cell: f64)
+                       -> PyResult<Bound<'py, PyArray1<bool>>> {
+    let t = tris.as_array();
+    let p = pts.as_array();
+    if t.ncols() != 6 || p.ncols() != 2 {
+        return Err(pyo3::exceptions::PyValueError::new_err("points_on_tris: tris (n, 6), pts (m, 2)"));
+    }
+    let (n, m) = (t.nrows(), p.nrows());
+    let mut out = vec![false; m];
+    if n == 0 || m == 0 || !(cell > 0.0) {
+        return Ok(out.into_pyarray(py));
+    }
+    let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for i in 0..n {
+        for k in 0..3 {
+            x0 = x0.min(t[[i, 2 * k]]); x1 = x1.max(t[[i, 2 * k]]);
+            y0 = y0.min(t[[i, 2 * k + 1]]); y1 = y1.max(t[[i, 2 * k + 1]]);
+        }
+    }
+    let nx = (((x1 - x0) / cell).floor() as usize + 1).min(4096);
+    let ny = (((y1 - y0) / cell).floor() as usize + 1).min(4096);
+    let ix = |x: f64| (((x - x0) / cell).floor().max(0.0) as usize).min(nx - 1);
+    let iy = |y: f64| (((y - y0) / cell).floor().max(0.0) as usize).min(ny - 1);
+    let mut cells: Vec<Vec<u32>> = vec![Vec::new(); nx * ny];
+    for i in 0..n {
+        let xs = [t[[i, 0]], t[[i, 2]], t[[i, 4]]];
+        let ys = [t[[i, 1]], t[[i, 3]], t[[i, 5]]];
+        let (a, b) = (ix(xs[0].min(xs[1]).min(xs[2])), ix(xs[0].max(xs[1]).max(xs[2])));
+        let (c, d) = (iy(ys[0].min(ys[1]).min(ys[2])), iy(ys[0].max(ys[1]).max(ys[2])));
+        for j in c..=d {
+            for k in a..=b {
+                cells[j * nx + k].push(i as u32);
+            }
+        }
+    }
+    for q in 0..m {
+        let (x, y) = (p[[q, 0]], p[[q, 1]]);
+        if x < x0 || x > x1 || y < y0 || y > y1 {
+            continue;
+        }
+        for &i in &cells[iy(y) * nx + ix(x)] {
+            let i = i as usize;
+            let (ax, ay, bx, by, cx, cy) = (t[[i, 0]], t[[i, 1]], t[[i, 2]], t[[i, 3]], t[[i, 4]], t[[i, 5]]);
+            let d1 = (bx - ax) * (y - ay) - (by - ay) * (x - ax);
+            let d2 = (cx - bx) * (y - by) - (cy - by) * (x - bx);
+            let d3 = (ax - cx) * (y - cy) - (ay - cy) * (x - cx);
+            let neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+            let pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+            if !(neg && pos) {
+                out[q] = true;
+                break;
+            }
+        }
+    }
+    Ok(out.into_pyarray(py))
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -3337,6 +3398,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(clip_segments, m)?)?;
     m.add_function(wrap_pyfunction!(first_probe_near_lines, m)?)?;
     m.add_function(wrap_pyfunction!(grid_mesh, m)?)?;
-    m.add("VERSION", 46)?;
+    m.add_function(wrap_pyfunction!(points_on_tris, m)?)?;
+    m.add("VERSION", 47)?;
     Ok(())
 }
