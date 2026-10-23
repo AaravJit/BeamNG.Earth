@@ -1131,9 +1131,15 @@ class Server:
         box = roadsmod.tile_bbox(tx, ty)
         import guardrails as guardrailsmod
         infra_fn = lambda key: self.mapdata.cell(key, layers=("infrastructure",), kind="demand").layers.get("infrastructure")
-        guardrail_decks = [{"n": np.column_stack((xy, z)), "w": spec.width}
-                           for _fid, spec, xy, z, _lon in anchor.bridges.parts(cells, (box[0]-10, box[1]-10, box[2]+10, box[3]+10))]
-        guardrail_mesh = guardrailsmod.mesh(anchor.frame, infra_fn, box, elev, (box[0], box[1], 0.0), decks=guardrail_decks)
+        try:
+            guardrail_decks = [{"n": np.column_stack((xy, z)), "w": spec.width}
+                               for _fid, spec, xy, z, _lon in anchor.bridges.parts(
+                                   cells, (box[0]-10, box[1]-10, box[2]+10, box[3]+10))]
+            guardrail_mesh = guardrailsmod.mesh(anchor.frame, infra_fn, box, elev,
+                                                 (box[0], box[1], 0.0), decks=guardrail_decks)
+        except Exception as ex:
+            log.debug("mapped guardrails: tile %s_%s: %s", tx, ty, ex)
+            guardrail_mesh = None
         cell_fn = lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads")  # noqa: E731
 
         def drawn(la, lo):      # the block's ground: raised over the low arches as the terrain is (_make_heightmap_here)
