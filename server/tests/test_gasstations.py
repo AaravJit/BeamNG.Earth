@@ -272,15 +272,16 @@ class LayoutTest(unittest.TestCase):
         can = rect("ml", 0.0, 20.0, 28.0, 18.0, src=ML, height=1.48)
         self.assertIsNotNone(gs.layout(st, [SHOP, can], ROAD))
 
-    def test_pump_style_hashed(self):
+    def test_pumps_match_the_roof(self):
+        # the roof slab (West Coast's s_fuel_structure_06) carries Trilobite's sign: every pump is Trilobite's too (the
+        # user, 2026-10-23: "the pumps are changing brands but the canopy is not")
         roof = rect("roof", 0.0, 22.0, 30.0, 21.0, cls="roof")
-
-        def style(sid):
-            st = gs.Station(sid, 0.0, 45.0, "x", "", ("p",), True)
-            return next(p["shape"] for p in gs.layout(st, [SHOP, roof], ROAD).props
-                        if "s_fuel_pump_" in p["shape"] and not p["collide"])
-        self.assertEqual(style("abc"), style("abc"))
-        self.assertEqual({style(f"s{i}") for i in range(200)}, {k["pump"][1] for k in gs.KITS})
+        shapes = set()
+        for i in range(50):
+            st = gs.Station(f"s{i}", 0.0, 45.0, "x", "", ("p",), True)
+            for site in (gs.layout(st, [SHOP, roof], ROAD), gs.layout(st, [SHOP], ROAD)):
+                shapes |= {p["shape"].rsplit("/", 1)[-1] for p in site.props if "s_fuel_pump_" in p["shape"]}
+        self.assertEqual(shapes, {"s_fuel_pump_2015.dae", "s_fuel_pump_2015_trilobite.dae"})
 
 
 def lane(x0, y0, x1, y1):

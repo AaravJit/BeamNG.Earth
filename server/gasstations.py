@@ -317,6 +317,9 @@ KITS = (
          pumps=((-4.74, 2.38), (0.05, -5.30), (0.29, 5.50), (5.08, -2.16)),
          pump=(_WCA + "s_fuel_pump_2000.dae", _WCA + "s_fuel_pump_2000_tyranos.dae")),
 )
+# every station's pumps: Trilobite's, as the roof slab's sign (the user, 2026-10-23: "the pumps are changing brands but
+# the canopy is not"; West Coast has no other stretchable roof)
+PUMP_KIT = KITS[0]
 BOLLARD = "/art/shapes/objects/bollard_yellow.dae"      # (global art; West Coast's fs_6: scale 1.5 1.5 1)
 PAIR_GAP_M = 5.6                # the two pumps of a station without a canopy (fs_6)
 # A refuel area per pump, centred on it (gasStationMarker.lua: the vehicle's box against the area's, its scale as
@@ -338,10 +341,6 @@ class Site:
     areas: list         # {"x", "y", "dz", "yaw", "half", "icon"}: one refuel area per pump (icon: its height over it)
     drop_ids: tuple     # buildings left out of the mesh (the canopy outline)
     shop_id: str = ""   # one station per shop (unmerged pins of one station: tile_sites)
-
-
-def _h(*vals):
-    return int.from_bytes(hashlib.blake2b(repr(vals).encode(), digest_size=8).digest(), "little")
 
 
 def _yaw(u):
@@ -399,7 +398,7 @@ def _pair_site(st, shop, blds, roads):
     r = np.array([-a[1], a[0]])                 # along the row
     _, su, shl, shw = _obox(shop.ring)
     reach = float(abs(su @ a) * shl + abs(su[0] * a[1] - su[1] * a[0]) * shw)    # the shop's half depth toward the road
-    kit = KITS[_h(st.id, "kit") % len(KITS)]
+    kit = PUMP_KIT
     gr, ga = np.meshgrid(np.linspace(-PAIR_HALF[0], PAIR_HALF[0], 11), np.linspace(-PAIR_HALF[1], PAIR_HALF[1], 9))
     grid = np.c_[gr.ravel(), ga.ravel()]
     for t in np.arange(reach + PAIR_HALF[1] + BLD_CLEAR_M, dist, 1.0):
@@ -591,7 +590,7 @@ def layout(st, blds, roads, service=()):
     if shop is None:
         return None
     canopy = find_canopy(st, shop, blds, roads)
-    kit = KITS[_h(st.id, "kit") % len(KITS)]
+    kit = PUMP_KIT
     site = None
     lanes = find_lanes(shop, service) if len(service) else None
     if lanes is not None:
