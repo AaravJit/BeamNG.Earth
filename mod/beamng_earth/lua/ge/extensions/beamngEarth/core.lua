@@ -60,6 +60,8 @@ local roads = require('beamngEarth/roads') -- DecalRoads from the server's road 
 local sea = require('beamngEarth/sea') -- the sea's WaterBlock tiles (server seatiles.py)
 local trees = require('beamngEarth/trees') -- trees, bushes, rocks (server vegetation.py)
 local parking = require('beamngEarth/parking') -- parked cars on the road tiles' spots (stock gameplay_parking)
+local gasstations = require('beamngEarth/gasstations') -- pumps and the stock refuel prompt (server gasstations.py)
+gasstations.onCollide = roads.markCollisionDirty
 local navgraph = require('beamngEarth/navgraph')
 local postfx = require('beamngEarth/postfx')       -- no far depth-of-field blur in our level
 local gps = require('beamngEarth/gps')               -- the game's GPS route to a place picked on the world map
@@ -453,6 +455,7 @@ local function finishRebase()
   -- roads, buildings, street furniture and trees move with it and stay until the new anchor's tiles cover them
   roads.transform(xf, geodesy)
   trees.transform(xf, geodesy)
+  gasstations.transform(xf)
   sea.transform(xf, msg.anchorId)
   -- a resync with a restarted server keeps the previous session's tiles the same way (st.sessionId
   -- is the new session's): they go once the new session's tiles cover them
@@ -1705,6 +1708,7 @@ local function onUpdate(dtReal, dtSim)
     -- teleport the far field's hundreds of tiles took it frame after frame and the road meshes under the car
     -- came after it had passed (Brasov, Sinaia 2026-10-15: the car drove bare ground)
     roads.update(gov, st.anchorId, st.player, M.viewAway())
+    gasstations.update(gov)
     t = mark('roads', t)
     farfield.update(gov, (gov.w1 or dtReal * 1000) / 1000, st.cam, st.player)
     t = mark('far', t)
@@ -1841,6 +1845,7 @@ local function onClientEndMission()
   hudapps.unhookMinimapNorth()
   postfx.restore()
   pcall(terrainpatch.clear)
+  pcall(gasstations.reset)
   pcall(farcars.reset)
   pcall(mpsession.reset)
   gps.reset()
@@ -2151,6 +2156,8 @@ function M.setRoadsEnabled(on)
 end
 
 M.onUpdate = onUpdate
+-- the stock gas stations' POI list (gameplay/rawPois.lua): ours, so freeroam/gasStations.lua offers "Refuel" at them
+M.onGetRawPoiListForLevel = function(levelIdentifier, elements) gasstations.pois(levelIdentifier, elements) end
 M.onPreRender = onPreRender
 M.onUiChangedState = onUiChangedState
 M.onClientStartMission = onClientStartMission
