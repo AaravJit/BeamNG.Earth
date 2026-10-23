@@ -86,6 +86,8 @@ class GuardrailMeshTest(unittest.TestCase):
         self.assertGreater(len(triangles), 0)
         self.assertEqual(uvs.shape, (len(positions), 2))
         self.assertTrue(np.isfinite(positions).all())
+        # With the constant 12 m test terrain, posts rise above the 0.78 m rail top.
+        self.assertGreater(float(positions[:, 2].max()), 12.8)
         self.assertGreaterEqual(int(triangles.min()), 0)
         self.assertLess(int(triangles.max()), len(positions))
 
