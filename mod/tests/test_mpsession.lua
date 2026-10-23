@@ -78,7 +78,8 @@ handlers.bngeGoTo('t')
 T.check(asked.go == nil, 'go-to once a session')
 
 -- damage: due when a player comes near; after a change of DAMAGE_STEP that held DAMAGE_SETTLE_S
-T.check(ms.damageDue(true, 0, 0, 0, 0.5) == true, 'damage: a newcomer: sent')
+T.check(ms.damageDue(true, 500, 0, 0, 0.5) == true, 'damage: a newcomer sees a damaged car: sent')
+T.check(ms.damageDue(true, 0, 0, 0, 0.5) == false, 'damage: a newcomer and an undamaged car: nothing to send')
 local due, settled = ms.damageDue(false, 10, 0, 0, 0.5)
 T.check(due == false and settled == 0, 'damage: a small change: not sent')
 due, settled = ms.damageDue(false, 500, 0, 0, 0.5)
@@ -99,12 +100,17 @@ ms.sendDamage(36.5, -118.1, 0.5)
 T.check(#cmds == 0, 'damage: nobody near: nothing sent')
 handlers.bngeAnchors('n')
 ms.sendDamage(36.5, -118.1, 0.5)
-T.check(#cmds == 1 and cmds[1]:find('nodesVE.getNodes', 1, true), 'damage: sent to a player who came near')
-ms.sendDamage(36.5, -118.1, 0.5)
-T.check(#cmds == 1, 'damage: not again while nothing changes')
+T.check(#cmds == 0, 'damage: a player came near, our car undamaged: nothing to send')
 map.objects[20].damage = 900
 for _ = 1, 6 do ms.sendDamage(36.5, -118.1, 0.5) end
-T.check(#cmds == 2, 'damage: sent once after it changed and settled: ' .. #cmds)
+T.check(#cmds == 1 and cmds[1]:find('nodesVE.getNodes', 1, true), 'damage: sent once after it changed and settled: ' .. #cmds)
+ms.sendDamage(36.5, -118.1, 0.5)
+T.check(#cmds == 1, 'damage: not again while nothing changes')
+handlers.bngeAnchors('f')
+ms.sendDamage(36.5, -118.1, 0.5)
+handlers.bngeAnchors('n')
+ms.sendDamage(36.5, -118.1, 0.5)
+T.check(#cmds == 2, 'damage: the damaged car to a player who came near again: ' .. #cmds)
 
 -- others: the map's arrows, every player but us, with names and headings
 decoded.o = { ['1'] = { aLat = 36.5, aLon = -118.1, lat = 36.5, lon = -118.1, name = 'me', h = 10 },

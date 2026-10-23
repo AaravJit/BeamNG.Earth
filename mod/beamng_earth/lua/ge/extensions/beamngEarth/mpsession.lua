@@ -95,7 +95,10 @@ end
 -- Pure: should our car's full damage go out now? newcomer: a player came near; damage, sent: now and at the last
 -- send (nil: never); settled: seconds it has differed. -> send, settled (updated)
 function M.damageDue(newcomer, damage, sent, settled, dt)
-  if newcomer then return true, 0 end
+  -- (a newcomer gets our car's full state only when it has damage to show: an undamaged car is the one BeamMP spawned
+  -- there already, and every join sent every nearby player's every car to every client, 2026-10-23: "the game freezes
+  -- when players join")
+  if newcomer then return (damage or 0) >= M.DAMAGE_STEP, 0 end
   if not damage or math.abs(damage - (sent or 0)) < M.DAMAGE_STEP then return false, 0 end
   settled = (settled or 0) + dt
   return settled >= M.DAMAGE_SETTLE_S, settled
