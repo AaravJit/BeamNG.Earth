@@ -149,7 +149,10 @@ More detail (traffic, the status bar, reporting problems, troubleshooting): [doc
 
 **Multiplayer (BeamMP, in testing):** a BeamMP server runs BeamNG.Earth from the drop-in server package
 (`python3 tools/package.py --beammp`: its `Resources` folder goes into the server's). Every player needs the
-BeamNG.Earth app running (each builds the world on their own computer). A player who joins is sent to the others;
+BeamNG.Earth app running (each builds the world on their own computer). Start the BeamNG.Earth app and the BeamMP
+launcher in either order: the app starts the game, or, if the BeamMP launcher started it already, just the world
+server (on Linux the game then runs without the grass patch); then join the server from BeamMP's Multiplayer menu.
+A player who joins is sent to the others;
 players near each other share one world origin and split the work of building the distant landscape, while a player
 far from everyone builds their own. For that sharing, the other players must be able to reach your computer on TCP
 port 47621 (on the same network it just works; over the internet, forward that port, else you build everything
