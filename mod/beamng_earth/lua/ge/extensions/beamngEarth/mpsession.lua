@@ -155,6 +155,7 @@ local switchLog = {}        -- (test 'switch') { { t, what, active, ownThere } }
 local awayLog = {}          -- (test 'away') { { t, what, lat, lon } }
 local lateGoTo = nil         -- (test 'late': the go-to held until TEST_LATE_S)
 M.TEST_LATE_S = 45
+M.TEST_DELREMOTE_S = 40
 local brokenOf = {}         -- (test) remote game vehicle id -> broken beams
 
 -- (test) a remote car's broken beams, from its vehicle Lua
@@ -244,6 +245,19 @@ local function testStep(dt)
       note('10 s after switching back')
     end
   end
+  -- 'delremote': TEST_DELREMOTE_S after the car, the other players' cars removed here, as a player does for frames (the
+  -- restore must leave them removed; 'oldrestore': 1.6.0's restore rule, for the before)
+  if test.delremote and testCarAt and not test.deleted and testClock - testCarAt > M.TEST_DELREMOTE_S and remoteOwners then
+    local owners = remoteOwners()
+    for gid in pairs(owners) do
+      local o = vehicle(gid)
+      if o then
+        test.deleted = true
+        o:delete()
+        log('I', 'beamngEarth', 'BeamMP test: removed the other player\'s car ' .. tostring(gid))
+      end
+    end
+  end
   if test.damage and testCarAt and not testDamaged and veh and testClock - testCarAt > M.TEST_DAMAGE_S then
     testDamaged = true
     -- a real crash (dropped from 20 m): dents, which BeamMP itself does not send; the other player's copy shows them
@@ -279,22 +293,30 @@ end
 
 -- Cars of other players that the game deleted here (BeamMP: isDeleted, drawn as its placeholder sphere; before
 -- mpanchor.FAR_M a teleport put them thousands of km out, where the physics broke) come back with BeamMP's own
--- restorePlayerVehicle once their owner is within RESTORE_M of us, at most every RESTORE_AGAIN_S per player.
-M.RESTORE_M, M.RESTORE_AGAIN_S = 20000, 15
+-- restorePlayerVehicle once their owner is within RESTORE_M of us, at most every RESTORE_AGAIN_S per player. Only a car
+-- our world could have broken (mpanchor.wasFar: it was beyond FAR_M) and RESTORE_MAX times at most: isDeleted is also a
+-- car this player removed on purpose (fewer cars, more frames), and respawning every one of those every 15 s (each a
+-- spawn: a freeze, and BeamMP's "Trying to respawn" notice) fits the 1.6.0 players' "multiplayer freezing" (2026-10-23).
+M.RESTORE_M, M.RESTORE_AGAIN_S, M.RESTORE_MAX = 20000, 15, 2
 local restoredAt = {}       -- owner name -> clock of the last restore
+local restores = {}         -- server vehicle string -> restores asked for it
 local clock = 0
 function M.restoreDeleted(lat, lon)
+  local mpanchor = require('beamngEarth/mpanchor')
   local v = mp()
   if not v or type(v.getVehicles) ~= 'function' or type(v.restorePlayerVehicle) ~= 'function' then return 0 end
   local ok, all = pcall(v.getVehicles)
   if not ok or type(all) ~= 'table' then return 0 end
   local n = 0
-  for _, veh in pairs(all) do
+  for sid, veh in pairs(all) do
     local a = type(veh) == 'table' and veh.isDeleted == true and not veh.isLocal and veh.ownerName
+      and (test.oldrestore or (mpanchor.wasFar(tostring(sid)) and (restores[tostring(sid)] or 0) < M.RESTORE_MAX))
       and anchors[tostring(veh.ownerID)]
     if a and tonumber(a.lat) and tonumber(a.lon) and M.dist(lat, lon, tonumber(a.lat), tonumber(a.lon)) <= M.RESTORE_M
         and clock - (restoredAt[veh.ownerName] or -math.huge) >= M.RESTORE_AGAIN_S then
       restoredAt[veh.ownerName] = clock
+      restores[tostring(sid)] = (restores[tostring(sid)] or 0) + 1
+      stats.restored = (stats.restored or 0) + 1
       log('I', 'beamngEarth', 'BeamMP: ' .. tostring(veh.ownerName) .. '\'s deleted car brought back')
       pcall(v.restorePlayerVehicle, veh.ownerName)
       n = n + 1
@@ -588,7 +610,7 @@ function M.reset()
     if veh then veh:setActive(1) end
   end
   deactivated, anchors, poseIn, hideIn, joined, wentTo, camPlaced, lastPlayers = {}, {}, 0, 0, false, false, false, -1
-  members, sentDamage, damageSince, restoredAt = {}, {}, {}, {}
+  members, sentDamage, damageSince, restoredAt, restores = {}, {}, {}, {}, {}
   share, convergeIn, anchorSince, lastAnchorKey = nil, 0, 0, nil
   stats, statusIn = { anchors = 0, go = 0, poses = 0, converged = 0, peers = 0 }, M.STATUS_S
   require('beamngEarth/mpanchor').reset()

@@ -126,7 +126,9 @@ end
 decoded.r = { ['2'] = { aLat = 36.6, aLon = -118.0, lat = 36.5005, lon = -118.1 },
   ['3'] = { aLat = 40, aLon = -100, lat = 40, lon = -100 } }
 handlers.bngeAnchors('r')
-T.check(ms.restoreDeleted(36.5, -118.1) == 1 and restored[1] == 'bob', 'deleted car of a near player: restored')
+T.check(ms.restoreDeleted(36.5, -118.1) == 0, 'a car removed here on purpose (never out of our world): left removed')
+require('beamngEarth/mpanchor')._noteFar('2-0')
+T.check(ms.restoreDeleted(36.5, -118.1) == 1 and restored[1] == 'bob', 'deleted car of a near player that was out of our world: restored')
 T.check(ms.restoreDeleted(36.5, -118.1) == 0, 'not again at once')
 MPVehicleGE.getVehicles = oldGet
 
