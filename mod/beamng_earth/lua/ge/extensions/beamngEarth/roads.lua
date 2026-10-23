@@ -432,7 +432,7 @@ function M.onTile(msg, currentAnchor)
     tiles[key].park = true
   end
   if type(data.guardrail) == 'table' and data.guardrail.shape and type(data.guardrail.pos) == 'table' then
-    walkQ[#walkQ + 1] = { key = key, walk = data.guardrail, what = 'guardrail', tile = tiles[key] }
+    walkQ[#walkQ + 1] = { key = key, walk = data.guardrail, what = 'guardrail', tile = tiles[key], renderOnly = true }
   end
   if type(data.wire) == 'table' and data.wire.shape and type(data.wire.pos) == 'table' then    -- pole wires
     walkQ[#walkQ + 1] = { key = key, walk = data.wire, what = 'wire', tile = tiles[key] }
