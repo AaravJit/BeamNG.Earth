@@ -236,6 +236,12 @@ function M.update(dt)
     switch = nil
   end
   if teleporting() then return end      -- (the player still where it was: nothing far, nothing near)
+  -- watching another BeamMP player's car (the game's vehicle switch takes the camera to it): our cars stay as they
+  -- are, the player comes back to them; taking them out would remove them for every player
+  if not own(active:getId()) then
+    for id in pairs(farFor) do farFor[id] = 0 end
+    return
+  end
   -- far own cars: saved and out
   for _, v in ipairs(candidates(active:getId())) do
     local id = v.id

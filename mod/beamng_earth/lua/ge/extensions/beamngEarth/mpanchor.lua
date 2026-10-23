@@ -18,11 +18,18 @@ local geodesy = require('beamngEarth/geodesy')
 
 local M = {}
 
+-- A remote car whose position lands farther than this from our origin is not placed: our world is not there, and
+-- thousands of km out the game's physics go non-finite and the game deletes the car (BeamMP then draws its
+-- placeholder sphere; the user, 2026-10-22: one player teleported across the world, then the other, and each saw the
+-- other's car as a sphere). Its packets are dropped (the car stays where it was) and mpsession hides it.
+M.FAR_M = 30000
+
 local myLat, myLon = nil, nil            -- our own current anchor (core.lua: announceOwn)
 local remote = {}                        -- [playerId] = { lat, lon }, the plugin's latest (setRemote)
 M.ownChanged = false                     -- our anchor changed since mpsession last sent a pose (it sends one at once)
 local xfCache = {}                       -- [playerId] = { myLat, myLon, rLat, rLon, xf } (lazy, see transformFor)
 local installed = false
+local far = {}                           -- [serverVehicleString] = true: its last position was beyond FAR_M (isFar)
 
 local function isMPSession()
   return MPCoreNetwork ~= nil and MPCoreNetwork.isMPSession ~= nil and MPCoreNetwork.isMPSession()
@@ -46,8 +53,11 @@ end
 -- Do we know player pid's anchor (its cars' positions can be converted)?
 function M.knows(pid) return remote[tonumber(pid)] ~= nil end
 
+-- Was this remote car's last position (BeamMP's serverVehicleString "pid-vid") beyond FAR_M?
+function M.isFar(sid) return far[sid] == true end
+
 -- (the session's end) the remote anchors forgotten
-function M.reset() remote, xfCache = {}, {} end
+function M.reset() remote, xfCache, far = {}, {}, {} end
 
 local function transformFor(pid)
   if not myLat then return nil end
@@ -97,6 +107,12 @@ local function wrapHandle(original)
     local ok, decoded = pcall(jsonDecode, data)
     if not ok or type(decoded) ~= 'table' then return original(rawData) end
     applyTransform(decoded, xf)
+    local p = decoded.pos
+    if p and tonumber(p[1]) and tonumber(p[2]) and p[1] * p[1] + p[2] * p[2] > M.FAR_M * M.FAR_M then
+      far[serverVehicleID] = true
+      return
+    end
+    far[serverVehicleID] = nil
     local ok2, reencoded = pcall(jsonEncode, decoded)
     if not ok2 then return original(rawData) end
     return original(code .. ':' .. serverVehicleID .. ':' .. reencoded)

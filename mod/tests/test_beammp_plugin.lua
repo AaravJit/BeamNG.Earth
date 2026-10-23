@@ -28,6 +28,11 @@ T.check(place == nil, 'a joining player already near them: stays')
 -- the anchors message: every live player's anchor and place, keyed by the id as a string
 local a = G.anchors(G.live())
 T.check(a['1'] and a['1'].aLat == 36.2 and a['2'] and a['2'].lon == -118.7 and a['3'], 'anchors: every player')
+T.check(a['1'].name == 'a' and a['1'].h == nil, 'anchors: the name, no heading without one')
+G.onPose(1, { v = G.PROTO, aLat = 36.2, aLon = -118, lat = 36.2, lon = -118, h = 90.5 }, 'a')
+T.check(G.anchors(G.live())['1'].h == 90.5, 'anchors: the heading (the map arrows)')
+G.onPose(1, { v = G.PROTO, aLat = 36.2, aLon = -118, lat = 36.2, lon = -118, h = 'x' }, 'a')
+T.check(G.anchors(G.live())['1'].h == nil, 'anchors: a bad heading left out')
 
 -- bad input ignored; stale poses and players who left out
 T.check(G.onPose(4, { v = 1, aLat = 1, aLon = 1, lat = 1, lon = 1 }, 'd') == nil and G.players[4] == nil,

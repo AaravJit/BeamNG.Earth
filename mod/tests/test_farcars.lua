@@ -96,6 +96,14 @@ tick()
 T.check(vehicles[far.id] == nil, 'deleted once saved')
 local list = fc.list()
 T.check(#list == 1 and list[1].model == 'pickup' and list[1].lat == 0 and list[1].lon == 4000, 'stored with its place')
+-- watching another player's car (the vehicle switch): our far cars stay
+local me = player
+local far2 = newCar(-4000, 0)
+player = mpOther
+for _ = 1, 14 do tick() end
+T.check(fc.state().saving[far2.id] == nil and vehicles[far2.id] ~= nil, 'watching another player\'s car: ours stay')
+player = me
+far2:delete()
 mpOther:delete()
 MPVehicleGE = nil
 

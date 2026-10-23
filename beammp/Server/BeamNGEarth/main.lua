@@ -4,8 +4,9 @@
 -- metres from an origin (the "anchor") that each player's game picks for itself and moves as they drive (a rebase
 -- every 15 km). Each client converts the other players' positions from their owner's anchor into its own
 -- (mpanchor.lua, from Thai-v4's PR #88); this plugin tells every client where everyone's anchor is:
---   - bngeAnchors { pid -> { aLat, aLon, lat, lon } }: every player's anchor and place (from the client's bngePose,
---     every 2 s and at once when its anchor changes), to everyone each TICK_MS and at once when an anchor changes;
+--   - bngeAnchors { pid -> { aLat, aLon, lat, lon, name, h } }: every player's anchor and place (from the client's
+--     bngePose, every 2 s and at once when its anchor changes), its name and heading (degrees from north; none
+--     without a car: the world map's arrows), to everyone each TICK_MS and at once when an anchor changes;
 --   - bngeGoTo { lat, lon }: a player who joins is sent to the others (the longest-joined player's place).
 -- Positions stay latitude / longitude here: no coordinates are converted on the server. Nothing of BeamMP itself is
 -- changed: only its events (MP.RegisterEvent, MP.TriggerClientEvent).
@@ -38,11 +39,11 @@ function G.live()
   return out
 end
 
--- Pure: the anchors message { tostring(pid) -> { aLat, aLon, lat, lon } } of players.
+-- Pure: the anchors message { tostring(pid) -> { aLat, aLon, lat, lon, name, h } } of players.
 function G.anchors(players)
   local out = {}
   for pid, p in pairs(players) do
-    out[tostring(pid)] = { aLat = p.aLat, aLon = p.aLon, lat = p.lat, lon = p.lon }
+    out[tostring(pid)] = { aLat = p.aLat, aLon = p.aLon, lat = p.lat, lon = p.lon, name = p.name, h = p.h }
   end
   return out
 end
@@ -59,7 +60,7 @@ function G.meetingPlace(players, newPid)
   return best and { lat = players[best].lat, lon = players[best].lon } or nil
 end
 
--- A client's pose { v, aLat, aLon, lat, lon, joined }. Returns place (the meeting place for its first pose after
+-- A client's pose { v, aLat, aLon, lat, lon, joined, h }. Returns place (the meeting place for its first pose after
 -- joining, or nil) and moved (its anchor is new or changed: the anchors go out at once).
 function G.onPose(pid, d, name)
   if type(d) ~= 'table' or tonumber(d.v) ~= G.PROTO then return nil, false end
@@ -76,6 +77,8 @@ function G.onPose(pid, d, name)
   end
   local moved = first or p.aLat ~= aLat or p.aLon ~= aLon
   p.name, p.aLat, p.aLon, p.lat, p.lon, p.t = name, aLat, aLon, lat, lon, G.clock
+  local h = tonumber(d.h)
+  p.h = (h and h >= 0 and h <= 360) and h or nil
   if first and d.joined == true then
     local place = G.meetingPlace(G.live(), pid)
     if place and G.dist(place.lat, place.lon, lat, lon) > G.MEET_M then return place, moved end

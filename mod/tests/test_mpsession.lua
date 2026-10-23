@@ -106,6 +106,30 @@ map.objects[20].damage = 900
 for _ = 1, 6 do ms.sendDamage(36.5, -118.1, 0.5) end
 T.check(#cmds == 2, 'damage: sent once after it changed and settled: ' .. #cmds)
 
+-- others: the map's arrows, every player but us, with names and headings
+decoded.o = { ['1'] = { aLat = 36.5, aLon = -118.1, lat = 36.5, lon = -118.1, name = 'me', h = 10 },
+  ['2'] = { aLat = 36.6, aLon = -118.0, lat = 36.6, lon = -118.0, name = 'bob', h = 271.5 },
+  ['3'] = { aLat = 36.6, aLon = -118.0, lat = 36.7, lon = -118.0 } }
+handlers.bngeAnchors('o')
+local o = ms.others()
+T.check(#o == 2 and o[1].name == 'bob' and o[1].h == 271.5 and o[2].name == 'player 3' and o[2].h == nil,
+  'others: the other players, named, with headings')
+
+-- a car the game deleted here (BeamMP's sphere) comes back once its owner is near, not again at once
+local restored = {}
+MPVehicleGE.restorePlayerVehicle = function(name) restored[#restored + 1] = name end
+local oldGet = MPVehicleGE.getVehicles
+MPVehicleGE.getVehicles = function()
+  return { ['2-0'] = { isDeleted = true, ownerID = 2, ownerName = 'bob', gameVehicleID = 99 },
+    ['3-0'] = { isDeleted = true, ownerID = 3, ownerName = 'far', gameVehicleID = 98 } }
+end
+decoded.r = { ['2'] = { aLat = 36.6, aLon = -118.0, lat = 36.5005, lon = -118.1 },
+  ['3'] = { aLat = 40, aLon = -100, lat = 40, lon = -100 } }
+handlers.bngeAnchors('r')
+T.check(ms.restoreDeleted(36.5, -118.1) == 1 and restored[1] == 'bob', 'deleted car of a near player: restored')
+T.check(ms.restoreDeleted(36.5, -118.1) == 0, 'not again at once')
+MPVehicleGE.getVehicles = oldGet
+
 -- reset: every car back on
 ms.reset()
 T.check(stranger.active == 1 and next(ms.state().deactivated) == nil, 'reset: the cars back on')

@@ -648,6 +648,8 @@ end
 
 -- Once per frame (core onUpdate): deletions, then creations, within the governor's budget.
 local viewAt = nil  -- core.viewAway(): the camera's { x, y } when it is away from the car, else nil (M.nextWalk)
+local prewarmId, prewarmPath, prewarmWant = nil, nil, nil     -- (the materials' prewarm shape, below)
+local prewarmNow
 
 function M.update(gov, currentAnchor, player, view)
   viewAt = view
@@ -950,8 +952,7 @@ end
 -- Server hello.prewarm: a tiny shape listing every material the server's shapes use, loaded once when it connects
 -- (server/prewarm.py): a material's first shape in a session set it up (a tunnel's first tile 65 ms, later ones ~2 ms),
 -- now while the level starts. Kept far below the map (one per path; nil: an older server, nothing).
-local prewarmId, prewarmPath, prewarmWant = nil, nil, nil
-local function prewarmNow()
+prewarmNow = function()
   local path = prewarmWant
   -- (the hello comes at the main menu, before the level's objects and with the roads off outside our level)
   if not path or not M.enabled or not scenetree.MissionGroup then return end

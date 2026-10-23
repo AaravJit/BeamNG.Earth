@@ -2,7 +2,8 @@
 -- BeamMP support). BeamMP sends every car's position in its driver's world coordinates, metres from the driver's own
 -- anchor; mpanchor.lua (Thai-v4's PR #88) converts the other players' positions into ours, given their anchors. Each
 -- POSE_S (and at once when our anchor changes) this sends the plugin our anchor and place (bngePose); it answers with
---   - bngeAnchors { pid -> { aLat, aLon, lat, lon } }: every player's anchor (to mpanchor) and place; the cars of a
+--   - bngeAnchors { pid -> { aLat, aLon, lat, lon, name, h } }: every player's anchor (to mpanchor), place, name and
+--     heading (others(): the world map's arrows); the cars of a
 --     player whose anchor is not known (no BeamNG.Earth, or not heard yet) are deactivated here: they would stand in
 --     the wrong place;
 --   - bngeGoTo { lat, lon }: on joining, a teleport to where the others are.
@@ -66,6 +67,8 @@ function M.damageDue(newcomer, damage, sent, settled, dt)
 end
 
 local function mp() return rawget(_G, 'MPVehicleGE') end
+local function core() return rawget(_G, 'beamngEarth_core') end
+local remoteOwners          -- (below; the test switch uses it)
 
 -- A vehicle by its game id, as the game's vehicle class (setActive, queueLuaCommand; scenetree.findObjectById's
 -- object has no setActive in the native Linux build: the session stopped at the first car to hide)
@@ -77,10 +80,18 @@ local function vehicle(gid)
   return o and o.setActive and o or nil         -- (vehicles only)
 end
 
--- Test switch (two BeamMP players on one PC, .claude/work/mp_two.sh): the game's start arguments -bngetest car,damage
+-- Test switch (two BeamMP players, .claude/work/mp_two.sh): the game's start arguments -bngetest car,damage
 -- spawn a car TEST_CAR_S after the first pose with none, damage it TEST_DAMAGE_S after that; the status file then
--- lists the other players' cars' broken beams (the damage they show here).
+-- lists the other players' cars' broken beams (the damage they show here). 'switch': TEST_SWITCH_S after the car,
+-- into another player's car (the game's vehicle switch) for TEST_SWITCH_HOLD_S, then back; 'perf': the frame times
+-- (perfmon.lua) since the last status in the status file. 'away': TEST_AWAY_S after the car, a teleport 130 degrees
+-- of longitude away (about California to Italy) for TEST_AWAY_HOLD_S, then back (a player across the world and back:
+-- the other's copy of our car must survive). 'drive': TEST_DRIVE_S after the car, the game's AI drives it (traffic
+-- mode) for the frame times while the world streams.
 M.TEST_CAR_S, M.TEST_DAMAGE_S = 5, 25
+M.TEST_SWITCH_S, M.TEST_SWITCH_HOLD_S = 40, 30
+M.TEST_AWAY_S, M.TEST_AWAY_HOLD_S = 40, 60
+M.TEST_DRIVE_S = 20
 local test = {}
 do
   local ok, args = pcall(function() return Engine.getStartingArgs() end)
@@ -93,6 +104,10 @@ do
   end
 end
 local testClock, testCarAt, testDamaged = 0, nil, false
+local testOwnId = nil       -- (test) our test car's game id
+local anchorRef = nil       -- (test) the anchor of the latest update
+local switchLog = {}        -- (test 'switch') { { t, what, active, ownThere } }
+local awayLog = {}          -- (test 'away') { { t, what, lat, lon } }
 local lateGoTo = nil         -- (test 'late': the go-to held until TEST_LATE_S)
 M.TEST_LATE_S = 45
 local brokenOf = {}         -- (test) remote game vehicle id -> broken beams
@@ -122,6 +137,54 @@ local function testStep(dt)
       log('I', 'beamngEarth', 'BeamMP test: car spawned')
     end
   end
+  if testCarAt and not testOwnId and veh then testOwnId = veh:getId() end
+  if test.away and testOwnId and anchorRef then
+    local c = core()
+    local function note(what, lat, lon)
+      awayLog[#awayLog + 1] = { t = testClock, what = what, lat = lat, lon = lon }
+      log('I', 'beamngEarth', 'BeamMP test: ' .. what)
+    end
+    if #awayLog == 0 and testClock - testCarAt > M.TEST_AWAY_S and veh then
+      local q = veh:getPosition()
+      local lat, lon = anchorRef:enuToGeodetic(q.x, q.y, q.z)
+      note('away', lat, lon)
+      c.teleport(lat, (lon + 130 + 180) % 360 - 180, nil, { record = false })
+    elseif #awayLog == 1 and testClock - awayLog[1].t > M.TEST_AWAY_HOLD_S then
+      note('back', awayLog[1].lat, awayLog[1].lon)
+      c.teleport(awayLog[1].lat, awayLog[1].lon, nil, { record = false })
+    end
+  end
+  if test.drive and testOwnId and not test.driving and veh and testClock - testCarAt > M.TEST_DRIVE_S then
+    test.driving = true
+    veh:queueLuaCommand('ai.setMode("traffic") ai.setSpeedMode("legal")')
+    log('I', 'beamngEarth', 'BeamMP test: AI driving')
+  end
+  if test.switch and testOwnId then
+    local phase = #switchLog
+    local function note(what)
+      local a = getPlayerVehicle and getPlayerVehicle(0)
+      switchLog[#switchLog + 1] = { t = testClock, what = what, active = a and a:getId() or nil,
+        ownThere = vehicle(testOwnId) ~= nil }
+      log('I', 'beamngEarth', 'BeamMP test: ' .. what)
+    end
+    if phase == 0 and testClock - testCarAt > M.TEST_SWITCH_S then
+      local target = nil
+      for gid in pairs(remoteOwners()) do
+        if not deactivated[gid] and vehicle(gid) then target = gid; break end
+      end
+      if target then
+        be:enterVehicle(0, vehicle(target))
+        note('into the other player\'s car ' .. target)
+      end
+    elseif phase == 1 and testClock - switchLog[1].t > M.TEST_SWITCH_HOLD_S then
+      note('still in the other car (before switching back)')
+      local own = vehicle(testOwnId)
+      if own then be:enterVehicle(0, own) end
+      note('back into our car')
+    elseif phase == 3 and testClock - switchLog[3].t > 10 then
+      note('10 s after switching back')
+    end
+  end
   if test.damage and testCarAt and not testDamaged and veh and testClock - testCarAt > M.TEST_DAMAGE_S then
     testDamaged = true
     -- a real crash (dropped from 20 m): dents, which BeamMP itself does not send; the other player's copy shows them
@@ -136,24 +199,61 @@ local COUNT = [[local n,d=0,0 for _,b in pairs(v.data.beams) do if obj:beamIsBro
   .. [[elseif obj:getBeamDeformation(b.cid) > 0.01 then d=d+1 end end ]]
   .. [[obj:queueGameEngineLua("local m=package.loaded['beamngEarth/mpsession'] if m then m.onBroken(%d,"..n..","..d..") end")]]
 
--- The other players' vehicles: { game vehicle id -> owner's server player id }
-local function remoteOwners()
-  local out = {}
+-- The other players' vehicles: { game vehicle id -> owner's server player id }, { game vehicle id -> BeamMP's
+-- serverVehicleString }
+remoteOwners = function()
+  local out, sids = {}, {}
   local v = mp()
-  if not v or type(v.getVehicles) ~= 'function' then return out end
+  if not v or type(v.getVehicles) ~= 'function' then return out, sids end
   local ok, all = pcall(v.getVehicles)
-  if not ok or type(all) ~= 'table' then return out end
+  if not ok or type(all) ~= 'table' then return out, sids end
   for _, veh in pairs(all) do
     -- (spawned ones only: a car BeamMP has queued has a placeholder game id, not a vehicle)
     if type(veh) == 'table' and veh.isSpawned ~= false and tonumber(veh.gameVehicleID) and veh.gameVehicleID > 0
       and veh.ownerID and not v.isOwn(veh.gameVehicleID) then
       out[veh.gameVehicleID] = veh.ownerID
+      sids[veh.gameVehicleID] = veh.serverVehicleString
     end
   end
-  return out
+  return out, sids
 end
 
-local function core() return rawget(_G, 'beamngEarth_core') end
+-- Cars of other players that the game deleted here (BeamMP: isDeleted, drawn as its placeholder sphere; before
+-- mpanchor.FAR_M a teleport put them thousands of km out, where the physics broke) come back with BeamMP's own
+-- restorePlayerVehicle once their owner is within RESTORE_M of us, at most every RESTORE_AGAIN_S per player.
+M.RESTORE_M, M.RESTORE_AGAIN_S = 20000, 15
+local restoredAt = {}       -- owner name -> clock of the last restore
+local clock = 0
+function M.restoreDeleted(lat, lon)
+  local v = mp()
+  if not v or type(v.getVehicles) ~= 'function' or type(v.restorePlayerVehicle) ~= 'function' then return 0 end
+  local ok, all = pcall(v.getVehicles)
+  if not ok or type(all) ~= 'table' then return 0 end
+  local n = 0
+  for _, veh in pairs(all) do
+    local a = type(veh) == 'table' and veh.isDeleted == true and not veh.isLocal and veh.ownerName
+      and anchors[tostring(veh.ownerID)]
+    if a and tonumber(a.lat) and tonumber(a.lon) and M.dist(lat, lon, tonumber(a.lat), tonumber(a.lon)) <= M.RESTORE_M
+        and clock - (restoredAt[veh.ownerName] or -math.huge) >= M.RESTORE_AGAIN_S then
+      restoredAt[veh.ownerName] = clock
+      log('I', 'beamngEarth', 'BeamMP: ' .. tostring(veh.ownerName) .. '\'s deleted car brought back')
+      pcall(v.restorePlayerVehicle, veh.ownerName)
+      n = n + 1
+    end
+  end
+  return n
+end
+
+
+-- The heading of the car the player is in, degrees clockwise from the frame's +y (north at the anchor); nil without one.
+local function carHeading()
+  local gpv = rawget(_G, 'getPlayerVehicle')
+  local veh = gpv and gpv(0)
+  if not veh then return nil end
+  local ok, dir = pcall(function() return veh:getDirectionVector() end)
+  if not ok or not dir or math.abs(dir.x) + math.abs(dir.y) < 1e-6 then return nil end
+  return (math.deg(math.atan2(dir.x, dir.y)) + 360) % 360
+end
 
 -- Our own server player id (BeamMP's MPConfig), as a string; nil unknown.
 local function myPid()
@@ -234,6 +334,7 @@ function M.update(dt, anchor, player)
   end
   local mpanchor = require('beamngEarth/mpanchor')
   mpanchor.install()            -- (a no-op once installed, and until BeamMP's positionGE has loaded)
+  clock = clock + (dt or 0)
   statusIn = statusIn - (dt or 0)
   if statusIn <= 0 then
     statusIn = M.STATUS_S
@@ -271,12 +372,25 @@ function M.update(dt, anchor, player)
         remote[tostring(gid)] = r
       end
     end
+    local perf = nil
+    if test.perf then
+      local pm = rawget(_G, 'beamngEarth_perfmon')
+      if not pm and extensions and extensions.load then extensions.load('beamngEarth_perfmon') end
+      pm = rawget(_G, 'beamngEarth_perfmon')
+      local ok, snap = pcall(function() return pm and pm.snapshot() end)
+      if ok and type(snap) == 'table' then
+        perf = { frames = snap.frames, fps = snap.fps, p50 = snap.p50, p99 = snap.p99, maxMs = snap.maxMs,
+          over33 = snap.over33, over50 = snap.over50, over100 = snap.over100 }
+      end
+    end
     pcall(jsonWriteFile, M.STATUS_FILE, { t = os.time(), anchor = anchor and M.key(anchor.lat, anchor.lon) or nil,
+      perf = perf, switch = next(switchLog) and switchLog or nil, away = next(awayLog) and awayLog or nil,
       anchors = anchors, stats = stats, hidden = hidden, remote = remote, own = own, player = player and { x = player.x,
       y = player.y, z = player.z, camera = player.camera } or nil }, true)
   end
   if not anchor then return end
   placeCamera(player)
+  anchorRef = anchor
   testStep(dt)
   if not player then return end
   local lat, lon = anchor:enuToGeodetic(player.x, player.y, player.z or 0)
@@ -284,8 +398,13 @@ function M.update(dt, anchor, player)
   if (poseIn <= 0 or mpanchor.ownChanged) and rawget(_G, 'TriggerServerEvent') then
     poseIn = M.POSE_S
     mpanchor.ownChanged = false
+    local h = carHeading()
+    if h and anchor.northAt then        -- (true north: the frame's +y drifts from it away from the anchor)
+      local ok, nx, ny = pcall(anchor.northAt, anchor, player.x, player.y)
+      if ok and tonumber(nx) and tonumber(ny) then h = (h - math.deg(math.atan2(nx, ny)) + 360) % 360 end
+    end
     TriggerServerEvent('bngePose', jsonEncode({ v = M.PROTO, aLat = anchor.lat, aLon = anchor.lon, lat = lat,
-      lon = lon, joined = joined }))
+      lon = lon, joined = joined, h = h and math.floor(h * 10 + 0.5) / 10 or nil }))
     stats.poses = stats.poses + 1
     if joined then log('I', 'beamngEarth', string.format('BeamMP: first pose sent (%.5f, %.5f)', lat, lon)) end
     joined = false
@@ -293,9 +412,13 @@ function M.update(dt, anchor, player)
   hideIn = hideIn - (dt or 0)
   if hideIn > 0 then return end
   hideIn = M.HIDE_S
-  local owners = remoteOwners()
+  local owners, sids = remoteOwners()
   local hide = M.toHide(owners, mpanchor.knows)
+  for gid, sid in pairs(sids) do
+    if mpanchor.isFar(sid) then hide[gid] = true end     -- (not placed: beyond our world)
+  end
   M.sendDamage(lat, lon, M.HIDE_S)
+  M.restoreDeleted(lat, lon)
   for gid in pairs(hide) do
     if not deactivated[gid] then
       local veh = vehicle(gid)
@@ -353,9 +476,23 @@ function M.reset()
     if veh then veh:setActive(1) end
   end
   deactivated, anchors, poseIn, hideIn, joined, wentTo, camPlaced, lastPlayers = {}, {}, 0, 0, false, false, false, -1
-  members, sentDamage, damageSince = {}, {}, {}
+  members, sentDamage, damageSince, restoredAt = {}, {}, {}, {}
   stats, statusIn = { anchors = 0, go = 0, poses = 0 }, M.STATUS_S
   require('beamngEarth/mpanchor').reset()
+end
+
+-- The other players for the world map: { { name, lat, lon, h } } (h: heading in degrees from true north, nil when
+-- they have no car), from the plugin's latest bngeAnchors (POSE_S old at most).
+function M.others()
+  local out, mine = {}, myPid()
+  for k, a in pairs(anchors) do
+    if k ~= mine and type(a) == 'table' and tonumber(a.lat) and tonumber(a.lon) then
+      out[#out + 1] = { name = type(a.name) == 'string' and a.name or ('player ' .. k), lat = tonumber(a.lat),
+        lon = tonumber(a.lon), h = tonumber(a.h) }
+    end
+  end
+  table.sort(out, function(x, y) return x.name < y.name end)
+  return out
 end
 
 -- (tests, the dev tools)
