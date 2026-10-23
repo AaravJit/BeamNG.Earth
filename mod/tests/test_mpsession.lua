@@ -130,6 +130,19 @@ T.check(ms.restoreDeleted(36.5, -118.1) == 1 and restored[1] == 'bob', 'deleted 
 T.check(ms.restoreDeleted(36.5, -118.1) == 0, 'not again at once')
 MPVehicleGE.getVehicles = oldGet
 
+-- pickAnchor: the shared anchor near a place (Utah's three players on one, Italy's alone; a lone far one ignored)
+local utah = { ['1'] = { aLat = 40.0, aLon = -111.9 }, ['2'] = { aLat = 40.0, aLon = -111.9 },
+  ['3'] = { aLat = 40.02, aLon = -111.9 }, ['4'] = { aLat = 45.46, aLon = 9.19 } }
+local la, lo, n = ms.pickAnchor(utah, 40.01, -111.9)
+T.check(la == 40.0 and lo == -111.9 and n == 2, 'pickAnchor: the one most players near use')
+la = ms.pickAnchor(utah, 45.47, 9.19)
+T.check(la == 45.46, 'pickAnchor: Italy keeps its own')
+T.check(ms.pickAnchor(utah, 30, 0) == nil, 'pickAnchor: nobody near: none')
+la = ms.pickAnchor({ ['1'] = { aLat = 40.0, aLon = -111.9 }, ['2'] = { aLat = 40.01, aLon = -111.9 } }, 40.005, -111.9)
+T.check(la == 40.0, 'pickAnchor: a tie goes to the lowest key (every player picks the same)')
+la = ms.pickAnchor(utah, 40.01, -111.9, '1')
+T.check(la == 40.0 or la == 40.02, 'pickAnchor: skip leaves our own out')
+
 -- reset: every car back on
 ms.reset()
 T.check(stranger.active == 1 and next(ms.state().deactivated) == nil, 'reset: the cars back on')

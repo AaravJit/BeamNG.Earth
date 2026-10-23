@@ -7,7 +7,11 @@
 --   - bngeAnchors { pid -> { aLat, aLon, lat, lon, name, h } }: every player's anchor and place (from the client's
 --     bngePose, every 2 s and at once when its anchor changes), its name and heading (degrees from north; none
 --     without a car: the world map's arrows), to everyone each TICK_MS and at once when an anchor changes;
---   - bngeGoTo { lat, lon }: a player who joins is sent to the others (the longest-joined player's place).
+--   - bngeGoTo { lat, lon }: a player who joins is sent to the others (the longest-joined player's place);
+--   - bngePeers { me, members = [{ id, host, port, code, weight }] }: the players on the same anchor whose world server
+--     shares generation (their pose's sp / sc / sw; host: the address BeamMP sees; weight: its machine's capacity,
+--     its share of the tiles), each tick when its group changed. Players
+--     near each other share an anchor (the clients converge, mpsession.lua), so they split the tiles to build.
 -- Positions stay latitude / longitude here: no coordinates are converted on the server. Nothing of BeamMP itself is
 -- changed: only its events (MP.RegisterEvent, MP.TriggerClientEvent).
 local G = {}
@@ -60,7 +64,7 @@ function G.meetingPlace(players, newPid)
   return best and { lat = players[best].lat, lon = players[best].lon } or nil
 end
 
--- A client's pose { v, aLat, aLon, lat, lon, joined, h }. Returns place (the meeting place for its first pose after
+-- A client's pose { v, aLat, aLon, lat, lon, joined, h, sp, sc, sw } (its world server's sharing port, code, weight). Returns place (the meeting place for its first pose after
 -- joining, or nil) and moved (its anchor is new or changed: the anchors go out at once).
 function G.onPose(pid, d, name)
   if type(d) ~= 'table' or tonumber(d.v) ~= G.PROTO then return nil, false end
@@ -79,6 +83,11 @@ function G.onPose(pid, d, name)
   p.name, p.aLat, p.aLon, p.lat, p.lon, p.t = name, aLat, aLon, lat, lon, G.clock
   local h = tonumber(d.h)
   p.h = (h and h >= 0 and h <= 360) and h or nil
+  local sp = tonumber(d.sp)
+  p.sp = (sp and sp >= 1 and sp <= 65535 and sp % 1 == 0) and sp or nil
+  p.sc = type(d.sc) == 'string' and #d.sc <= 64 and d.sc or nil
+  local sw = tonumber(d.sw)
+  p.sw = (sw and sw >= 0.1 and sw <= 1000) and sw or 1
   if first and d.joined == true then
     local place = G.meetingPlace(G.live(), pid)
     if place and G.dist(place.lat, place.lon, lat, lon) > G.MEET_M then return place, moved end
@@ -86,7 +95,40 @@ function G.onPose(pid, d, name)
   return nil, moved
 end
 
-function G.onLeave(pid) G.players[pid] = nil end
+function G.onLeave(pid) G.players[pid] = nil; G.sentPeers[pid] = nil end
+
+-- Pure: each sharing player's group { pid -> { me, members } }: the players with the same anchor that share (a
+-- port, a code and an address), sorted by id (the same list for every member).
+function G.peers(players)
+  local byKey = {}
+  for pid, p in pairs(players) do
+    if p.sp and p.sc and p.ip then
+      local k = G.key(p.aLat, p.aLon)
+      byKey[k] = byKey[k] or {}
+      table.insert(byKey[k], { id = tostring(pid), host = p.ip, port = p.sp, code = p.sc, weight = p.sw })
+    end
+  end
+  local out = {}
+  for pid, p in pairs(players) do
+    local list = p.sp and p.sc and p.ip and byKey[G.key(p.aLat, p.aLon)]
+    if list then
+      table.sort(list, function(a, b) return a.id < b.id end)
+      out[pid] = { me = tostring(pid), members = list }
+    end
+  end
+  return out
+end
+
+-- Pure: a group's signature (sent again only when it changes).
+function G.peersKey(g)
+  local parts = {}
+  for _, m in ipairs(g.members) do
+    parts[#parts + 1] = m.id .. '@' .. m.host .. ':' .. m.port .. '/' .. m.code .. 'x' .. tostring(m.weight)
+  end
+  return table.concat(parts, ',')
+end
+
+G.sentPeers = {}            -- pid -> the signature last sent
 
 -- Every TICK_MS: the anchors message for the clients.
 function G.tick(dt)
@@ -105,22 +147,36 @@ if MP and MP.RegisterEvent then
     local known = G.players[pid] ~= nil
     local place, moved = G.onPose(pid, d, MP.GetPlayerName(pid))
     local p = G.players[pid]
+    if p and not p.ip and MP.GetPlayerIdentifiers then      -- (the address the others reach its world server at)
+      local okI, ids = pcall(MP.GetPlayerIdentifiers, pid)
+      if okI and type(ids) == 'table' and type(ids.ip) == 'string' then p.ip = ids.ip end
+    end
     if p and not known then
       print(string.format('[BeamNG.Earth] %s at %.5f, %.5f (anchor %s)', tostring(p.name), p.lat, p.lon,
         G.key(p.aLat, p.aLon)))
     end
+    -- (the anchors first: the joiner teleports onto the others' anchor, mpsession.adoptAnchor)
+    if moved then MP.TriggerClientEvent(-1, 'bngeAnchors', encode(G.anchors(G.live()))) end
     if place then
       print(string.format('[BeamNG.Earth] %s sent to the others at %.5f, %.5f', tostring(p and p.name), place.lat,
         place.lon))
       MP.TriggerClientEvent(pid, 'bngeGoTo', encode(place))
     end
-    if moved then MP.TriggerClientEvent(-1, 'bngeAnchors', encode(G.anchors(G.live()))) end
   end
 
   function BNGE_onLeave(pid) G.onLeave(pid) end
 
   function BNGE_tick()
     MP.TriggerClientEvent(-1, 'bngeAnchors', encode(G.tick(G.TICK_MS / 1000)))
+    for pid, g in pairs(G.peers(G.live())) do
+      local sig = G.peersKey(g)
+      if G.sentPeers[pid] ~= sig then
+        G.sentPeers[pid] = sig
+        MP.TriggerClientEvent(pid, 'bngePeers', encode(g))
+        print(string.format('[BeamNG.Earth] %s shares generation with %d player(s)', tostring(G.players[pid].name),
+          #g.members - 1))
+      end
+    end
   end
 
   MP.RegisterEvent('bngePose', 'BNGE_onPose')

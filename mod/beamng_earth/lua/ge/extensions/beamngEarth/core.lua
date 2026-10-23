@@ -234,14 +234,17 @@ end
 
 -- cx, cy: where the anchor's first terrain should be centred in the NEW frame
 -- ((0,0) for a teleport, snap256(predicted) for a rebase; V1_1_SPEC 3).
-local function requestAnchor(lat, lon, purpose, cx, cy)
+-- place: { x, y } the player's spot in the new frame when it is not the origin (a teleport onto another BeamMP
+-- player's anchor, mpsession.adoptAnchor).
+local function requestAnchor(lat, lon, purpose, cx, cy, place)
   if not net.isConnected() then
     setStatus('Companion server not connected (127.0.0.1:' .. net.PORT .. ')')
     return false
   end
   local id = nextId()
   st.pending = { requestId = id, purpose = purpose, lat = lat, lon = lon, sentAt = st.clock }
-  net.send({ type = 'prepare_anchor', requestId = id, lat = lat, lon = lon, cx = cx or 0, cy = cy or 0 })
+  net.send({ type = 'prepare_anchor', requestId = id, lat = lat, lon = lon, cx = cx or 0, cy = cy or 0,
+    px = place and place.x or nil, py = place and place.y or nil })
   return true
 end
 
@@ -402,6 +405,7 @@ local function commitTeleport(msg)
   st.loadingUntil = st.clock + LOADING_AFTER_TELEPORT_S
   st.placeFrames = PLACE_DELAY_FRAMES
   st.placeZ = (msg.groundZ or 0) + 1.0
+  st.placeX, st.placeY = tonumber(msg.px) or 0, tonumber(msg.py) or 0
   -- in a tunnel: set down on the ground over it first (placed in the tube before its road tile came, the car fell
   -- through the world under the one-sided terrain), moved down onto the floor once that collides (2026-10-17)
   st.floorZ = msg.floorZ
@@ -412,7 +416,7 @@ local function commitTeleport(msg)
   local veh = getPlayerVehicle(0)
   holdMotionBlur()
   if veh then
-    veh:setClusterPosRelRot(-1, 0, 0, st.placeZ + PRE_LIFT, 0, 0, 0, 1)
+    veh:setClusterPosRelRot(-1, st.placeX, st.placeY, st.placeZ + PRE_LIFT, 0, 0, 0, 1)
     veh:applyClusterVelocityScaleAdd(-1, 0, 0, 0, 0)
   end
   be:reloadCollision()
@@ -580,7 +584,15 @@ local function placePlayer(z)
   local dir = veh:getDirectionVector()
   dir = vec3(dir.x, dir.y, 0)
   if dir:length() < 1e-3 then dir = vec3(0, 1, 0) end
-  spawn.safeTeleport(veh, vec3(0, 0, z), quatFromDir(dir:normalized(), vec3(0, 0, 1)), nil, nil, false, nil, true)
+  local x, y = st.placeX or 0, st.placeY or 0
+  if x ~= 0 or y ~= 0 then
+    -- away from the origin (a BeamMP player's anchor): the server's height there is the raw elevation data; set down
+    -- on the collision under it (a graded road can be a few metres off)
+    local ray = rawget(_G, 'castRayStatic')
+    local d = ray and ray(vec3(x, y, z + 60), vec3(0, 0, -1), 200)
+    if d and d < 200 then z = z + 60 - d + 1.0 end
+  end
+  spawn.safeTeleport(veh, vec3(x, y, z), quatFromDir(dir:normalized(), vec3(0, 0, 1)), nil, nil, false, nil, true)
 end
 
 -- A teleport into a tunnel: once a ray down from just over its floor (floorZ) meets collision at the floor (the tube's
@@ -723,6 +735,8 @@ local function onMessage(msg)
     st.serverBacklog = tonumber(msg.backlog)
     -- M1h: the far-field radius rides on every status in horizon mode (the view distance follows it)
     if msg.radius ~= nil then M.setFarRadius(msg.radius) end
+  elseif t == 'share' then              -- our world server serving our BeamMP group (mpsession.lua, peerwork.py)
+    pcall(mpsession.onShare, msg)
   elseif t == 'terrain_patch' then
     pcall(terrainpatch.onPatch, msg)
   elseif t == 'anchor_ready' then
@@ -1766,7 +1780,16 @@ teleportTo = function(lat, lon, name, kind)
     return false
   end
   ui.setLatLon(lat, lon)
-  if requestAnchor(lat, lon, 'teleport') then
+  -- BeamMP: next to other players, onto their anchor (their tiles are ours: built once for the group, peerwork.py)
+  local aLat, aLon, place, cx, cy = lat, lon, nil, 0, 0
+  local okA, adLat, adLon = pcall(mpsession.adoptAnchor, lat, lon)
+  if okA and adLat then
+    local x, y = geodesy.newAnchor(adLat, adLon):geodeticToEnu(lat, lon, 0)
+    aLat, aLon, place = adLat, adLon, { x = x, y = y }
+    cx, cy = follow.target(x, y, 0, 0)
+    log('I', 'beamngEarth', string.format('teleport onto the anchor %.5f, %.5f (%.0f, %.0f there)', aLat, aLon, x, y))
+  end
+  if requestAnchor(aLat, aLon, 'teleport', cx, cy, place) then
     setStatus(string.format('Preparing terrain at %.5f, %.5f ...', lat, lon))
     parking.onTeleport()
     navgraph.onTeleport()

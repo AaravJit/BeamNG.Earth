@@ -67,6 +67,33 @@ class CheckTest(unittest.TestCase):
                 peerwork.check_job(bad)
 
 
+class TextureSizeTest(unittest.TestCase):
+    def test_one_key_for_every_texture_size(self):
+        h = header(op="far_tile", tex={"px": 512, "chain": ["esri"], "tone": 1.0, "leaf_on": True,
+                                        "season_mode": "auto", "mask_px": 256})
+        h2 = dict(h, layout=dict(h["layout"], tex=[256, 256]), tex=dict(h["tex"], px=256, mask_px=128))
+        self.assertEqual(peerwork.job_key(h), peerwork.job_key(h2))
+        self.assertNotEqual(peerwork.job_key(h), peerwork.job_key(dict(h, tile=[1, -2, 4])))
+
+    def test_shrink_drops_top_mips(self):
+        import imagery
+        rgb = np.random.default_rng(3).integers(0, 255, (512, 512, 3), dtype=np.uint8)
+        big = imagery.encode_dds(rgb)
+        w, hgt, mips, _, sizes = imagery.read_dds_info(big)
+        small = peerwork.dds_shrink(big, 256)
+        w2, h2, mips2, fourcc, sizes2 = imagery.read_dds_info(small)
+        self.assertEqual((w2, h2, mips2), (256, 256, mips - 1))
+        self.assertEqual(len(small), 128 + sum(sizes2))
+        self.assertEqual(small[128:], big[128 + sizes[0]:], "the 512's own mip levels, not re-encoded")
+        self.assertIs(peerwork.dds_shrink(big, 512), big)
+
+    def test_fits(self):
+        head = {"ok": True, "texture": {"blob": 0}, "px": 512, "mask_px": 256}
+        self.assertTrue(peerwork.fits(head, (256, 128)))
+        self.assertFalse(peerwork.fits(dict(head, px=256), (512, 0)))
+        self.assertTrue(peerwork.fits({"ok": True, "texture": None}, (512, 0)))
+
+
 class LocalPool:
     def __init__(self):
         self.calls = 0
@@ -140,6 +167,96 @@ class PoolTest(unittest.TestCase):
         threading.Event().wait(0.3)
         self.assertEqual((pool.free.qsize(), pool.remote_slots()), (0, 0))
         self.assertEqual(pool.submit(far_geometry, *self.args(0)).result(5), ("local", "1_0_0"))
+
+
+class CountingLocal:
+    """A local pool building far_geometry jobs (a Built per tile), counting what it built."""
+
+    def __init__(self):
+        self.built = []
+        self.lock = threading.Lock()
+
+    def submit(self, fn, *args, **kw):
+        with self.lock:
+            self.built.append(args[3].key)
+        f = Future()
+        f.set_result(built(args[3].i + 7))
+        return f
+
+
+class GroupTest(unittest.TestCase):
+    def test_each_tile_built_once_in_the_group(self):
+        import tempfile
+        pools = []
+        for name in ("a", "b"):
+            local = CountingLocal()
+            pool = peerwork.SharedFarPool(local, [], {"roads": True}, None,
+                                          peerwork.ReplyCache(tempfile.mkdtemp(prefix="bnge_rc_")))
+            helper = peerwork.GroupHelper(pool, lambda la, lo: 1, tempfile.mkdtemp(prefix="bnge_po_"))
+            port = helper.start(0, 1)
+            pools.append((name, local, pool, port))
+        members = [(n, "127.0.0.1", port) for n, _, _, port in pools]
+        for n, _, pool, _ in pools:
+            pool.set_group(n, members)
+        self.assertEqual(pools[0][2].remote_slots(), peerwork.GROUP_CONNS)
+        args = [(1, 39.28, -76.59, farfield.Tile(1, i, 0), 13, None, 14, True, farfield.Layout(64)) for i in range(12)]
+        futs = [pool.submit(far_geometry, *a) for _, _, pool, _ in pools for a in args]
+        out = [f.result(20) for f in futs]
+        self.assertTrue(all(isinstance(o, farfield.Built) for o in out))
+        for i, a in enumerate(args):        # both players got the same tile
+            np.testing.assert_array_equal(out[i].positions, out[len(args) + i].positions)
+        built_a, built_b = pools[0][1].built, pools[1][1].built
+        self.assertEqual(sorted(built_a + built_b), sorted(a[3].key for a in args), "each tile built once in all")
+        self.assertTrue(built_a and built_b, "the work split between the two")
+        self.assertEqual(pools[0][2].stats["fallback"] + pools[1][2].stats["fallback"], 0)
+
+    def test_newcomer_gets_the_kept_tiles(self):
+        import tempfile
+        pools = []
+        for name in ("old", "new"):
+            local = CountingLocal()
+            pool = peerwork.SharedFarPool(local, [], {"roads": True}, None,
+                                          peerwork.ReplyCache(tempfile.mkdtemp(prefix="bnge_rc_")))
+            pool.sharing = True
+            port = peerwork.GroupHelper(pool, lambda la, lo: 1, tempfile.mkdtemp(prefix="bnge_po_")).start(0, 1)
+            pools.append((name, local, pool, port))
+        args = [(1, 39.28, -76.59, farfield.Tile(1, i, 0), 13, None, 14, True, farfield.Layout(64)) for i in range(10)]
+        old, new = pools[0][2], pools[1][2]
+        for a in args:                       # alone first: everything built and kept
+            old.submit(far_geometry, *a).result(10)
+        members = [(n, "127.0.0.1", port) for n, _, _, port in pools]
+        old.set_group("old", members)
+        new.set_group("new", members)
+        out = [new.submit(far_geometry, *a).result(20) for a in args]
+        self.assertTrue(all(isinstance(o, farfield.Built) for o in out))
+        self.assertEqual(pools[1][1].built, [], "the newcomer built nothing: all from the player there before")
+        self.assertEqual(len(pools[0][1].built), len(args))
+
+    def test_alone_builds_everything(self):
+        import tempfile
+        local = CountingLocal()
+        pool = peerwork.SharedFarPool(local, [], {"roads": True}, None,
+                                      peerwork.ReplyCache(tempfile.mkdtemp(prefix="bnge_rc_")))
+        pool.set_group("italy", [("italy", "127.0.0.1", 1)])
+        self.assertIsNone(pool.group)
+        args = (1, 45.0, 9.0, farfield.Tile(1, 0, 0), 13, None, 14, True, farfield.Layout(64))
+        self.assertIsInstance(pool.submit(far_geometry, *args).result(5), farfield.Built)
+        self.assertEqual(local.built, ["1_0_0"])
+
+    def test_owner_gone_built_here(self):
+        import tempfile
+        local = CountingLocal()
+        pool = peerwork.SharedFarPool(local, [], {"roads": True}, None,
+                                      peerwork.ReplyCache(tempfile.mkdtemp(prefix="bnge_rc_")))
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        dead = s.getsockname()[1]
+        s.close()
+        pool.set_group("a", [("a", "127.0.0.1", 1), ("b", "127.0.0.1", dead)])
+        args = [(1, 39.28, -76.59, farfield.Tile(1, i, 0), 13, None, 14, True, farfield.Layout(64)) for i in range(8)]
+        out = [pool.submit(far_geometry, *a).result(20) for a in args]
+        self.assertTrue(all(isinstance(o, farfield.Built) for o in out))
+        self.assertEqual(sorted(local.built), sorted(a[3].key for a in args))
 
 
 if __name__ == "__main__":

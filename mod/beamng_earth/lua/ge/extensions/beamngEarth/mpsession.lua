@@ -11,6 +11,12 @@
 -- every node and beam, applied on the other players' copies by its nodesGE) is never sent. This sends it for our own
 -- cars when another player comes within DAMAGE_NEAR_M (they see the car as it is) and DAMAGE_SETTLE_S after our car's
 -- damage changed by DAMAGE_STEP while one is near.
+-- Shared generation (the user, 2026-10-22: "3 players in Utah and 1 in Italy ... the Utah players split generation
+-- between each other"): players near each other converge onto one anchor (pickAnchor: within ADOPT_M, the one most of
+-- them use; a teleport next to them lands on it, core.teleportTo / adoptAnchor; otherwise a smooth rebaseTo), and
+-- our world server serves its group (the "share" message: its port and code go out in our poses); the plugin sends
+-- each player the others on its anchor (bngePeers), handed to the world server ("peers"), which splits the far tiles
+-- among them (server/peerwork.py).
 -- BeamMP's files are not changed: its client events, its own functions, and mpanchor's wrap of positionGE.handle.
 local M = {}
 
@@ -23,6 +29,9 @@ M.DAMAGE_SETTLE_S = 2
 M.DAMAGE_NEAR_M = 2000      -- a player this near sees our cars' damage (sendDamage)
 M.STATUS_S = 5              -- the session's state to the log and STATUS_FILE this often
 M.STATUS_FILE = '/temp/beamngEarth/mpsession_status.json'
+M.ADOPT_M = 7500            -- another player's anchor this near is ours to share (half the rebase distance: no loop)
+M.CONVERGE_S = 5            -- the anchor checked this often (converge)
+M.SETTLE_S = 10             -- ... and not within this of our own anchor's last change
 
 local handlers = false
 local anchors = {}          -- tostring(server player id) -> { aLat, aLon, lat, lon } (bngeAnchors)
@@ -32,13 +41,39 @@ local joined = false        -- BeamMP joined and no pose sent yet: the first pos
 local wentTo = false        -- the session's one bngeGoTo done
 local camPlaced = false     -- the free camera put on the ground once (BeamMP joins without a car)
 local lastPlayers = -1      -- (the log: the player count as last logged)
-local stats = { anchors = 0, go = 0, poses = 0 }
+local stats = { anchors = 0, go = 0, poses = 0, converged = 0, peers = 0 }
+local share = nil           -- { port, code } of our world server's group service (onShare); false: asked
+local convergeIn = 0
+local anchorSince = 0       -- seconds our anchor has been the same (converge's settle)
+local lastAnchorKey = nil
 local statusIn = 5
 local members = {}          -- tostring(pid) -> true: the other players within DAMAGE_NEAR_M at the last check
 local sentDamage = {}       -- own game vehicle id -> the damage its state was last sent at
 local damageSince = {}      -- own game vehicle id -> seconds its damage has differed from sentDamage
 
 function M.key(aLat, aLon) return string.format('%.6f,%.6f', aLat, aLon) end
+
+-- Pure: the anchor a player at (lat, lon) should share: of the players' anchors (bngeAnchors' table) within ADOPT_M of
+-- it, the one the most of them use, ties to the lowest key; skip: a player id left out (ourselves, for a teleport).
+-- -> aLat, aLon, players on it (nil: none in reach)
+function M.pickAnchor(list, lat, lon, skip)
+  local count, ll = {}, {}
+  for pid, a in pairs(list) do
+    local aLat, aLon = type(a) == 'table' and tonumber(a.aLat), type(a) == 'table' and tonumber(a.aLon)
+    if pid ~= skip and aLat and aLon then
+      local k = M.key(aLat, aLon)
+      count[k], ll[k] = (count[k] or 0) + 1, { aLat, aLon }
+    end
+  end
+  local best, bestN = nil, 0
+  for k, n in pairs(count) do
+    if M.dist(lat, lon, ll[k][1], ll[k][2]) <= M.ADOPT_M and (n > bestN or (n == bestN and k < best)) then
+      best, bestN = k, n
+    end
+  end
+  if best then return ll[best][1], ll[best][2], bestN end
+  return nil
+end
 
 -- Pure: the remote vehicles to deactivate: owners { game vehicle id -> owner's server player id }, known (owner's id
 -- -> true when its anchor is known). -> { game vehicle id -> true }
@@ -87,11 +122,14 @@ end
 -- (perfmon.lua) since the last status in the status file. 'away': TEST_AWAY_S after the car, a teleport 130 degrees
 -- of longitude away (about California to Italy) for TEST_AWAY_HOLD_S, then back (a player across the world and back:
 -- the other's copy of our car must survive). 'drive': TEST_DRIVE_S after the car, the game's AI drives it (traffic
--- mode) for the frame times while the world streams.
+-- mode) for the frame times while the world streams. 'goto' (with -bngegoto LAT,LON): TEST_GOTO_S after the first
+-- pose, a teleport there (a fresh place: the shared generation's timing); -bngegotoat UNIXTIME: at that time instead
+-- (two machines arriving together).
 M.TEST_CAR_S, M.TEST_DAMAGE_S = 5, 25
 M.TEST_SWITCH_S, M.TEST_SWITCH_HOLD_S = 40, 30
 M.TEST_AWAY_S, M.TEST_AWAY_HOLD_S = 40, 60
 M.TEST_DRIVE_S = 20
+M.TEST_GOTO_S = 3
 local test = {}
 do
   local ok, args = pcall(function() return Engine.getStartingArgs() end)
@@ -100,6 +138,11 @@ do
       if a == '-bngetest' and type(args[i + 1]) == 'string' then
         for w in args[i + 1]:gmatch('[^,]+') do test[w] = true end
       end
+      if a == '-bngegoto' and type(args[i + 1]) == 'string' then
+        local la, lo = args[i + 1]:match('^([%-%d%.]+),([%-%d%.]+)$')
+        test.gotoLat, test.gotoLon = tonumber(la), tonumber(lo)
+      end
+      if a == '-bngegotoat' then test.gotoAt = tonumber(args[i + 1]) end
     end
   end
 end
@@ -125,6 +168,15 @@ local function testStep(dt)
     lateGoTo = nil
     log('I', 'beamngEarth', 'BeamMP test: going to the others now')
     onGoToRef(d)
+  end
+  if test['goto'] and test.gotoLat and not test.wentGoto and stats.poses > 0 and testClock > M.TEST_GOTO_S
+      and (not test.gotoAt or os.time() >= test.gotoAt) then
+    test.wentGoto = true
+    local c = core()
+    if c then
+      log('I', 'beamngEarth', string.format('BeamMP test: to %.5f, %.5f', test.gotoLat, test.gotoLon))
+      c.teleport(test.gotoLat, test.gotoLon, nil, { record = false })
+    end
   end
   local veh = getPlayerVehicle and getPlayerVehicle(0)
   if test.car and not testCarAt and not veh and stats.poses > 0 and testClock > M.TEST_CAR_S then
@@ -282,6 +334,50 @@ local function onAnchors(data)
   end
 end
 
+-- core.teleportTo: the anchor of other players near (lat, lon) to teleport onto (aLat, aLon), nil if none.
+function M.adoptAnchor(lat, lon)
+  if not next(anchors) then return nil end         -- (outside a session: empty)
+  return M.pickAnchor(anchors, lat, lon, myPid())
+end
+
+-- Our world server's group service is up (core: the "share" answer): { port, code }.
+function M.onShare(msg)
+  local port = tonumber(msg.port)
+  share = port and { port = port, code = tostring(msg.code or ''), weight = tonumber(msg.weight) } or false
+  log('I', 'beamngEarth', 'BeamMP: sharing generation on port ' .. tostring(port))
+end
+
+local function onPeers(data)
+  local ok, d = pcall(jsonDecode, data)
+  if not ok or type(d) ~= 'table' or type(d.members) ~= 'table' then return end
+  stats.peers = #d.members
+  require('beamngEarth/net').send({ type = 'peers', me = tostring(d.me), members = d.members })
+  log('I', 'beamngEarth', string.format('BeamMP: %d player(s) share our anchor\'s generation', #d.members))
+end
+
+-- Onto the anchor of the players near us when it is not ours (pickAnchor, everyone's anchors with ours): a smooth
+-- rebase (core.rebaseTo). Every player applies the same rule, so a group ends on one anchor; a car ahead that
+-- rebased takes the ones following onto its new anchor.
+local function converge(dt, anchor, lat, lon)
+  local k = M.key(anchor.lat, anchor.lon)
+  if k ~= lastAnchorKey then lastAnchorKey, anchorSince = k, 0 end
+  anchorSince = anchorSince + (dt or 0)
+  convergeIn = convergeIn - (dt or 0)
+  if convergeIn > 0 or anchorSince < M.SETTLE_S then return end
+  convergeIn = M.CONVERGE_S
+  local mine = myPid()
+  if not mine or not anchors[mine] then return end   -- (ours not heard back yet: the counts would be off)
+  local aLat, aLon = M.pickAnchor(anchors, lat, lon)
+  if not aLat or M.key(aLat, aLon) == k then return end
+  local c = core()
+  local ok, why = false, 'no core'
+  if c and c.rebaseTo then ok, why = c.rebaseTo(aLat, aLon) end
+  if ok then
+    stats.converged = stats.converged + 1
+    log('I', 'beamngEarth', string.format('BeamMP: onto the shared anchor %s', M.key(aLat, aLon)))
+  end
+end
+
 local function onGoTo(data)
   local ok, d = pcall(jsonDecode, data)
   local c = core()
@@ -330,6 +426,7 @@ function M.update(dt, anchor, player)
   if not handlers and rawget(_G, 'AddEventHandler') then
     AddEventHandler('bngeAnchors', onAnchors, 'beamngEarth')
     AddEventHandler('bngeGoTo', onGoTo, 'beamngEarth')
+    AddEventHandler('bngePeers', onPeers, 'beamngEarth')
     handlers = true
   end
   local mpanchor = require('beamngEarth/mpanchor')
@@ -388,6 +485,10 @@ function M.update(dt, anchor, player)
       anchors = anchors, stats = stats, hidden = hidden, remote = remote, own = own, player = player and { x = player.x,
       y = player.y, z = player.z, camera = player.camera } or nil }, true)
   end
+  if share == nil then          -- our world server's group service, asked once a session (its answer: onShare)
+    share = false
+    require('beamngEarth/net').send({ type = 'share' })
+  end
   if not anchor then return end
   placeCamera(player)
   anchorRef = anchor
@@ -404,11 +505,13 @@ function M.update(dt, anchor, player)
       if ok and tonumber(nx) and tonumber(ny) then h = (h - math.deg(math.atan2(nx, ny)) + 360) % 360 end
     end
     TriggerServerEvent('bngePose', jsonEncode({ v = M.PROTO, aLat = anchor.lat, aLon = anchor.lon, lat = lat,
-      lon = lon, joined = joined, h = h and math.floor(h * 10 + 0.5) / 10 or nil }))
+      lon = lon, joined = joined, h = h and math.floor(h * 10 + 0.5) / 10 or nil,
+      sp = share and share.port or nil, sc = share and share.code or nil, sw = share and share.weight or nil }))
     stats.poses = stats.poses + 1
     if joined then log('I', 'beamngEarth', string.format('BeamMP: first pose sent (%.5f, %.5f)', lat, lon)) end
     joined = false
   end
+  converge(dt, anchor, lat, lon)
   hideIn = hideIn - (dt or 0)
   if hideIn > 0 then return end
   hideIn = M.HIDE_S
@@ -477,7 +580,8 @@ function M.reset()
   end
   deactivated, anchors, poseIn, hideIn, joined, wentTo, camPlaced, lastPlayers = {}, {}, 0, 0, false, false, false, -1
   members, sentDamage, damageSince, restoredAt = {}, {}, {}, {}
-  stats, statusIn = { anchors = 0, go = 0, poses = 0 }, M.STATUS_S
+  share, convergeIn, anchorSince, lastAnchorKey = nil, 0, 0, nil
+  stats, statusIn = { anchors = 0, go = 0, poses = 0, converged = 0, peers = 0 }, M.STATUS_S
   require('beamngEarth/mpanchor').reset()
 end
 

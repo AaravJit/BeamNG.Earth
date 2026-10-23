@@ -609,6 +609,8 @@ class Server:
         # builds on the default pool do not hold them back (a route took 30 s after one, 2026-10-14)
         self.ui_pool = ThreadPoolExecutor(2, thread_name_prefix="map-ui")
         # (a thread per helper slot too: a far thread waits for its tile's builder, here or on a helper)
+        self.cache_dir = cache_dir
+        self.share_lock, self.group_helper = threading.Lock(), None    # (share_start: a BeamMP group's server)
         self.tile_pool = ThreadPoolExecutor(tile_workers + (peerworkmod.MAX_SLOTS if hasattr(far_pool, "remote_slots")
                                                             else 0), thread_name_prefix="far")
         # Road plans (grading) of the map cells ahead of the player, made before a block needs them: a
@@ -1168,6 +1170,14 @@ class Server:
                                          None, None, items)
         return roadsmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, chunks, walks if self.sidewalks else None,
                                    mesh, dmesh, bld, props, wires, park, tunnel_mesh=tmesh)
+
+    def ground_z_at(self, anchor, e, n):
+        """The ground's height (the frame's up) at (e, n) of anchor's frame, from the elevation data (not graded: the
+        mod sets the car down on the collision there)."""
+        la, lo, _ = anchor.frame.enu_to_geodetic(e, n, 0.0)
+        la, lo = float(la), float(lo)
+        z = self.ground(anchor.frame, la, lo, float(self.dem.sample(la, lo, anchor.hm_zoom)))
+        return round(float(anchor.frame.geodetic_to_enu(la, lo, z)[2]), 3)
 
     def ground(self, frame, la, lo, z):
         """blockworker.ground here: runways graded in, the sea floor carved."""
@@ -1810,6 +1820,42 @@ class Server:
             x0, y0, _, _ = tile.bbox
             px = self.tex_size(tile.level)
             self.imagery.prefetch(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px), px)
+
+    def share_start(self):
+        """Compute sharing in a BeamMP group: our GroupHelper listening (started once). -> {port, code} (port None:
+        not sharing)."""
+        if not hasattr(self.far_pool, "set_group"):
+            return {"port": None, "code": peerworkmod.code_id()}
+        self.far_pool.sharing = True        # every tile built is kept from now on (a player arriving gets ours)
+        with self.share_lock:
+            if self.group_helper is None:
+                self.group_helper = peerworkmod.GroupHelper(self.far_pool, self.anchor_id_for,
+                                                            os.path.join(self.cache_dir, "peer-out"))
+                self.group_helper.start(int(os.environ.get("BNGE_SHARE_PORT", peerworkmod.SHARE_PORT)))
+        return {"port": self.group_helper.port, "code": peerworkmod.code_id(), "weight": peerworkmod.share_weight()}
+
+    def share_group(self, msg):
+        """The mod's "peers": {me, members: [{id, host, port, code}]}: the players on our anchor with our code."""
+        if not hasattr(self.far_pool, "set_group"):
+            return
+        code = peerworkmod.code_id()
+        members, weights = [], {}
+        for m in msg.get("members") or []:
+            try:
+                if m.get("code") == code and m.get("host") and 0 < int(m.get("port")) < 65536:
+                    members.append((str(m["id"]), str(m["host"]), int(m["port"])))
+                    w = float(m.get("weight") or 1.0)
+                    weights[str(m["id"])] = w if 0.1 <= w <= 1000 else 1.0
+            except (TypeError, ValueError, AttributeError):
+                continue
+        self.far_pool.set_group(str(msg.get("me")), members, weights)
+
+    def anchor_id_for(self, lat, lon):
+        """Our anchor id at (lat, lon) when we have one there (its graders are made already), else the helper's."""
+        for a in list(self.anchors.values()):
+            if float(a.lat) == lat and float(a.lon) == lon:
+                return a.id
+        return peerworkmod._anchor_id(lat, lon)
 
     def remote_slots(self):
         """Far tiles compute sharing's helpers build at once (0 without helpers)."""
@@ -2745,6 +2791,10 @@ class Connection:
                 log.info("the game's %d threads on CPUs %s", n, ",".join(map(str, sorted(self.s.game_cpus))))
         elif kind == "prepare_anchor":
             self.spawn(self.prepare_anchor(msg))
+        elif kind == "share":                   # a BeamMP session: serve our group (peerwork.GroupHelper)
+            self.send(dict(self.s.share_start(), type="share"))
+        elif kind == "peers":                   # the players on our anchor (the BeamMP plugin, through mpsession)
+            self.s.share_group(msg)
         elif kind == "prepare_terrain":
             self.spawn(self.prepare_terrain(msg))
         elif kind == "commit_anchor":
@@ -2858,6 +2908,11 @@ class Connection:
             if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90):
                 raise ValueError
             lim = ANCHOR_CENTRE_MAX
+            # the player's spot in the new frame when it is not the origin (BeamMP: a teleport onto another player's
+            # anchor, mpsession.adoptAnchor): its ground height is sent instead of the origin's
+            place = None
+            if msg.get("px") is not None:
+                place = (min(max(float(msg["px"]), -lim), lim), min(max(float(msg["py"]), -lim), lim))
             cx = min(max(self.s.snap(_num(msg, "cx", 0.0)), -lim), lim)
             cy = min(max(self.s.snap(_num(msg, "cy", 0.0)), -lim), lim)
         except (KeyError, TypeError, ValueError):
@@ -2910,8 +2965,11 @@ class Connection:
         self.s.hm_sent.append(key)
         # groundZ is None when (0, 0) lies outside the block (a resync around a distant player)
         gz = info["groundZ"]
+        if place is not None:
+            gz = await asyncio.get_running_loop().run_in_executor(self.s.ui_pool, self.s.ground_z_at, anchor, *place)
         floor_z = None                  # in a tunnel: its floor under the ground (the mod moves the car down onto it
-        if gz is not None and not provisional:  # once the tube's collision is there: set down in it at once, it fell)
+        if gz is not None and not provisional and place is None:   # once the tube's collision is there: set down in
+                                                                   # it at once, it fell)
             fl = await asyncio.get_running_loop().run_in_executor(self.s.ui_pool, self.s.tunnel_floor, anchor)
             if fl is not None and fl < gz - TUNNEL_FLOOR_UNDER_M:
                 floor_z = round(fl + gradingmod.ROAD_LIFT, 3)
@@ -2921,8 +2979,8 @@ class Connection:
                  "n/a" if gz is None else f"{gz:.1f}",
                  self.s.dem.stats_snapshot())
         self.send({"type": "anchor_ready", "requestId": req, "anchorId": anchor.id, "lat": lat, "lon": lon,
-                   "groundZ": info["groundZ"], "floorZ": floor_z, "terrain": self.terrain_msg(key, info),
-                   "provisional": provisional})
+                   "groundZ": gz, "floorZ": floor_z, "terrain": self.terrain_msg(key, info),
+                   "provisional": provisional, "px": place[0] if place else None, "py": place[1] if place else None})
         self.status(f"Terrain ready ({time.perf_counter() - t0:.1f} s)")
         if provisional:
             self.spawn(self.refine_first(anchor, cx, cy, info.get("ter"), t0))
@@ -3652,6 +3710,10 @@ class Connection:
                          1000 * bs[len(bs) // 2] if bs else 0.0)
                 log.info("tile build ms (geometry+write / texture) and KB (shape / texture) by level: %s",
                          self.s.level_summary())
+                if getattr(self.s.far_pool, "stats", None) is not None:
+                    g = getattr(self.s.far_pool, "group", None)
+                    log.info("compute sharing: %s; group %s", self.s.far_pool.stats,
+                             g["ids"] if g else "none")
                 if self.s.imagery is not None:
                     log.info("imagery: %s", self.s.imagery.summary())
                     if self.s.imagery_worker or self.s.base_worker:
@@ -3748,13 +3810,15 @@ async def main_async(args):
                       args.grading == "on" and args.roads == "on",
                       args.road_widths == "on" and args.roads == "on", False, ctx.Queue(maxsize=1),
                       logging.getLogger().level, args.airports == "on", args.sea == "on", NICE_FAR))
-    if far_pool is not None and args.peers:
-        # compute sharing: far tiles to helpers built with the same settings as these workers (peerwork.py)
+    if far_pool is not None:
+        # compute sharing: far tiles to helpers (--peers) and, in a BeamMP group, split with the players on our anchor,
+        # built with the same settings as these workers (peerwork.py)
         far_pool = peerworkmod.SharedFarPool(
             far_pool, peerworkmod.parse_peers(args.peers),
             {"roads": args.roads == "on", "grading": args.grading == "on" and args.roads == "on",
              "road_widths": args.road_widths == "on" and args.roads == "on", "airports": args.airports == "on",
-             "sea": args.sea == "on"}, None)
+             "sea": args.sea == "on"}, None,
+            peerworkmod.ReplyCache(os.path.join(args.cache_dir, "peercache")))
     airports_db = None
     if args.airports == "on":       # before any worker process starts: they read this copy
         try:

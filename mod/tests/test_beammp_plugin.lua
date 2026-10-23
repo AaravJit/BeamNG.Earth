@@ -34,6 +34,23 @@ T.check(G.anchors(G.live())['1'].h == 90.5, 'anchors: the heading (the map arrow
 G.onPose(1, { v = G.PROTO, aLat = 36.2, aLon = -118, lat = 36.2, lon = -118, h = 'x' }, 'a')
 T.check(G.anchors(G.live())['1'].h == nil, 'anchors: a bad heading left out')
 
+-- peers: the sharing players on one anchor, the same sorted list for each; a player on another anchor alone
+G.players = {}
+G.onPose(1, { v = G.PROTO, aLat = 40, aLon = -111.9, lat = 40, lon = -111.9, sp = 47621, sc = 'c1' }, 'u1')
+G.onPose(2, { v = G.PROTO, aLat = 40, aLon = -111.9, lat = 40.01, lon = -111.9, sp = 47621, sc = 'c1' }, 'u2')
+G.onPose(3, { v = G.PROTO, aLat = 45.46, aLon = 9.19, lat = 45.46, lon = 9.19, sp = 47621, sc = 'c1' }, 'it')
+G.onPose(4, { v = G.PROTO, aLat = 40, aLon = -111.9, lat = 40, lon = -111.9 }, 'noshare')
+G.onPose(5, { v = G.PROTO, aLat = 40, aLon = -111.9, lat = 40, lon = -111.9, sp = 99999, sc = 'c1' }, 'badport')
+for pid, ip in pairs({ [1] = '10.0.0.1', [2] = '10.0.0.2', [3] = '10.0.0.3', [4] = '10.0.0.4', [5] = '10.0.0.5' }) do
+  G.players[pid].ip = ip
+end
+local pe = G.peers(G.live())
+T.check(pe[1] and #pe[1].members == 2 and pe[1].members[1].id == '1' and pe[1].members[2].host == '10.0.0.2'
+  and pe[2] and G.peersKey(pe[1]) == G.peersKey(pe[2]), 'peers: Utah\'s two share one list')
+T.check(pe[3] and #pe[3].members == 1, 'peers: Italy alone')
+T.check(pe[4] == nil and pe[5] == nil, 'peers: no sharing port (or a bad one): left out')
+G.players, G.sentPeers = {}, {}
+
 -- bad input ignored; stale poses and players who left out
 T.check(G.onPose(4, { v = 1, aLat = 1, aLon = 1, lat = 1, lon = 1 }, 'd') == nil and G.players[4] == nil,
   'another protocol: ignored')
