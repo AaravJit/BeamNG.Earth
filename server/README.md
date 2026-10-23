@@ -55,7 +55,7 @@ python3 server/earthd.py --port 47613 --user-dir ~/.local/share/BeamNG/BeamNG.dr
 | `--sea` | `off` | Sea water (`seacarve.py`, `seatiles.py`): the ground carved under Overture's `ocean` polygons (1 : 6.7 from the shore to 6 m), and `sea` messages with the WaterBlock tiles the mod draws around the player (512 m near to 8192 m far, out to 8 km, each at the sea level of its centre and tilted with the Earth's curve). |
 | `--trees` | `off` | Trees, bushes and rocks (`vegetation.py`): tree tops from the 1.2 m canopy height model, bushes and rocks by land cover, sent in 256 m tiles (`veg_tile`) and drawn by the mod as Forest items of stock East Coast USA shapes. |
 | `--buildings` | `off` | 3D buildings (`buildings.py`) from the Overture footprints with the road tiles, heights and roofs predicted where the data has none, stock window sheets; also street lights and utility poles (`furniture.py`). Needs `--roads on`. |
-| `--gas-stations` | `off` | Gas stations with refuelling (`gasstations.py`; on in `start.py`): fuel stations from Overture places (the `gas_station` / `fueling_station` categories, or a fuel brand's Wikidata id; a convenience brand such as Sheetz or Wawa only with a canopy or a gas-station pin), West Coast USA's canopy kits under the mapped canopy (whose outline is left out of the buildings) or a pump pair, sent with the road tile as `fuel`; the mod spawns them with the stock refuel prompt. Needs `--roads on`. |
+| `--gas-stations` | `off` | Gas stations with refuelling (`gasstations.py`; on in `start.py`): fuel stations from Overture places (the `gas_station` / `fueling_station` categories, or a fuel brand's Wikidata id; a convenience brand such as Sheetz or Wawa only with a canopy or a gas-station pin), pump islands under the mapped canopy or between the forecourt's mapped drive lanes (the canopy outline is left out of the buildings) in the region's style, or a pump pair, sent with the road tile as `fuel`; the mod spawns them with the stock refuel prompt. Needs `--roads on`. |
 | `--sidewalks` | `on` | Raised sidewalks (curbs and slabs, `sidewalks.py`) with the road tiles; `off`: the road tiles carry no `walk` mesh (the ground keeps its flat sidewalk band). For comparisons: in-game 2026-10-12 they did not change the frame rate measurably. |
 | `--grading` | `on` | Ground graded under roads (`grading.py`): smooth along the road, flat across the carriageway and a 1 m shoulder, 1:2 slopes back to the natural ground; in the physics block, the level -1 / 0 mesh tiles and the road heights alike. Needs `--roads on`. |
 | `--block-process` | `on` | The terrain-follow and prefetch physics blocks build in two processes of their own (`blockworker.py`: one for the mod's requests, one for the prefetch), off this process's interpreter lock, each with its own DEM reader, road plans (looked up ahead of the player), street widths and 128 m height chunks over the same disk caches. A block that moved one step reuses 7/8 of its heights. `off`: built in this process's threads. In-game 2026-10-12 this took a 58 m/s drive from falling off the block after 0.5 km to 10 km without a fall. |
@@ -642,10 +642,20 @@ A road tile (`roads_tile`'s JSON) carries `"fuel": [station, ...]` for the stati
 `{id, name, brand, ll: [lat, lon], props: [{shape, pos, yaw, scale, collide}], areas: [{pos, yaw, half, icon}]}` in
 the anchor frame (yaw in degrees; `half`: a `BeamNGGameplayArea`'s scale; `icon`: its `BeamNGPointOfInterest`).
 Additive: an older mod ignores it. Stations: Overture places (`mapdata` layer `places`), merged within 60 m; a
-station's shop is the building nearest its pins, its canopy a tagged `roof` near the shop or the one untagged imagery
-outline (Microsoft / Google ML) between the shop and the road that is canopy-sized and rectangular; otherwise no
-building is touched and two pumps stand on open ground clear of roads (3 m) and buildings (1 m). Every road tile lays
-out the stations within reach of it, so a canopy outline is left out by whichever tile owns it (`tile_buildings`
+station's shop is the building nearest its pins (never a roof, a home or a public building: `NOT_SHOP_CLASSES`;
+a name match and a mapper's outline first), its canopies every tagged `roof` within 30 m of the shop (or of another
+canopy), else the one untagged imagery outline (Microsoft / Google ML) between the shop and a road that is canopy-sized
+and rectangular. Most exact first, the pumps go on islands between the forecourt's mapped drive lanes (three or more
+short parallel service roads 5-10 m apart near the shop), else on islands across each canopy's short side about 7 m
+apart; otherwise no building is touched and two pumps stand on open ground clear of roads (3 m) and buildings (1 m):
+between the shop and its road, else at the pin (within 20 m, not behind the shop), and with no shop at the pin when a
+road is within 60 m. The style is the station's region (`style_of`, `buildings.region_style`): Europe (`alpine`,
+`europe_north`, `nordic`, `mediterranean`) Italy's petrol station set (awning sections stretched over the forecourt,
+Italy's pumps and brand sign); the US East and South (`us_east`, `us_south`) East Coast USA's units (three islands,
+dispensers and roof in one model, stretched so its islands fall between the lanes); elsewhere West Coast USA's roof
+slab over the islands, Trilobite pumps and pillars. One refuel area per pump (per island for East Coast's units). The
+prompt's name is the place's, or its brand when the name does not mention it (an operator's name). Every road tile
+lays out the stations within reach of it, so a canopy outline is left out by whichever tile owns it (`tile_buildings`
 `skip`). Far building tiles still draw it as a box until the road tile arrives.
 
 ## Airports and runways (`server/airports.py`, `runwaygeom.py`, `runwaymarks.py`; docs/research/2026-10-11-airports.md)
@@ -680,7 +690,7 @@ determinism, queries, the download / weekly refresh / last-good-copy store behin
 the CLI), the grading on synthetic DEMs (limits, data ends, steep / relaxed / coarse, crossings, no steps,
 footprint, determinism, `heightmap.grid_u` with the graded sampler) and the markings (classes, stripe counts,
 designators, on the pavement, no overlaps, mirrored ends, displaced thresholds, closed runways).
-`test_gasstations.py` the gas stations: categories and the two brand lists, merged pins, the shop and the canopy (a car wash behind the shop is not one), the layouts and their clearances, the road tile's records and dropped canopies across tiles. `test_cdae.py` holds the golden `.cdae` tests. `test_heightmap.py` the lattice/quantum identity
+`test_gasstations.py` the gas stations: categories and the two brand lists, merged pins and their names, the shop and the canopies (a car wash behind the shop is not one), mapped drive lanes, the layouts and their clearances, the region styles, the road tile's records and dropped canopies across tiles (`BNGE_GAS_REAL=1`: the user's stations near Pittsburgh from the real Overture data). `test_cdae.py` holds the golden `.cdae` tests. `test_heightmap.py` the lattice/quantum identity
 tests. `test_farfield.py` selection, hysteresis, swap groups, err/sink/skirt and the shipped mod
 assets. `test_mesh.py` mesh mode: selection down to L-2 with the min-level radii (no gaps/overlaps on
 64 m cells), the 25 % hysteresis at 150/400 m, L-2 vertices == terrain PNG heights (float64 and the

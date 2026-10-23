@@ -49,7 +49,29 @@ Spawns the `s_fuel_structure_03` kit 25 m ahead of the player at runtime, each p
 (wider across the row than West Coast's 0.6, so a car need not touch the pump) and an icon 2.5 m up, and adds a stock
 station POI through a temporary `onGetRawPoiListForLevel` extension.
 
-Results: *pending (run with the game on the BeamNG.Earth level; filled in by the gas stations plan's Task 8)*:
-first-load ms of the canopy and pump shapes; whether the prompt appears and the tank fills; the smallest area that
-triggers reliably for a car parked beside the pumps; that the prompt follows a moved area only after
-`gameplay_rawPois.clear()`.
+Results (BeamNG 0.40.3, the BeamNG.Earth level, through the MCP, 2026-10-23; the stations as the mod spawns them, not
+the probe file):
+
+- The stock prompt ("Gas Station - <name> - Gasoline / Diesel - Refuel Vehicle") appears for a car stopped beside a
+  pump in its `1.6 2.2 2.75` area: West Coast pumps (near Pittsburgh), East Coast's units (a Sheetz near Pittsburgh) and Italy's
+  pumps (the Aral, Garmischer Str. 197, Munich). Its name is the record's (the Aral's said its operator's, "Wolfgang
+  Tulach", until the name rule: the brand when the name does not mention it).
+- Spawn cost, gasstations.update timed per frame: every station under 5 ms; the Buc-ee's in New Braunfels (132 pumps,
+  88 pillars, two roof slabs, ~490 objects) 23.8 ms in one frame. Not spread over frames yet (a one-off on arrival).
+  The batched collision rebuild after it is not in that figure.
+- Shapes are preloaded at the session start (`gasstations.PREWARM`), so their first load is not mid-drive; East Coast's
+  unit uses `eca_genericsigns`, defined in no materials file of East Coast's own zip, yet its roof-edge signs render.
+- Not measured: the smallest reliable area, and the tank filling over time.
+
+## 4. Other levels' sets (2026-10-23)
+
+- Italy (`levels/italy/art/shapes/buildings/italy_petrolstation_*`): an awning half `awningSt` (12 m along its x,
+  6.53 m to its -y, pillars built in; two turned 180 degrees about one origin make a 12 x 13 m section), pumps `pump_b`
+  / `pump_c` (two under each half at x +-2.25, y -3.2), `brandsign`. Materials: Italy's
+  `art/shapes/buildings/main.materials.json`.
+- East Coast USA (`levels/east_coast_usa/art/shapes/buildings/eca_gastation_pumps.DAE`): one model of three islands
+  (1.46 m wide at x = -5.215, 1.24, 7.74; along y over -9.2 .. -4.53; 0.2 m high), a dispenser on each at y = -7.46,
+  and a 17.6 x 6.6 m roof 4.7 m up (x -7.53 .. 10.1, y -10.04 .. -3.44), origin at the ground (its collision mesh).
+  East Coast's own station (`main/MissionGroup/Gas_Station`, `fuel_node_city` / `fuel_node_dealer`) puts one area per
+  island at the dispenser, scale `2 0.5 1` across the island. Materials: East Coast's
+  `art/shapes/buildings/main.materials.json`.
