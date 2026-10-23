@@ -103,9 +103,11 @@ class GuardrailMeshTest(unittest.TestCase):
                                 elev, (100.0, 0.0, 0.0))
         self.assertIsNotNone(left)
         self.assertIsNotNone(right)
-        # This horizontal line's rail sections meet at x=100 with no gap or overhang.
+        # Rails meet at x=100. The boundary-owned post is centred on that line and its 8 cm
+        # width intentionally overlaps the neighbouring mesh by only half a post width.
         self.assertAlmostEqual(float(left[0][:, 0].max()), 100.0, places=4)
-        self.assertAlmostEqual(float(right[0][:, 0].min()), 0.0, places=4)
+        self.assertGreaterEqual(float(right[0][:, 0].min()), -guardrails.POST_WIDTH_M / 2 - 1e-4)
+        self.assertLessEqual(float(right[0][:, 0].min()), 0.0)
 
     def test_road_tile_writer_exports_guardrail_mesh_reference(self):
         vertices = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], np.float32)
