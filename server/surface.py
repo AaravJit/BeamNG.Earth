@@ -29,7 +29,6 @@ from PIL import Image, ImageDraw
 import fast
 import heightmap
 import mapcells
-import mapdata as mapdatamod
 import roads as roadsmod
 import staging
 
@@ -618,15 +617,14 @@ class Surface:
     def _cached(self, key):
         """The cell's land-cover Raster from the cache, None if absent (a fetch is queued) or no
         coverage (open ocean: the layer is stored as missing)."""
-        arrays = self.md._load(self.md.path(key, "landcover"))
-        if arrays is None:
+        if not self.md.has(key, "landcover"):
             self._queue(key)
             return None
-        arrays = dict(arrays)
-        arrays.pop("provenance", None)
-        if "missing" in arrays:
+        try:        # (mapdata's memory LRU: a far tile's road paint and every block read the same cells again)
+            return self.md.cell(key, layers=("landcover",), kind="background").layers.get("landcover")
+        except Exception as e:      # an unreadable cache file: like a missing one
+            log.debug("surface: land cover of %s: %s: %s", key, type(e).__name__, e)
             return None
-        return mapdatamod._raster_from(arrays)
 
     def _queue(self, key, layers=("landcover",)):
         with self._lock:
@@ -677,7 +675,7 @@ class Surface:
         keys = []
         for layer in ("landcover", "land_use", "infrastructure"):
             for k in cells:
-                if self.md._load(self.md.path(k, layer)) is None:
+                if not self.md.has(k, layer):
                     self._queue(k, (layer,))
                     keys.append(k)
         deadline = time.monotonic() + timeout_s
@@ -694,7 +692,7 @@ class Surface:
         lon = np.asarray(lon, np.float64)
         out, complete = [], True
         for key in mapcells.cells_for_points(lat, lon):
-            if self.md._load(self.md.path(key, "roads")) is None:
+            if not self.md.has(key, "roads"):
                 self._queue(key, ("roads",))
                 complete = False
                 continue
@@ -713,7 +711,7 @@ class Surface:
         out = []
         for key in mapcells.cells_for_points(lat, lon):
             for layer in ("infrastructure", "land_use"):
-                if self.md._load(self.md.path(key, layer)) is None:
+                if not self.md.has(key, layer):
                     self._queue(key, (layer,))
                     continue
                 try:

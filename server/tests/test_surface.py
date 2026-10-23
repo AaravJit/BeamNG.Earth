@@ -197,6 +197,15 @@ class FakeMapData:
     def has(self, key, layer):
         return self.path(key, layer) in self.cached
 
+    def cell(self, key, layers, kind="demand"):
+        """As MapData.cell for one raster layer: its Raster, None when stored as missing."""
+        import types
+        import mapdata as mapdatamod
+        arrays = dict(self.cached[self.path(key, layers[0])])
+        arrays.pop("provenance", None)
+        r = None if "missing" in arrays else mapdatamod._raster_from(arrays)
+        return types.SimpleNamespace(layers={layers[0]: r})
+
     def prefetch(self, key, layers):
         self.prefetched.append((key, layers))
         self.store(key)
