@@ -435,10 +435,30 @@ def _clear(pts, blds, roads):
     return True
 
 
-def _pair_site(st, shop, blds, roads, kit=None):
+PIN_NEAR_M = 20.0           # a pair beside the shop: this close to the pin
+
+
+def _pair_site(st, shop, blds, roads, kit=None, at_pin=False):
     """Two pumps in a row parallel to the shop's front, on open ground between the shop and its nearest road, as near
-    the shop as fits; without a shop, from the pin toward its nearest road; None when nothing fits."""
-    sc = _centre(shop.ring) if shop is not None else np.array([st.x, st.y])
+    the shop as fits; without a shop, from the pin toward its nearest road; at_pin: from the pin, within PIN_NEAR_M of
+    it and not behind the shop's back wall (a forecourt beside the shop); None when nothing fits."""
+    pin = np.array([st.x, st.y])
+    if at_pin and shop is not None:
+        c0 = _centre(shop.ring)
+        q0, d0, _ = _nearest_on(roads, c0)
+        if q0 is None or d0 < 1.0:
+            return None
+        front = (q0 - c0) / d0                  # the shop's front: toward its road
+        _, su, shl, shw = _obox(shop.ring)
+        back = -float(abs(su @ front) * shl + abs(su[0] * front[1] - su[1] * front[0]) * shw)   # its back wall
+        site = _pair_site(st, None, blds, roads, kit)
+        if site is None:
+            return None
+        for p in site.props:
+            if np.hypot(p["x"] - st.x, p["y"] - st.y) > PIN_NEAR_M or float((np.array([p["x"], p["y"]]) - c0) @ front) < back:
+                return None
+        return site
+    sc = _centre(shop.ring) if shop is not None else pin
     q, dist, _ = _nearest_on(roads, sc)
     if q is None or dist < 1.0:
         return None
@@ -788,7 +808,7 @@ def layout(st, blds, roads, service=(), style="default"):
         if boxes:
             site = _italy_site(st, boxes, others, roads)
         elif st.confirmed:
-            site = _pair_site(st, shop, blds, roads, ITA_KIT)
+            site = _pair_site(st, shop, blds, roads, ITA_KIT) or _pair_site(st, shop, blds, roads, ITA_KIT, at_pin=True)
         if site is not None:
             site.shop_id, site.drop_ids = shop.id, drop
         return site
@@ -805,7 +825,7 @@ def layout(st, blds, roads, service=(), style="default"):
     if site is not None:
         site.drop_ids = drop
     if site is None and st.confirmed:
-        site = _pair_site(st, shop, blds, roads)
+        site = _pair_site(st, shop, blds, roads) or _pair_site(st, shop, blds, roads, at_pin=True)
     if site is not None:
         site.shop_id = shop.id
     return site

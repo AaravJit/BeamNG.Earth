@@ -292,6 +292,18 @@ class LayoutTest(unittest.TestCase):
             self.assertGreater(road_gap(p["x"], p["y"]), gs.ROAD_CLEAR_M, p)
             self.assertFalse(inside_box(shop, p["x"], p["y"], pad=gs.BLD_CLEAR_M), p)
 
+    def test_forecourt_beside_the_shop(self):
+        # a Kwik Fill near Pittsburgh (2026-10-23): the shop's front close to the road, the forecourt and the
+        # pin beside it; the pair at the pin, clear of both
+        shop = rect("shop", 0.0, 12.0, 20.0, 10.0)
+        st = gs.Station("kf", 22.0, 16.0, "Kwik Fill", "Kwik Fill", ("p",), True)
+        site = gs.layout(st, [shop], ROAD)
+        self.assertIsNotNone(site)
+        for p in site.props:
+            self.assertLess(np.hypot(p["x"] - st.x, p["y"] - st.y), 20.0, p)
+            self.assertGreater(road_gap(p["x"], p["y"]), gs.ROAD_CLEAR_M, p)
+            self.assertFalse(inside_box(shop, p["x"], p["y"], pad=gs.BLD_CLEAR_M), p)
+
     def test_no_room_no_site(self):
         shop = rect("shop", 0.0, 13.0, 20.0, 10.0)          # 3 m between the road's edge and the shop
         st = gs.Station("st", 0.0, 13.0, "Shell", "Shell", ("p",), True)
