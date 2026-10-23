@@ -124,12 +124,17 @@ def _trace_memory(every_s=60.0, top=10):
 
 
 def init(cache_dir, offline, roads, grading, road_widths, surface, warm_q, log_level=logging.INFO, airports=False,
-         sea=False, nice=0):
+         sea=False, nice=0, roads_in_ground=None):
     """nice: this worker's niceness on top of the server's (earthd NICE_*): the terrain blocks' workers keep the
     server's own, the road tiles' and the far field's run below them, so the ground under the car wins the server's
     few cores (2026-10-19: at 180 mph the next block waited 6 s behind the road tiles ahead and a ball fell off the
     block's edge)."""
     global _s
+    # A helper may serve clients with different choices. Never use its own launcher
+    # preference for a client's job, or mix painted and mesh roads within one world.
+    if roads_in_ground is not None:
+        import roads as roadsmod
+        roadsmod.ROADS_IN_GROUND = roads_in_ground
     import budget
     try:
         budget.lower_priority(nice, worker=True)    # (Windows: the far field's workers idle, budget.WIN_IDLE_ABOVE)
