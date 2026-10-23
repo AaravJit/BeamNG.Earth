@@ -288,6 +288,8 @@ class FollowRule:
     fast_lead: float = 0.0
     fast_reach: float = 0.0
     fast_ahead: float = 0.0
+    min_lead: float = 0.0           # the target at least this far ahead of a moving player (follow.lua MIN_LEAD)
+    min_lead_v: float = 2.0         # (moving: faster than this, m/s; follow.lua MIN_LEAD_V)
 
     def mode(self, vx, vy):
         """(lead, reach, prepare-test ahead s) for this velocity."""
@@ -302,7 +304,7 @@ class FollowRule:
 FOLLOW_RULES = {
     1024: FollowRule(heightmap.GRIDS[1024], FOLLOW_PREPARE, FOLLOW_LEAD, FOLLOW_REACH, PREFETCH_START),
     512: FollowRule(heightmap.GRIDS[512], 128.0, 5.0, 260.0, 100.0,
-                    fast_v=150.0, fast_lead=3.0, fast_reach=420.0, fast_ahead=0.75),
+                    fast_v=150.0, fast_lead=3.0, fast_reach=420.0, fast_ahead=0.75, min_lead=256.0),
 }
 BLOCK_DEFAULT = 1024        # Server()'s block (test_v131_default.py pins the library default)
 # The command line's block in mesh mode: M4's 512² block (in-game 2026-10-10: P2 steady import 16 ms vs
@@ -437,12 +439,17 @@ class TileInfo:
     shape: str | None = None    # its shape file when not tile_name(): a copy under a new material name (reslot)
 
 
-def predict_centre(px, py, vx, vy, lead, reach=FOLLOW_REACH, grid=heightmap.GRID):
-    """snap256(p + v*lead) (M4: the block's grid), clamped so p stays within `reach` of the centre
-    on both axes."""
+def predict_centre(px, py, vx, vy, lead, reach=FOLLOW_REACH, grid=heightmap.GRID, min_lead=0.0, min_lead_v=2.0):
+    """snap256(p + v*lead) (M4: the block's grid), the lead at least min_lead metres while moving (follow.lua's
+    MIN_LEAD), clamped so p stays within `reach` of the centre on both axes."""
+    lx, ly = vx * lead, vy * lead
+    v2 = vx * vx + vy * vy
+    if min_lead > 0 and v2 > min_lead_v * min_lead_v and lx * lx + ly * ly < min_lead * min_lead:
+        k = min_lead / math.sqrt(v2)
+        lx, ly = vx * k, vy * k
     out = []
-    for p, v in ((px, vx), (py, vy)):
-        c = heightmap.snap(p + v * lead, grid)
+    for p, d in ((px, lx), (py, ly)):
+        c = heightmap.snap(p + d, grid)
         lo = math.ceil((p - reach) / grid) * grid
         hi = math.floor((p + reach) / grid) * grid
         out.append(float(min(max(c, lo), hi)) + 0.0)
@@ -456,13 +463,20 @@ def predict_request(px, py, vx, vy, cx, cy, rule=FOLLOW_RULES[1024]):
     exact request instead avoids builds that are never asked for.) rule: the block size's
     follow table; in its fast mode the box test is on the point v * fast_ahead ahead."""
     lead, reach, ahead = rule.mode(vx, vy)
+    v2 = vx * vx + vy * vy
+    if (rule.min_lead > 0 and rule.min_lead_v ** 2 < v2 and v2 * lead * lead < rule.min_lead ** 2
+            and (cx - px) * vx + (cy - py) * vy > 0
+            and max(abs(px - cx), abs(py - cy)) <= rule.min_lead + rule.grid):
+        # (follow.lua centreAhead: the centre just committed is ahead; the next request once the player is past it)
+        t0 = ((cx - px) * vx + (cy - py) * vy) / v2 + FRAME_S
+        px, py = px + vx * t0, py + vy * t0
     qx, qy = px + vx * ahead, py + vy * ahead
     t = 0.0
     if max(abs(qx - cx), abs(qy - cy)) <= rule.prepare:
         exits = [((c + math.copysign(rule.prepare, v)) - q) / v
                  for q, v, c in ((qx, vx, cx), (qy, vy, cy)) if abs(v) > 0.5]
         t = min(exits) + FRAME_S if exits else 0.0
-    return predict_centre(px + vx * t, py + vy * t, vx, vy, lead, reach, rule.grid)
+    return predict_centre(px + vx * t, py + vy * t, vx, vy, lead, reach, rule.grid, rule.min_lead, rule.min_lead_v)
 
 
 def _num(msg, name, default=None):

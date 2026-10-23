@@ -569,6 +569,7 @@ class ConstantsTest(unittest.TestCase):
             self.assertEqual((rule.grid, rule.prepare, rule.lead, rule.reach),
                              (T["GRID"], T["PREPARE_DIST"], T["LOOKAHEAD_S"], T["REACH"]), size)
             self.assertEqual(rule.grid, heightmap.grid(size))
+            self.assertEqual((rule.min_lead, rule.min_lead_v), (T["MIN_LEAD"], F["MIN_LEAD_V"]), size)
             edge = heightmap.valid(size) - heightmap.half_extent(size)            # +1022 / +510 m
             self.assertLessEqual(T["REACH"], edge - T["EDGE_MARGIN"])
             self.assertEqual(rule.fast_v, math.inf if T["FAST_MODE_V"] >= 1e9 else T["FAST_MODE_V"])
@@ -585,7 +586,8 @@ class ConstantsTest(unittest.TestCase):
                                (-90.0, 60.0, -140.0, 40.0), (170.0, 120.0, 10.0, -20.0)):
             want = modsim.follow_decide(px, py, vx, vy, 0.0, 0.0, None, size=512)
             self.assertEqual(want[0], "prepare", (vx, vy))
-            self.assertEqual(earthd.predict_centre(px, py, vx, vy, *fast.mode(vx, vy)[:2], fast.grid), want[1:])
+            self.assertEqual(earthd.predict_centre(px, py, vx, vy, *fast.mode(vx, vy)[:2], fast.grid, fast.min_lead,
+                                                   fast.min_lead_v), want[1:])
 
     def test_stale_dist_per_block_size(self):
         """rebase.lua STALE_DIST per block size equals that table's commit distance (a rebase never

@@ -182,6 +182,16 @@ end
 --   latency: the last measured heightmap latency, s (the 512² re-check; nil = LATENCY_S)
 -- Returns 'prepare' (+ new cx, cy), 'commit', 'discard' or nil. 'commit' is a request: the caller
 -- runs it in a governor heavy slot (governor.lua), so it may be returned on several frames.
+-- Pure: is the block's centre still ahead of a player moving at town speed, the target set by MIN_LEAD (decide)?
+function M.centreAhead(px, py, vx, vy, cx, cy)
+  vx, vy = vx or 0, vy or 0
+  local v2 = vx * vx + vy * vy
+  if M.MIN_LEAD <= 0 or v2 <= M.MIN_LEAD_V * M.MIN_LEAD_V or v2 * M.LOOKAHEAD_S * M.LOOKAHEAD_S >= M.MIN_LEAD * M.MIN_LEAD then
+    return false
+  end
+  return (cx - px) * vx + (cy - py) * vy > 0 and M.cheb(px, py, cx, cy) <= M.MIN_LEAD + M.GRID
+end
+
 function M.decide(px, py, vx, vy, cx, cy, pending, now, retryAt, gate, latency)
   if not cx then return nil end
   local _, reach, ahead = mode(vx, vy)
@@ -194,8 +204,12 @@ function M.decide(px, py, vx, vy, cx, cy, pending, now, retryAt, gate, latency)
       -- 512² commit-time re-check (see the top): a block the player would soon need to replace is
       -- re-prepared instead, while there is time for that
       -- (the latency is at least LATENCY_S: the last measured one says little about the next request)
+      -- (not where MIN_LEAD sets the target: the block is then that far ahead by design, and the box test, symmetric,
+      -- took it for one the player would soon leave: ready blocks thrown away and asked again at town speeds)
       local r = M.RECHECK_S
-      if r > 0 and ahead == 0 and d <= M.HARD_COMMIT_DIST
+      local lt = M.LOOKAHEAD_S
+      local leadSet = M.MIN_LEAD > 0 and ((vx or 0) ^ 2 + (vy or 0) ^ 2) * lt * lt < M.MIN_LEAD * M.MIN_LEAD
+      if r > 0 and ahead == 0 and not leadSet and d <= M.HARD_COMMIT_DIST
         and M.cheb(px + (vx or 0) * r, py + (vy or 0) * r, pending.cx, pending.cy) > M.PREPARE_DIST
         and M.timeTo(px, py, vx or 0, vy or 0, cx, cy, M.RECHECK_SAFE)
           > max(latency or M.LATENCY_S, M.LATENCY_S) + M.RECHECK_SLACK_S
@@ -228,6 +242,9 @@ function M.decide(px, py, vx, vy, cx, cy, pending, now, retryAt, gate, latency)
   if M.cheb(px + (vx or 0) * ahead, py + (vy or 0) * ahead, cx, cy) <= M.PREPARE_DIST or now < (retryAt or 0) then
     return nil
   end
+  -- (MIN_LEAD: the block just committed is centred ahead of the player; the box test, symmetric, asked for the next one
+  -- at once, and a prediction made then was overtaken by the bend: the next one once the player is past this centre)
+  if M.centreAhead(px, py, vx, vy, cx, cy) then return nil end
   local tx, ty = M.target(px, py, vx, vy)
   if tx == cx and ty == cy then return nil end -- heading back towards the centre: nothing to gain
   return 'prepare', tx, ty
