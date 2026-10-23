@@ -478,7 +478,9 @@ class MapData:
         got = self._mirror_load(path)
         return got if got is not None else arrays
 
-    _mirror_written = 0
+    # (a process's first write prunes: the count of a session's own writes alone never reached the threshold when
+    # each run wrote less, and the mirror grew past MIRROR_MB across sessions: 6.3 GB on a Steam Deck, 2026-10-23)
+    _mirror_written = MIRROR_MB * 1e6
     _mirror_pruned = -1e9
     _mirror_lock = threading.Lock()
 

@@ -29,6 +29,7 @@ from polygon import Path
 
 import mapcells
 import pacer
+import cache as cachemod
 import staging
 
 log = logging.getLogger("earthd.seacarve")
@@ -47,6 +48,8 @@ BATHY_DOWN = 4              # ~7.5 m pixels
 BATHY_MIN, BATHY_MAX = 1.0, 80.0    # m: a sea floor this deep at least / at most
 BATHY_RETRY_S = 120.0       # s: a cell built without bathymetry is built again after this (in memory)
 SHORE_SLOPE = 0.3           # m/m: with bathymetry, the floor reaches its depth from the shore this steeply
+RAW_MB = 1536               # the uncompressed rasters (memory-mapped; ~9.5 MB a cell) kept at most (earthd's start-up
+                            # prune: they grew to 13.7 GB on a Steam Deck beside 0.15 GB of the compressed ones they repeat)
 PX_ZOOM = 16                # raster pixels: Web-Mercator z16 (256 px tiles): 1024 px per z14 cell
 CELL_PX = 256 << (PX_ZOOM - mapcells.ZOOM)      # raster pixels per cell edge (1024)
 PAD_PX = 32                 # margin rasterised from the neighbouring cells (> the cap's distance)
@@ -310,7 +313,9 @@ class SeaCarver:
         raw = _raw_path(p)
         if raw and os.path.exists(raw):
             try:
-                return _open_raw(raw), True
+                got = _open_raw(raw)
+                cachemod.touch_once(raw)        # (recent for the start-up prune: cache.prune_dir, RAW_MB)
+                return got, True
             except (OSError, ValueError) as e:      # (a damaged file: the npz, or a build, again)
                 log.debug("sea: %s: %s", raw, e)
         if p and os.path.exists(p):

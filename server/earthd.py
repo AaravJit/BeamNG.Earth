@@ -3847,6 +3847,7 @@ async def main_async(args):
         radii = {ml: args.near_radii[0], ml + 1: args.near_radii[1]}
     net = netfetch.Fetcher(stats_dir=os.path.join(args.cache_dir, "netstats"), offline=args.offline)
     disk = cachemod.Cache(args.cache_dir, args.cache_cap)
+    threading.Thread(target=prune_own_caches, args=(args.cache_dir,), daemon=True, name="cache-prune").start()
     # map data (mapdata.py): land cover for the surfaces, roads; one instance shares its cache locks
     mapdata = (mapdatamod.MapData(args.cache_dir, fetcher=net)
                if "on" in (args.surface, args.roads, args.sea, args.trees) else None)
@@ -4081,6 +4082,21 @@ def raise_open_files():
             log.info("open files limit: %d -> %d", soft, want)
     except (ValueError, OSError) as e:
         log.warning("open files limit not raised: %s", e)
+
+
+def prune_own_caches(cache_dir):
+    """The caches outside the cap's MANAGED folders, each cut back to its own limit at start (cache.prune_dir): sea
+    carving's raw rasters, compute sharing's kept replies, the road widths' walls. Each grew run after run past its
+    limit (35 GB on a Steam Deck under a 20 GB cap, 2026-10-23: players' C: drives filled)."""
+    for sub, mb, match in (("seacarve", seacarvemod.RAW_MB, lambda n: n.endswith(".raw.npy")),
+                           ("peercache", peerworkmod.CACHE_BYTES / 1e6, None),
+                           ("roadwidth", roadwidthmod.STORE_MB, lambda n: n.endswith(".npy"))):
+        try:
+            n, left = cachemod.prune_dir(os.path.join(cache_dir, sub), mb * 1e6, match=match)
+            if n:
+                log.info("cache: %s cut back: %d files removed, %.2f GB left", sub, n, left / 1e9)
+        except Exception as e:      # a cache's trim must never stop the server
+            log.warning("cache: %s not cut back: %s", sub, e)
 
 
 def main():
