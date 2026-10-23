@@ -787,6 +787,18 @@ class CacheTest(Sources, SmallBlocks, unittest.TestCase):
         with self.assertRaises(netfetch.Offline):
             md3.cell(mapcells.cell_of(10.0, 10.0), ("landcover",))
 
+    def test_a_deferred_osm_prefetch_is_not_cached(self):
+        # the OSM tags' host had no room for a prefetch: the roads are not built (prefetch False) rather than cached for
+        # good without their tags; on demand they are built without them
+        import osmtags
+        cache = os.path.join(self.tmp, "cache")
+        md, _ = self.mapdata(cache=cache)
+        with mock.patch.object(osmtags.OsmTags, "cell", side_effect=netfetch.Deferred("busy, prefetch dropped")):
+            self.assertFalse(md.prefetch(mf.CELL, ("roads",)))
+            self.assertFalse(md.has(mf.CELL, "roads"), "nothing cached")
+            self.assertIn("roads", md.cell(mf.CELL, ("roads",)).layers)
+        self.assertTrue(md.has(mf.CELL, "roads"))
+
     def test_one_build_per_cell_across_processes(self):
         # two MapData over one cache (two of the server's processes): the second waits for the first's layer file
         # instead of building (downloading, decoding) the same cell again

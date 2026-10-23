@@ -361,6 +361,14 @@ class MapData:
                 if getattr(self, "osmtags", None) is None:
                     self.osmtags = osmtags.OsmTags(self.raw_dir, self.fetcher)
             return self.osmtags.cell(key.bounds(), kind)
+        except DEFERRED:
+            # a prefetch the host had no room for: the cell is not built now (MapData.prefetch: False) rather than cached
+            # for good without its tags (a player's start cell in Baltimore kept the roads' guesses, 2026-10-23); on
+            # demand the roads go on without them, as below
+            if kind not in ("demand", "urgent"):
+                raise
+            log.warning("mapdata: OSM road tags of %s: the host is busy (%s); the roads go on without them", key, kind)
+            return {}, []
         except Exception as e:          # optional: the roads go on with their guesses
             log.warning("mapdata: OSM road tags of %s: %s: %s", key, type(e).__name__, e)
             return {}, []
