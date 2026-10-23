@@ -193,6 +193,15 @@ ML_SOURCES = {"Microsoft ML Buildings", "Google Open Buildings"}    # traced fro
 CANOPY_RECT_MIN = 0.85      # area / its oriented box's: a canopy is a rectangle
 CANOPY_AREA_M2 = (120.0, 900.0)
 CANOPY_MAX_H_M = 7.0
+# never a station's shop: homes and public buildings (Munich, 2026-10-23: a Shell's and an Agip's kiosks are not mapped,
+# the nearest buildings were a hospital and a block of flats)
+NOT_SHOP_CLASSES = {"apartments", "house", "residential", "detached", "semidetached_house", "terrace", "bungalow",
+                    "dormitory", "houseboat", "static_caravan", "hospital", "school", "university", "college",
+                    "kindergarten", "church", "cathedral", "chapel", "mosque", "temple", "synagogue", "shrine",
+                    "religious", "hotel", "civic", "government", "public", "fire_station", "train_station",
+                    "transportation", "stadium", "sports_hall", "grandstand", "greenhouse", "barn", "farm",
+                    "farm_auxiliary", "cowshed", "stable", "silo", "military", "bunker", "parking"}
+PIN_ROAD_M = 60.0           # no shop: the pumps at the pin (a kiosk not mapped) when a road is this close to it
 ROOF_CLASSES = {"roof"}     # OSM building=roof (the Speedway's canopy: outbuilding / roof)
 CANOPY_GAP_M = 30.0         # a tagged roof this close to the shop's outline, or to another canopy's, is a canopy (Buc-ee's
                             # New Braunfels: a 155 x 55 m store, two 157 m canopies whose centres are 52 and 90 m from
@@ -244,7 +253,7 @@ def find_shop(st, blds):
     p = np.array([st.x, st.y])
     near = []
     for b in blds:
-        if b.cls in ROOF_CLASSES:
+        if b.cls in ROOF_CLASSES or b.cls in NOT_SHOP_CLASSES:
             continue
         d = float(np.hypot(*(_centre(b.ring) - p)))
         if d <= SHOP_SEARCH_M:
@@ -376,10 +385,10 @@ def _yaw(u):
     return float(np.degrees(np.arctan2(u[1], u[0])))
 
 
-def _pump(props, areas, kit, x, y, yaw, dz):
+def _pump(props, areas, kit, x, y, yaw, dz, shapes=None):
     py = (yaw + kit["dyaw"]) % 360.0
-    props.append(dict(shape=kit["pump"][0], x=x, y=y, dz=dz, yaw=py, scale=[1.0, 1.0, 1.0], collide=True))
-    props.append(dict(shape=kit["pump"][1], x=x, y=y, dz=dz, yaw=py, scale=[1.0, 1.0, 1.0], collide=False))
+    for k, shape in enumerate(shapes or kit["pump"]):     # (a base and its brand overlay: the base collides)
+        props.append(dict(shape=shape, x=x, y=y, dz=dz, yaw=py, scale=[1.0, 1.0, 1.0], collide=k == 0))
     areas.append(dict(x=x, y=y, dz=dz + AREA_DZ, yaw=yaw % 360.0, half=list(AREA_HALF), icon=ICON_DZ))
 
 
@@ -416,21 +425,27 @@ def _clear(pts, blds, roads):
     return True
 
 
-def _pair_site(st, shop, blds, roads):
+def _pair_site(st, shop, blds, roads, kit=None):
     """Two pumps in a row parallel to the shop's front, on open ground between the shop and its nearest road, as near
-    the shop as fits; None when nothing fits."""
-    sc = _centre(shop.ring)
+    the shop as fits; without a shop, from the pin toward its nearest road; None when nothing fits."""
+    sc = _centre(shop.ring) if shop is not None else np.array([st.x, st.y])
     q, dist, _ = _nearest_on(roads, sc)
     if q is None or dist < 1.0:
         return None
     a = (q - sc) / dist                         # toward the road
     r = np.array([-a[1], a[0]])                 # along the row
-    _, su, shl, shw = _obox(shop.ring)
-    reach = float(abs(su @ a) * shl + abs(su[0] * a[1] - su[1] * a[0]) * shw)    # the shop's half depth toward the road
-    kit = PUMP_KIT
+    if shop is not None:
+        _, su, shl, shw = _obox(shop.ring)
+        reach = float(abs(su @ a) * shl + abs(su[0] * a[1] - su[1] * a[0]) * shw)    # its half depth toward the road
+    else:
+        reach = -(PAIR_HALF[1] + BLD_CLEAR_M)   # (from the pin itself)
+    kit = kit or PUMP_KIT
     gr, ga = np.meshgrid(np.linspace(-PAIR_HALF[0], PAIR_HALF[0], 11), np.linspace(-PAIR_HALF[1], PAIR_HALF[1], 9))
     grid = np.c_[gr.ravel(), ga.ravel()]
-    for t in np.arange(reach + PAIR_HALF[1] + BLD_CLEAR_M, dist, 1.0):
+    steps = np.arange(reach + PAIR_HALF[1] + BLD_CLEAR_M, dist, 1.0)
+    if shop is None:                            # from the pin both ways, nearest first (the forecourt may be behind it)
+        steps = sorted(np.arange(-30.0, dist, 1.0), key=abs)
+    for t in steps:
         for lat in (0.0, 4.0, -4.0, 8.0, -8.0):
             c = sc + a * t + r * lat
             if not _clear(c + grid[:, :1] * r + grid[:, 1:] * a, blds, roads):
@@ -447,6 +462,71 @@ def _pair_site(st, shop, blds, roads):
                                       scale=[1.5, 1.5, 1.0], collide=True))
             return Site(st, props, areas, ())
     return None
+
+
+# --- stations by region (the user, 2026-10-23: "I want to use them based on region so we should take advantage of the
+# italy assets for europe") ---------------------------------------------------------------------------------------
+EUROPE = {"alpine", "europe_north", "nordic", "mediterranean"}    # buildings.region_style's names
+
+
+def style_of(lat, lon):
+    """"europe" (Italy's petrol station set) or "default" (West Coast USA's) for a station at (lat, lon)."""
+    import buildings
+    return "europe" if buildings.region_style(lat, lon).name in EUROPE else "default"
+
+
+_ITA = "/levels/italy/art/shapes/buildings/italy_petrolstation_"
+# Italy's set, measured in game (2026-10-23): an awning half 12 m along its x, 6.53 m to its -y from its origin (two
+# turned 180 degrees about one origin make a 12 x 13 m section, italy_big_petrolstation.prefab), its pillars built in;
+# under each half a row of 2 pumps at x +-2.25, y -3.2 (the prefab's), turned as the awning (a pump's x along its row)
+ITA_AWNING = _ITA + "awningSt.DAE"
+ITA_HALF = (6.0, 6.53)
+ITA_PUMP_XY = (2.25, 3.2)
+ITA_PUMPS = (_ITA + "pump_b.DAE", _ITA + "pump_c.DAE")
+ITA_SIGN = _ITA + "brandsign.DAE"
+ITA_KIT = dict(pump=(ITA_PUMPS[0],), dyaw=0.0, dz=0.0)
+ITA_SCALE = (0.6, 1.6)
+
+
+def _italy_site(st, boxes, others, roads):
+    """Italy's awning sections over each box (centre, long axis, half length, half width: a canopy's or the mapped
+    lanes'), 12 m each along it and stretched across it, two pumps under each half where they are clear of roads and
+    buildings, and the brand sign beside the end nearest a road; None without a pump."""
+    props, areas = [], []
+    for c, ul, hl, hw in boxes:
+        v = np.array([-ul[1], ul[0]])
+        yaw = _yaw(ul)
+        k = max(1, int(round(hl / ITA_HALF[0])))
+        sx = float(np.clip(hl / k / ITA_HALF[0], *ITA_SCALE))
+        sy = float(np.clip(hw / ITA_HALF[1], *ITA_SCALE))
+        for j in range(k):
+            o = c + ul * ((2 * j + 1 - k) * hl / k)
+            for side in (-1.0, 1.0):                # (the -y half as modelled, then the one turned to +y)
+                props.append(dict(shape=ITA_AWNING, x=float(o[0]), y=float(o[1]), dz=0.0,
+                                  yaw=(yaw if side < 0 else yaw + 180.0) % 360.0, scale=[sx, sy, 1.0], collide=True))
+                for i, ax in enumerate((-ITA_PUMP_XY[0], ITA_PUMP_XY[0])):
+                    p = o + ul * (ax * sx) + v * (side * ITA_PUMP_XY[1] * sy)
+                    if _clear(_area_pts(float(p[0]), float(p[1]), yaw), others, roads):
+                        _pump(props, areas, ITA_KIT, float(p[0]), float(p[1]), yaw, 0.0,
+                              shapes=(ITA_PUMPS[(j + i) % 2],))
+        q, _, _ = _nearest_on(roads, c) if len(roads) else (None, 0.0, -1)
+        end = ul if q is None or float((q - c) @ ul) >= 0 else -ul
+        sign = c + end * (hl + 2.5)
+        if _clear(np.array([sign]), others, roads):
+            props.append(dict(shape=ITA_SIGN, x=float(sign[0]), y=float(sign[1]), dz=0.0, yaw=yaw % 360.0,
+                              scale=[1.0, 1.0, 1.0], collide=True))
+    if not areas:
+        return None
+    return Site(st, props, areas, ())
+
+
+def _lanes_box(lanes):
+    """(centre, long axis, half length, half width) of the mapped lanes' forecourt."""
+    along = (lanes.a1 - lanes.a0) / 2
+    across = (lanes.offsets[-1] - lanes.offsets[0]) / 2
+    if along >= across:
+        return lanes.centre, lanes.u, along, across
+    return lanes.centre, lanes.n, across, along
 
 
 # --- the forecourt's mapped drive lanes ----------------------------------------------------------------------------
@@ -609,21 +689,36 @@ def _outline_lanes(canopy):
     return Lanes(c, u, n, offsets, -hw, hw)
 
 
-def layout(st, blds, roads, service=()):
+def layout(st, blds, roads, service=(), style="default"):
     """The station's forecourt (a Site), or None. The shop (find_shop); then, most exact first: the forecourt's mapped
     drive lanes among the service roads (find_lanes), else lanes made up under its canopy (find_canopy,
     _outline_lanes): islands between them under a roof slab (_lane_site); else a pump pair clear of roads and
     buildings. A canopy outline found is dropped from the buildings either way. A convenience brand alone (not
     st.confirmed) needs the lanes or the canopy."""
     shop = find_shop(st, blds)
-    if shop is None:
-        return None
+    if shop is None:                            # (a kiosk not mapped: the pin is on the forecourt)
+        q, dist, _ = _nearest_on(roads, np.array([st.x, st.y])) if len(roads) else (None, np.inf, -1)
+        if not st.confirmed or q is None or dist > PIN_ROAD_M:
+            return None
+        site = _pair_site(st, None, blds, roads, ITA_KIT if style == "europe" else PUMP_KIT)
+        if site is not None:
+            site.shop_id = "pin:" + st.id
+        return site
     canopies = find_canopies(st, shop, blds, roads)
     others = [b for b in blds if b not in canopies]
     drop = tuple(b.id for b in canopies)
     kit = PUMP_KIT
     site = None
     lanes = find_lanes(shop, service) if len(service) else None
+    if style == "europe":
+        boxes = [_lanes_box(lanes)] if lanes is not None else [_obox(c.ring) for c in canopies]
+        if boxes:
+            site = _italy_site(st, boxes, others, roads)
+        elif st.confirmed:
+            site = _pair_site(st, shop, blds, roads, ITA_KIT)
+        if site is not None:
+            site.shop_id, site.drop_ids = shop.id, drop
+        return site
     if lanes is not None:
         site = _lane_site(st, lanes, others, roads, kit)
     if site is None and canopies:
@@ -778,9 +873,10 @@ def tile_sites(frame, tx, ty, md, elev):
             cds = [md.cell(k, layers=("buildings", "roads"), kind="demand")
                    for k in _cells_near(frame, st.x, st.y, REACH_M)]
             rls = [c.layers.get("roads") for c in cds]
+            la, lo, _ = frame.enu_to_geodetic(st.x, st.y, 0.0)
             site = layout(st, buildings_near(frame, [c.layers.get("buildings") for c in cds], st.x, st.y, REACH_M),
                           drive_lines(frame, rls, st.x, st.y, REACH_M + 50.0),
-                          service_lines(frame, rls, st.x, st.y, REACH_M))
+                          service_lines(frame, rls, st.x, st.y, REACH_M), style_of(float(la), float(lo)))
         except Exception as e:
             log.debug("gas station %s: %s", st.id, e)
             continue

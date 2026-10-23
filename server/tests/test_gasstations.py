@@ -191,6 +191,12 @@ class CanopyTest(unittest.TestCase):
         self.assertIs(gs.find_shop(st, [ml, osm]), osm)
         self.assertIs(gs.find_shop(st, [ml]), ml)               # where imagery is all there is
 
+    def test_shop_not_a_hospital_or_home(self):
+        # the Shell at Plinganserstrasse 128, Munich: its kiosk is not mapped; the nearest building is a hospital
+        hosp = rect("hosp", -25.0, 45.0, 50.0, 55.0, cls="hospital")
+        flats = rect("flats", 20.0, 45.0, 20.0, 15.0, cls="apartments")
+        self.assertIsNone(gs.find_shop(STATION, [hosp, flats]))
+
     def test_no_shop_far(self):
         self.assertIsNone(gs.find_shop(STATION, [rect("far", 300.0, 300.0, 20.0, 20.0)]))
 
@@ -282,6 +288,27 @@ class LayoutTest(unittest.TestCase):
         st = gs.Station("st", 0.0, 13.0, "Shell", "Shell", ("p",), True)
         self.assertIsNone(gs.layout(st, [shop], ROAD))
 
+    def test_no_shop_pair_at_the_pin(self):
+        # the Agip at Boschetsrieder Str. 162, Munich: the pin on the forecourt, no shop mapped, the road 22 m away
+        st = gs.Station("agip", 0.0, 22.0, "Agip", "Agip", ("p",), True)
+        flats = rect("flats", 0.0, 60.0, 20.0, 12.0, cls="apartments")
+        site = gs.layout(st, [flats], ROAD)
+        self.assertIsNotNone(site)
+        self.assertEqual(site.drop_ids, ())
+        for p in site.props:
+            self.assertLess(np.hypot(p["x"] - st.x, p["y"] - st.y), 30.0, p)
+            self.assertGreater(road_gap(p["x"], p["y"]), gs.ROAD_CLEAR_M, p)
+            self.assertFalse(inside_box(flats, p["x"], p["y"], pad=gs.BLD_CLEAR_M), p)
+
+    def test_no_shop_pin_near_the_road(self):
+        # the Shell at Plinganserstrasse 128, Munich: its pin 8.5 m from the road's centre line, the forecourt behind it
+        st = gs.Station("shell", 0.0, 8.5, "Shell", "Shell", ("p",), True)
+        site = gs.layout(st, [], ROAD)
+        self.assertIsNotNone(site)
+        for p in site.props:
+            self.assertLess(np.hypot(p["x"] - st.x, p["y"] - st.y), 30.0, p)
+            self.assertGreater(road_gap(p["x"], p["y"]), gs.ROAD_CLEAR_M, p)
+
     def test_no_shop_no_site(self):
         st = gs.Station("st", 0.0, 200.0, "Shell", "Shell", ("p",), True)
         self.assertIsNone(gs.layout(st, [SHOP], ROAD))
@@ -302,6 +329,48 @@ class LayoutTest(unittest.TestCase):
             for site in (gs.layout(st, [SHOP, roof], ROAD), gs.layout(st, [SHOP], ROAD)):
                 shapes |= {p["shape"].rsplit("/", 1)[-1] for p in site.props if "s_fuel_pump_" in p["shape"]}
         self.assertEqual(shapes, {"s_fuel_pump_2015.dae", "s_fuel_pump_2015_trilobite.dae"})
+
+
+class RegionTest(unittest.TestCase):
+    """Stations by region (the user, 2026-10-23: "I want to use them based on region so we should take advantage of
+    the italy assets for europe")."""
+
+    def test_style_of(self):
+        self.assertEqual(gs.style_of(48.8566, 2.3522), "europe")        # Paris
+        self.assertEqual(gs.style_of(41.9028, 12.4964), "europe")       # Rome
+        self.assertEqual(gs.style_of(47.37, 8.54), "europe")            # Zurich (alpine)
+        self.assertEqual(gs.style_of(40.403093, -80.041343), "default")   # the Pittsburgh area
+        self.assertEqual(gs.style_of(35.68, 139.69), "default")         # Tokyo
+
+    def test_europe_canopy_italy_sections(self):
+        roof = rect("roof", 0.0, 22.0, 30.0, 13.0, cls="roof")
+        site = gs.layout(STATION, [SHOP, roof], ROAD, style="europe")
+        self.assertEqual(site.drop_ids, ("roof",))
+        names = [p["shape"].rsplit("/", 1)[-1] for p in site.props]
+        self.assertFalse([n for n in names if n.startswith("s_fuel_")], names)
+        self.assertEqual(names.count("italy_petrolstation_awningSt.DAE"), 4)   # 30 m: 2 sections of two halves
+        self.assertEqual(len(site.areas), 8)                                   # 2 pumps under each half
+        for p in site.props:
+            if "_pump_" in p["shape"]:
+                self.assertAlmostEqual(p["yaw"] % 180.0, 0.0, places=3)        # along the canopy (x)
+                self.assertTrue(inside_box(roof, p["x"], p["y"]), p)
+        self.assertEqual(names.count("italy_petrolstation_brandsign.DAE"), 1)
+
+    def test_europe_pair_italy_pumps(self):
+        site = gs.layout(STATION, [SHOP], ROAD, style="europe")
+        names = {p["shape"].rsplit("/", 1)[-1] for p in site.props if "pump" in p["shape"]}
+        self.assertTrue(names and all(n.startswith("italy_petrolstation_pump_") for n in names), names)
+
+    def test_tile_sites_by_region(self):
+        md = station_md()
+        orig = gs.style_of
+        gs.style_of = lambda lat, lon: "europe"
+        try:
+            recs, skip = gs.tile_sites(FRAME, 0, 0, md, flat)
+        finally:
+            gs.style_of = orig
+        self.assertIn("b-roof", skip)
+        self.assertTrue(any(p["shape"].endswith("italy_petrolstation_awningSt.DAE") for p in recs[0]["props"]))
 
 
 def lane(x0, y0, x1, y1):
