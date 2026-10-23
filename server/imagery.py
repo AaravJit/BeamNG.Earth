@@ -1123,6 +1123,24 @@ def mip_chain(img):
     return [Image.fromarray(a, "RGB") for a in mip_arrays(np.asarray(img.convert("RGB")))]
 
 
+_BC1_GPU_FAILED = False
+
+
+def _bc1_gpu(levels):
+    """The levels' BC1 blocks on the GPU (earthfast.bc1_encode_gpu: the same encoder in float32, ~1 block in 1000
+    differs; a 512 px texture's CPU time 9.3 -> 2.0 ms), or None: no GPU, or it failed (logged once; the CPU encoder
+    from then on)."""
+    global _BC1_GPU_FAILED
+    if _BC1_GPU_FAILED or not fast.gpu() or getattr(fast._ef, "VERSION", 0) < 59:
+        return None
+    try:
+        return fast._ef.bc1_encode_gpu(levels)
+    except Exception as e:
+        _BC1_GPU_FAILED = True
+        log.warning("imagery: GPU BC1 encoding failed (%s); the CPU from now on", e)
+        return None
+
+
 def encode_dds(rgb):
     """DDS bytes of an RGB image (uint8 [h, w, 3], power-of-two sides): DXT1 (BC1, no alpha)
     with the full mip chain."""
@@ -1132,10 +1150,10 @@ def encode_dds(rgb):
     # the Rust BC1 encoder: endpoints on each block's principal axis, refined, nearest-colour indices (2026-10-16:
     # RMSE 3.39 -> 2.86 on 60 imagery tiles against Pillow's min / max 565 endpoints), without the GIL
     fast.require(0, "bc1_encode")
-    for lv in mip_arrays(rgb):
-        data = fast._ef.bc1_encode(np.ascontiguousarray(lv))
+    levels = [np.ascontiguousarray(lv) for lv in mip_arrays(rgb)]
+    blobs = _bc1_gpu(levels) or [fast._ef.bc1_encode(lv) for lv in levels]
+    for lv, data in zip(levels, blobs):
         assert len(data) == dxt1_size(lv.shape[1], lv.shape[0]), (lv.shape, len(data))
-        blobs.append(data)
     flags = DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PIXELFORMAT | DDSD_MIPMAPCOUNT | DDSD_LINEARSIZE
     head = (DDS_MAGIC
             + struct.pack("<7I", 124, flags, h, w, dxt1_size(w, h), 0, len(blobs))

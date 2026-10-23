@@ -262,6 +262,23 @@ fn seam_detect_gpu<'py>(py: Python<'py>, src: PyReadonlyArray3<'py, f32>, n_ang:
     Ok((best.into_pyarray(py), ang.into_pyarray(py), d.into_pyarray(py)))
 }
 
+/// BC1 blocks of several images (a texture's mip levels: [(h, w, 3) uint8]) on the GPU (gpu.rs): one bytes object
+/// per image, as bc1_encode's (float32 maths: a few blocks can differ from it). RuntimeError: no GPU or it failed.
+#[pyfunction]
+fn bc1_encode_gpu<'py>(py: Python<'py>, imgs: Vec<PyReadonlyArray3<'py, u8>>) -> PyResult<Vec<Bound<'py, PyBytes>>> {
+    let data: Vec<(usize, usize, Vec<u8>)> = imgs.iter().map(|a| {
+        let v = a.as_array();
+        (v.shape()[1], v.shape()[0], v.iter().copied().collect())
+    }).collect();
+    let out = py.allow_threads(|| {
+        let g = gpu::get().ok_or_else(|| "no GPU".to_string())?;
+        let refs: Vec<(usize, usize, &[u8])> = data.iter().map(|(w, h, b)| (*w, *h, b.as_slice())).collect();
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gpu::bc1_encode(g, &refs)))
+            .unwrap_or_else(|_| Err("the GPU kernel panicked".to_string()))
+    }).map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+    Ok(out.iter().map(|b| PyBytes::new(py, b)).collect())
+}
+
 /// roads._crossings: (part index, arc m along it, x, y) where a ground road crosses a deck part. Parts and ground
 /// lines are polylines one after another (pts (n, 2), starts (L + 1,), the last: n); per part, per ground line whose
 /// box meets the part's, per ground segment in order, the part's segments in order: numpy's float64 arithmetic of the
@@ -3799,6 +3816,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(segment_crossings, m)?)?;
     m.add_function(wrap_pyfunction!(gpu_name, m)?)?;
     m.add_function(wrap_pyfunction!(seam_detect_gpu, m)?)?;
+    m.add_function(wrap_pyfunction!(bc1_encode_gpu, m)?)?;
     m.add_function(wrap_pyfunction!(rf_pass, m)?)?;
     m.add_function(wrap_pyfunction!(vmedian, m)?)?;
     m.add_function(wrap_pyfunction!(bc1_encode, m)?)?;
@@ -3826,6 +3844,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(wet_run_inside, m)?)?;
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 58)?;
+    m.add("VERSION", 59)?;
     Ok(())
 }
