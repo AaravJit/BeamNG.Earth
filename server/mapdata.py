@@ -68,6 +68,7 @@ import netfetch
 import overture
 import rangeread
 import staging
+import xproc
 
 log = logging.getLogger("earthd.mapdata")
 
@@ -146,6 +147,7 @@ def digest_arrays(arrays):
 # the walls, ~90-160 MB, 2026-10-20); a mirrored layer is decompressed once per machine and its pages shared, dropped
 # instead of swapped under memory pressure. At most MIRROR_MB on disk (the least recently read go first); the vector
 # layers' `en` (the cell frame's metres, Features.localize) is kept with them.
+BUILD_WAIT_S = 180.0        # a cell layer another process is building is waited for this long (xproc.once)
 MIRROR_MB = 2048
 MIRROR_PRUNE_S = 120.0  # the mirror pruned at most this often per process (each prune walks it all)
 MIRROR_SMALL = 65536    # bytes: an array this small is read into memory (no mapping)
@@ -388,11 +390,16 @@ class MapData:
         if arrays is not None:
             return self._mirrored(key, layer, path, arrays), True
         with self._key_lock(key, layer):
-            arrays = self._load(path)           # another thread built it meanwhile
+            # another thread, or another of the server's processes (xproc), built it meanwhile
+            arrays, mine = xproc.once(path + ".lock", lambda: self._load(path), BUILD_WAIT_S, kind)
             if arrays is not None:
                 return self._mirrored(key, layer, path, arrays), True
-            arrays = self._build(key, layer, kind)
-            self._store(path, arrays)
+            try:
+                arrays = self._build(key, layer, kind)
+                self._store(path, arrays)
+            finally:
+                if mine:
+                    xproc.release(path + ".lock")
             return self._mirrored(key, layer, path, arrays), False
 
     # --- the uncompressed mirror (MIRROR_MB) ---------------------------------------------------

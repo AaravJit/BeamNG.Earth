@@ -159,6 +159,41 @@ class DetailBaseRefreshTest(ServerHarness):
         self.assertFalse([m for m in c.drain(1.0) if m["type"] == "block_base"], "once")
 
 
+class DetailQuickPhotoTest(ServerHarness):
+    """A teleport's provisional photo (write_base quick) does not wait for a fresh place's buildings and roads: it goes
+    without the roofs' mask while they are not on disk, and is rendered again in full later (base_stale)."""
+    near_visual = "detail"
+    with_imagery = True
+    cells = 64
+    block = 512
+
+    def test_quick_skips_missing_map_data(self):
+        self.hello()
+        aid = self.prepare_anchor(1, LAT, LON)["anchorId"]
+        s = self.server
+        anchor = s.anchors[aid]
+        asked = []
+
+        class MD:
+            cached = False
+
+            def has(self, key, layer):
+                return self.cached
+
+            def cell(self, key, layers=None, kind=None):
+                asked.append(layers)
+                raise OSError("not here")
+        s.mapdata, s.buildings = MD(), True
+        s.base_stale.discard((aid, 0.0, 0.0))
+        self.assertIsNotNone(s.write_base(anchor, 0.0, 0.0, quick=True))
+        self.assertEqual(asked, [], "no map data asked for")
+        self.assertIn((aid, 0.0, 0.0), s.base_stale, "rendered again in full later")
+        s.mapdata.cached = True                 # a place seen before: the full photo at once
+        s.write_base(anchor, 0.0, 0.0, quick=True)
+        self.assertEqual(asked, [("buildings",)] * len(asked))
+        self.assertTrue(asked)
+
+
 class DetailNoImageryTest(ServerHarness):
     near_visual = "detail"
     with_imagery = False

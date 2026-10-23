@@ -435,12 +435,15 @@ class Reader:
         firsts = {}
         for (path, rg), g in sorted(groups.items()):
             firsts.setdefault(path, []).append((g["first"], rg))
-        matched = set()
+        rows_of = {}
         for fname, row in hits:
+            rows_of.setdefault(fname, []).append(row)
+        matched = set()
+        for fname, rows in rows_of.items():     # (each file's rows at once: one search per hit was ~0.1 s a cell)
             path = fname.split("://", 1)[-1]
             rgs = firsts[path]
-            k = int(np.searchsorted([f for f, _ in rgs], row, side="right")) - 1
-            matched.add((path, rgs[k][1]))
+            ks = np.searchsorted(np.array([f for f, _ in rgs]), np.asarray(rows), side="right") - 1
+            matched.update((path, rgs[int(k)][1]) for k in np.unique(ks))
         used = set(re.findall(r"[A-Za-z_]+", spec["cols"] + " " + spec.get("extra", ""))) | BASE_COLUMNS
         wanted = {}
         for path, rg in sorted(matched):

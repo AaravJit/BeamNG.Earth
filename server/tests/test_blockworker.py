@@ -195,7 +195,7 @@ class BaseRoutingTest(unittest.TestCase):
         self.assertIsNone(S._base_process(SimpleNamespace(**{**vars(s), "block_pools": []}), earthd.LANE_REQUEST))
         calls = []
 
-        def write_base(anchor, cx, cy, photo=None):
+        def write_base(anchor, cx, cy, photo=None, quick=False):
             calls.append((cx, cy))
             photo.append("here")
             return "here.png"

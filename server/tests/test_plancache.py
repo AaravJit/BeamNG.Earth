@@ -14,6 +14,7 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import grading  # noqa: E402
 import plancache  # noqa: E402
+import xproc  # noqa: E402
 from test_grading import FakeMD  # noqa: E402
 from test_roads import features, FRAME  # noqa: E402
 
@@ -70,7 +71,7 @@ class PlanCacheTest(unittest.TestCase):
 
     def test_does_not_wait_behind_a_less_favoured_planner(self):
         c = plancache.PlanCache(self.dir, 1.0, 2.0, "s")
-        with mock.patch.object(plancache, "PRIORITY", 5):
+        with mock.patch.object(xproc, "PRIORITY", 5):
             self.assertEqual(c.claim(KEY), (None, True))
         t0 = time.monotonic()
         self.assertEqual(c.claim(KEY), (None, False), "plans it itself")
@@ -80,7 +81,7 @@ class PlanCacheTest(unittest.TestCase):
         c = plancache.PlanCache(self.dir, 1.0, 2.0, "s")
         self.assertEqual(c.claim(KEY), (None, True))
         lock = c._path(KEY) + ".lock"
-        old = time.time() - plancache.STALE_LOCK_S - 5
+        old = time.time() - xproc.STALE_S - 5
         os.utime(lock, (old, old))
         self.assertEqual(c.claim(KEY), (None, True))
 

@@ -222,6 +222,7 @@ AHEAD_MARGIN_M = 250.0          # m around the block's half width at each point
 # the road tiles' cells (landcover: surface.prefetch). With roads (surface.prefetch has them within 3 km, with the land
 # cover on) and water, which a road tile otherwise fetched itself when it needed it (from KyzoFox's 1.5.4, PR #64)
 AHEAD_LAYERS = ("roads", "buildings", "building_parts", "infrastructure", "water", "land_use")
+SLOW_BASE_S = 3.0               # a base photo slower than this is logged with its stages
 BASE_PX = 1024                  # detail mode: the block's base photo (1 km -> 1 m per texel; USGS is ~1.9 m)
 BASE_AO_VFS = "/levels/beamng_earth/art/terrains/bngEarth_base_ao.png"   # every surface layer's aoBaseTex
 BASE_AO = 251                   # its flat value (tools/make_level_assets.py)
@@ -605,6 +606,10 @@ class Server:
         # a block's base photo rendered beside its heights (they do not depend on each other): after them it added
         # 2.3 s to a 12 s Baltimore block on a Steam Deck (2026-10-20)
         self.base_pool = ThreadPoolExecutor(HM_THREADS, thread_name_prefix="base-photo")
+        # the photos a player waits for (a teleport's first block, the request lane's): never queued behind the other
+        # blocks' (each holds a base-photo thread until its block process renders it; a teleport's photo waited
+        # ~20 s behind the old place's on a Deck, 2026-10-23)
+        self.urgent_base_pool = ThreadPoolExecutor(2, thread_name_prefix="base-urgent")
         self.ground_pool = ThreadPoolExecutor(1, thread_name_prefix="ground-ahead")   # groundahead.py
         # the world map's requests (GPS route, address search, map tiles): their own threads, so a teleport's tile
         # builds on the default pool do not hold them back (a route took 30 s after one, 2026-10-14)
@@ -1322,8 +1327,8 @@ class Server:
         if fb is not None and fb[0] == (cx, cy):        # the provisional first block's photo (make_provisional)
             anchor.first_base, base = None, fb[1]
         elif self.near_visual == "detail" and self.imagery is not None:
-            base = self.base_pool.submit(self._base_photo, anchor, cx, cy, self._base_process(lane),
-                                         lane == LANE_REQUEST)
+            base = (self.urgent_base_pool if lane == LANE_REQUEST else self.base_pool).submit(
+                self._base_photo, anchor, cx, cy, self._base_process(lane), lane == LANE_REQUEST)
         pool = self.block_pools[lane][0] if self.block_pools and progress is None else None
         if pool is not None:
             info = pool.submit(
@@ -1348,7 +1353,7 @@ class Server:
         if self.near_visual == "detail" and self.imagery is not None:
             # (here, not in a block process: the other lane's process can still be busy with the old place's block,
             # and the photo waited 16 s behind it on a Deck, 2026-10-23)
-            base = self.base_pool.submit(self._base_photo, anchor, cx, cy, None, True)
+            base = self.urgent_base_pool.submit(self._base_photo, anchor, cx, cy, None, True, True)
             anchor.first_base = ((cx, cy), base)
         urgent = getattr(self.dem, "urgent", None)     # (test DEMs have no lane)
         with urgent() if urgent is not None else contextlib.nullcontext():
@@ -1498,17 +1503,17 @@ class Server:
             return None
         return self.block_pools[LANE_PREFETCH if lane == LANE_REQUEST else LANE_REQUEST][0]
 
-    def _base_photo(self, anchor, cx, cy, pool=None, urgent=False):
+    def _base_photo(self, anchor, cx, cy, pool=None, urgent=False, quick=False):
         """base_pool: the block's base photo (write_base; in the block process pool when given and its imagery
         tiles are on disk) while its heights are built: (file name or None, [rgb] or [], seconds). urgent: the
         player waits on this block (a teleport's first, or one the mod asked for): its missing photo tiles are
-        fetched ahead of the far field's (Imagery.urgent, netfetch "urgent")."""
+        fetched ahead of the far field's (Imagery.urgent, netfetch "urgent"). quick: write_base's."""
         t1 = time.perf_counter()
         photo = []
         name = self._base_elsewhere(anchor, cx, cy, pool, photo) if pool is not None else None
         if name is None:
             with self.imagery.urgent() if urgent and hasattr(self.imagery, "urgent") else contextlib.nullcontext():
-                name = self.write_base(anchor, cx, cy, photo=photo)
+                name = self.write_base(anchor, cx, cy, photo=photo, quick=quick)
         return name, photo, time.perf_counter() - t1
 
     def _base_elsewhere(self, anchor, cx, cy, pool, photo):
@@ -1565,14 +1570,19 @@ class Server:
     def base_name(self, key, rev=0):
         return self.hm_name(key)[:-4] + ("_base.png" if not rev else f"_base_r{rev}.png")
 
-    def write_base(self, anchor, cx, cy, pool=None, rev=0, photo=None):
+    def write_base(self, anchor, cx, cy, pool=None, rev=0, photo=None, quick=False):
         """Detail mode: the block footprint's aerial photo (BASE_PX² PNG, row 0 = north, the same imagery
         chain and corrections as the far tiles), the drawn block's base colour. The game would pack it into
         BC7 on its main thread (1.5 s for a new 1024² photo); terraincache writes that packed texture into
         the game's cache first (~0.4 s here), so the game takes it as it is. Returns the file name, or None
-        when no imagery could be rendered (the block keeps the level's neutral base)."""
+        when no imagery could be rendered (the block keeps the level's neutral base).
+        quick (a teleport's provisional first block): without the roofs' mask and the painted roads when the place's
+        buildings and roads are not on disk yet (their downloads, and the road widths measured from them, were 20 s
+        of a fresh place's 22 s photo on a Deck, before the car could be placed; 2026-10-23); rendered again in full
+        once the graded block is in (base_refresh), as for a lazy imagery source."""
         size = self.layout.block * heightmap.SQUARE
         x0, y0 = cx - size / 2, cy - size / 2
+        quick = quick and not self._photo_data_cached(anchor, x0, y0, size)
         t0 = time.perf_counter()
         try:
             pending = set()
@@ -1586,18 +1596,21 @@ class Server:
         name = self.base_name((anchor.id, cx, cy), rev)
         path = os.path.join(self.out_dir, name)
         rgb = np.asarray(rgb, np.uint8)
-        if self.buildings and self.mapdata is not None:     # no roofs on the ground beside the 3D buildings
+        stamps = [("imagery", time.perf_counter())]
+        if self.buildings and self.mapdata is not None and not quick:   # no roofs beside the 3D buildings
             try:
                 mask = buildingsmod.photo_mask(anchor.frame, x0, y0, size, BASE_PX, self.mapdata)
                 if mask is not None:
                     rgb = buildingsmod.fill_photo(rgb, mask, size, BASE_PX)
             except Exception as e:      # the photo stays as it is
                 log.info("base photo %s: building mask: %s", (anchor.id, cx, cy), e)
-        if roadsmod.ROADS_IN_GROUND:          # the carriageways in the ground (surface.photo_roads)
+        stamps.append(("buildings", time.perf_counter()))
+        if roadsmod.ROADS_IN_GROUND and not quick:      # the carriageways in the ground (surface.photo_roads)
             try:
                 rgb = surfacemod.paint_square(rgb, anchor.frame, x0, y0, size, self.surface, self.road_widths)
             except Exception as e:      # the photo stays as it is
                 log.info("base photo %s: roads: %s", (anchor.id, cx, cy), e)
+        stamps.append(("roads", time.perf_counter()))
         try:            # its cliffs as rock, like the far tiles' (rockface.py), from a 16 m grid of the ground
             n = 65
             xs = x0 + np.arange(n) * (size / (n - 1))
@@ -1611,6 +1624,8 @@ class Server:
         # ... and the analyses (de-shadow, colour match) it was rendered without (never waited for)
         key = (anchor.id, cx, cy)
         self._base_kept(anchor, cx, cy, pending)
+        if quick:
+            self.base_stale.add(key)
         if photo is not None:
             photo.append(rgb)
         t1 = time.perf_counter()
@@ -1626,9 +1641,20 @@ class Server:
                 terraincache.base_entry(*args)
         except OSError as e:
             log.info("terrain cache for %s: %s", name, e)
-        log.debug("base photo %s r%d: render %.2f png %.2f cache %.2f s", key, rev, t1 - t0, t2 - t1,
-                  time.perf_counter() - t2)
+        stamps.append(("rock", t1))
+        parts = " ".join(f"{k} {b - a:.2f}" for (_, a), (k, b) in zip([("", t0)] + stamps, stamps))
+        log.log(logging.INFO if time.perf_counter() - t0 > SLOW_BASE_S else logging.DEBUG,
+                "base photo %s r%d in %.2f s: %s, png %.2f, cache %.2f", key, rev, time.perf_counter() - t0, parts,
+                t2 - t1, time.perf_counter() - t2)
         return name
+
+    def _photo_data_cached(self, anchor, x0, y0, size):
+        """Whether the buildings and roads of every map cell under the square are on disk (never fetches)."""
+        if self.mapdata is None:
+            return True
+        la, lo, _ = anchor.frame.enu_to_geodetic(np.array([x0, x0 + size]), np.array([y0, y0 + size]), 0.0)
+        keys = mapcells.cells_for_bbox(float(np.min(la)), float(np.min(lo)), float(np.max(la)), float(np.max(lo)))
+        return all(self.mapdata.has(k, "buildings") and self.mapdata.has(k, "roads") for k in keys)
 
     def base_ready(self, anchor, cx, cy):
         """Rendering the block's base photo again would not change it: every lazy imagery tile is here and

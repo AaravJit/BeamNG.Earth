@@ -74,6 +74,23 @@ DAY = 86400.0
 TOKEN_EPS = 1e-4                # a token short by rounding (clock resolution) counts as a token
 OFFLINE_TEXT = "Offline - using cached data"
 
+NETLOG = os.environ.get("BNGE_NETLOG")      # debugging: every network request, one line each, from every process
+
+
+def _netlog(url, headers, status, body):
+    """Append "<unix time> <pid> <status> <bytes> <url> <range>" to the BNGE_NETLOG file (one write per line:
+    whole lines from every process)."""
+    line = (f"{time.time():.3f} {os.getpid()} {status} {len(body or b'')} {url} "
+            f"{(headers or {}).get('Range', '-')}\n")
+    try:
+        fd = os.open(NETLOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            os.write(fd, line.encode())
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
 
 @dataclass(frozen=True)
 class HostPolicy:
@@ -739,6 +756,8 @@ class Fetcher:
                         err = FetchFailed(f"{url}: {type(e).__name__}: {e}", url, h.name)
                         continue
                     elapsed = self.clock() - t0
+                    if NETLOG:
+                        _netlog(url, hd, status, body)
                 finally:
                     sem.release()
                 res = self._classify(h, url, status, {k.lower(): v for k, v in (rh or {}).items()}, body, elapsed)

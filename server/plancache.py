@@ -9,10 +9,9 @@ writes it here; the others read it, or wait while one is planning it (a lock fil
 
 The files: <cache>/plans/<run>/<anchor lat_lon>/<signature>/<z>_<x>_<y>.npz, the arrays as npz (no pickle) and the
 rest as JSON (Spec as its fields). One server run's own (RUN_ENV, set by earthd before its workers start): a plan made
-while some elevation was missing stays out of the next run. A stale lock (STALE_LOCK_S: a process that died planning)
-is taken over; a wait longer than WAIT_S plans the cell here as before. A process waits only for a planner at least as
-favoured as itself (the lock holds its PRIORITY, the niceness the server gave it): the terrain block under the car never
-waits behind a road tile's process below it. Old runs' folders go at server start (prune).
+while some elevation was missing stays out of the next run. A stale lock (xproc.STALE_S: a process that died planning)
+is taken over; a wait longer than WAIT_S plans the cell here as before; a process waits only for a planner at least as
+favoured as itself (xproc.once). Old runs' folders go at server start (prune).
 """
 import json
 import os
@@ -22,12 +21,11 @@ import time
 
 import numpy as np
 
-STALE_LOCK_S = 120.0
+import xproc
+
 WAIT_S = 90.0
-POLL_S = 0.1
 KEEP_S = 6 * 3600.0         # run folders untouched this long are removed (prune)
 RUN_ENV = "BNGE_PLAN_RUN"
-PRIORITY = 0                # this process's niceness above the server's (blockworker.init's nice)
 
 
 def _pack(arrays, g, items):
@@ -129,61 +127,21 @@ class PlanCache:
 
     def claim(self, key):
         """Before planning cell key: (state, False) when it is in the cache (or another process planned it while we
-        waited); (None, True) when this process plans it (call release after store); (None, False) when the wait
-        timed out (plan it without the cache)."""
-        got = self.load(key)
-        if got is not None:
-            return got, False
-        lock = self._path(key) + ".lock"
+        waited); (None, True) when this process plans it (call release after store); (None, False) when it plans it
+        without the lock (xproc.once)."""
         t0 = time.monotonic()
-        waited = False
-        while True:
-            try:
-                os.makedirs(self.dir, exist_ok=True)
-                fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-                try:
-                    os.write(fd, str(int(PRIORITY)).encode())
-                finally:
-                    os.close(fd)
-                got = self.load(key)            # (written by the process whose lock we just followed)
-                if got is not None:
-                    self.release(key)
-                    return got, False
-                return None, True
-            except FileExistsError:
-                try:
-                    if time.time() - os.path.getmtime(lock) > STALE_LOCK_S:
-                        os.remove(lock)          # its process died planning
-                        continue
-                    with open(lock, "rb") as fh:
-                        held = fh.read()
-                except OSError:
-                    continue
-                try:
-                    if int(held) > PRIORITY:    # a less favoured process plans it: plan it here, not wait
-                        return None, False
-                except ValueError:
-                    pass                        # (being written)
-            except OSError:
-                return None, False
-            if not waited:
-                waited = True
-                with self._lock:
-                    self.stats["waited"] += 1
-            if time.monotonic() - t0 > WAIT_S:
-                return None, False
-            time.sleep(POLL_S)
-            got = self.load(key)
-            if got is not None:
-                with self._lock:
-                    self.stats["wait_s"] += time.monotonic() - t0
-                return got, False
+
+        def waiting():
+            with self._lock:
+                self.stats["waited"] += 1
+        got, mine = xproc.once(self._path(key) + ".lock", lambda: self.load(key), WAIT_S, on_wait=waiting)
+        if got is not None and time.monotonic() - t0 > xproc.POLL_S:
+            with self._lock:
+                self.stats["wait_s"] += time.monotonic() - t0
+        return got, mine
 
     def release(self, key):
-        try:
-            os.remove(self._path(key) + ".lock")
-        except OSError:
-            pass
+        xproc.release(self._path(key) + ".lock")
 
 
 def _newest(d, depth=2):

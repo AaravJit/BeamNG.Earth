@@ -32,6 +32,7 @@ import roadwidth as roadwidthmod
 import seacarve as seacarvemod
 import surface as surfacemod
 import terraincache
+import xproc
 
 log = logging.getLogger("earthd.blockworker")
 
@@ -144,7 +145,7 @@ def init(cache_dir, offline, roads, grading, road_widths, surface, warm_q, log_l
         _trace_memory()
     import sampler
     sampler.maybe_start(f".{os.getpid()}")      # BNGE_SAMPLE: this worker's own sampling profile (debugging)
-    plancache.PRIORITY = nice
+    xproc.PRIORITY = nice
     _s = _State(cache_dir, offline, roads, grading, road_widths, surface, airports, sea)
     threading.Thread(target=_watch_parent, args=(os.getppid(),), daemon=True, name="parent-watch").start()
     threading.Thread(target=_read_warm, args=(warm_q,), daemon=True, name="warm-read").start()
