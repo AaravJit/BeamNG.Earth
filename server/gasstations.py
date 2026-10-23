@@ -317,8 +317,9 @@ KIT_SCALE = (0.7, 1.4)          # a kit's canopy scaled to its share of the mapp
 BOLLARD = "/art/shapes/objects/bollard_yellow.dae"      # (global art; West Coast's fs_6: scale 1.5 1.5 1)
 PAIR_GAP_M = 5.6                # the two pumps of a station without a canopy (fs_6)
 # A refuel area per pump, centred on it (gasStationMarker.lua: the vehicle's box against the area's, its scale as
-# half extents): 1.6 m across the pump row, 2.2 along it, 2.75 up (West Coast: 0.6 across, so a car must touch the
-# pump; provisional until the in-game probe, probes/fuel_pump.lua)
+# half extents), in the pump's frame: a pump model's x runs along its island and its screens face +-y, the cars either
+# side (West Coast's fuel_station_4: pumps at yaw 0 in rows along x, areas 0.6 along x, 2.2 across): 1.6 m along the
+# island, 2.2 across it, 2.75 up (provisional until the in-game probe, probes/fuel_pump.lua)
 AREA_HALF = (1.6, 2.2, 2.75)
 AREA_DZ = 0.8
 ICON_DZ = 2.5
@@ -352,7 +353,7 @@ def _pump(props, areas, kit, x, y, yaw, dz):
 
 
 def _area_pts(x, y, yaw):
-    """The corners and centre of a refuel area (AREA_HALF across / along) at (x, y), its kit yaw in degrees."""
+    """The corners and centre of a refuel area (AREA_HALF along / across its island) at (x, y), its yaw in degrees."""
     a = np.radians(yaw)
     ex, ey = np.array([np.cos(a), np.sin(a)]), np.array([-np.sin(a), np.cos(a)])
     return np.array([(x, y)] + [(x, y) + ex * (sx * AREA_HALF[0]) + ey * (sy * AREA_HALF[1])
@@ -430,7 +431,7 @@ def _pair_site(st, shop, blds, roads):
             if not _clear(c + grid[:, :1] * r + grid[:, 1:] * a, blds, roads):
                 continue
             props, areas = [], []
-            yaw = _yaw(r) - 90.0                # the kit's y (its pump rows) along r
+            yaw = _yaw(r)                       # a pump's x along its row (fs_4)
             for s in (-0.5, 0.5):
                 p = c + r * (s * PAIR_GAP_M)
                 _pump(props, areas, kit, float(p[0]), float(p[1]), yaw, 0.0)
@@ -535,7 +536,8 @@ def _lane_site(st, lanes, others, roads, kit):
     """Islands between the lanes, a pump every PUMP_STEP_M along each (clear of roads and buildings, as every pump),
     a pillar at each island's end and the roof slab over all the lanes."""
     c, u, n = lanes.centre, lanes.u, lanes.n
-    yaw = _yaw(u) - 90.0                        # a model's +y along the lanes
+    yaw = _yaw(u)                               # pumps and pillars: their x along the island (fs_4; the user,
+    roof_yaw = yaw - 90.0                       # 2026-10-23: "pumps are facing the wrong way"); the roof slab's y
     length = (lanes.a1 - lanes.a0) - 2 * ISLAND_END_M
     if length < 3.0:
         return None
@@ -556,7 +558,7 @@ def _lane_site(st, lanes, others, roads, kit):
         return None
     across = (lanes.offsets[-1] - lanes.offsets[0]) + 2.0
     along = (lanes.a1 - lanes.a0) + 2.0
-    props.append(dict(shape=_ROOF, x=float(c[0]), y=float(c[1]), dz=ROOF_DZ, yaw=yaw % 360.0,
+    props.append(dict(shape=_ROOF, x=float(c[0]), y=float(c[1]), dz=ROOF_DZ, yaw=roof_yaw % 360.0,
                       scale=[round(across / (2 * ROOF_HALF[0]), 3), round(along / (2 * ROOF_HALF[1]), 3), 1.0],
                       collide=True))
     return Site(st, props, areas, ())

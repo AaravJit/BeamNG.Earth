@@ -306,6 +306,24 @@ class LaneLayoutTest(unittest.TestCase):
         roof = next(p for p in site.props if p["shape"].endswith("s_fuel_structure_06.dae"))
         self.assertGreater(roof["dz"], 4.0)
 
+    def test_lane_pumps_face_the_lanes(self):
+        # a pump model's x runs along its island, its screens face the cars either side (West Coast USA's fs_4: pumps
+        # at yaw 0 in rows along x, areas 0.6 along x, 2.2 across); the user, 2026-10-23, at a Sheetz near Pittsburgh:
+        # "pumps are facing the wrong way"
+        site = gs.layout(STATION, [SHOP], ROAD, LADDER)                 # lanes along y
+        for p in site.props:
+            if "s_fuel_pump_" in p["shape"] or p["shape"].endswith("s_fuel_structure_07.dae"):
+                self.assertAlmostEqual(p["yaw"] % 180.0, 90.0, places=3, msg=p)
+        for a in site.areas:
+            self.assertAlmostEqual(a["yaw"] % 180.0, 90.0, places=3, msg=a)
+            self.assertLess(a["half"][0], a["half"][1])                 # short along the island, long across it
+
+    def test_pair_pumps_face_the_lanes(self):
+        site = gs.layout(STATION, [SHOP], ROAD)                         # the row parallel to the road: along x
+        for p in site.props:
+            if "s_fuel_pump_" in p["shape"]:
+                self.assertAlmostEqual(p["yaw"] % 180.0, 0.0, places=3, msg=p)
+
     def test_lanes_and_outline_drop_the_outline(self):
         roof = rect("roof", -3.5, 21.0, 26.0, 22.0, cls="roof")
         site = gs.layout(STATION, [SHOP, roof], ROAD, LADDER)
