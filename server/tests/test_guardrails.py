@@ -62,6 +62,17 @@ class ClipSegmentTest(unittest.TestCase):
                                                    (0.0, 0.0, 10.0, 10.0)))
 
 
+    def test_guardrail_material_is_defined_and_opaque(self):
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        path = os.path.join(root, "mod", "beamng_earth", "levels", "beamng_earth", "art", "shapes",
+                            "beamngEarth", "guardrails.materials.json")
+        with open(path, encoding="utf-8") as f:
+            materials = json.load(f)
+        material = materials["bngEarth_mapped_guardrail"]
+        self.assertEqual(material["mapTo"], "bngEarth_mapped_guardrail")
+        self.assertFalse(material["translucent"])
+        self.assertEqual(material["class"], "Material")
+
 class GuardrailMeshTest(unittest.TestCase):
     def setUp(self):
         self.frame = geodesy.EnuFrame(39.2834, -76.5934, 0.0)
@@ -136,7 +147,7 @@ class GuardrailMeshTest(unittest.TestCase):
         write_mesh.assert_called_once()
         args, kwargs = write_mesh.call_args
         self.assertEqual(os.path.basename(args[0]), "guardrail_7_1_2.cdae")
-        self.assertEqual(kwargs["material"], "guardrail")
+        self.assertEqual(kwargs["material"], "bngEarth_mapped_guardrail")
 
     def test_unrelated_barrier_produces_no_mesh(self):
         feats = self.features("fence", {"barrier": "fence"})
