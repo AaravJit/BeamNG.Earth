@@ -24,8 +24,8 @@ M.TILE_CAP = { { 300, 6000 }, { 700, 2400 }, { 1500, 900 }, { 1e9, 400 } }
 M.GROUP_MAX_M = { shrub = 250, desert_shrub = 250, rock = 400, desert_rock = 400, cliff = 1500, door = 120, hydrant = 200, bin = 200, bench = 200, polelamp = 400,
   stop = 300, giveway = 300, signal = 500, fence = 150, wallsign_logistics = 800, wallsign_rentabox = 800, wallsign_lemon = 800, wallsign_turboburger = 500,
   speed30 = 300, speed40 = 300, speed50 = 300, speed60 = 300, speed70 = 300,
-  speedk40 = 300, speedk50 = 300, speedk60 = 300, speedk80 = 300, speedk100 = 300,
-  speedk120 = 300, speedk130 = 300, speedk150 = 300, speedknone = 300 }
+  speedk30 = 300, speedk40 = 300, speedk50 = 300, speedk60 = 300, speedk70 = 300, speedk80 = 300, speedk90 = 300,
+  speedk100 = 300, speedk110 = 300, speedk120 = 300, speedk130 = 300, speedk140 = 300, speedk150 = 300, speedknone = 300 }
 M.FOREST_NAME = 'bngEarthForest'      -- a prefix: small Forests from a pool ('bngEarthForest_<n>')
 -- A small Forest per tile, from a pool (2026-10-15, 100 mph drives: one shared Forest with ~240k items made and ~220k
 -- removed over a session made frames with any tree change cost ~100 ms in the engine's tick, and a fresh game ran the
@@ -147,13 +147,18 @@ M.CATALOG = {
   -- ... and the round km/h signs (furniture.SIGN_KMH, outside the mph countries). The custom European signs are
   -- generated in this mod's art folder so roads can use the continent-specific limits and Germany's no-limit sign
   -- without relying on stock placeholders.
+  speedk30 = { { '/levels/beamng_earth/art/shapes/beamngEarth/sign_speed30kph', 2.47 } },
   speedk40 = { { '/levels/beamng_earth/art/shapes/beamngEarth/sign_speed40kph', 2.47 } },
   speedk50 = { { '/levels/beamng_earth/art/shapes/beamngEarth/sign_speed50kph', 2.47 } },
   speedk60 = { { '/levels/beamng_earth/art/shapes/beamngEarth/sign_speed60kph', 2.47 } },
+  speedk70 = { { '/levels/beamng_earth/art/shapes/beamngEarth/sign_speed70kph', 2.47 } },
   speedk80 = { { '/levels/beamng_earth/art/shapes/beamngEarth/sign_speed80kph', 2.47 } },
+  speedk90 = { { '/levels/beamng_earth/art/shapes/beamngEarth/sign_speed90kph', 2.47 } },
   speedk100 = { { '/levels/beamng_earth/art/shapes/beamngEarth/sign_speed100kph', 2.47 } },
+  speedk110 = { { '/levels/beamng_earth/art/shapes/beamngEarth/sign_speed110kph', 2.47 } },
   speedk120 = { { '/levels/beamng_earth/art/shapes/beamngEarth/sign_speed120kph', 2.47 } },
   speedk130 = { { '/levels/beamng_earth/art/shapes/beamngEarth/sign_speed130kph', 2.47 } },
+  speedk140 = { { '/levels/beamng_earth/art/shapes/beamngEarth/sign_speed140kph', 2.47 } },
   speedk150 = { { '/levels/beamng_earth/art/shapes/beamngEarth/sign_speed150kph', 2.47 } },
   speedknone = { { '/levels/beamng_earth/art/shapes/beamngEarth/sign_speed_none', 2.47 } },
   hydrant = { { '/levels/west_coast_usa/art/shapes/objects/hydrant1', 1.5 } },

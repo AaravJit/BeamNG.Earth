@@ -8,6 +8,7 @@
       {
         "baseColorMap": "/levels/beamng_earth/art/shapes/beamngEarth/sign_metal_basecolor.png",
         "normalMap": "/levels/beamng_earth/art/shapes/beamngEarth/sign_metal_normal.png",
+        "roughnessMap": "/levels/beamng_earth/art/shapes/beamngEarth/sign_metal_roughness.png",
         "baseColorFactor": [
           1.0,
           1.0,
@@ -15,8 +16,8 @@
           1.0
         ],
         "metallicFactor": 1.0,
-        "roughnessFactor": 0.42,
-        "normalMapStrength": 0.7,
+        "roughnessFactor": 1.0,
+        "normalMapStrength": 0.8,
         "useAnisotropic": true
       },
       {},
@@ -37,7 +38,45 @@
           1,
           1,
           1
-        ]
+        ],
+        "specular": [
+          0.5,
+          0.5,
+          0.5,
+          1.0
+        ],
+        "specularPower": 20,
+        "pixelSpecular": true
+      },
+      {},
+      {},
+      {}
+    ],
+    "alphaTest": true,
+    "alphaRef": 127,
+    "doubleSided": false
+  },
+  "sign_speed110kph": {
+    "name": "sign_speed110kph",
+    "mapTo": "sign_speed110kph",
+    "class": "Material",
+    "Stages": [
+      {
+        "colorMap": "/levels/beamng_earth/art/shapes/beamngEarth/sign_speed110kph.png",
+        "diffuseColor": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "specular": [
+          0.5,
+          0.5,
+          0.5,
+          1.0
+        ],
+        "specularPower": 20,
+        "pixelSpecular": true
       },
       {},
       {},
@@ -59,7 +98,15 @@
           1,
           1,
           1
-        ]
+        ],
+        "specular": [
+          0.5,
+          0.5,
+          0.5,
+          1.0
+        ],
+        "specularPower": 20,
+        "pixelSpecular": true
       },
       {},
       {},
@@ -81,7 +128,45 @@
           1,
           1,
           1
-        ]
+        ],
+        "specular": [
+          0.5,
+          0.5,
+          0.5,
+          1.0
+        ],
+        "specularPower": 20,
+        "pixelSpecular": true
+      },
+      {},
+      {},
+      {}
+    ],
+    "alphaTest": true,
+    "alphaRef": 127,
+    "doubleSided": false
+  },
+  "sign_speed140kph": {
+    "name": "sign_speed140kph",
+    "mapTo": "sign_speed140kph",
+    "class": "Material",
+    "Stages": [
+      {
+        "colorMap": "/levels/beamng_earth/art/shapes/beamngEarth/sign_speed140kph.png",
+        "diffuseColor": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "specular": [
+          0.5,
+          0.5,
+          0.5,
+          1.0
+        ],
+        "specularPower": 20,
+        "pixelSpecular": true
       },
       {},
       {},
@@ -103,7 +188,45 @@
           1,
           1,
           1
-        ]
+        ],
+        "specular": [
+          0.5,
+          0.5,
+          0.5,
+          1.0
+        ],
+        "specularPower": 20,
+        "pixelSpecular": true
+      },
+      {},
+      {},
+      {}
+    ],
+    "alphaTest": true,
+    "alphaRef": 127,
+    "doubleSided": false
+  },
+  "sign_speed30kph": {
+    "name": "sign_speed30kph",
+    "mapTo": "sign_speed30kph",
+    "class": "Material",
+    "Stages": [
+      {
+        "colorMap": "/levels/beamng_earth/art/shapes/beamngEarth/sign_speed30kph.png",
+        "diffuseColor": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "specular": [
+          0.5,
+          0.5,
+          0.5,
+          1.0
+        ],
+        "specularPower": 20,
+        "pixelSpecular": true
       },
       {},
       {},
@@ -125,7 +248,15 @@
           1,
           1,
           1
-        ]
+        ],
+        "specular": [
+          0.5,
+          0.5,
+          0.5,
+          1.0
+        ],
+        "specularPower": 20,
+        "pixelSpecular": true
       },
       {},
       {},
@@ -147,7 +278,15 @@
           1,
           1,
           1
-        ]
+        ],
+        "specular": [
+          0.5,
+          0.5,
+          0.5,
+          1.0
+        ],
+        "specularPower": 20,
+        "pixelSpecular": true
       },
       {},
       {},
@@ -169,7 +308,45 @@
           1,
           1,
           1
-        ]
+        ],
+        "specular": [
+          0.5,
+          0.5,
+          0.5,
+          1.0
+        ],
+        "specularPower": 20,
+        "pixelSpecular": true
+      },
+      {},
+      {},
+      {}
+    ],
+    "alphaTest": true,
+    "alphaRef": 127,
+    "doubleSided": false
+  },
+  "sign_speed70kph": {
+    "name": "sign_speed70kph",
+    "mapTo": "sign_speed70kph",
+    "class": "Material",
+    "Stages": [
+      {
+        "colorMap": "/levels/beamng_earth/art/shapes/beamngEarth/sign_speed70kph.png",
+        "diffuseColor": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "specular": [
+          0.5,
+          0.5,
+          0.5,
+          1.0
+        ],
+        "specularPower": 20,
+        "pixelSpecular": true
       },
       {},
       {},
@@ -191,7 +368,45 @@
           1,
           1,
           1
-        ]
+        ],
+        "specular": [
+          0.5,
+          0.5,
+          0.5,
+          1.0
+        ],
+        "specularPower": 20,
+        "pixelSpecular": true
+      },
+      {},
+      {},
+      {}
+    ],
+    "alphaTest": true,
+    "alphaRef": 127,
+    "doubleSided": false
+  },
+  "sign_speed90kph": {
+    "name": "sign_speed90kph",
+    "mapTo": "sign_speed90kph",
+    "class": "Material",
+    "Stages": [
+      {
+        "colorMap": "/levels/beamng_earth/art/shapes/beamngEarth/sign_speed90kph.png",
+        "diffuseColor": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "specular": [
+          0.5,
+          0.5,
+          0.5,
+          1.0
+        ],
+        "specularPower": 20,
+        "pixelSpecular": true
       },
       {},
       {},
@@ -213,7 +428,15 @@
           1,
           1,
           1
-        ]
+        ],
+        "specular": [
+          0.5,
+          0.5,
+          0.5,
+          1.0
+        ],
+        "specularPower": 20,
+        "pixelSpecular": true
       },
       {},
       {},
