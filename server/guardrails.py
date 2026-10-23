@@ -17,7 +17,7 @@ log = logging.getLogger("earthd.guardrails")
 
 POST_SPACING_M = 2.0
 POST_WIDTH_M = 0.08
-POST_HEIGHT_M = 0.72
+POST_HEIGHT_M = 0.88
 RAIL_DEPTH_M = 0.07
 RAIL_BOTTOM_M = 0.62
 RAIL_TOP_M = 0.78
@@ -120,12 +120,12 @@ def _prism(vertices, triangles, uvs, p0, p1, z0, z1, depth, bottom, top, origin)
     a, b = np.asarray(p0, np.float64), np.asarray(p1, np.float64)
     base = len(vertices)
     corners = (a + normal, a - normal, b - normal, b + normal)
-    for q, zz, v in ((corners[0], z0 + bottom, 0), (corners[1], z0 + bottom, 1),
-                     (corners[2], z1 + bottom, 1), (corners[3], z1 + bottom, 0),
-                     (corners[0], z0 + top, 0), (corners[1], z0 + top, 1),
-                     (corners[2], z1 + top, 1), (corners[3], z1 + top, 0)):
+    for q, zz, u in ((corners[0], z0 + bottom, 0), (corners[1], z0 + bottom, 0),
+                     (corners[2], z1 + bottom, length), (corners[3], z1 + bottom, length),
+                     (corners[0], z0 + top, 0), (corners[1], z0 + top, 0),
+                     (corners[2], z1 + top, length), (corners[3], z1 + top, length)):
         vertices.append((float(q[0] - origin[0]), float(q[1] - origin[1]), float(zz - origin[2])))
-        uvs.append((float(length * v), float(0 if len(vertices) - base <= 4 else 1)))
+        uvs.append((float(u), float(0 if len(vertices) - base <= 4 else 1)))
     # Outward-facing bottom, top, sides and ends.
     _quad(triangles, base + 0, base + 3, base + 2, base + 1)
     _quad(triangles, base + 4, base + 5, base + 6, base + 7)
