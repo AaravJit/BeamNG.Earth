@@ -1236,17 +1236,10 @@ def _no_sag(s, z):
 
 def _dedupe(xy, tol=0.5):
     """A polyline without points closer than tol m to the previous one (ends kept). Pure."""
-    if len(xy) < 3:
-        return xy
-    keep = [0]
-    for k in range(1, len(xy) - 1):
-        if np.hypot(*(xy[k] - xy[keep[-1]])) >= tol:
-            keep.append(k)
-    if np.hypot(*(xy[-1] - xy[keep[-1]])) < tol and len(keep) > 1:
-        keep[-1] = len(xy) - 1
-    else:
-        keep.append(len(xy) - 1)
-    return xy[keep]
+    import fast
+    fast.require(66, "dedupe_polyline")     # (the Rust loop: 14-21 CPU-s a Deck teleport in each road process)
+    xy = np.asarray(xy, np.float64)
+    return xy[fast._ef.dedupe_polyline(xy, float(tol))]
 
 
 def _ground_envelope(s, g, grade, curve=0.0):

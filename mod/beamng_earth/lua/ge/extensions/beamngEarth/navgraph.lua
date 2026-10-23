@@ -251,7 +251,9 @@ local function apply(b)
     M.rules = { rightHandDrive = r.rightHandDrive and true or false, turnOnRed = r.turnOnRed and true or false }
     M.SIGNAL_TYPE = r.redYellow and 'lightsBasicEU' or 'lightsBasic'
   end
+  local tN = os.clock()
   local nodes, nn, ne, cl = M.toNodes(graph, b, M.EDGE_M, M.rules.rightHandDrive)
+  stats.nodesMs = (os.clock() - tN) * 1000         -- (the parts of an apply's frame: the hitch hunt, 2026-10-23)
   local ts = signalsSystem()
   -- before the reset: its onNavgraphReloaded would place the old instances on the new graph (research §2.8)
   if ts then pcall(ts.resetSignals) end
@@ -266,7 +268,9 @@ local function apply(b)
   end
   local okG, gps = pcall(require, 'beamngEarth/gps')
   local mOld = map.getMap and map.getMap()
+  local tG = os.clock()
   local keep = okG and gps.beforeGraph and gps.beforeGraph(mOld and mOld.nodes) or nil
+  stats.gpsMs = (os.clock() - tG) * 1000
   local t0 = os.clock()
   ours = true
   local ok, err = pcall(map.reset, nodes)
@@ -286,7 +290,9 @@ local function apply(b)
   else
     persistent = m.nodes
   end
+  local tA = os.clock()
   if keep then pcall(gps.afterGraph, keep, m.nodes) end    -- before the vehicles' new map
+  stats.gpsMs = stats.gpsMs + (os.clock() - tA) * 1000
   be:queueAllObjectLua('mapmgr.requestMap()')
   -- the minimap (the navigation app, in 0.40's freeroam layout and ours) indexes the map's roads once and keeps them:
   -- it showed the first graph's streets, or none, as the player drove on (the user, 2026-10-22)
@@ -295,6 +301,7 @@ local function apply(b)
   pendingSignals = ts and nodes or nil     -- next frame: a second, smaller hitch instead of one big one
   cuts = cl
   stats.applies, stats.lastMs, stats.nodes, stats.edges = stats.applies + 1, (os.clock() - t0) * 1000, nn, ne
+  stats.applyMs = (os.clock() - tN) * 1000
   stats.cuts = #cl
   return true
 end
@@ -489,6 +496,9 @@ function M.update(aid, b)
     lastGuard = t0
     local ok, err = pcall(guard, b, false)
     if not ok then log('W', 'beamngEarth', 'navgraph guard: ' .. tostring(err)) end
+    local g = (os.clock() - t0) * 1000
+    stats.guardMs = g
+    stats.guardMaxMs = math.max(stats.guardMaxMs or 0, g)
   end
   if graph.anchor ~= aid then
     graph = nil

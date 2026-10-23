@@ -1588,10 +1588,12 @@ local function onUpdate(dtReal, dtSim)
     if not fociBroken then
       local ok, err = pcall(collisionfoci.update, dtReal, { roads.setFoci, trees.setFoci }, farcars.foci)
       if not ok then fociBroken = true; log('E', 'beamngEarth', 'collision foci: ' .. tostring(err)) end
+      t = mark('foci', t)
       ok, err = pcall(terrainpatch.update, dtReal, st.anchorId, collisionfoci.last, st.player, pb, net.send)
       if not ok then fociBroken = true; log('E', 'beamngEarth', 'terrain patches: ' .. tostring(err)) end
       ok, err = pcall(farcars.update, dtReal)
       if not ok then fociBroken = true; log('E', 'beamngEarth', 'far cars: ' .. tostring(err)) end
+      t = mark('farcars', t)
     end
     parking.update(st.anchorId, not (st.player and st.player.camera) and st.player or nil, pb)   -- (no car: none parked)
     t = mark('parking', t)

@@ -27,6 +27,7 @@ import grading as gradingmod
 import heightmap
 import mapdata as mapdatamod
 import netfetch
+import plancache
 import roadwidth as roadwidthmod
 import seacarve as seacarvemod
 import surface as surfacemod
@@ -75,6 +76,8 @@ class _State:
                 if self.graders[aid] is not None:
                     self.graders[aid].wet = self.sea.depth if getattr(self, "sea", None) is not None else None
                     self.graders[aid].dem = self.dem          # (its urgent lane: _plan_missing)
+                    self.graders[aid].shared = plancache.for_grader(self.cache_dir, self.graders[aid], self.widths,
+                                                                   self.graders[aid].wet)
                 for old in sorted(self.chunks)[:-ANCHORS_KEPT]:
                     del self.chunks[old], self.graders[old]
             return self.graders[aid], self.chunks[aid]
@@ -141,6 +144,7 @@ def init(cache_dir, offline, roads, grading, road_widths, surface, warm_q, log_l
         _trace_memory()
     import sampler
     sampler.maybe_start(f".{os.getpid()}")      # BNGE_SAMPLE: this worker's own sampling profile (debugging)
+    plancache.PRIORITY = nice
     _s = _State(cache_dir, offline, roads, grading, road_widths, surface, airports, sea)
     threading.Thread(target=_watch_parent, args=(os.getppid(),), daemon=True, name="parent-watch").start()
     threading.Thread(target=_read_warm, args=(warm_q,), daemon=True, name="warm-read").start()
@@ -650,8 +654,13 @@ def _accounted(fn):
             now = time.monotonic()
             if now - _cpu_logged[0] >= CPU_LOG_S:
                 _cpu_logged[0] = now
-                log.debug("worker %d cpu: %s", os.getpid(),
-                          ", ".join(f"{k} {v[0]} jobs {v[1]:.1f} s" for k, v in sorted(_cpu.items())))
+                shared = [g.shared.stats for g in list(getattr(_s, "graders", {}).values())
+                          if g is not None and g.shared is not None]
+                log.debug("worker %d cpu: %s%s", os.getpid(),
+                          ", ".join(f"{k} {v[0]} jobs {v[1]:.1f} s" for k, v in sorted(_cpu.items())),
+                          "; shared road plans " + ", ".join(f"{k} {sum(st[k] for st in shared):.0f}"
+                                                             for k in ("read", "written", "waited", "wait_s"))
+                          if shared else "")
     return run
 
 

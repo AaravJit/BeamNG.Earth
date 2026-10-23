@@ -3,6 +3,7 @@
 mod gpu;
 mod dsm;
 mod vegmask;
+mod roadgeom;
 
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, IntoPyArray};
 use pyo3::types::PyBytes;
@@ -3796,6 +3797,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
     m.add_function(wrap_pyfunction!(dsm::dsm_ground, m)?)?;
     m.add_function(wrap_pyfunction!(dsm::fill_holes, m)?)?;
+    m.add_function(wrap_pyfunction!(roadgeom::dedupe_polyline, m)?)?;
     m.add_function(wrap_pyfunction!(vegmask::mask_polys, m)?)?;
     m.add_function(wrap_pyfunction!(vegmask::road_segments, m)?)?;
     m.add_function(wrap_pyfunction!(vegmask::disc_max, m)?)?;
@@ -3862,6 +3864,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(wet_run_inside, m)?)?;
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 65)?;
+    m.add("VERSION", 66)?;
     Ok(())
 }

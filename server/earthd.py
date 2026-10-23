@@ -92,6 +92,7 @@ import roads as roadsmod  # noqa: E402
 import randomplace as randomplacemod  # noqa: E402
 import placepreview as placepreviewmod  # noqa: E402
 import pools as poolsmod  # noqa: E402
+import plancache as plancachemod  # noqa: E402
 import grading as gradingmod  # noqa: E402
 import roadmesh as roadmeshmod  # noqa: E402
 import roadwidth as roadwidthmod  # noqa: E402
@@ -1199,6 +1200,8 @@ class Server:
                                                   self.road_widths)
                 anchor.grader.wet = self.sea.depth if self.sea is not None else None    # (no dams: underwater tunnels)
                 anchor.grader.dem = self.dem                # (its urgent lane: _plan_missing)
+                anchor.grader.shared = plancachemod.for_grader(self.cache_dir, anchor.grader, self.road_widths,
+                                                              anchor.grader.wet)
             return anchor.grader
 
     def warm_roads(self, anchor, x, y, vx, vy):
@@ -3812,6 +3815,7 @@ async def main_async(args):
     DETAIL_RING_M = args.detail_ring
     AHEAD_ON = args.download_ahead == "on"
     block_pools, far_pool = [], None
+    plancachemod.start_run(args.cache_dir)      # (before the workers: they inherit the run's id)
     if args.block_process == "on":
         ctx = multiprocessing.get_context("spawn")
         for _ in (LANE_REQUEST, LANE_PREFETCH):
