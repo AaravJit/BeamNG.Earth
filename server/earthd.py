@@ -1687,7 +1687,9 @@ class Server:
             photo.append(rgb)
         t1 = time.perf_counter()
         tmp = staging.tmp_for(path)
-        Image.fromarray(rgb, "RGB").save(tmp, format="PNG", compress_level=1)
+        # stored, not deflated: the game reads the packed cache entry (terraincache), this file only if that is stale;
+        # level 1 was 0.15 s of a block photo on a Steam Deck, level 0 0.08 (3 MB, a session keeps a few)
+        Image.fromarray(rgb, "RGB").save(tmp, format="PNG", compress_level=0)
         staging.replace(tmp, path)
         t2 = time.perf_counter()
         try:            # after the photo: the cache entry must be the newer file

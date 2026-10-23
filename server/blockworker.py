@@ -583,7 +583,9 @@ def base_photo(lat, lon, x0, y0, size, px, tex, buildings, rock_zoom, path, cach
     except Exception as e:
         log.debug("base photo: rock faces: %s", e)
     tmp = staging.tmp_for(path)
-    Image.fromarray(rgb, "RGB").save(tmp, format="PNG", compress_level=1)
+    # stored, not deflated: the game reads the packed cache entry (terraincache), this file only if that is stale;
+    # level 1 was 0.15 s of a block photo on a Steam Deck, level 0 0.08 (3 MB, a session keeps a few)
+    Image.fromarray(rgb, "RGB").save(tmp, format="PNG", compress_level=0)
     staging.replace(tmp, path)
     user_dir, base_vfs, ao_vfs, ao_value = cache
     terraincache.base_entry(user_dir, base_vfs, ao_vfs, rgb, ao_value)
