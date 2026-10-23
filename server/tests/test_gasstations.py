@@ -206,16 +206,20 @@ class LayoutTest(unittest.TestCase):
         self.assertEqual(len([p for p in site.props if p["shape"].endswith("s_fuel_structure_06.dae")]), 1)
         self.assertEqual(len([p for p in site.props if p["shape"].endswith("s_fuel_structure_07.dae")]), 12)
 
-    def test_narrow_canopy_one_row_along_it(self):
-        # a Speedway near Pittsburgh: its mapped canopy is 73 x 8.6 m, one row of pumps down its length
+    def test_narrow_canopy_short_islands_across_it(self):
+        # a Speedway near Pittsburgh: its mapped canopy is 73 x 8.6 m; the user's photo, 2026-10-23: short
+        # islands across the canopy one after another, one dispenser and a pillar on each, bollards at their ends
         roof = rect("roof", 0.0, 22.0, 73.0, 8.6, cls="roof")
         site = gs.layout(STATION, [SHOP, roof], ROAD)
-        self.assertEqual(len(site.areas), 8)                           # 4 islands of ~16 m, 2 pumps each
+        self.assertEqual(len(site.areas), 10)                          # 72 m / 7: 10 islands, one pump each
         for a in site.areas:
-            self.assertAlmostEqual(a["y"], 22.0, places=3)              # down the middle
-            self.assertAlmostEqual(a["yaw"] % 180.0, 0.0, places=3)     # along the canopy
+            self.assertAlmostEqual(a["yaw"] % 180.0, 90.0, places=3)   # the islands across the canopy (along y)
+            self.assertAlmostEqual(a["y"], 22.0, places=3)             # the pump in the island's middle
         pillars = [p for p in site.props if p["shape"].endswith("s_fuel_structure_07.dae")]
-        self.assertEqual(len(pillars), 8)                               # 71 m: 4 islands of < 20 m, a pillar at each end
+        self.assertEqual(len(pillars), 10)                             # one per island ...
+        for p in pillars:
+            self.assertGreater(p["y"], 22.5)                           # ... behind its pump (away from the road)
+        self.assertEqual(len([p for p in site.props if "bollard" in p["shape"]]), 20)
 
     def test_long_lanes_split_into_islands(self):
         long_ladder = [lane(x, 12.0, x, 46.0) for x in (-14.0, -7.0, 0.0)]         # 34 m lanes

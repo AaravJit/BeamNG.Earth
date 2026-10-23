@@ -433,7 +433,9 @@ LANE_SEARCH_M = 60.0            # lanes' midpoints this close to the shop's cent
 LANE_MIN = 3                    # lanes of one forecourt (two islands)
 ISLAND_END_M = 1.0              # an island stops this short of its lanes' ends
 PUMP_STEP_M = 6.5               # pumps along an island (West Coast's fuel_station_4)
-ISLAND_MAX_M = 20.0             # a longer island is split, a pillar at each piece's ends (a 73 m canopy's row)
+ISLAND_MAX_M = 20.0             # a longer island is split, a pillar at each piece's ends
+SHORT_ISLAND_M = 10.0           # an island this short (a narrow canopy's, across it) has one dispenser in its middle, a
+                                # pillar on it behind the pump and a bollard at each end (the user's photo, 2026-10-23)
 ISLAND_BREAK_M = 2.0            # the gap between the pieces
 _PILLAR = _WCA + "s_fuel_structure_07.dae"     # (fs_4: a 4.9 m pillar at each island's end ...)
 _ROOF = _WCA + "s_fuel_structure_06.dae"       # (... and a 14 x 17.2 m roof slab 4.8 m up)
@@ -525,6 +527,21 @@ def _lane_site(st, lanes, others, roads, kit):
     count = max(1, int(round(piece / PUMP_STEP_M)))
     step = min(PUMP_STEP_M, piece / count)
     props, areas = [], []
+    if length <= SHORT_ISLAND_M:
+        q, _, _ = _nearest_on(roads, c) if len(roads) else (None, 0.0, -1)
+        back = -u if q is not None and float((q - c) @ u) > 0 else u          # away from the road
+        for o0, o1 in zip(lanes.offsets[:-1], lanes.offsets[1:]):
+            m = c + n * ((o0 + o1) / 2) + u * ((lanes.a0 + lanes.a1) / 2)
+            if _clear(_area_pts(float(m[0]), float(m[1]), yaw), others, roads):
+                _pump(props, areas, kit, float(m[0]), float(m[1]), yaw, 0.0)
+            q = m + back * min(2.0, length / 2 - 0.6)
+            props.append(dict(shape=_PILLAR, x=float(q[0]), y=float(q[1]), dz=0.0, yaw=yaw % 360.0,
+                              scale=[1.0, 1.0, 1.0], collide=True))
+            for sgn in (-1.0, 1.0):
+                b = m + u * (sgn * (length / 2 + 0.3))
+                props.append(dict(shape=BOLLARD, x=float(b[0]), y=float(b[1]), dz=0.0, yaw=yaw % 360.0,
+                                  scale=[1.5, 1.5, 1.0], collide=True))
+        pieces = 0
     for o0, o1 in zip(lanes.offsets[:-1], lanes.offsets[1:]):
         for j in range(pieces):
             m = c + n * ((o0 + o1) / 2) + u * (-length / 2 + piece / 2 + j * (piece + ISLAND_BREAK_M) + (lanes.a0 + lanes.a1) / 2)
@@ -547,18 +564,15 @@ def _lane_site(st, lanes, others, roads, kit):
 
 
 ISLAND_GAP_M = 7.0              # islands under a mapped canopy without mapped lanes: one every this much (a Sheetz's
-                                # lanes: 7 m apart) along its long side, each across its short side ...
-NARROW_M = 14.0                 # ... unless it is narrower than this: one row down its length, cars either side (the
-                                # Speedway's 73 x 8.6 m, another Sheetz's 51 x 10 m)
+                                # lanes: 7 m apart) along its long side, each across its short side (the
+                                # user's photo of a long narrow canopy, 2026-10-23: short islands across it, one after
+                                # another)
 
 
 def _outline_lanes(canopy):
     """Lanes made up for a mapped canopy without mapped ones: across its short side (its islands too), evenly along
-    its long side about ISLAND_GAP_M apart, inside its outline; a narrow one (NARROW_M): two lanes along its sides,
-    one row of islands down the middle."""
+    its long side about ISLAND_GAP_M apart, inside its outline."""
     c, ul, hl, hw = _obox(canopy.ring)
-    if 2 * hw < NARROW_M:
-        return Lanes(c, ul, np.array([-ul[1], ul[0]]), (-(hw - 0.5), hw - 0.5), -hl, hl)
     u = np.array([-ul[1], ul[0]])               # the lanes (and islands) across the short side
     n = ul
     islands = max(1, int(round((2 * hl - 1.0) / ISLAND_GAP_M)))
