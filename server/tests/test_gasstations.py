@@ -95,6 +95,12 @@ class MergeTest(unittest.TestCase):
         self.assertEqual(gs.merge([pin("g", 0, 0, "GetGo Gas Station", "GetGo", gas=True)])[0].name, "GetGo Gas Station")
         self.assertEqual(gs.merge([pin("b", 0, 0, "BP Wolfratshausen", "BP", gas=True)])[0].name, "BP Wolfratshausen")
         self.assertEqual(gs.merge([pin("u", 0, 0, "Main Street Gas", gas=True)])[0].name, "Main Street Gas")
+        # the Buc-ee's in New Braunfels: Overture's brand name is another store's ("Buc-ee's Katy Texas"); the brand
+        # list's name for its Wikidata id
+        st = gs.merge([pin("b", 0, 0, "Buccee s 22 New Braunfels Tx", "Buc-ee's Katy Texas", "Q4982335", gas=True)])[0]
+        self.assertEqual(st.name, "Buc-ee's")
+        st = gs.merge([pin("b", 0, 0, "Buccee s 22 New Braunfels Tx", "Buc-ee's Katy Texas", gas=True)])[0]    # (no id)
+        self.assertEqual(st.name, "Buc-ee's")
 
     def test_station_id_stable(self):
         ps = [pin("dac", 0.0, 0.0, "Speedway", gas=True), pin("x", 300.0, 0.0, "Shell", "Shell", "Q110716465", gas=True),
@@ -161,6 +167,16 @@ class CanopyTest(unittest.TestCase):
         self.assertEqual(set(site.drop_ids), {"roof1", "roof2"})
         self.assertEqual(len([p for p in site.props if p["shape"].endswith("s_fuel_structure_06.dae")]), 2)
         self.assertGreater(len(site.areas), 100)
+
+    def test_chained_roofs_need_a_canopy_shape(self):
+        # final review I1: a roofed hall 15 m past the canopy, a platform roof chained on from the hall, a 1 x 0.6 m
+        # roof by the shop: none of them a canopy (real ones: short side <= 21 m, >= 118 m2, rectangles; 2026-10-23)
+        can = rect("can", 0.0, 22.0, 30.0, 13.0, cls="roof")
+        hall = rect("hall", 60.0, 22.0, 60.0, 30.0, cls="roof")
+        plat = rect("plat", 100.0, 22.0, 10.0, 60.0, cls="roof")      # 5 m from the hall, 80 m from the canopy
+        tiny = rect("tiny", 12.0, 34.0, 1.0, 0.6, cls="roof")
+        found = gs.find_canopies(STATION, SHOP, [SHOP, can, hall, plat, tiny], ROAD)
+        self.assertEqual([b.id for b in found], ["can"])
 
     def test_far_roof_not_a_canopy(self):
         far = rect("roof", 0.0, -5.0, 30.0, 10.0, cls="roof")        # 36 m from the shop's edge
@@ -304,6 +320,16 @@ class LayoutTest(unittest.TestCase):
             self.assertGreater(road_gap(p["x"], p["y"]), gs.ROAD_CLEAR_M, p)
             self.assertFalse(inside_box(shop, p["x"], p["y"], pad=gs.BLD_CLEAR_M), p)
 
+    def test_lanes_away_from_the_canopy_ignored(self):
+        # final review I2: three service lanes in the next lot, beside a mapped canopy: the canopy's islands, not the
+        # lanes'
+        roof = rect("roof", 0.0, 22.0, 30.0, 13.0, cls="roof")
+        lanes = [lane(x, 12.0, x, 30.0) for x in (40.0, 47.0, 54.0)]
+        site = gs.layout(STATION, [SHOP, roof], ROAD, service=lanes)
+        self.assertEqual(site.drop_ids, ("roof",))
+        for a in site.areas:
+            self.assertTrue(inside_box(roof, a["x"], a["y"]), a)
+
     def test_no_room_no_site(self):
         shop = rect("shop", 0.0, 13.0, 20.0, 10.0)          # 3 m between the road's edge and the shop
         st = gs.Station("st", 0.0, 13.0, "Shell", "Shell", ("p",), True)
@@ -421,6 +447,23 @@ class RegionTest(unittest.TestCase):
         for a in site.areas:
             self.assertAlmostEqual(a["yaw"] % 180.0, 90.0, places=3)
             self.assertTrue(12.0 < a["y"] < 30.0, a)
+
+    def test_us_east_small_canopy_west_coast_islands(self):
+        # final review I3: a canopy with room for two islands: East Coast's three-island unit would overhang it by 5 m;
+        # West Coast's islands under the roof slab instead
+        roof = rect("roof", 0.0, 22.0, 14.0, 8.0, cls="roof")
+        site = gs.layout(STATION, [SHOP, roof], ROAD, style="us_east")
+        self.assertFalse([p for p in site.props if "eca_gastation" in p["shape"]], site.props)
+        self.assertTrue(site.areas)
+        for a in site.areas:
+            self.assertTrue(inside_box(roof, a["x"], a["y"]), a)
+
+    def test_us_east_overlapping_unit_lifted(self):
+        # final review: five islands, the second unit back over the first's last island: its roof a little higher, not
+        # in the same plane (z-fighting)
+        roof = rect("roof", 0.0, 22.0, 36.0, 8.0, cls="roof")
+        units = self.eca(gs.layout(STATION, [SHOP, roof], ROAD, style="us_east"))
+        self.assertEqual(sorted(u["dz"] > 0.0 for u in units), [False, True])
 
     def test_us_east_pair_west_coast_pumps(self):
         site = gs.layout(STATION, [SHOP], ROAD, style="us_east")
@@ -749,7 +792,7 @@ class RealSpotsTest(unittest.TestCase):
         # and the road is the canopy over the pumps (2026-10-23)
         rec, skip = self.site(40.465627, -79.955447)
         self.assertEqual(len(skip), 1, "the imagery canopy (the user confirmed it on satellite view, 2026-10-23)")
-        self.assertTrue(any("eca_gastation_pumps" in p["shape"] for p in rec["props"]))    # (us_east)
+        self.assertTrue(any("s_fuel_structure_06" in p["shape"] for p in rec["props"]))    # (two islands: West Coast's)
 
 
 if __name__ == "__main__":

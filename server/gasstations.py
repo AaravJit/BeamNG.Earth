@@ -151,6 +151,10 @@ def _compatible(a, b):
 def _display_name(name, brand):
     """The name the refuel prompt shows: the place's name, or its brand when the name does not mention it (Overture
     names some stations after their operator: the Munich Aral's "Wolfgang Tulach", 2026-10-23)."""
+    for known in (*FUEL_BRANDS.values(), *CONV_BRANDS.values()):     # ("Buc-ee's Katy Texas" in New Braunfels)
+        if brand.lower().startswith(known.lower() + " "):
+            brand = known
+            break
     if not brand or not name:
         return name or brand
     if brand.lower() in name.lower() or (_tokens(brand) - GENERIC_WORDS) & _tokens(name):
@@ -180,7 +184,9 @@ def merge(ps, merge_m=MERGE_M):
         named = max(g, key=lambda p: (bool(p.brand or p.wikidata), p.gas))     # (a branded pin, else a gas one)
         out.append(Station(hashlib.blake2b("|".join(ids).encode(), digest_size=6).hexdigest(),
                            float(np.mean([p.x for p in g])), float(np.mean([p.y for p in g])),
-                           _display_name(named.name, named.brand), named.brand or FUEL_BRANDS.get(named.wikidata)
+                           _display_name(named.name, FUEL_BRANDS.get(named.wikidata) or CONV_BRANDS.get(named.wikidata)
+                                         or named.brand),       # (the list's name: Overture's can be another store's)
+                           named.brand or FUEL_BRANDS.get(named.wikidata)
                            or CONV_BRANDS.get(named.wikidata, ""), tuple(ids),
                            any(p.gas or p.fuel_brand for p in g)))
     return sorted(out, key=lambda s: s.id)
@@ -279,10 +285,25 @@ def _gap(a, b):
     return float(min(_seg_dist(a, b[:-1], b[1:]).min(), _seg_dist(b, a[:-1], a[1:]).min()))
 
 
+# a tagged roof is a canopy only in a canopy's shape (the real ones, 2026-10-23: Buc-ee's 157 x 21 m and 8.4 m high,
+# the Speedway's 73 x 9 m, Munich's 118-328 m2; final review I1: not a market hall, a platform roof or a carport)
+ROOF_AREA_MIN_M2 = 40.0
+ROOF_SHORT_MAX_M = 25.0
+ROOF_MAX_H_M = 10.0
+
+
+def _canopy_shape(b):
+    _, _, hl, hw = _obox(b.ring)
+    a = _area(b.ring)
+    return (a >= ROOF_AREA_MIN_M2 and 2 * min(hl, hw) <= ROOF_SHORT_MAX_M and a >= CANOPY_RECT_MIN * 4 * hl * hw
+            and (b.height is None or b.height <= ROOF_MAX_H_M))
+
+
 def find_canopies(st, shop, blds, roads):
-    """The station's canopies: every tagged roof within CANOPY_GAP_M of the shop's outline or of a canopy found so far
-    (a big station's rows of them); without any, find_canopy's one untagged imagery outline, if any."""
-    roofs = [b for b in blds if b is not shop and b.cls in ROOF_CLASSES]
+    """The station's canopies: every tagged roof in a canopy's shape within CANOPY_GAP_M of the shop's outline or of a
+    canopy found so far (a big station's rows of them); without any, find_canopy's one untagged imagery outline, if
+    any."""
+    roofs = [b for b in blds if b is not shop and b.cls in ROOF_CLASSES and _canopy_shape(b)]
     found, near = [], [shop]
     grew = True
     while grew:
@@ -566,6 +587,7 @@ ECA_PUMP_Y = -7.46
 ECA_DEPTH = 6.6                 # the roof's depth (y): a row of units every this much along the islands
 ECA_ROOF_XY = (1.285, -6.74)    # the roof's centre
 ECA_SCALE = (0.8, 1.25)
+ECA_LIFT_M = 0.05
 
 
 def _eca_site(st, lanes, others, roads):
@@ -581,6 +603,8 @@ def _eca_site(st, lanes, others, roads):
     if sign < 0:
         mids = mids[::-1]
     n_isl = len(mids)
+    if n_isl < 3:                               # (a unit would overhang: final review I3)
+        return None
     gap = (mids[-1] - mids[0]) / (n_isl - 1) if n_isl > 1 else ECA_ISLAND_STEP
     sx = float(np.clip(gap / ECA_ISLAND_STEP, *ECA_SCALE))
     length = lanes.a1 - lanes.a0
@@ -605,8 +629,9 @@ def _eca_site(st, lanes, others, roads):
                     areas.append(dict(x=float(p[0]), y=float(p[1]), dz=AREA_DZ, yaw=_yaw(u) % 360.0,
                                       half=list(AREA_HALF), icon=ICON_DZ))
                     made = True
-            if made:
-                props.append(dict(shape=ECA_UNIT, x=float(o[0]), y=float(o[1]), dz=0.0, yaw=yaw % 360.0,
+            if made:                            # (a unit back over the one before: its roof above, not in its plane)
+                props.append(dict(shape=ECA_UNIT, x=float(o[0]), y=float(o[1]), dz=ECA_LIFT_M if first != 3 * j else 0.0,
+                                  yaw=yaw % 360.0,
                                   scale=[round(sx, 3), round(sy, 3), 1.0], collide=True))
     if not areas:
         return None
@@ -782,6 +807,15 @@ def _outline_lanes(canopy):
     return Lanes(c, u, n, offsets, -hw, hw)
 
 
+LANES_UNDER_M = 5.0             # mapped lanes beside a canopy: their centre this near its outline's box
+
+
+def _under(p, canopy):
+    c, ul, hl, hw = _obox(canopy.ring)
+    d = p - c
+    return abs(float(d @ ul)) <= hl + LANES_UNDER_M and abs(float(d[0] * ul[1] - d[1] * ul[0])) <= hw + LANES_UNDER_M
+
+
 def layout(st, blds, roads, service=(), style="default"):
     """The station's forecourt (a Site), or None. The shop (find_shop); then, most exact first: the forecourt's mapped
     drive lanes among the service roads (find_lanes), else lanes made up under its canopy (find_canopy,
@@ -803,6 +837,8 @@ def layout(st, blds, roads, service=(), style="default"):
     kit = PUMP_KIT
     site = None
     lanes = find_lanes(shop, service) if len(service) else None
+    if lanes is not None and canopies and not any(_under(lanes.centre, c) for c in canopies):
+        lanes = None                            # (another lot's lanes: final review I2)
     if style == "europe":
         boxes = [_lanes_box(lanes)] if lanes is not None else [_obox(c.ring) for c in canopies]
         if boxes:
@@ -813,7 +849,8 @@ def layout(st, blds, roads, service=(), style="default"):
             site.shop_id, site.drop_ids = shop.id, drop
         return site
     if style == "us_east":
-        lane_site = lambda ln: _eca_site(st, ln, others, roads)         # noqa: E731
+        lane_site = lambda ln: (_eca_site(st, ln, others, roads)        # noqa: E731
+                                or _lane_site(st, ln, others, roads, kit))
     else:
         lane_site = lambda ln: _lane_site(st, ln, others, roads, kit)   # noqa: E731
     if lanes is not None:
