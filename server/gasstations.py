@@ -122,39 +122,46 @@ def pins(frame, layers):
 MERGE_M = 60.0      # pins of one station this close together (the Speedway's two: 55 m)
 
 
+# words that say nothing about which station a pin is ("Joe Gas Mart" and "Main Street Gas" are two stations)
+GENERIC_WORDS = {"gas", "station", "stations", "fuel", "fuels", "petrol", "filling", "service", "services", "mart",
+                 "market", "mini", "food", "foods", "shop", "store", "stores", "oil", "express", "the", "and", "stop",
+                 "center", "centre", "travel", "plaza", "convenience", "quick", "inc", "llc", "company", "corp"}
+
+
 def _tokens(name):
     return {t for t in re.findall(r"[a-z]+", name.lower()) if len(t) >= 3}
 
 
 def _compatible(a, b):
+    """Two pins can be one station: the same brand id, or a shared distinctive name word, or one of them without one
+    (an unnamed pin)."""
     if a.wikidata and b.wikidata:
         return a.wikidata == b.wikidata
-    if not (a.wikidata or a.brand) or not (b.wikidata or b.brand):
+    ta = _tokens(a.name + " " + a.brand) - GENERIC_WORDS
+    tb = _tokens(b.name + " " + b.brand) - GENERIC_WORDS
+    if not ta or not tb:
         return True
-    return bool(_tokens(a.name + " " + a.brand) & _tokens(b.name + " " + b.brand))
+    return bool(ta & tb)
 
 
 def merge(ps, merge_m=MERGE_M):
-    """Stations of pins ps: single linkage of compatible pins within merge_m (the same brand id, a shared name word,
-    or one of them without a brand)."""
+    """Stations of pins ps: pins within merge_m joined, nearest pairs first, while every pin of the one group is
+    compatible with every pin of the other (an unbranded pin between a Shell and a Sunoco across a street joins one of
+    them, not both: review I2)."""
     ps = sorted(ps, key=lambda p: p.id)
-    parent = list(range(len(ps)))
-
-    def root(i):
-        while parent[i] != i:
-            parent[i] = parent[parent[i]]
-            i = parent[i]
-        return i
-    for i in range(len(ps)):
-        for j in range(i + 1, len(ps)):
-            a, b = ps[i], ps[j]
-            if (a.x - b.x) ** 2 + (a.y - b.y) ** 2 <= merge_m ** 2 and _compatible(a, b):
-                parent[root(j)] = root(i)
-    groups = {}
-    for i in range(len(ps)):
-        groups.setdefault(root(i), []).append(ps[i])
+    pairs = sorted(((a.x - b.x) ** 2 + (a.y - b.y) ** 2, i, j) for i, a in enumerate(ps) for j, b in enumerate(ps)
+                   if i < j and (a.x - b.x) ** 2 + (a.y - b.y) ** 2 <= merge_m ** 2)
+    group = {i: [i] for i in range(len(ps))}
+    of = list(range(len(ps)))
+    for _, i, j in pairs:
+        gi, gj = of[i], of[j]
+        if gi == gj or not all(_compatible(ps[p], ps[q]) for p in group[gi] for q in group[gj]):
+            continue
+        for q in group[gj]:
+            of[q] = gi
+        group[gi] += group.pop(gj)
     out = []
-    for g in groups.values():
+    for g in ([ps[i] for i in sorted(m)] for m in group.values()):
         ids = sorted(p.id for p in g)
         named = max(g, key=lambda p: (bool(p.brand or p.wikidata), p.gas))     # (a branded pin, else a gas one)
         out.append(Station(hashlib.blake2b("|".join(ids).encode(), digest_size=6).hexdigest(),
@@ -323,6 +330,7 @@ class Site:
     props: list         # {"shape", "x", "y", "dz", "yaw", "scale", "collide"} (anchor frame m, yaw degrees)
     areas: list         # {"x", "y", "dz", "yaw", "half", "icon"}: one refuel area per pump (icon: its height over it)
     drop_ids: tuple     # buildings left out of the mesh (the canopy outline)
+    shop_id: str = ""   # one station per shop (unmerged pins of one station: tile_sites)
 
 
 def _h(*vals):
@@ -340,7 +348,19 @@ def _pump(props, areas, kit, x, y, yaw, dz):
     areas.append(dict(x=x, y=y, dz=dz + AREA_DZ, yaw=yaw % 360.0, half=list(AREA_HALF), icon=ICON_DZ))
 
 
-def _canopy_site(st, canopy, kit):
+def _area_pts(x, y, yaw):
+    """The corners and centre of a refuel area (AREA_HALF across / along) at (x, y), its kit yaw in degrees."""
+    a = np.radians(yaw)
+    ex, ey = np.array([np.cos(a), np.sin(a)]), np.array([-np.sin(a), np.cos(a)])
+    return np.array([(x, y)] + [(x, y) + ex * (sx * AREA_HALF[0]) + ey * (sy * AREA_HALF[1])
+                                for sx in (-1, 1) for sy in (-1, 1)], np.float64)
+
+
+def _canopy_site(st, canopy, kit, blds=(), roads=()):
+    """The kit(s) under the canopy; a pump whose refuel area is not clear of the roads and of every other building
+    (spec section 2.5's hard checks: a kit scaled no smaller than KIT_SCALE[0] can reach past a narrow canopy, review
+    I3) is left out; None when none is left."""
+    others = [b for b in blds if b is not canopy]
     c, u, hl, hw = _obox(canopy.ring)
     v = np.array([-u[1], u[0]])                 # the kit's x (across); its y (along) is u
     kx, ky = kit["half"]
@@ -355,7 +375,10 @@ def _canopy_site(st, canopy, kit):
                           scale=[sx, sy, 1.0], collide=True))
         for lx, ly in kit["pumps"]:
             p = o + v * (lx * sx) + u * (ly * sy)
-            _pump(props, areas, kit, float(p[0]), float(p[1]), yaw, kit["dz"])
+            if _clear(_area_pts(float(p[0]), float(p[1]), yaw), others, roads):
+                _pump(props, areas, kit, float(p[0]), float(p[1]), yaw, kit["dz"])
+    if not areas:
+        return None
     return Site(st, props, areas, (canopy.id,))
 
 
@@ -426,11 +449,14 @@ def layout(st, blds, roads):
     if shop is None:
         return None
     canopy = find_canopy(st, shop, blds, roads)
+    site = None
     if canopy is not None:
-        return _canopy_site(st, canopy, KITS[_h(st.id, "kit") % len(KITS)])
-    if not st.confirmed:
-        return None
-    return _pair_site(st, shop, blds, roads)
+        site = _canopy_site(st, canopy, KITS[_h(st.id, "kit") % len(KITS)], blds, roads)
+    if site is None and st.confirmed:
+        site = _pair_site(st, shop, blds, roads)
+    if site is not None:
+        site.shop_id = shop.id
+    return site
 
 
 # --- the map data around a station, and the road tile's records --------------------------------------------------
@@ -449,7 +475,9 @@ def buildings_near(frame, layers, x, y, r):
             continue
         a = f.attrs
         xy = f.xy_in(frame)
-        for i in range(len(f)):
+        cx, cy = f.outer_centres(frame)         # (vectorised: a city cell has tens of thousands, review I6)
+        near = np.flatnonzero((cx - x) ** 2 + (cy - y) ** 2 <= (r + 1.0) ** 2)
+        for i in near.tolist():
             fid = str(f.ids[i])
             if fid in seen or f.part_off[i + 1] == f.part_off[i]:
                 continue
@@ -469,7 +497,8 @@ def buildings_near(frame, layers, x, y, r):
 
 def drive_lines(frame, layers, x, y, r):
     """(centreline (k, 2), half carriageway width) of the public roads (buildings.THROUGH_CLASSES) with a point within
-    r of (x, y) in frame, each road once."""
+    r of (x, y) in frame, each road once; the width as the road mesh draws it (roads.road_specs: lane counts, width
+    tags, one-way: a six-lane arterial is wider than its class, review I5)."""
     import buildings
     import roads
     out, seen = [], set()
@@ -477,7 +506,10 @@ def drive_lines(frame, layers, x, y, r):
         if f is None or len(f) == 0 or "class" not in f.attrs:
             continue
         xy = f.xy_in(frame)
-        for i in range(len(f)):
+        bb = f.boxes(frame)                     # (only the roads near: review I6)
+        near = np.flatnonzero((bb[:, 0] <= x + r) & (bb[:, 2] >= x - r) & (bb[:, 1] <= y + r) & (bb[:, 3] >= y - r))
+        specs = f.__dict__.get("_gas_specs")
+        for i in near.tolist():
             fid, cls = str(f.ids[i]), str(f.attrs["class"][i])
             if fid in seen or cls not in buildings.THROUGH_CLASSES or f.part_off[i + 1] == f.part_off[i]:
                 continue
@@ -485,7 +517,10 @@ def drive_lines(frame, layers, x, y, r):
             if len(line) < 2 or _seg_dist(np.array([[x, y]]), line[:-1], line[1:])[0] > r:
                 continue
             seen.add(fid)
-            out.append((line, roads.carriageway(cls, "paved", False) / 2.0))
+            if specs is None:
+                specs = f.__dict__.setdefault("_gas_specs", roads.road_specs(f))
+            sp = specs[i]
+            out.append((line, (sp.width if sp is not None else roads.carriageway(cls, "paved", False)) / 2.0))
     return out
 
 
@@ -534,7 +569,7 @@ def tile_sites(frame, tx, ty, md, elev):
     except Exception as e:      # an unreachable source costs the stations, not the tile
         log.debug("gas stations of road tile %d_%d: %s", tx, ty, e)
         return [], frozenset()
-    recs, skip = [], set()
+    sites = []
     for st in stations:
         if not (x0 - REACH_M <= st.x < x1 + REACH_M and y0 - REACH_M <= st.y < y1 + REACH_M):
             continue
@@ -546,9 +581,15 @@ def tile_sites(frame, tx, ty, md, elev):
         except Exception as e:
             log.debug("gas station %s: %s", st.id, e)
             continue
-        if site is None:
+        if site is not None:
+            sites.append(site)
+    recs, skip, shops = [], set(), set()
+    for site in sorted(sites, key=lambda s: (not s.station.confirmed, s.station.id)):
+        if site.shop_id in shops:               # one forecourt per shop (the same in every tile: all are laid out)
             continue
+        shops.add(site.shop_id)
         skip.update(site.drop_ids)
+        st = site.station
         if x0 <= st.x < x1 and y0 <= st.y < y1:
             recs.append(_record(site, frame, elev))
     return recs, frozenset(skip)

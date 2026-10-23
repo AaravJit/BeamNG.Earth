@@ -36,6 +36,8 @@ local function deleteObjs(st)
     local o = scenetree.findObjectById(ob.id)
     if o then o:delete() end
   end
+  -- its colliding pumps and canopy out of the collision too (no invisible pump left to crash into)
+  if st.made and M.onCollide then M.onCollide() end
   st.objs, st.pumps, st.made = {}, {}, false
 end
 
@@ -44,7 +46,9 @@ local function spawn(id, st)
   for _, p in ipairs(r.props or {}) do
     local o = createObject('TSStatic')
     o:setField('shapeName', 0, p.shape)
-    o:setField('collisionType', 0, p.collide and 'Visible Mesh Final' or 'None')
+    -- the shapes' own collision meshes (West Coast USA leaves its fuel shapes at the default, 'Collision Mesh'), not
+    -- their visible triangles: every collidable triangle costs each global collision rebuild (CLAUDE.md)
+    o:setField('collisionType', 0, p.collide and 'Collision Mesh' or 'None')
     o:setField('decalType', 0, 'None')
     o.canSave = false
     local s = p.scale or { 1, 1, 1 }
@@ -112,8 +116,14 @@ function M.onRows(aid, key, recs)
         st.keys[key] = true
         if st.made and #(st.rec.props or {}) == #(r.props or {}) and #(st.rec.areas or {}) == #(r.areas or {}) then
           replace(st, r)
+        elseif st.made then         -- another layout (the new anchor's frame): made again from this record
+          deleteObjs(st)
+          queue[#queue + 1] = r.id
+          poisDirty = true
+        elseif st.stale then        -- queued at a rebase: now it has a record in the current frame
+          queue[#queue + 1] = r.id
         end
-        st.rec = r
+        st.rec, st.stale = r, nil
       end
     end
   end
@@ -138,7 +148,7 @@ function M.update(gov)
   while #queue > 0 and gov:try('fuel') do
     local id = table.remove(queue, 1)
     local st = stations[id]
-    if st and not st.made then
+    if st and not st.made and not st.stale then
       local t0 = M.now()
       local ok, err = pcall(spawn, id, st)
       if not ok then log('W', 'beamngEarth', 'gas station ' .. tostring(id) .. ': ' .. tostring(err)) end
@@ -151,11 +161,13 @@ function M.update(gov)
   end
 end
 
--- Origin rebase (core.lua finishRebase): every object moved by p_new = R*p + t (as roads.transform).
+-- Origin rebase (core.lua finishRebase): every object moved by p_new = R*p + t (as roads.transform). A station not
+-- made yet waits for its record in the new frame (the new anchor's road tile): its old one would put it kilometres off.
 function M.transform(xf)
   local geodesy = require('beamngEarth/geodesy')
   local bx, by, bz, bw = xf:beamngQuat()
   for _, st in pairs(stations) do
+    if not st.made then st.stale = true end
     for _, ob in ipairs(st.objs) do
       local x, y, z = xf:apply(ob.pos[1], ob.pos[2], ob.pos[3])
       local qx, qy, qz, qw = geodesy.quatMul(ob.q[1], ob.q[2], ob.q[3], ob.q[4], bx, by, bz, bw)

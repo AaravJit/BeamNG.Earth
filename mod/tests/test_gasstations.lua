@@ -40,7 +40,8 @@ local solid, ghost
 for _, o in ipairs(S.liveOf('TSStatic')) do
   if o.fields.shapeName:find('structure') then solid = o else ghost = o end
 end
-T.check(solid.fields.collisionType == 'Visible Mesh Final' and ghost.fields.collisionType == 'None', 'collide flags')
+-- the shapes' own collision meshes, as West Coast USA places them (its items leave collisionType at the default)
+T.check(solid.fields.collisionType == 'Collision Mesh' and ghost.fields.collisionType == 'None', 'collide flags')
 T.near(solid.scale.x, 1.1, 1e-9, 'scale')
 -- yaw 90 (counter-clockwise from +x) in setPosRot's conjugate form: (0, 0, -sin 45, cos 45)
 T.near(solid.rot.z, -math.sqrt(0.5), 1e-9, 'yaw quaternion z')
@@ -95,6 +96,25 @@ T.check(count('TSStatic') == 0 and count('BeamNGGameplayArea') == 0 and count('B
 els = {}
 G.pois('beamng_earth', els)
 T.check(#els == 0, 'no POIs after reset')
+
+-- review I1: a station still queued at a rebase is not spawned from its old-frame record; the new anchor's tile brings
+-- the record it is spawned from
+G.reset()
+G.onRows(1, '1:9_9', { rec('late', 300) })
+G.transform(xf)
+G.update(gov)
+T.check(scenetree.findObject('bne_fuel_late_a1') == nil, 'not spawned in the old frame')
+G.onRows(2, '2:9_9', { rec('late', 400) }); G.update(gov)
+T.near(scenetree.findObject('bne_fuel_late_a1').pos.x, 402, 1e-9, 'spawned from the new anchor record')
+-- a made station whose new record has other pumps (the new frame's layout): made again from it
+local r2 = rec('late', 400); r2.areas[3] = { pos = { 410, 0, 2 }, yaw = 90, half = { 1.6, 2.2, 2.75 }, icon = { 410, 0, 4.5 } }
+G.onRows(2, '2:9_8', { r2 }); G.update(gov)
+T.check(scenetree.findObject('bne_fuel_late_a3') ~= nil and count('BeamNGGameplayArea') == 3, 'made again with 3 pumps')
+-- a station's colliding props deleted: the collision rebuilt (no invisible pump left behind)
+local cbefore = collide
+G.dropKey('1:9_9'); G.dropKey('2:9_9'); G.dropKey('2:9_8')
+T.check(collide == cbefore + 1, 'a collision rebuild after the delete')
+G.reset()
 
 -- the shapes loaded once at session start (hidden, no collision), so the first station does not pay their first load
 G.prewarm()
