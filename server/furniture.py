@@ -281,9 +281,12 @@ def junction_props(roads, box, curb_h=0.15, left_hand=False, decks=()):
 
 
 SIGN_MPH = (30, 40, 50, 60, 70)     # speed-limit sign models (trees.lua: Utah's ut_<n>_speed_limit)
-# ... and the round km/h ones (trees.lua: Driver Training's sign_speed<n>kph) where limits are posted in km/h
-# (2026-10-15: Swiss valley roads had American "SPEED LIMIT 50" signs)
-SIGN_KMH = (40, 60, 80, 100)
+# ... and the round km/h ones (trees.lua: Driver Training's sign_speed<n>kph) where limits are posted in km/h.
+# Europe commonly uses 50, 80, 100 and motorway limits up to 150; Germany also posts an "unlimited" sign.
+# The stock sign pack is only a subset of that range, so the higher values fall back to the generic "kph"
+# placeholder group until bespoke art is added.
+SIGN_KMH = (40, 50, 60, 80, 100, 120, 130, 150)
+SIGN_NONE = "speedknone"
 SIGN_CLASSES = {"tertiary", "secondary", "primary", "trunk", "unclassified"}
 SIGN_MIN_M = 150.0          # a road segment at least this long gets a sign after each of its ends
 SIGN_IN_M = 30.0            # m past the junction
@@ -300,11 +303,15 @@ def speed_signs(roads, speeds, box, left_hand=False, mph_signs=True):
         mph_v = speeds.get(fid)
         if mph_v is None or spec.cls not in SIGN_CLASSES or spec.oneway or len(line) < 2:
             continue
-        if mph_signs:
+        if not math.isfinite(mph_v) or mph_v <= 0:
+            group = SIGN_NONE if not mph_signs else None
+        elif mph_signs:
             n = int(round(mph_v / 5.0)) * 5
             group = f"speed{n}" if n in SIGN_MPH else None
         else:
             n = int(round(mph_v * 1.609344 / 10.0)) * 10
+            if n > 150:
+                n = 150
             group = f"speedk{n}" if n in SIGN_KMH else None
         if group is None:
             continue
