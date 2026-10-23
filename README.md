@@ -34,7 +34,8 @@ Status: beta (see VERSION). Tested on BeamNG.drive 0.40.1 on Linux (Vulkan) and 
   that keep clear of the roads under them; tunnels through hills, with portals, lights and low arches where little
   is over them.
 - Water: the sea with real depth (cars sink), lakes, and rivers kept beside the roads.
-- Airports with graded, marked runways; landmarks such as the pyramids of Giza.
+- Airports with graded, marked runways; racetracks (circuits, ovals and pit lanes, with their real banking);
+  landmarks such as the pyramids of Giza.
 
 **Time, weather and physics**
 - **Real time**: the sun, moon and stars are where they really are for the place, the date and the clock
@@ -63,6 +64,11 @@ Status: beta (see VERSION). Tested on BeamNG.drive 0.40.1 on Linux (Vulkan) and 
 - **Traffic**: stock BeamNG traffic and police can be switched on, and parked cars line the streets and fill
   parking lots (stock BeamNG parking).
 
+**Multiplayer (BeamMP, in testing)**
+- Play the real world together on a BeamMP server (every player runs the BeamNG.Earth app): players who join are
+  sent to the others, cars show in the right place and with their dents in everyone's world, other players show on
+  the world map, and players near each other split the work of building the world (see "Multiplayer" below).
+
 **Map and navigation**
 - A level select with famous places and a **Random location** button (it starts you on a road).
 - World map (**M**): pan and zoom the globe, satellite or street map (EOX) with a roads & labels overlay,
@@ -82,6 +88,8 @@ Status: beta (see VERSION). Tested on BeamNG.drive 0.40.1 on Linux (Vulkan) and 
 - Easy setup: one download per system (Windows .exe, Linux AppImage) that installs the mod and starts the server
   and the game; from the source, `install.py` installs everything and `start.py` keeps the mod in sync.
 - Runs on a Steam Deck (aim: 30 fps on the Handheld graphics preset).
+- Uses your graphics card for some of the world server's work (colour matching of the photos, compressing the distant
+  textures) when it can, so the server needs less of your CPU; without a usable one the CPU does it as before.
 - Offline play from the download cache (with a size cap and "clear cache").
 - Updates: the mod tells you in game (and on its settings page, with a link) when a newer version is on GitHub;
   with the downloaded app (.exe / AppImage), **Update now** downloads it next to your copy, checks it against

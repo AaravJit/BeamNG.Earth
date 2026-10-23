@@ -124,12 +124,14 @@ end
 -- the other's copy of our car must survive). 'drive': TEST_DRIVE_S after the car, the game's AI drives it (traffic
 -- mode) for the frame times while the world streams. 'goto' (with -bngegoto LAT,LON): TEST_GOTO_S after the first
 -- pose, a teleport there (a fresh place: the shared generation's timing); -bngegotoat UNIXTIME: at that time instead
--- (two machines arriving together).
+-- (two machines arriving together). 'map': TEST_MAP_S after the first pose, the world map opened (the other players'
+-- arrows, for a screenshot).
 M.TEST_CAR_S, M.TEST_DAMAGE_S = 5, 25
 M.TEST_SWITCH_S, M.TEST_SWITCH_HOLD_S = 40, 30
 M.TEST_AWAY_S, M.TEST_AWAY_HOLD_S = 40, 60
 M.TEST_DRIVE_S = 20
 M.TEST_GOTO_S = 3
+M.TEST_MAP_S = 30
 local test = {}
 do
   local ok, args = pcall(function() return Engine.getStartingArgs() end)
@@ -177,6 +179,11 @@ local function testStep(dt)
       log('I', 'beamngEarth', string.format('BeamMP test: to %.5f, %.5f', test.gotoLat, test.gotoLon))
       c.teleport(test.gotoLat, test.gotoLon, nil, { record = false })
     end
+  end
+  if test.map and not test.mapOpened and stats.poses > 0 and testClock > M.TEST_MAP_S then
+    test.mapOpened = true
+    local st = rawget(_G, 'beamngEarth_settings')
+    if st and st.toggleMap then st.toggleMap(); log('I', 'beamngEarth', 'BeamMP test: map opened') end
   end
   local veh = getPlayerVehicle and getPlayerVehicle(0)
   if test.car and not testCarAt and not veh and stats.poses > 0 and testClock > M.TEST_CAR_S then

@@ -2978,9 +2978,11 @@ class Connection:
                  anchor.id, lat, lon, time.perf_counter() - t0, cx, cy,
                  "n/a" if gz is None else f"{gz:.1f}",
                  self.s.dem.stats_snapshot())
-        self.send({"type": "anchor_ready", "requestId": req, "anchorId": anchor.id, "lat": lat, "lon": lon,
-                   "groundZ": gz, "floorZ": floor_z, "terrain": self.terrain_msg(key, info),
-                   "provisional": provisional, "px": place[0] if place else None, "py": place[1] if place else None})
+        ready = {"type": "anchor_ready", "requestId": req, "anchorId": anchor.id, "lat": lat, "lon": lon,
+                 "groundZ": gz, "floorZ": floor_z, "terrain": self.terrain_msg(key, info), "provisional": provisional}
+        if place is not None:           # (the player's spot off the origin, echoed: core places the car there)
+            ready["px"], ready["py"] = place
+        self.send(ready)
         self.status(f"Terrain ready ({time.perf_counter() - t0:.1f} s)")
         if provisional:
             self.spawn(self.refine_first(anchor, cx, cy, info.get("ter"), t0))

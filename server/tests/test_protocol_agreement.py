@@ -92,7 +92,9 @@ MOD_TO_SERVER = {
     "hello": {"protocol": F(int), "format": F(int), "modVersion": F(str), "sessions": F((list, dict), OPT),
               # a reconnect: the pooled far-tile slots [[slot, serial], ...] the mod's objects hold for that session
               "slotSession": F(str, OPT), "slotsHeld": F((list, dict), OPT)},
-    "prepare_anchor": {"requestId": F(int), "lat": F(NUM), "lon": F(NUM), "cx": F(NUM, OPT), "cy": F(NUM, OPT)},
+    "prepare_anchor": {"requestId": F(int), "lat": F(NUM), "lon": F(NUM), "cx": F(NUM, OPT), "cy": F(NUM, OPT),
+                       # 2026-10-22: the player's spot when not the origin (BeamMP: onto another player's anchor)
+                       "px": F(NUM, OPT), "py": F(NUM, OPT)},
     "commit_anchor": {"anchorId": F(int)},
     "prepare_terrain": {"requestId": F(int), "anchorId": F(int), "cx": F(NUM), "cy": F(NUM)},
     "commit_terrain": {"anchorId": F(int), "cx": F(NUM), "cy": F(NUM)},
@@ -112,6 +114,10 @@ MOD_TO_SERVER = {
     "cache": {"capGb": F(NUM, OPT), "clear": F(bool, OPT)},
     # the ground's collision patch under another vehicle's collision island off the block (terrainpatch.lua / .py)
     "terrain_patch": {"anchorId": F(int), "key": F(str), "x0": F(NUM), "y0": F(NUM), "x1": F(NUM), "y1": F(NUM)},
+    # BeamMP shared generation (peerwork.py, mpsession.lua): our world server serves our group; the players on our
+    # anchor ({id, host, port, code, weight} each)
+    "share": {},
+    "peers": {"me": F(str), "members": F(list)},
     # roads (roads.py; additive): the mod removed its roads (switched off and on again): send them again
     "roads_reset": {},
     "map_tiles": {"tiles": F(list)},       # the world map's basemap tiles as files (settings.mapTiles)
@@ -165,8 +171,10 @@ SERVER_TO_MOD = {
                      "groundZ": F(NUM, NULL), "terrain": F(dict),
                      "floorZ": F(NUM, NULL, OPT),          # 2026-10-17: in a tunnel, its floor (core.floorCheck)
                      "anchorKey": F(str, OPT),             # phase 5 (lattice anchors): not sent yet
-                     "provisional": F(bool, OPT)},         # 2026-10-22: a teleport's ungraded first block
+                     "provisional": F(bool, OPT),          # 2026-10-22: a teleport's ungraded first block
+                     "px": F(NUM, NULL, OPT), "py": F(NUM, NULL, OPT)},    # the prepare_anchor's spot, echoed
     "anchor_error": {"requestId": F(int, NULL), "error": F(str)},
+    "share": {"port": F(int, NULL), "code": F(str), "weight": F(NUM, OPT)},   # our group service (mpsession.onShare)
     "terrain_ready": {"requestId": F(int), "anchorId": F(int), **TERRAIN},
     "terrain_refresh": {"anchorId": F(int), **TERRAIN},     # the graded block in place of the provisional one
     "terrain_error": {"requestId": F(int, NULL), "anchorId": F(int, NULL), "error": F(str)},
@@ -280,10 +288,12 @@ def top_keys(table):
 
 
 def mod_sends():
-    """{type: (keys, nested)} of every net.send({...}) in core.lua and places.lua (the level select's pictures), and
-    every send({...}) in terrainpatch.lua (core hands it net.send)."""
+    """{type: (keys, nested)} of every net.send({...}) in core.lua, places.lua (the level select's pictures) and
+    mpsession.lua (require('beamngEarth/net').send), and every send({...}) in terrainpatch.lua (core hands it
+    net.send)."""
     out = {}
-    for names, pattern in ((("core.lua", "places.lua"), r"net\.send\(\{"), (("terrainpatch.lua",), r"\bsend\(\{")):
+    for names, pattern in ((("core.lua", "places.lua", "mpsession.lua"), r"net(?:'\))?\.send\(\{"),
+                           (("terrainpatch.lua",), r"\bsend\(\{")):
         text = "\n".join((LUA / n).read_text(encoding="utf-8") for n in names)
         for m in re.finditer(pattern, text):
             t = lua_tables(text, m.end() - 1)
@@ -296,7 +306,7 @@ def mod_sends():
 def mod_reads():
     """Fields the mod reads from server messages: msg.X / p.msg.X / tr.X (terrain) in its Lua."""
     out = set()
-    for name in ("core.lua", "farfield.lua", "lattice.lua", "weather.lua", "credits.lua", "roads.lua"):
+    for name in ("core.lua", "farfield.lua", "lattice.lua", "weather.lua", "credits.lua", "roads.lua", "mpsession.lua"):
         text = (LUA / name).read_text(encoding="utf-8")
         out |= set(re.findall(r"\bmsg\.(\w+)", text))
         out |= {"terrain." + f for f in re.findall(r"\btr\.(\w+)", text)}
@@ -833,6 +843,9 @@ class ServerMessagesTest(test_server.ServerHarness):
         self.assertEqual(until(lambda m: m["type"] == "cache")["capBytes"], 10_000_000_000)
         c.send({"type": "cache", "clear": True})        # ... and "Clear cache"
         self.assertIn("clearedBytes", until(lambda m: m["type"] == "cache"))
+        c.send({"type": "share"})                       # a BeamMP session: our group service's port and code
+        self.assertTrue(until(lambda m: m["type"] == "share")["code"])
+        c.send({"type": "peers", "me": "1", "members": []})     # (alone: no group; nothing answered)
         c.send({"type": "prepare_anchor", "requestId": 1, "lat": test_server.LAT, "lon": test_server.LON,
                 "cx": 0, "cy": 0})
         a = until(lambda m: m["type"] == "anchor_ready")
