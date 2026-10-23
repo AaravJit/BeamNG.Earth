@@ -610,6 +610,7 @@ class Server:
         self.ui_pool = ThreadPoolExecutor(2, thread_name_prefix="map-ui")
         # (a thread per helper slot too: a far thread waits for its tile's builder, here or on a helper)
         self.cache_dir = cache_dir
+        self.refetched = 0              # far textures whose missing photo tiles were fetched here (make_tile)
         self.share_lock, self.group_helper = threading.Lock(), None    # (share_start: a BeamMP group's server)
         self.tile_pool = ThreadPoolExecutor(tile_workers + (peerworkmod.MAX_SLOTS if hasattr(far_pool, "remote_slots")
                                                             else 0), thread_name_prefix="far")
@@ -1318,7 +1319,8 @@ class Server:
         if fb is not None and fb[0] == (cx, cy):        # the provisional first block's photo (make_provisional)
             anchor.first_base, base = None, fb[1]
         elif self.near_visual == "detail" and self.imagery is not None:
-            base = self.base_pool.submit(self._base_photo, anchor, cx, cy, self._base_process(lane))
+            base = self.base_pool.submit(self._base_photo, anchor, cx, cy, self._base_process(lane),
+                                         lane == LANE_REQUEST)
         pool = self.block_pools[lane][0] if self.block_pools and progress is None else None
         if pool is not None:
             info = pool.submit(
@@ -1341,7 +1343,7 @@ class Server:
         q = self.anchor_q(anchor)
         base = None
         if self.near_visual == "detail" and self.imagery is not None:
-            base = self.base_pool.submit(self._base_photo, anchor, cx, cy, self._base_process(LANE_REQUEST))
+            base = self.base_pool.submit(self._base_photo, anchor, cx, cy, self._base_process(LANE_REQUEST), True)
             anchor.first_base = ((cx, cy), base)
         urgent = getattr(self.dem, "urgent", None)     # (test DEMs have no lane)
         with urgent() if urgent is not None else contextlib.nullcontext():
@@ -1491,14 +1493,17 @@ class Server:
             return None
         return self.block_pools[LANE_PREFETCH if lane == LANE_REQUEST else LANE_REQUEST][0]
 
-    def _base_photo(self, anchor, cx, cy, pool=None):
+    def _base_photo(self, anchor, cx, cy, pool=None, urgent=False):
         """base_pool: the block's base photo (write_base; in the block process pool when given and its imagery
-        tiles are on disk) while its heights are built: (file name or None, [rgb] or [], seconds)."""
+        tiles are on disk) while its heights are built: (file name or None, [rgb] or [], seconds). urgent: the
+        player waits on this block (a teleport's first, or one the mod asked for): its missing photo tiles are
+        fetched ahead of the far field's (Imagery.urgent, netfetch "urgent")."""
         t1 = time.perf_counter()
         photo = []
         name = self._base_elsewhere(anchor, cx, cy, pool, photo) if pool is not None else None
         if name is None:
-            name = self.write_base(anchor, cx, cy, photo=photo)
+            with self.imagery.urgent() if urgent and hasattr(self.imagery, "urgent") else contextlib.nullcontext():
+                name = self.write_base(anchor, cx, cy, photo=photo)
         return name, photo, time.perf_counter() - t1
 
     def _base_elsewhere(self, anchor, cx, cy, pool, photo):
@@ -1819,7 +1824,7 @@ class Server:
         if self.imagery is not None:
             x0, y0, _, _ = tile.bbox
             px = self.tex_size(tile.level)
-            self.imagery.prefetch(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px), px)
+            self.imagery.prefetch(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px), px, soon=True)
 
     def share_start(self):
         """Compute sharing in a BeamMP group: our GroupHelper listening (started once). -> {port, code} (port None:
@@ -1888,9 +1893,17 @@ class Server:
                             self.road_mask_px(lvl)) if self.road_masks else None,
                    "chain": [s.name for s in im.chain], "tone": self.tone, "leaf_on": im.leaf_on,
                    "season_mode": im.season_mode}
-            built, got = self.far_pool.submit(blockworker.far_tile, anchor.id, anchor.lat, anchor.lon, tile,
-                                              anchor.zooms[max(lvl, 0)], q, ref_zoom,
-                                              self.near_visual in BLOCK_DRAWN, self.layout, tex).result()
+            args = (blockworker.far_tile, anchor.id, anchor.lat, anchor.lon, tile, anchor.zooms[max(lvl, 0)], q,
+                    ref_zoom, self.near_visual in BLOCK_DRAWN, self.layout, tex)
+            built, got = self.far_pool.submit(*args).result()
+            if got is None:
+                # a photo tile was not on disk (its prefetch dropped: a host at its daily budget, GitHub #116, or a
+                # fast drive): fetched here, the render goes back to the workers (rendered in this process, one
+                # interpreter for every far thread, the far field waited on it); here only if that fails too
+                x0, y0, _, _ = tile.bbox
+                if im.fetch_needed(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, tex["px"]), tex["px"]):
+                    built, got = self.far_pool.submit(*args).result()
+                    self.refetched += 1
             if got is not None:
                 done = (texture, got[0], got[1])
         elif self.far_pool is not None:
@@ -2788,7 +2801,8 @@ class Connection:
                 self.spawn(self.check_update())     # a newer version on GitHub: the mod says so (updates.py)
             if getattr(self.s, "game_cpus", None):  # the game off the server's cores (cpupin.py)
                 n = cpupin.pin_game(self.s.game_cpus)
-                log.info("the game's %d threads on CPUs %s", n, ",".join(map(str, sorted(self.s.game_cpus))))
+                log.info("the game's %d %s on CPUs %s", n, "processes" if sys.platform == "win32" else "threads",
+                         ",".join(map(str, sorted(self.s.game_cpus))))
         elif kind == "prepare_anchor":
             self.spawn(self.prepare_anchor(msg))
         elif kind == "share":                   # a BeamMP session: serve our group (peerwork.GroupHelper)
@@ -3719,8 +3733,8 @@ class Connection:
                 if self.s.imagery is not None:
                     log.info("imagery: %s", self.s.imagery.summary())
                     if self.s.imagery_worker or self.s.base_worker:
-                        log.info("imagery in the worker processes: %d far textures, %d base photos",
-                                 self.s.imagery_worker, self.s.base_worker)
+                        log.info("imagery in the worker processes: %d far textures (%d after a fetch here), "
+                                 "%d base photos", self.s.imagery_worker, self.s.refetched, self.s.base_worker)
                 if self.s.retex_stats["started"]:
                     log.info("live retexture: %s, %d waiting", self.s.retex_stats, len(self.s.retex_todo))
                 if not any(ck[0] != anchor.id for ck in self.shown):
@@ -4046,10 +4060,10 @@ def main():
     ap.add_argument("--far-radius", type=float, default=farfield.RADIUS, help="far-field radius (m)")
     ap.add_argument("--nice", type=int, default=NICE, help="process niceness increment (0 = leave as is)")
     ap.add_argument("--pin", choices=("on", "off"), default="on",
-                    help="Linux: the server on the last quarter of the physical cores and the game on the rest "
-                         "(cpupin.py; default on)")
+                    help="Linux and Windows: the server on the last quarter of the physical cores and the game on "
+                         "the rest (cpupin.py; default on; BNGE_SERVER_CORES=<n> for n cores)")
     ap.add_argument("--load-boost", choices=("on", "off"), default="on",
-                    help="Linux with --pin on: after a teleport, while the player waits for the world, the server may "
+                    help="Linux or Windows with --pin on: after a teleport, while the player waits for the world, the server may "
                          "also use half of the game's cores (at idle priority) until the far field is done or the "
                          "player moves (cpupin.boosted; default on)")
     ap.add_argument("--sched", choices=("auto", "idle", "normal"), default="auto",
@@ -4220,7 +4234,7 @@ def main():
         # first, NICE_ROADS / NICE_FAR) counts for nothing between idle-class tasks, and on a Steam Deck a teleport's
         # block took 105-170 s behind the far field and the road tiles (2026-10-20; 1.6 s on a desktop)
         split = cpupin.split(budget.SMALL_SERVER_SHARE if budget.small() else cpupin.SERVER_SHARE) \
-            if args.pin == "on" and sys.platform.startswith("linux") else (None, None)
+            if args.pin == "on" and (sys.platform.startswith("linux") or sys.platform == "win32") else (None, None)
         args.sched = "normal" if split[0] else "idle"
     if args.sched == "idle" and hasattr(os, "sched_setscheduler") and hasattr(os, "SCHED_IDLE"):
         # Linux: CPU time only when a core would idle otherwise (the worker processes and threads made after this
@@ -4248,7 +4262,7 @@ def main():
         log.info("small machine (%.1f GB): %d far-tile and %d road-tile processes, smaller caches, imagery analyses "
                  "off (budget.py; BNGE_BUDGET=desktop for the desktop sizes)", budget.total_gb() or 0, args.workers,
                  args.road_processes)
-    if args.pin == "on" and sys.platform.startswith("linux"):
+    if args.pin == "on" and (sys.platform.startswith("linux") or sys.platform == "win32"):   # (Windows: KyzoFox, PR #112)
         try:
             server_cpus, game_cpus = cpupin.split(budget.SMALL_SERVER_SHARE if small else cpupin.SERVER_SHARE)
             cpupin.pin_self(server_cpus)

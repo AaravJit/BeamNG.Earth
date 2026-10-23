@@ -1,6 +1,7 @@
 //! Geometry kernels for the world server (server/fast.py wraps them, with the Python versions as the fallback).
 //! All coordinates are metres in the anchor's local frame, f64.
 mod gpu;
+mod dsm;
 
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, IntoPyArray};
 use pyo3::types::PyBytes;
@@ -3792,6 +3793,7 @@ fn rtin_mesh<'py>(py: Python<'py>, h: PyReadonlyArray2<'py, f64>, max_err: f64)
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
+    m.add_function(wrap_pyfunction!(dsm::dsm_ground, m)?)?;
     m.add_function(wrap_pyfunction!(points_inside, m)?)?;
     m.add_function(wrap_pyfunction!(polyline_dist, m)?)?;
     m.add_function(wrap_pyfunction!(clear_of, m)?)?;
@@ -3854,6 +3856,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(wet_run_inside, m)?)?;
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 60)?;
+    m.add("VERSION", 61)?;
     Ok(())
 }
