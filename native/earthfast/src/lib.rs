@@ -1523,42 +1523,48 @@ fn srgb_monotonic() -> bool {
     true
 }
 
-/// imagery.mip_arrays below level 0: the levels 1.. (uint8 [h, w, 3]) of a power-of-two image rgb: linear-light
+/// imagery.mip_arrays below level 0: the levels 1.. (uint8 [h, w, c], c 3 or 4) of a power-of-two image: linear-light
 /// (lut: the 256 float32 values of _TO_LIN) 2 x 2 averages, each from the previous unsharpened one, then sharpened
 /// by sharpen (3 x 3 box, edge-padded) where both sides are >= 4, back to sRGB (x ** (1 / 2.2)), as the numpy code
-/// in float32.
+/// in float32. A 4th channel (alpha: the terrain cache's ambient occlusion) is averaged as it is, not sharpened (the
+/// 3-channel loop read an RGBA image's bytes as RGB: grey mips under the photo's, GitHub #115, 2026-10-23).
 #[pyfunction]
 fn mip_levels<'py>(py: Python<'py>, rgb: PyReadonlyArray3<'py, u8>, lut: PyReadonlyArray1<'py, f32>, sharpen: f32)
-                   -> Vec<Bound<'py, numpy::PyArray3<u8>>> {
+                   -> PyResult<Vec<Bound<'py, numpy::PyArray3<u8>>>> {
     let img = rgb.as_array();
     let lut = lut.as_array();
+    let nc = img.shape()[2];
+    if nc != 3 && nc != 4 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!("mip_levels: 3 or 4 channels, not {}", nc)));
+    }
     let levels = py.allow_threads(|| {
     let (mut h, mut w) = (img.shape()[0], img.shape()[1]);
+    let to_lin = |i: usize, v: u8| -> f32 { if i % nc < 3 { lut[v as usize] } else { v as f32 / 255.0f32 } };
     let mut lin: Vec<f32> = match img.as_slice() {
-        Some(sl) => sl.iter().map(|&v| lut[v as usize]).collect(),
-        None => img.iter().map(|&v| lut[v as usize]).collect(),
+        Some(sl) => sl.iter().enumerate().map(|(i, &v)| to_lin(i, v)).collect(),
+        None => img.iter().enumerate().map(|(i, &v)| to_lin(i, v)).collect(),
     };
     let mut out = Vec::new();
     while h.max(w) > 1 {
         let (mut nh, mut nw) = (h, w);
         if h > 1 {
             nh = h / 2;
-            let mut nl = vec![0f32; nh * w * 3];
+            let mut nl = vec![0f32; nh * w * nc];
             for y in 0..nh {
-                for x in 0..w * 3 {
-                    nl[y * w * 3 + x] = 0.5f32 * (lin[(2 * y) * w * 3 + x] + lin[(2 * y + 1) * w * 3 + x]);
+                for x in 0..w * nc {
+                    nl[y * w * nc + x] = 0.5f32 * (lin[(2 * y) * w * nc + x] + lin[(2 * y + 1) * w * nc + x]);
                 }
             }
             lin = nl;
         }
         if w > 1 {
             nw = w / 2;
-            let mut nl = vec![0f32; nh * nw * 3];
+            let mut nl = vec![0f32; nh * nw * nc];
             for y in 0..nh {
                 for x in 0..nw {
-                    for c in 0..3 {
-                        nl[(y * nw + x) * 3 + c] =
-                            0.5f32 * (lin[(y * w + 2 * x) * 3 + c] + lin[(y * w + 2 * x + 1) * 3 + c]);
+                    for c in 0..nc {
+                        nl[(y * nw + x) * nc + c] =
+                            0.5f32 * (lin[(y * w + 2 * x) * nc + c] + lin[(y * w + 2 * x + 1) * nc + c]);
                     }
                 }
             }
@@ -1570,17 +1576,17 @@ fn mip_levels<'py>(py: Python<'py>, rgb: PyReadonlyArray3<'py, u8>, lut: PyReado
             let at = |y: isize, x: isize, c: usize| -> f32 {
                 let yy = y.clamp(0, h as isize - 1) as usize;
                 let xx = x.clamp(0, w as isize - 1) as usize;
-                lin[(yy * w + xx) * 3 + c]
+                lin[(yy * w + xx) * nc + c]
             };
-            let mut l2 = vec![0f32; h * w * 3];
-            let row = w * 3;
+            let mut l2 = lin.clone();           // (alpha kept as averaged)
+            let row = w * nc;
             // the interior: no clamping (the same sum, term by term)
             for y in 1..h - 1 {
                 for x in 1..w - 1 {
                     for c in 0..3 {
-                        let q = y * row + x * 3 + c;
-                        let blur = (lin[q - row - 3] + lin[q - row] + lin[q - row + 3] + lin[q - 3] + lin[q]
-                            + lin[q + 3] + lin[q + row - 3] + lin[q + row] + lin[q + row + 3]) / 9.0f32;
+                        let q = y * row + x * nc + c;
+                        let blur = (lin[q - row - nc] + lin[q - row] + lin[q - row + nc] + lin[q - nc] + lin[q]
+                            + lin[q + nc] + lin[q + row - nc] + lin[q + row] + lin[q + row + nc]) / 9.0f32;
                         l2[q] = lin[q] + sharpen * (lin[q] - blur);
                     }
                 }
@@ -1596,7 +1602,7 @@ fn mip_levels<'py>(py: Python<'py>, rgb: PyReadonlyArray3<'py, u8>, lut: PyReado
                             + at(y, x, c) + at(y, x + 1, c) + at(y + 1, x - 1, c) + at(y + 1, x, c)
                             + at(y + 1, x + 1, c)) / 9.0f32;
                         let v = at(y, x, c);
-                        l2[((y as usize) * w + x as usize) * 3 + c] = v + sharpen * (v - blur);
+                        l2[((y as usize) * w + x as usize) * nc + c] = v + sharpen * (v - blur);
                     }
                 }
             }
@@ -1605,15 +1611,19 @@ fn mip_levels<'py>(py: Python<'py>, rgb: PyReadonlyArray3<'py, u8>, lut: PyReado
             lin.clone()
         };
         let th = srgb_thresholds();
-        let bytes: Vec<u8> = lev.iter().map(|&v| {
+        let bytes: Vec<u8> = lev.iter().enumerate().map(|(i, &v)| {
             let c = v.clamp(0.0, 1.0);
-            th.partition_point(|&t| t <= c) as u8      // the byte the formula gives (monotonic: thresholds)
+            if i % nc < 3 {
+                th.partition_point(|&t| t <= c) as u8      // the byte the formula gives (monotonic: thresholds)
+            } else {
+                (c * 255.0f32 + 0.5f32) as u8
+            }
         }).collect();
-        out.push(numpy::ndarray::Array3::from_shape_vec((h, w, 3), bytes).unwrap());
+        out.push(numpy::ndarray::Array3::from_shape_vec((h, w, nc), bytes).unwrap());
     }
     out
     });
-    levels.into_iter().map(|a| a.into_pyarray(py)).collect()
+    Ok(levels.into_iter().map(|a| a.into_pyarray(py)).collect())
 }
 
 fn polyline_min_dist(l: &numpy::ndarray::ArrayView2<f64>, px: f64, py: f64) -> f64 {
@@ -3844,6 +3854,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(wet_run_inside, m)?)?;
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 59)?;
+    m.add("VERSION", 60)?;
     Ok(())
 }
