@@ -125,6 +125,9 @@ class GuardrailMeshTest(unittest.TestCase):
         self.assertEqual(path, "vfs/roads_7_1_2.json")
         self.assertEqual(data["guardrail"], {"shape": "vfs/guardrail_7_1_2.cdae", "pos": [256.0, 512.0, 0.0]})
         write_mesh.assert_called_once()
+        args, kwargs = write_mesh.call_args
+        self.assertEqual(os.path.basename(args[0]), "guardrail_7_1_2.cdae")
+        self.assertEqual(kwargs["material"], "guardrail")
 
     def test_unrelated_barrier_produces_no_mesh(self):
         feats = self.features("fence", {"barrier": "fence"})
