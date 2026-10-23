@@ -21,8 +21,10 @@ class ClassifyTest(unittest.TestCase):
     def test_classify(self):
         self.assertEqual(gs.classify("gas_station", "gas_station", "", "open"), (True, False, False))
         self.assertEqual(gs.classify("fueling_station", "", "", None), (True, False, False))
-        # a Sheetz near Pittsburgh: a convenience store by its category, fuel by its brand
-        self.assertEqual(gs.classify("convenience_store", "convenience_store", "Q7492551", "open"), (False, False, True))
+        # a Sheetz near Pittsburgh: a convenience store by its category, fuel by its brand (a fuel brand:
+        # the user, 2026-10-23; one of its stores has no canopy in any building data)
+        self.assertEqual(gs.classify("convenience_store", "convenience_store", "Q7492551", "open"), (False, True, False))
+        self.assertEqual(gs.classify("convenience_store", "", "Q5936320", "open"), (False, False, True))   # Wawa
         # "7-ELEVEN/SPEEDWAY #40001": Western Union by its category, no brand
         self.assertIsNone(gs.classify("financial_service", "money_transfer_service", "", "open"))
         self.assertEqual(gs.classify("atm", "atm", "Q458363", "open"), (False, True, False))     # Marathon
@@ -32,13 +34,13 @@ class ClassifyTest(unittest.TestCase):
 
     def test_brand_name_without_wikidata(self):
         # a Sheetz near Pittsburgh carries the brand's name but no Wikidata id (found 2026-10-23)
-        self.assertEqual(gs.classify("convenience_store", "convenience_store", "", "open", "Sheetz"), (False, False, True))
+        self.assertEqual(gs.classify("convenience_store", "convenience_store", "", "open", "Sheetz"), (False, True, False))
         self.assertEqual(gs.classify("atm", "atm", None, "open", "MARATHON"), (False, True, False))
         self.assertIsNone(gs.classify("convenience_store", "", "", "open", "Sheetz Bakery"))
 
     def test_brand_lists_disjoint(self):
         self.assertFalse(set(gs.FUEL_BRANDS) & set(gs.CONV_BRANDS))
-        self.assertIn("Q7492551", gs.CONV_BRANDS)       # Sheetz
+        self.assertIn("Q7492551", gs.FUEL_BRANDS)       # Sheetz (all 48 around Pittsburgh filed as gas stations)
         self.assertIn("Q5936320", gs.CONV_BRANDS)       # Wawa
         self.assertIn("Q565734", gs.FUEL_BRANDS)        # Aral
 

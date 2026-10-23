@@ -36,10 +36,13 @@ FUEL_BRANDS = {
     "Q867662": "Esso", "Q1009104": "bft", "Q565594": "Eni", "Q377915": "Agip", "Q300147": "Avia", "Q568940": "JET",
     "Q2007561": "OIL!", "Q2121146": "Q1", "Q16998281": "Murco", "Q130223576": "EG On the Move",
     "Q1640290": "ENEOS",
+    # Sheetz: all 48 of its places around Pittsburgh are filed as gas stations, and one of its stores near Pittsburgh has
+    # no canopy in any building data, so the convenience rule left it without pumps (the user, 2026-10-23: move it)
+    "Q7492551": "Sheetz",
 }
 # Convenience brands with fuel at some of their stores: a match needs a canopy or a gas_station pin too.
 CONV_BRANDS = {
-    "Q7492551": "Sheetz", "Q5936320": "Wawa", "Q259340": "7-Eleven", "Q3268010": "Circle K",
+    "Q5936320": "Wawa", "Q259340": "7-Eleven", "Q3268010": "Circle K",
     "Q2940968": "Casey's", "Q110278299": "Bonjour",
 }
 
