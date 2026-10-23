@@ -1,6 +1,7 @@
 name: Guardrail tests
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - feature/mapped-guardrails
