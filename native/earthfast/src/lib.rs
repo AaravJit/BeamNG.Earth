@@ -5,6 +5,7 @@ mod dsm;
 mod vegmask;
 mod roadgeom;
 mod shore;
+mod photofill;
 
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, IntoPyArray};
 use pyo3::types::PyBytes;
@@ -3866,7 +3867,8 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(points_on_tris, m)?)?;
     m.add_function(wrap_pyfunction!(wet_run_inside, m)?)?;
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
+    m.add_function(wrap_pyfunction!(photofill::fill_photo, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 67)?;
+    m.add("VERSION", 68)?;
     Ok(())
 }
