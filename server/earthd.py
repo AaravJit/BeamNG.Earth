@@ -222,6 +222,9 @@ AHEAD_MARGIN_M = 250.0          # m around the block's half width at each point
 # the road tiles' cells (landcover: surface.prefetch). With roads (surface.prefetch has them within 3 km, with the land
 # cover on) and water, which a road tile otherwise fetched itself when it needed it (from KyzoFox's 1.5.4, PR #64)
 AHEAD_LAYERS = ("roads", "buildings", "building_parts", "infrastructure", "water", "land_use")
+FAST_BASE_V = 70.0              # m/s (157 mph): faster, a block waits at most BASE_FAST_WAIT_S for its photo after its
+BASE_FAST_WAIT_S = 0.15         # heights, then goes without it (block_base later): blocks took 0.6-3 s at 600 mph on a
+                                # Steam Deck, mostly the photo (heights 0.1-0.4 s), and the game paused 11 times a minute
 SLOW_BASE_S = 3.0               # a base photo slower than this is logged with its stages
 BASE_PX = 1024                  # detail mode: the block's base photo (1 km -> 1 m per texel; USGS is ~1.9 m)
 BASE_AO_VFS = "/levels/beamng_earth/art/terrains/bngEarth_base_ao.png"   # every surface layer's aoBaseTex
@@ -680,6 +683,7 @@ class Server:
         self.hm_inflight = {}
         self.ter_serial = itertools.count()
         self.base_stale = set()         # blocks whose base photo lacks lazy imagery (NAIP) still to come
+        self.fast = False               # the player faster than FAST_BASE_V (the latest pose): photos follow blocks
         self.base_pending = {}          # block -> the analysis regions its base photo was rendered without
         self.base_rev = itertools.count(1)
         self.hm_committed = deque(maxlen=HM_KEEP_COMMITTED)
@@ -1570,6 +1574,17 @@ class Server:
         future from _base_photo, started with the heights), the timings."""
         if base is not None:
             t1 = time.perf_counter()
+            if self.fast and not base.done():
+                concurrent.futures.wait([base], timeout=BASE_FAST_WAIT_S)
+            if self.fast and not base.done():
+                # a fast player (FAST_BASE_V): the block goes now and its photo when done (block_base)
+                info["base"] = None
+                info["stages"]["baseWait"] = time.perf_counter() - t1
+                info["stages"]["baseLater"] = 1.0
+                base.add_done_callback(lambda f, key=(anchor.id, cx, cy): self._base_later(key, f))
+                info["seconds"] = time.perf_counter() - t0
+                info["zoom"] = anchor.hm_zoom
+                return info
             info["base"], photo, info["stages"]["baseRender"] = base.result()
             info["stages"]["baseWait"] = time.perf_counter() - t1
             if photo and info.get("layers") and info.get("ter"):
@@ -1580,6 +1595,34 @@ class Server:
         info["seconds"] = time.perf_counter() - t0
         info["zoom"] = anchor.hm_zoom
         return info
+
+    def _base_later(self, key, fut, tries=4):
+        """A block sent without its photo (a fast player): the photo, once rendered, onto the block's entry (later
+        terrain_ready answers) and to the mod (block_base: the block in use takes it now, a ready one at its commit)."""
+        try:
+            name = fut.result()[0]
+        except Exception:
+            return
+        conns = [c for c in list(self.connections) if getattr(c, "loop", None) is not None]
+        if not name or not conns:
+            return
+        size = self.layout.block * heightmap.SQUARE
+        loop = conns[0].loop
+
+        def apply(left=tries):
+            info = self.hm.get(key)
+            if info is None and left > 0:       # (the block's entry is stored just after it is built)
+                loop.call_later(0.25, apply, left - 1)
+                return
+            if info is not None and not info.get("base"):
+                info["base"] = name
+            for c in list(self.connections):    # (the mod drops another anchor's)
+                c.send({"type": "block_base", "anchorId": key[0], "cx": key[1], "cy": key[2],
+                        "base": f"{self.vfs_dir}/{name}", "baseSize": size})
+        try:
+            loop.call_soon_threadsafe(apply)
+        except RuntimeError:
+            pass                                # (the loop has closed)
 
     def base_name(self, key, rev=0):
         return self.hm_name(key)[:-4] + ("_base.png" if not rev else f"_base_r{rev}.png")
@@ -3220,6 +3263,7 @@ class Connection:
         else:
             return
         self.vel = (vx, vy)
+        self.s.fast = math.hypot(vx, vy) > FAST_BASE_V
         if self.s.boost_on:
             since = time.monotonic() - getattr(self, "boost_t0", 0.0)
             moving = math.hypot(vx, vy) > BOOST_MOVE_MS and since > BOOST_GRACE_S     # (the car settling: not moving)
