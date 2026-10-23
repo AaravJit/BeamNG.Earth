@@ -109,6 +109,9 @@ class GuardrailMeshTest(unittest.TestCase):
         self.assertGreaterEqual(float(right[0][:, 0].min()), -guardrails.POST_WIDTH_M / 2 - 1e-4)
         self.assertLessEqual(float(right[0][:, 0].min()), 0.0)
 
+    def test_guardrail_shape_is_in_tile_shape_pool(self):
+        self.assertEqual(roads.shape_files(7, 1, 2)["guardrail"], "guardrail_7_1_2.cdae")
+
     def test_road_tile_writer_exports_guardrail_mesh_reference(self):
         vertices = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], np.float32)
         triangles = np.array([[0, 1, 2]], np.int32)
