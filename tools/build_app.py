@@ -141,6 +141,12 @@ def pyinstaller(work, ico, onefile, ver=None, boot=None):
            "--add-data", f"{os.path.join(ROOT, 'VERSION')}{SEP}.",
            "--add-data", f"{os.path.join(server, 'bridges_us.npz')}{SEP}.",     # (bridgetypes.DB_PATH: beside the modules)
            "--add-data", f"{os.path.join(server, 'bridges_wd.npz')}{SEP}."]     # (bridgetypes.WD_PATH)
+    # the sources' fingerprint (peerwork.code_id: compute-sharing helpers build only for the same code)
+    sys.path.insert(0, server)
+    import peerwork
+    with open(os.path.join(work, "CODE_ID"), "w", encoding="ascii") as f:
+        f.write(peerwork.source_id(server))
+    cmd += ["--add-data", f"{os.path.join(work, 'CODE_ID')}{SEP}."]
     cmd += ["--onefile"] if onefile else ["--onedir"]
     if IS_WIN:
         vf, mf = version_files(work, ver)

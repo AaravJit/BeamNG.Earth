@@ -139,6 +139,13 @@ downloaded file (or this folder); the map cache is `.cache/beamng-earth` in your
 
 More detail (traffic, the status bar, reporting problems, troubleshooting): [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
+**Compute sharing (optional, for tinkerers):** another computer on your network can build part of the distant
+landscape for you. On it, from a copy of the same version's source: `python3 server/peerwork.py serve` (port 47620,
+`--workers N` processes; it downloads its own map data). On the computer you play on, set `BNGE_PEERS` to the
+helpers before starting BeamNG.Earth, for example `BNGE_PEERS=192.168.1.20:47620,192.168.1.21:47620`. Helpers
+running other code are left out, and anything a helper fails on is built on your own computer. Only use helpers on a
+network you trust: the connection is not encrypted.
+
 ### Developer setup
 `python3 install.py` also works from a checkout (mod copy, `.venv`, then `python3 start.py`); by hand:
 1. Python 3.10+ with the packages in `server/requirements.txt`. The server needs its Rust module: the checkout

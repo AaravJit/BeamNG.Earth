@@ -99,6 +99,7 @@ import mapdata as mapdatamod  # noqa: E402
 import dem as demmod  # noqa: E402
 import mapcells  # noqa: E402
 import pacer  # noqa: E402
+import peerwork as peerworkmod  # noqa: E402
 import deshadow as deshadowmod  # noqa: E402
 import farfield  # noqa: E402
 import terraincache  # noqa: E402
@@ -607,7 +608,9 @@ class Server:
         # the world map's requests (GPS route, address search, map tiles): their own threads, so a teleport's tile
         # builds on the default pool do not hold them back (a route took 30 s after one, 2026-10-14)
         self.ui_pool = ThreadPoolExecutor(2, thread_name_prefix="map-ui")
-        self.tile_pool = ThreadPoolExecutor(tile_workers, thread_name_prefix="far")
+        # (a thread per helper slot too: a far thread waits for its tile's builder, here or on a helper)
+        self.tile_pool = ThreadPoolExecutor(tile_workers + (peerworkmod.MAX_SLOTS if hasattr(far_pool, "remote_slots")
+                                                            else 0), thread_name_prefix="far")
         # Road plans (grading) of the map cells ahead of the player, made before a block needs them: a
         # cell's first plans (and street widths) take 2-10 s, more than a block move allows at speed
         # One thread takes the most urgent cell of the latest pose's list each time (not a FIFO: cells
@@ -1807,6 +1810,11 @@ class Server:
             x0, y0, _, _ = tile.bbox
             px = self.tex_size(tile.level)
             self.imagery.prefetch(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px), px)
+
+    def remote_slots(self):
+        """Far tiles compute sharing's helpers build at once (0 without helpers)."""
+        f = getattr(self.far_pool, "remote_slots", None)
+        return f() if f is not None else 0
 
     def make_tile(self, anchor, tile, prev=None):
         """Worker thread: build and write one far tile (and its texture). Returns its TileInfo.
@@ -3608,6 +3616,9 @@ class Connection:
             # (GIL), and three far workers made a block build 3-10x slower (landcover 1.4 s vs 0.1 s), too slow
             # to follow a car at 58 m/s (2026-10-12). The far tile finishing next refills the workers.
             workers = HM_BUSY_TILE_WORKERS if self.s.hm_here else self.s.tile_workers
+            # plus the helpers' slots (compute sharing): their tiles cost this process only the files (26 ms a
+            # tile); kept to the local workers, a Steam Deck sent 2 at a time to 12 idle helper workers (2026-10-22)
+            workers += self.s.remote_slots()
             while anchor is not None and not self.teleport_pending and len(self.inflight) < workers:
                 t = self._next_tile()
                 if t is None:
@@ -3737,6 +3748,13 @@ async def main_async(args):
                       args.grading == "on" and args.roads == "on",
                       args.road_widths == "on" and args.roads == "on", False, ctx.Queue(maxsize=1),
                       logging.getLogger().level, args.airports == "on", args.sea == "on", NICE_FAR))
+    if far_pool is not None and args.peers:
+        # compute sharing: far tiles to helpers built with the same settings as these workers (peerwork.py)
+        far_pool = peerworkmod.SharedFarPool(
+            far_pool, peerworkmod.parse_peers(args.peers),
+            {"roads": args.roads == "on", "grading": args.grading == "on" and args.roads == "on",
+             "road_widths": args.road_widths == "on" and args.roads == "on", "airports": args.airports == "on",
+             "sea": args.sea == "on"}, None)
     airports_db = None
     if args.airports == "on":       # before any worker process starts: they read this copy
         try:
@@ -3949,6 +3967,9 @@ def main():
                     help="BeamNG user folder; output goes to <user-dir>/temp/beamngEarth/<sessionId>/")
     ap.add_argument("--cache-dir", default=os.path.join(home, ".cache/beamng-earth"),
                     help="download cache root (DEM tiles go to <cache-dir>/dem/)")
+    ap.add_argument("--peers", default=os.environ.get("BNGE_PEERS", ""),
+                    help="compute sharing: helpers (HOST[:PORT] ...; peerwork.py serve on them) that build far tiles "
+                         "when this server's own workers are busy (default: BNGE_PEERS)")
     ap.add_argument("--workers", type=int, default=WORKERS, help="far-tile worker threads (keep <= 3: the game needs the cores)")
     ap.add_argument("--far-format", choices=farfield.FORMATS, default="cdae",
                     help="far-tile shape format: binary .cdae (default, ~5x faster to load) or Collada .dae")

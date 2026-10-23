@@ -521,14 +521,16 @@ WORKER_IMAGERY_TILES = 96      # decoded imagery tiles a far-tile worker keeps (
 
 def _imagery(tex):
     """This process's imagery.Imagery for the server's chain settings (tex: chain, tone, leaf_on, season_mode): the
-    imagery tiles on disk alone (strict: a missing tile fails the render)."""
+    imagery tiles on disk alone (strict: a missing tile fails the render), or, for a compute-sharing helper
+    (tex["online"], peerwork.py), fetched as needed."""
     import imagery as imagerymod
-    key = (tuple(tex["chain"]), tex["tone"], tex["leaf_on"], tex["season_mode"])
+    online = bool(tex.get("online"))
+    key = (tuple(tex["chain"]), tex["tone"], tex["leaf_on"], tex["season_mode"], online)
     if _s.imagery is None or _s.imagery[0] != key:
-        im = imagerymod.Imagery(os.path.join(_s.cache_dir, "imagery"), key[0], fetch_workers=1,
-                                mem_tiles=WORKER_IMAGERY_TILES, tone=key[1], fetcher=netfetch.Fetcher(offline=True),
-                                leaf_on=key[2], season_mode=key[3])
-        im.strict = True
+        im = imagerymod.Imagery(os.path.join(_s.cache_dir, "imagery"), key[0], fetch_workers=4 if online else 1,
+                                mem_tiles=WORKER_IMAGERY_TILES, tone=key[1],
+                                fetcher=netfetch.Fetcher(offline=not online), leaf_on=key[2], season_mode=key[3])
+        im.strict = not online
         _s.imagery = (key, im)
     return _s.imagery[1]
 
