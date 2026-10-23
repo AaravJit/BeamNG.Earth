@@ -194,6 +194,9 @@ CANOPY_RECT_MIN = 0.85      # area / its oriented box's: a canopy is a rectangle
 CANOPY_AREA_M2 = (120.0, 900.0)
 CANOPY_MAX_H_M = 7.0
 ROOF_CLASSES = {"roof"}     # OSM building=roof (the Speedway's canopy: outbuilding / roof)
+CANOPY_GAP_M = 30.0         # a tagged roof this close to the shop's outline, or to another canopy's, is a canopy (Buc-ee's
+                            # New Braunfels: a 155 x 55 m store, two 157 m canopies whose centres are 52 and 90 m from
+                            # its centre; the user, 2026-10-23: "canopys are buildings and we put two pumps outside")
 ROAD_SLACK_M = 20.0         # a canopy may face any public road this much farther from the shop than the nearest (a
                             # corner lot: a Sheetz near Pittsburgh faces the road 59 m away, the nearest is 49 m)
 
@@ -249,17 +252,43 @@ def find_shop(st, blds):
     return min(near, key=lambda r: r[:4])[4] if near else None
 
 
+def _gap(a, b):
+    """The distance between two outlines (0 when they cross or one holds the other)."""
+    import polygon
+    if polygon.contains_points(a, b[:1]).any() or polygon.contains_points(b, a[:1]).any():
+        return 0.0
+    return float(min(_seg_dist(a, b[:-1], b[1:]).min(), _seg_dist(b, a[:-1], a[1:]).min()))
+
+
+def find_canopies(st, shop, blds, roads):
+    """The station's canopies: every tagged roof within CANOPY_GAP_M of the shop's outline or of a canopy found so far
+    (a big station's rows of them); without any, find_canopy's one untagged imagery outline, if any."""
+    roofs = [b for b in blds if b is not shop and b.cls in ROOF_CLASSES]
+    found, near = [], [shop]
+    grew = True
+    while grew:
+        grew = False
+        for b in roofs:
+            if b not in found and any(_gap(b.ring, x.ring) <= CANOPY_GAP_M for x in near):
+                found.append(b)
+                near.append(b)
+                grew = True
+    if found:
+        return sorted(found, key=lambda b: b.id)
+    one = find_canopy(st, shop, blds, roads)
+    return [one] if one is not None else []
+
+
 def find_canopy(st, shop, blds, roads):
     """The station's canopy among blds, or None (then no building is touched): the nearest tagged roof within
-    CANOPY_SEARCH_M of the shop; else an untagged imagery outline (ML_SOURCES) that is not the shop, a canopy-sized
+    CANOPY_GAP_M of the shop's outline; else an untagged imagery outline (ML_SOURCES) that is not the shop, a canopy-sized
     rectangle no taller than CANOPY_MAX_H_M, between the shop and a public road (projected on the line from the
     shop's centre to that road's nearest point; the nearest road or one at most ROAD_SLACK_M farther), and the only one
     that passes (the user, 2026-10-23, on turning a car wash into a
     canopy: "I wouldn't like that")."""
     sc = _centre(shop.ring)
-    roofs = [(float(np.hypot(*(_centre(b.ring) - sc))), b.id, b) for b in blds
-             if b is not shop and b.cls in ROOF_CLASSES]
-    roofs = [r for r in roofs if r[0] <= CANOPY_SEARCH_M]
+    roofs = [(_gap(b.ring, shop.ring), b.id, b) for b in blds if b is not shop and b.cls in ROOF_CLASSES]
+    roofs = [r for r in roofs if r[0] <= CANOPY_GAP_M]
     if roofs:
         return min(roofs, key=lambda r: r[:2])[2]
     fronts = [_nearest_on([rl], sc) for rl in roads]
@@ -589,18 +618,20 @@ def layout(st, blds, roads, service=()):
     shop = find_shop(st, blds)
     if shop is None:
         return None
-    canopy = find_canopy(st, shop, blds, roads)
+    canopies = find_canopies(st, shop, blds, roads)
+    others = [b for b in blds if b not in canopies]
+    drop = tuple(b.id for b in canopies)
     kit = PUMP_KIT
     site = None
     lanes = find_lanes(shop, service) if len(service) else None
     if lanes is not None:
-        site = _lane_site(st, lanes, [b for b in blds if b is not canopy], roads, kit)
-        if site is not None and canopy is not None:
-            site.drop_ids = (canopy.id,)
-    if site is None and canopy is not None:
-        site = _lane_site(st, _outline_lanes(canopy), [b for b in blds if b is not canopy], roads, kit)
-        if site is not None:
-            site.drop_ids = (canopy.id,)
+        site = _lane_site(st, lanes, others, roads, kit)
+    if site is None and canopies:
+        parts = [x for x in (_lane_site(st, _outline_lanes(c), others, roads, kit) for c in canopies) if x is not None]
+        if parts:
+            site = Site(st, [p for x in parts for p in x.props], [a for x in parts for a in x.areas], ())
+    if site is not None:
+        site.drop_ids = drop
     if site is None and st.confirmed:
         site = _pair_site(st, shop, blds, roads)
     if site is not None:
@@ -757,7 +788,8 @@ def tile_sites(frame, tx, ty, md, elev):
             sites.append(site)
     recs, skip, shops = [], set(), set()
     for site in sorted(sites, key=lambda s: (not s.station.confirmed, s.station.id)):
-        if site.shop_id in shops:               # one forecourt per shop (the same in every tile: all are laid out)
+        # one forecourt per shop and per canopy (the same in every tile: all are laid out)
+        if site.shop_id in shops or skip.intersection(site.drop_ids):
             continue
         shops.add(site.shop_id)
         skip.update(site.drop_ids)

@@ -138,6 +138,26 @@ class CanopyTest(unittest.TestCase):
         wash = rect("wash", 0.0, 70.0, 28.0, 12.0, src=ML)
         self.assertIsNone(gs.find_canopy(STATION, SHOP, [SHOP, wash], ROAD + [back]))
 
+    def test_two_tagged_roofs_of_a_big_store(self):
+        # Buc-ee's, 2760 N I-35, New Braunfels TX: a 155 x 55 m store, two mapped canopies of 157 x 21 m beside it,
+        # their centres 52 and 90 m from the store's (the user, 2026-10-23: "canopys are buildings and we put two
+        # pumps outside instead")
+        shop = rect("shop", 0.0, 80.0, 155.0, 55.0, cls="retail", name="Buc-ee's")
+        near = rect("roof1", 0.0, 32.0, 157.0, 21.0, cls="roof")     # 10 m from the store
+        far = rect("roof2", 0.0, -5.0, 157.0, 20.0, cls="roof")      # 16.5 m from the first canopy
+        road = [(np.array([(-300.0, -60.0), (300.0, -60.0)]), 5.0)]
+        st = gs.Station("bucees", 0.0, 80.0, "Buc-ee's", "", ("p",), True)
+        self.assertEqual([b.id for b in gs.find_canopies(st, shop, [shop, near, far], road)], ["roof1", "roof2"])
+        site = gs.layout(st, [shop, near, far], road)
+        self.assertEqual(set(site.drop_ids), {"roof1", "roof2"})
+        self.assertEqual(len([p for p in site.props if p["shape"].endswith("s_fuel_structure_06.dae")]), 2)
+        self.assertGreater(len(site.areas), 100)
+
+    def test_far_roof_not_a_canopy(self):
+        far = rect("roof", 0.0, -5.0, 30.0, 10.0, cls="roof")        # 36 m from the shop's edge
+        road = [(np.array([(-300.0, -100.0), (300.0, -100.0)]), 5.0)]
+        self.assertEqual(gs.find_canopies(STATION, SHOP, [SHOP, far], road), [])
+
     def test_osm_untagged_not_canopy(self):
         b = rect("osm", 0.0, 20.0, 28.0, 18.0)
         self.assertIsNone(gs.find_canopy(STATION, SHOP, [SHOP, b], ROAD))
@@ -502,6 +522,21 @@ class TileTest(unittest.TestCase):
                               ("r-2", [(0.0, 50.0), (300.0, 50.0)], {"class": "primary", "osm_lanes": 6.0})], mg.LINE)   # (osmtags.join)
         half = {round(float(l[0, 1])): h for l, h in gs.drive_lines(FRAME, [rds], 150.0, 25.0, 100.0)}
         self.assertGreater(half[50], half[0] + 2.0)
+
+    def test_one_station_per_canopy(self):
+        # two stations of different shops both reaching one canopy: one forecourt
+        md = station_md()
+        md.all["buildings"] = feats("buildings", [
+            ("b-shop", box_ring(230.0, 100.0, 18.0, 20.0), {"class": "retail", "src_dataset": "OpenStreetMap"}),
+            ("b-shop2", box_ring(245.0, 135.0, 18.0, 16.0), {"class": "retail", "src_dataset": "OpenStreetMap"}),
+            ("b-roof", box_ring(275.0, 100.0, 21.0, 30.0), {"class": "roof", "src_dataset": "OpenStreetMap"})],
+            mg.POLYGON)
+        md.all["places"] = feats("places", [
+            ("pla-1", (240.0, 100.0), {"basic_category": "gas_station", "name": "Speedway", "operating_status": "open"}),
+            ("pla-2", (245.0, 140.0), {"basic_category": "gas_station", "name": "Valero", "operating_status": "open"})],
+            mg.POINT)
+        recs, _ = gs.tile_sites(FRAME, 0, 0, md, flat)
+        self.assertEqual(len(recs), 1)
 
     def test_tile_buildings_skip(self):
         import buildings
