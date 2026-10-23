@@ -493,7 +493,8 @@ class MapData:
             if MapData._mirror_written < MIRROR_MB * 1e6 / 8 or now - MapData._mirror_pruned < MIRROR_PRUNE_S:
                 return
             MapData._mirror_written, MapData._mirror_pruned = 0, now
-        self._mirror_prune()
+        # (beside the write: the walk stat()s every file, 0.5-1 s on a desktop, in the block build that wrote)
+        threading.Thread(target=self._mirror_prune, daemon=True, name="mapdata-mirror-prune").start()
 
     def _mirror_prune(self):
         prune_mirror(self.cache_dir)

@@ -356,8 +356,8 @@ class Dem:
                      and now - Dem._mirror_pruned >= MIRROR_PRUNE_S)
             if prune:
                 Dem._mirror_written, Dem._mirror_pruned = 0, now
-        if prune:
-            self._mirror_prune()
+        if prune:       # (beside the read that wrote it: the walk is seconds on a Steam Deck)
+            threading.Thread(target=self._mirror_prune, daemon=True, name="dem-mirror-prune").start()
         return self._mirror_get(key)
 
     # (a process's first write prunes: the count of a session's own writes alone never reached the threshold when
