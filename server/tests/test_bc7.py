@@ -62,3 +62,25 @@ class TerrainCacheKeyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TerrainCacheMipsTest(unittest.TestCase):
+    def test_rgba_mips_follow_the_photo(self):
+        """GitHub #115: the terrain cache's RGBA (photo + AO) mips were read as RGB: grey under the top level, the
+        distant ground striped (worst at Low texture quality, which draws the lower levels)."""
+        import struct
+        rng = np.random.default_rng(5)
+        rgb = np.clip(np.array([180, 130, 80]) + rng.normal(0, 12, (256, 256, 3)), 0, 255).astype(np.uint8)
+        rgba = np.concatenate([rgb, np.full((256, 256, 1), 251, np.uint8)], 2)
+        d = bc7.dds(rgba)
+        h, w, mips = struct.unpack_from("<2I", d, 12) + (struct.unpack_from("<I", d, 28)[0],)
+        off = 148
+        for k in range(mips):
+            lw, lh = max(1, w >> k), max(1, h >> k)
+            n = max(1, (lw + 3) // 4) * max(1, (lh + 3) // 4) * 16
+            lv = bc7.decode(d[off:off + n], lw, lh)
+            off += n
+            mean = lv[..., :3].reshape(-1, 3).mean(0)
+            self.assertLess(np.abs(mean - [180, 130, 80]).max(), 12, f"level {k}: {mean}")
+            self.assertTrue(np.all(np.abs(lv[..., 3].astype(int) - 251) <= 2), f"level {k}: alpha")
+        self.assertEqual(off, len(d))
