@@ -3710,7 +3710,7 @@ class Connection:
                          1000 * bs[len(bs) // 2] if bs else 0.0)
                 log.info("tile build ms (geometry+write / texture) and KB (shape / texture) by level: %s",
                          self.s.level_summary())
-                if getattr(self.s.far_pool, "stats", None) is not None:
+                if getattr(self.s.far_pool, "stats", None) is not None and self.batch[1] >= 50:   # (a full one)
                     g = getattr(self.s.far_pool, "group", None)
                     log.info("compute sharing: %s; group %s", self.s.far_pool.stats,
                              g["ids"] if g else "none")

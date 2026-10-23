@@ -28,6 +28,12 @@ local stopwatch = require('beamngEarth/stopwatch')
 
 local M = {}
 
+-- Slow frames (the BeamMP session's test 'perf' and the dev tools): a frame of at least SLOW_MS wall time is kept in
+-- M.slow (the latest SLOW_KEEP) with the units charged in it ("kind:ms ...") and whether a heavy op ran in it; none
+-- of ours (no units, not heavy) points at the engine itself.
+M.SLOW_MS, M.SLOW_KEEP = 150, 40
+M.slow = {}
+
 local max, min, huge = math.max, math.min, math.huge
 
 M.DEFAULT_TARGET_MS = 2.0
@@ -108,6 +114,7 @@ function M.new(opts)
     quiet = 0,          -- quiet frames still to come after a heavy op
     blocked = false,    -- no units this frame (quiet or heavy)
     stats = { heavy = 0, units = 0, maxFrameSpent = 0 },
+    frameLog = {},      -- this frame's charges "kind:ms" (the slow-frame record)
   }, Gov)
   if opts.targetMs then g:setTarget(opts.targetMs) end
   return g
@@ -141,9 +148,15 @@ end
 -- Call once per frame, first thing in onUpdate. wallMs: duration of the previous frame (nil =
 -- measure with the clock). hasWork: streaming work is waiting.
 function Gov:beginFrame(hasWork, wallMs)
-  self.frame = self.frame + 1
   local t = self.clock()
   if wallMs == nil then wallMs = self.lastStart and (t - self.lastStart) or nil end
+  if wallMs and wallMs >= M.SLOW_MS then
+    M.slow[#M.slow + 1] = { ms = math.floor(wallMs + 0.5), units = table.concat(self.frameLog, ' '),
+      heavy = self.heavyFrame == self.frame, engineMs = self.lastEngineMs }
+    if #M.slow > M.SLOW_KEEP then table.remove(M.slow, 1) end
+  end
+  self.frameLog = {}
+  self.frame = self.frame + 1
   self.lastStart = t
   if wallMs then
     if not self.prevHeavy then
@@ -195,6 +208,7 @@ end
 -- Charge a unit that ran (ms = its measured cost).
 function Gov:charge(kind, ms)
   ms = max(0, ms or 0)
+  if ms >= 1 then self.frameLog[#self.frameLog + 1] = kind .. ':' .. math.floor(ms + 0.5) end
   self.tokens = self.tokens - ms
   self.frameSpent = self.frameSpent + ms
   self.frameUnits = self.frameUnits + 1
@@ -207,6 +221,7 @@ end
 
 -- The previous frame's engine tick (ms, Engine.Debug metrics "Ticking"): its excess is a debt on the bucket.
 function Gov:chargeEngine(tickMs)
+  self.lastEngineMs = tickMs and math.floor(tickMs + 0.5) or nil
   local debt = max(0, (tickMs or 0) - M.ENGINE_FREE_MS)
   if debt <= 0 then return 0 end
   self.tokens = max(-M.ENGINE_MAX_DEBT_MS, self.tokens - debt)

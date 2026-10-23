@@ -478,6 +478,8 @@ function M.update(dt, anchor, player)
       if ok and type(snap) == 'table' then
         perf = { frames = snap.frames, fps = snap.fps, p50 = snap.p50, p99 = snap.p99, maxMs = snap.maxMs,
           over33 = snap.over33, over50 = snap.over50, over100 = snap.over100 }
+        local gov = require('beamngEarth/governor')
+        if next(gov.slow) then perf.slow, gov.slow = gov.slow, {} end     -- (the slow frames since the last)
       end
     end
     pcall(jsonWriteFile, M.STATUS_FILE, { t = os.time(), anchor = anchor and M.key(anchor.lat, anchor.lon) or nil,
