@@ -317,7 +317,12 @@ class RemoteFile:
         i0, i1 = start // self.block, (end - 1) // self.block + 1
         got = self.blocks(i0, i1, kind)
         buf = b"".join(got[i] for i in range(i0, i1) if i in got)
-        return buf[start - i0 * self.block:end - i0 * self.block]
+        out = buf[start - i0 * self.block:end - i0 * self.block]
+        # (a block left out mid-range would shift every byte after it: a corrupt page for DuckDB, not an error)
+        if len(out) != end - start and (self.size is not None or i1 - 1 in got):
+            log.warning("rangeread: short read of %s [%d, %d): %d bytes, blocks %s of %d..%d, size %s",
+                        self.cache_dir, start, end, len(out), sorted(got), i0, i1 - 1, self.size)
+        return out
 
 
 # --- fsspec filesystem for DuckDB ----------------------------------------------------------------
