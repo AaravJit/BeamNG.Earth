@@ -56,7 +56,7 @@ TILE = 256
 MAX_LAT = demmod.MAX_LAT
 EARTH_CIRC = 40075016.686          # m, equatorial circumference (Web-Mercator scale)
 R_MERC = EARTH_CIRC / (2 * math.pi)  # m, the Web-Mercator sphere
-FETCH_WORKERS = 12      # (the photo hosts allow 12 / 6 at once, 2026-10-16)
+FETCH_WORKERS = 16      # (the photo hosts allow 24 (USGS, 2026-10-23) / 6 at once; more threads here only queue)
 URGENT_WORKERS = 4      # Imagery.urgent(): its own fetch threads (netfetch gives urgent requests URGENT_CONC slots)
 MEM_TILES = 512                    # decoded 256² RGB tiles kept in memory (~100 MB)
 # Attempts, retry delays, timeouts and the "source unreachable" backoff are the host's netfetch

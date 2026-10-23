@@ -129,7 +129,9 @@ TILE_HOST = dict(redirect_limited=True, binary=True)
 # docs/research/2026-10-10-rate-limits.md §5.2, the hosts the server contacts today (rates per player).
 POLICIES = {
     # (2026-10-16, the user: raise them, lower again on trouble; a first visit's far field waited ~100 s on 15/s)
-    "basemap.nationalmap.gov": HostPolicy(rate=50.0, burst=150.0, max_conc=12, daily_budget=150000,
+    # (2026-10-23, the user: raise it again: 24 at once; a PC already got ~26/s with 12 and the same far field with 24,
+    # all answered, so it helps players far from USGS, whose every request waits longer)
+    "basemap.nationalmap.gov": HostPolicy(rate=50.0, burst=150.0, max_conc=24, daily_budget=150000,
                                           allow_prefetch=True, offline_ok=True, miss_ttl=90 * DAY, **TILE_HOST),
     # NAIP through USGS's ArcGIS exportImage (imagery.py "naip"): one 1024² image a request, 4-10 s each
     # and 5xx under parallel requests (docs/research/2026-10-10-us-state-imagery.md, in-game 2026-10-13):
