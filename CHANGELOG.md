@@ -7,6 +7,7 @@ What changed in each release of BeamNG.Earth, newest first.
 Works with BeamNG.drive 0.40.3.
 
 ### Multiplayer (BeamMP, in testing)
+- **Want to play together? Join the [Discord](https://discord.gg/tgf) to get an IP to join a BeamMP.Earth server.**
 - **BeamNG.Earth on BeamMP servers.** A server runs it from the drop-in server package (see the README). Every player needs the BeamNG.Earth app running; a player who joins is sent to where the others are, and each player's car shows in the right place in everyone's world (within a few centimetres in testing), with its dents. Players far apart don't see each other's cars until they meet.
 - **Players near each other share the work of building the world.** Players close together use one shared world origin, and each piece of distant landscape is built once by one of them and sent to the others; a player far from everyone builds their own, and faster computers take a bigger share. In testing, a Steam Deck joining a desktop that had already loaded the area got most of its distant landscape from it (69 seconds instead of 110-150). Over the internet this needs TCP port 47621 open; otherwise each player builds their own.
 - **Other players on the world map**, as green arrows with their names.
