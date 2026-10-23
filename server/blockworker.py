@@ -360,6 +360,9 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
     rwalls = []
     ctx = []
     box = roadsmod.tile_bbox(tx, ty)
+    import guardrails as guardrailsmod
+    infra_fn = lambda key: _s.md.cell(key, layers=("infrastructure",), kind="demand").layers.get("infrastructure")
+    guardrail_mesh = guardrailsmod.mesh(frame, infra_fn, box, elev, (box[0], box[1], 0.0))
     cell_fn = lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads")   # noqa: E731
 
     def drawn(la, lo):          # the block's ground: raised over the low arches as the terrain is (_make_heightmap)
@@ -395,7 +398,7 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
                                      lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)), None, None,
                                      items)
     return roadsmod.write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks if sidewalks else None, mesh, dmesh,
-                               bld, props, wires, park, tunnel_mesh=tmesh)
+                               bld, props, wires, park, tunnel_mesh=tmesh, guardrail_mesh=guardrail_mesh)
 
 
 def _with_plazas(mesh, frame, tx, ty, elev, origin, surface):
