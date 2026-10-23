@@ -238,6 +238,25 @@ def grid_affine(lat, lon):
     return f
 
 
+def _lonlat_boxes(feats):
+    """(n, 4) lon min / max, lat min / max of each feature's coordinates (+-inf for none), kept with the feats."""
+    got = feats.__dict__.get("_lonlat_boxes")
+    if got is not None:
+        return got
+    n = len(feats)
+    got = np.empty((n, 4))
+    got[:, 0::2], got[:, 1::2] = np.inf, -np.inf
+    a = feats.coord_off[feats.ring_off[feats.part_off[:-1]]]
+    b = feats.coord_off[feats.ring_off[feats.part_off[1:]]]
+    rows = np.flatnonzero(b > a)
+    if len(rows):
+        ll = feats.lonlat
+        for col, (u, f) in enumerate([(0, np.minimum), (0, np.maximum), (1, np.minimum), (1, np.maximum)]):
+            got[rows, col] = mapgeom._reduce(f, ll[:, u], a[rows], b[rows])
+    feats.__dict__["_lonlat_boxes"] = got
+    return got
+
+
 def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, extra=()):
     """idx (material per sample, [row, col], as classify gives it) with the roads of feats_list (the
     "roads" Features of the cells around) drawn in at their width: ROAD_MATERIAL by surface kind.
@@ -282,11 +301,20 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, e
         if feats is None or len(feats) == 0:
             continue
         specs = roadsmod.road_specs(feats, urban_fn, widths)
+        box = _lonlat_boxes(feats)
+        bc, br = to_px(box[:, [0, 1, 0, 1]], box[:, [2, 2, 3, 3]])     # the boxes' corners on the grid
+        c_lo, c_hi, r_lo, r_hi = bc.min(1), bc.max(1), br.min(1), br.max(1)
+        ids = feats.ids.tolist()
         for i in range(len(feats)):
-            fid = str(feats.ids[i])
+            fid = str(ids[i])
             if specs[i] is None or fid in seen:
                 continue
             seen.add(fid)
+            # (all of it off the grid, with room for everything drawn beside it: no sample of it is painted)
+            m = (specs[i].width + 2 * AISLE_STALLS_M + 2 * (specs[i].walk + square) + 2 * VERGE_M
+                 + 3 * roadsmod.median_width(specs[i])) / square + 4
+            if not (c_hi[i] >= -m and c_lo[i] <= w + m and r_hi[i] >= -m and r_lo[i] <= h + m):
+                continue
             aisle = specs[i].kind == "paved" and \
                 roadsmod._rule_value(feats.rules.get("subclass"), i) == "parking_aisle"
             mw = roadsmod.median_width(specs[i])
