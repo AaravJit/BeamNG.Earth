@@ -30,6 +30,7 @@ M.MATERIAL_FILES = { '/levels/west_coast_usa/art/road/main.materials.json',
   '/levels/driver_training/art/road/main.materials.json',          -- m_metal_grid_drain (storm drains)
   '/levels/gridmap_v2/art/shapes/grid/main.materials.json',        -- m_gm_concrete_plain (concrete streets)
   '/levels/beamng_earth/art/shapes/beamngEarth/buildings.materials.json', -- buildings (server/buildings.py)
+  '/art/shapes/objects/main.materials.json', -- stock object materials used by other generated meshes
   '/levels/beamng_earth/art/shapes/beamngEarth/guardrails.materials.json' } -- opaque metal for mapped guardrails
 M.FADE = '450 150'          -- distanceFade: start, range (m)
 M.enabled = true
