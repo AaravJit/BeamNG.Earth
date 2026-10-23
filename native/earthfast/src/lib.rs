@@ -1,5 +1,7 @@
 //! Geometry kernels for the world server (server/fast.py wraps them, with the Python versions as the fallback).
 //! All coordinates are metres in the anchor's local frame, f64.
+mod gpu;
+
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, IntoPyArray};
 use pyo3::types::PyBytes;
 use pyo3::prelude::*;
@@ -220,6 +222,44 @@ fn dual_side(a: PyReadonlyArray2<f64>, b: PyReadonlyArray2<f64>, gap_min: f64, g
         return (0.0, 0.0);
     }
     (ok_n as f64 / n as f64, side_sum / ok_n as f64)
+}
+
+/// The GPU the kernels run on ("name (backend)"), or None (no usable GPU, or BNGE_GPU=0): callers keep their CPU
+/// path. Made on first use.
+#[pyfunction]
+fn gpu_name(py: Python<'_>) -> Option<String> {
+    py.allow_threads(|| gpu::get().map(|g| g.name.clone()))
+}
+
+/// colormatch.detect_seams' angle loop on the GPU (gpu.rs): src (7, h, w) float32 = [w, w*L_0 .. w*L_5]. Returns
+/// (best [h, w], ang [h, w], D [h, w, 3]) float32. RuntimeError when there is no GPU or it failed.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn seam_detect_gpu<'py>(py: Python<'py>, src: PyReadonlyArray3<'py, f32>, n_ang: usize, half: i32, depth: i32,
+                        offs: Vec<i32>, full: f32, gate: f32, agree: f32, min_valid: u32)
+                        -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<f32>>, Bound<'py, numpy::PyArray3<f32>>)> {
+    let v = src.as_array();
+    let (c, h, w) = (v.shape()[0], v.shape()[1], v.shape()[2]);
+    if c != 7 {
+        return Err(pyo3::exceptions::PyValueError::new_err("seam_detect_gpu: src must be (7, h, w)"));
+    }
+    let data: Vec<f32> = v.iter().copied().collect();
+    let out = py.allow_threads(|| {
+        let g = gpu::get().ok_or_else(|| "no GPU".to_string())?;
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            gpu::seam_detect(g, &data, h, w, n_ang, half, depth, &offs, full, gate, agree, min_valid)
+        })).unwrap_or_else(|_| Err("the GPU kernel panicked".to_string()))
+    }).map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+    let n = h * w;
+    let best = numpy::ndarray::Array2::from_shape_vec((h, w), out[..n].to_vec()).unwrap();
+    let ang = numpy::ndarray::Array2::from_shape_vec((h, w), out[n..2 * n].to_vec()).unwrap();
+    let mut d = numpy::ndarray::Array3::<f32>::zeros((h, w, 3));
+    for ch in 0..3 {
+        for i in 0..n {
+            d[[i / w, i % w, ch]] = out[(2 + ch) * n + i];
+        }
+    }
+    Ok((best.into_pyarray(py), ang.into_pyarray(py), d.into_pyarray(py)))
 }
 
 /// roads._crossings: (part index, arc m along it, x, y) where a ground road crosses a deck part. Parts and ground
@@ -3757,6 +3797,8 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bilinear_grid, m)?)?;
     m.add_function(wrap_pyfunction!(float_predictor_f32, m)?)?;
     m.add_function(wrap_pyfunction!(segment_crossings, m)?)?;
+    m.add_function(wrap_pyfunction!(gpu_name, m)?)?;
+    m.add_function(wrap_pyfunction!(seam_detect_gpu, m)?)?;
     m.add_function(wrap_pyfunction!(rf_pass, m)?)?;
     m.add_function(wrap_pyfunction!(vmedian, m)?)?;
     m.add_function(wrap_pyfunction!(bc1_encode, m)?)?;
@@ -3784,6 +3826,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(wet_run_inside, m)?)?;
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 57)?;
+    m.add("VERSION", 58)?;
     Ok(())
 }

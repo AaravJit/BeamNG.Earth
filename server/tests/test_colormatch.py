@@ -19,11 +19,13 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import colormatch as cm  # noqa: E402
+import fast  # noqa: E402
 import deshadow as ds  # noqa: E402
 import earthd  # noqa: E402
 import farfield as ff  # noqa: E402
@@ -322,6 +324,26 @@ class DetectTest(unittest.TestCase):
             sc = float(np.median(score[on]))        # |step| x the S2 gate (S2's texture across the line)
             self.assertTrue(0.6 * step < sc <= step + 1e-6, (deg, sc, step))
             self.assertFalse((seam & (np.abs(d) > 4)).any(), deg)     # nothing off the line
+
+    @unittest.skipUnless(fast.gpu(), "no GPU here (earthfast.gpu_name)")
+    def test_gpu_matches_cpu(self):
+        """The GPU's angle loop (earthfast.seam_detect_gpu, float32) finds the same seam as the CPU path (float64
+        sums), with the same angles and steps to float32 precision."""
+        T = det_texture(1)
+        S = T + 0.08 * np.random.default_rng(2).standard_normal(T.shape).astype(np.float32)
+        yy, xx = np.mgrid[0:DN, 0:DN] + 0.5
+        for deg in (0, 35, 90, 140):
+            a = math.radians(deg)
+            d = (xx - DN / 2) * -math.sin(a) + (yy - DN / 2) * math.cos(a)
+            Lu = T + (d > 0)[..., None] * self.D
+            seam_g, ang_g, D_g, score_g, _ = self.detect(Lu, S)
+            with mock.patch.object(cm, "_seams_gpu", lambda *a: None):
+                seam_c, ang_c, D_c, score_c, _ = self.detect(Lu, S)
+            np.testing.assert_array_equal(seam_g, seam_c, deg)
+            # (float32 vs float64 sums: a median or the agreement test flips on a few borderline cells)
+            self.assertLess(float((np.abs(score_g - score_c) > 1e-3).mean()), 1e-3, deg)
+            np.testing.assert_allclose(ang_g[seam_c], ang_c[seam_c], atol=1e-6, err_msg=str(deg))
+            np.testing.assert_allclose(D_g[seam_c], D_c[seam_c], atol=1e-4, err_msg=str(deg))
 
     def test_noise_natural_edges_and_patches_rejected(self):
         T = det_texture(3)

@@ -13,7 +13,7 @@ except ImportError:         # no binary for this platform / Python: require() sa
     _ef = None
 
 AVAILABLE = _ef is not None
-MIN_VERSION = 57            # the newest kernel signature the server calls (earthd checks it at start)
+MIN_VERSION = 58            # the newest kernel signature the server calls (earthd checks it at start)
 
 
 class NativeMissing(RuntimeError):
@@ -77,3 +77,18 @@ class Others:
         """Is p (2+,) farther than each road's half width + margin from every road but own?"""
         return _ef.clear_of(self.segs, self.half, self.owner, float(p[0]), float(p[1]), self.ids.get(own, -1),
                             float(margin))
+
+
+_GPU = None
+
+
+def gpu():
+    """The GPU's name when the kernels can run there (earthfast gpu.rs: Vulkan / DX12 / Metal), else None (none, an old
+    module, or BNGE_GPU=0): the callers keep their CPU path. Found once (~0.4 s, the first call)."""
+    global _GPU
+    if _GPU is None:
+        try:
+            _GPU = _ef.gpu_name() or "" if getattr(_ef, "VERSION", 0) >= 58 else ""
+        except Exception:
+            _GPU = ""
+    return _GPU or None
