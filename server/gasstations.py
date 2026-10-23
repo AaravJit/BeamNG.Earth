@@ -148,6 +148,16 @@ def _compatible(a, b):
     return bool(ta & tb)
 
 
+def _display_name(name, brand):
+    """The name the refuel prompt shows: the place's name, or its brand when the name does not mention it (Overture
+    names some stations after their operator: the Munich Aral's "Wolfgang Tulach", 2026-10-23)."""
+    if not brand or not name:
+        return name or brand
+    if brand.lower() in name.lower() or (_tokens(brand) - GENERIC_WORDS) & _tokens(name):
+        return name
+    return brand
+
+
 def merge(ps, merge_m=MERGE_M):
     """Stations of pins ps: pins within merge_m joined, nearest pairs first, while every pin of the one group is
     compatible with every pin of the other (an unbranded pin between a Shell and a Sunoco across a street joins one of
@@ -170,7 +180,7 @@ def merge(ps, merge_m=MERGE_M):
         named = max(g, key=lambda p: (bool(p.brand or p.wikidata), p.gas))     # (a branded pin, else a gas one)
         out.append(Station(hashlib.blake2b("|".join(ids).encode(), digest_size=6).hexdigest(),
                            float(np.mean([p.x for p in g])), float(np.mean([p.y for p in g])),
-                           named.name or named.brand, named.brand or FUEL_BRANDS.get(named.wikidata)
+                           _display_name(named.name, named.brand), named.brand or FUEL_BRANDS.get(named.wikidata)
                            or CONV_BRANDS.get(named.wikidata, ""), tuple(ids),
                            any(p.gas or p.fuel_brand for p in g)))
     return sorted(out, key=lambda s: s.id)

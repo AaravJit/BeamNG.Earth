@@ -87,6 +87,15 @@ class MergeTest(unittest.TestCase):
         st = gs.merge([pin("w", 0.0, 0.0, "Wawa", "Wawa", "Q5936320")])
         self.assertFalse(st[0].confirmed)
 
+    def test_name_without_the_brand_shows_the_brand(self):
+        # the Aral at Garmischer Str. 197, Munich: Overture's name is its operator's (the refuel prompt said "Wolfgang
+        # Tulach", 2026-10-23); a name that has the brand in it stays
+        self.assertEqual(gs.merge([pin("a", 0, 0, "Wolfgang Tulach", "Aral", gas=True)])[0].name, "Aral")
+        self.assertEqual(gs.merge([pin("j", 0, 0, "Joby's Gulf", "Gulf", gas=True)])[0].name, "Joby's Gulf")
+        self.assertEqual(gs.merge([pin("g", 0, 0, "GetGo Gas Station", "GetGo", gas=True)])[0].name, "GetGo Gas Station")
+        self.assertEqual(gs.merge([pin("b", 0, 0, "BP Wolfratshausen", "BP", gas=True)])[0].name, "BP Wolfratshausen")
+        self.assertEqual(gs.merge([pin("u", 0, 0, "Main Street Gas", gas=True)])[0].name, "Main Street Gas")
+
     def test_station_id_stable(self):
         ps = [pin("dac", 0.0, 0.0, "Speedway", gas=True), pin("x", 300.0, 0.0, "Shell", "Shell", "Q110716465", gas=True),
               gs.Pin("atp", 40.0, 38.0, "7-ELEVEN/SPEEDWAY #40001", "", "", False, False, False)]
