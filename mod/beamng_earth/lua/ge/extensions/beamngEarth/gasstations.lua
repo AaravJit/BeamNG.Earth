@@ -180,9 +180,13 @@ function M.transform(xf)
   poisDirty = true
 end
 
--- core.lua's onGetRawPoiListForLevel: the made stations as stock gas station POIs.
+-- core.lua's onGetRawPoiListForLevel: the made stations as stock gas station POIs. Only where the stock module lists a
+-- level's own (freeroam/gasStations.lua onGetRawPoiListForLevel): in career, or with the game's freeroam gas stations
+-- setting on (toggling it gathers the list again: settings.lua, showMissionMarkersToggled).
 function M.pois(levelIdentifier, elements)
   if not freeroam_gasStations then return end
+  local career = career_career and career_career.isActive()
+  if not career and not (settings and settings.getValue('enableGasStationsInFreeroam')) then return end
   for id, st in pairs(stations) do
     if st.made and #st.pumps > 0 then
       local r = st.rec

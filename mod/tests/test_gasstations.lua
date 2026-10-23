@@ -7,6 +7,9 @@ local S = dofile(dir .. '/stubs.lua')
 
 local clears = 0
 gameplay_rawPois = { clear = function() clears = clears + 1 end }
+local gasSetting, careerOn = true, false
+settings = { getValue = function(k) if k == 'enableGasStationsInFreeroam' then return gasSetting end end }
+career_career = { isActive = function() return careerOn end }
 freeroam_gasStations = { formatGasStationPoi = function(f) return { id = f.id, data = { type = 'gasStation', facility = f } } end }
 
 local G = require('beamngEarth/gasstations')
@@ -57,6 +60,17 @@ T.check(#els == 1 and #els[1].data.facility.pumps == 2, 'one POI with two pumps'
 T.check(els[1].data.facility.pumps[1][1] == 'bne_fuel_abc_a1' and els[1].data.facility.pumps[1][2] == 'bne_fuel_abc_i1',
   'pump pairs')
 T.check(els[1].data.facility.energyTypes[1] == 'gasoline', 'gasoline and diesel')
+-- the game's own switch (Options > Gameplay: gas stations in freeroam), as freeroam/gasStations.lua honours it; career
+-- always has them
+gasSetting = false
+els = {}
+G.pois('beamng_earth', els)
+T.check(#els == 0, 'no POIs with the freeroam gas stations setting off')
+careerOn = true
+els = {}
+G.pois('beamng_earth', els)
+T.check(#els == 1, 'career: POIs whatever the setting')
+gasSetting, careerOn = true, false
 
 -- the POIs gathered again after a change, at most every CLEAR_S
 T.check(clears == 1, 'a clear with the spawn: ' .. clears)
