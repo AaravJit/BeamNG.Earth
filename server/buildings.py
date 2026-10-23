@@ -2843,18 +2843,12 @@ def photo_mask(frame, x0, y0, size, px, md):
         if f is None:
             continue
         hs = f.attrs.get("height")
-        for i in range(len(f.kind)):
-            fid = f.ids[i]
-            if fid in seen:
+        ids = f.ids.tolist()
+        for i in _photo_candidates(f, frame, x0, y0, size):
+            if ids[i] in seen:      # (a building in two cells: the first cell's piece, as it is listed)
                 continue
-            seen.add(fid)
-            parts = f.parts(i)
-            if not parts or not parts[0]:
-                continue
-            ring = np.asarray(parts[0][0], np.float64)
+            ring = np.asarray(f.parts(i)[0][0], np.float64)
             e, nn = mapgeom.enu_xy(f, frame, ring)
-            if e.max() < x0 or e.min() > x0 + size or nn.max() < y0 or nn.min() > y0 + size:
-                continue
             h = float(hs[i]) if hs is not None and np.isfinite(hs[i]) else 8.0
             grow = (PHOTO_GROW_M + min(PHOTO_LEAN * h, PHOTO_LEAN_MAX_M)) / mpp
             cx, cy = (e - x0) / mpp, (y0 + size - nn) / mpp
@@ -2865,9 +2859,42 @@ def photo_mask(frame, x0, y0, size, px, md):
             pts = pts + d / np.maximum(r, 1e-6) * grow          # grown out from its middle
             draw.polygon([tuple(p) for p in pts], fill=255)
             n += 1
+        seen.update(ids)
     if n == 0:
         return None
     return np.asarray(img) > 0
+
+
+def _photo_candidates(f, frame, x0, y0, size):
+    """Rows of f (a cell's buildings) whose outer ring's box meets the square [x0, x0 + size]² and that come first
+    among the rows of their id, ascending: photo_mask's buildings, its test made for all rows at once (one ring at a
+    time it was ~19k Python steps a block, most of a block photo's roof mask; 2026-10-23)."""
+    m = len(f.kind)
+    if m == 0:
+        return []
+    p = f.part_off[:-1]
+    has = (f.part_off[1:] > p)
+    r = f.ring_off[np.minimum(p, len(f.ring_off) - 2)]
+    has &= f.ring_off[np.minimum(p, len(f.ring_off) - 2) + 1] > r
+    a = f.coord_off[np.minimum(r, len(f.coord_off) - 2)]
+    b = f.coord_off[np.minimum(r, len(f.coord_off) - 2) + 1]
+    has &= b > a
+    _, first = np.unique(f.ids, return_index=True)
+    head = np.zeros(m, bool)
+    head[first] = True
+    rows = np.flatnonzero(has & head)
+    if len(rows) == 0:
+        return []
+    xy = f.xy_in(frame)
+    a, b = a[rows], b[rows]
+    order = np.argsort(a, kind="stable")       # (reduceat: ascending starts)
+    e_lo = np.empty(len(rows)); e_hi = np.empty(len(rows)); n_lo = np.empty(len(rows)); n_hi = np.empty(len(rows))
+    e_lo[order] = mapgeom._reduce(np.minimum, xy[:, 0], a[order], b[order])
+    e_hi[order] = mapgeom._reduce(np.maximum, xy[:, 0], a[order], b[order])
+    n_lo[order] = mapgeom._reduce(np.minimum, xy[:, 1], a[order], b[order])
+    n_hi[order] = mapgeom._reduce(np.maximum, xy[:, 1], a[order], b[order])
+    inside = ~((e_hi < x0) | (e_lo > x0 + size) | (n_hi < y0) | (n_lo > y0 + size))
+    return rows[inside].tolist()
 
 
 def _push_pull(c, w):
