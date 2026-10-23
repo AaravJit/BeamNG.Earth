@@ -254,6 +254,70 @@ class LayoutTest(unittest.TestCase):
         self.assertEqual({kit(f"s{i}") for i in range(200)}, {k["shape"] for k in gs.KITS})
 
 
+def lane(x0, y0, x1, y1):
+    return np.array([(x0, y0), (x1, y1)], np.float64)
+
+
+# a Sheetz near Pittsburgh: its forecourt's drive lanes mapped as six short parallel service roads, 7 m apart
+# (the user, 2026-10-23: "you see the rows thats the roads for the pumps")
+LADDER = [lane(-14.0, 12.0, -14.0, 30.0), lane(-7.0, 12.0, -7.0, 30.0), lane(0.0, 12.0, 0.0, 30.0),
+          lane(7.0, 12.0, 7.0, 30.0)]
+
+
+class LanesTest(unittest.TestCase):
+    def test_ladder_found(self):
+        ln = gs.find_lanes(SHOP, LADDER + [lane(-60.0, 5.0, 60.0, 8.0)])     # (and a long service road: not a lane)
+        self.assertIsNotNone(ln)
+        self.assertEqual(len(ln.offsets), 4)
+        self.assertAlmostEqual(abs(float(ln.u[1])), 1.0, places=6)          # along y
+        self.assertAlmostEqual(ln.a1 - ln.a0, 18.0, delta=0.5)
+
+    def test_real_sheetz_ladder(self):
+        # the six lanes as Overture has them (m from the pin), with the station's other service roads
+        rows = [lane(-14, -12, 6, -11), lane(-15, 2, 6, 3), lane(-13, -20, 6, -19), lane(-16, 17, 5, 18),
+                lane(-14, -5, 6, -4), lane(-16, 9, 5, 10), lane(-46, -45, -49, -7), lane(47, -32, 5, 7),
+                lane(-21, 58, -19, 41), lane(-23, -24, -13, -24)]
+        shop = rect("shop", 28.0, -3.0, 30.0, 20.4)
+        ln = gs.find_lanes(shop, rows)
+        self.assertEqual(len(ln.offsets), 6)
+
+    def test_two_lanes_not_enough(self):
+        self.assertIsNone(gs.find_lanes(SHOP, LADDER[:2]))
+
+    def test_parking_aisles_not_lanes(self):
+        aisles = [lane(-40.0, y, 40.0, y) for y in (60.0, 78.0, 96.0)]       # long, 18 m apart
+        self.assertIsNone(gs.find_lanes(SHOP, aisles))
+
+    def test_lanes_far_from_the_shop_ignored(self):
+        far = [lane(x, 200.0, x, 218.0) for x in (-14.0, -7.0, 0.0, 7.0)]
+        self.assertIsNone(gs.find_lanes(SHOP, far))
+
+
+class LaneLayoutTest(unittest.TestCase):
+    def test_lane_site(self):
+        site = gs.layout(STATION, [SHOP], ROAD, LADDER)
+        self.assertEqual(site.drop_ids, ())
+        self.assertEqual(len([p for p in site.props if p["shape"].endswith("s_fuel_structure_06.dae")]), 1)
+        self.assertEqual(len([p for p in site.props if p["shape"].endswith("s_fuel_structure_07.dae")]), 6)
+        self.assertEqual(len(site.areas), 6)                    # 3 islands of 16 m, 2 pumps each
+        for a in site.areas:
+            self.assertTrue(12.0 < a["y"] < 30.0 and -14.0 < a["x"] < 7.0, a)
+            self.assertNotIn(round(a["x"], 3), (-14.0, -7.0, 0.0, 7.0))   # on the islands, not in the lanes
+        roof = next(p for p in site.props if p["shape"].endswith("s_fuel_structure_06.dae"))
+        self.assertGreater(roof["dz"], 4.0)
+
+    def test_lanes_and_outline_drop_the_outline(self):
+        roof = rect("roof", -3.5, 21.0, 26.0, 22.0, cls="roof")
+        site = gs.layout(STATION, [SHOP, roof], ROAD, LADDER)
+        self.assertEqual(site.drop_ids, ("roof",))
+        self.assertEqual(len(site.areas), 6)
+
+    def test_lanes_are_evidence_for_a_convenience_brand(self):
+        st = gs.Station("wawa", 0.0, 45.0, "Wawa", "Wawa", ("p",), False)
+        self.assertIsNone(gs.layout(st, [SHOP], ROAD))
+        self.assertIsNotNone(gs.layout(st, [SHOP], ROAD, LADDER))
+
+
 # --- the road tile: map data in, station records and the canopies to leave out ------------------------------------
 import json  # noqa: E402
 import tempfile  # noqa: E402
@@ -347,6 +411,17 @@ class TileTest(unittest.TestCase):
         self.assertEqual(recs1, [])
         self.assertIn("b-roof", skip1)
         json.dumps(recs)                                        # plain JSON
+
+    def test_mapped_lanes_reach_the_record(self):
+        md = station_md()
+        rows = [("r-1", [(320.0, -200.0), (320.0, 400.0)], {"class": "secondary"})]
+        rows += [(f"s-{k}", [(250.0, y), (270.0, y)], {"class": "service"}) for k, y in enumerate((86.0, 93.0, 100.0, 107.0))]
+        md.all["roads"] = feats("roads", rows, mg.LINE)
+        recs, skip = gs.tile_sites(FRAME, 0, 0, md, flat)
+        self.assertEqual(len(recs), 1)
+        self.assertIn("b-roof", skip)
+        self.assertTrue(any(p["shape"].endswith("s_fuel_structure_06.dae") for p in recs[0]["props"]))
+        self.assertEqual(len(gs.service_lines(FRAME, [md.all["roads"]], 240.0, 100.0, 100.0)), 4)
 
     def test_no_places_layer_no_stations(self):
         self.assertEqual(gs.tile_sites(FRAME, 0, 0, station_md(fail=("places",)), flat), ([], frozenset()))

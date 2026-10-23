@@ -119,7 +119,7 @@ G.reset()
 -- the shapes loaded once at session start (hidden, no collision), so the first station does not pay their first load
 G.prewarm()
 local warm = S.liveOf('TSStatic')
-T.check(#warm == #G.PREWARM and #warm >= 11, 'one hidden TSStatic per shape: ' .. #warm)
+T.check(#warm == #G.PREWARM and #warm >= 13, 'one hidden TSStatic per shape: ' .. #warm)
 T.check(warm[1].hidden == true and warm[1].fields.collisionType == 'None', 'hidden, not colliding')
 G.prewarm()
 T.check(#S.liveOf('TSStatic') == #warm, 'once')

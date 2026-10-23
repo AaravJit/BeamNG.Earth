@@ -443,18 +443,144 @@ def _pair_site(st, shop, blds, roads):
     return None
 
 
-def layout(st, blds, roads):
-    """The station's forecourt (a Site), or None: the shop (find_shop); under its canopy (find_canopy) West Coast
-    USA's canopy kit(s), hashed by station id, scaled to the canopy, the canopy outline dropped from the buildings;
-    without one, a pump pair clear of roads and buildings. A convenience brand alone (not st.confirmed) needs the
-    canopy."""
+# --- the forecourt's mapped drive lanes ----------------------------------------------------------------------------
+# OpenStreetMap often maps a forecourt's drive lanes as short parallel service roads (a Sheetz near Pittsburgh:
+# six of ~20 m, 7 m apart; the user, 2026-10-23: "you see the rows thats the roads for the pumps"). The pump islands
+# stand between them: the most exact layout there is, and evidence of fuel for a convenience brand.
+LANE_LEN_M = (10.0, 35.0)       # a lane's length
+LANE_STRAIGHT = 0.95            # chord / length
+LANE_ANGLE_DEG = 10.0           # lanes this parallel
+LANE_GAP_M = (5.0, 10.0)        # neighbouring lanes this far apart (an island and a car either side)
+LANE_SEARCH_M = 60.0            # lanes' midpoints this close to the shop's centre
+LANE_MIN = 3                    # lanes of one forecourt (two islands)
+ISLAND_END_M = 1.0              # an island stops this short of its lanes' ends
+PUMP_STEP_M = 6.5               # pumps along an island (West Coast's fuel_station_4)
+_PILLAR = _WCA + "s_fuel_structure_07.dae"     # (fs_4: a 4.9 m pillar at each island's end ...)
+_ROOF = _WCA + "s_fuel_structure_06.dae"       # (... and a 14 x 17.2 m roof slab 4.8 m up)
+ROOF_HALF = (7.0, 8.61)
+ROOF_DZ = 4.8
+
+
+@dataclass
+class Lanes:
+    centre: np.ndarray      # (2,) the forecourt's centre
+    u: np.ndarray           # along the lanes
+    n: np.ndarray           # across them
+    offsets: tuple          # each lane's offset along n from the centre, ascending
+    a0: float               # the lanes' common span along u from the centre
+    a1: float
+
+
+def find_lanes(shop, lines):
+    """The forecourt's drive lanes among service road polylines (anchor frame) near the shop, or None: the longest
+    run of at least LANE_MIN short, straight, parallel ones LANE_GAP_M apart, overlapping along their length."""
+    sc = _centre(shop.ring)
+    cos_max = np.cos(np.radians(LANE_ANGLE_DEG))
+    segs = []
+    for line in lines:
+        line = np.asarray(line, np.float64)[:, :2]
+        if len(line) < 2:
+            continue
+        length = float(np.hypot(*np.diff(line, axis=0).T).sum())
+        d = line[-1] - line[0]
+        chord = float(np.hypot(*d))
+        if not LANE_LEN_M[0] <= length <= LANE_LEN_M[1] or chord < LANE_STRAIGHT * length:
+            continue
+        mid = (line[0] + line[-1]) / 2
+        if float(np.hypot(*(mid - sc))) > LANE_SEARCH_M:
+            continue
+        u = d / chord
+        if u[0] < 0 or (u[0] == 0 and u[1] < 0):
+            u = -u
+        segs.append((mid, u, line[0], line[-1]))
+    segs.sort(key=lambda g: (round(float(g[0][0]), 3), round(float(g[0][1]), 3)))
+    best = None
+    for mid, u, _, _ in segs:
+        n = np.array([-u[1], u[0]])
+        rows = []
+        for m2, u2, p0, p1 in segs:
+            if abs(float(u2 @ u)) < cos_max:
+                continue
+            a = sorted((float((p0 - mid) @ u), float((p1 - mid) @ u)))
+            rows.append((float((m2 - mid) @ n), a[0], a[1]))
+        seed = next(r for r in rows if abs(r[0]) < 1e-9)
+        rows = [r for r in rows if min(r[2], seed[2]) - max(r[1], seed[1])
+                >= 0.5 * min(r[2] - r[1], seed[2] - seed[1])]
+        rows.sort()
+        k = rows.index(seed)
+        chain = [rows[k]]
+        for step in (1, -1):
+            cur, j = rows[k], k + step
+            while 0 <= j < len(rows):
+                gap = abs(rows[j][0] - cur[0])
+                if gap > LANE_GAP_M[1]:
+                    break
+                if gap >= LANE_GAP_M[0]:
+                    chain.append(rows[j])
+                    cur = rows[j]
+                j += step
+        if len(chain) >= LANE_MIN and (best is None or len(chain) > len(best[2])):
+            best = (mid, u, chain)
+    if best is None:
+        return None
+    mid, u, chain = best
+    n = np.array([-u[1], u[0]])
+    offs = sorted(r[0] for r in chain)
+    a0, a1 = float(np.median([r[1] for r in chain])), float(np.median([r[2] for r in chain]))
+    o_mid, a_mid = (offs[0] + offs[-1]) / 2, (a0 + a1) / 2
+    return Lanes(mid + n * o_mid + u * a_mid, u, n, tuple(o - o_mid for o in offs), a0 - a_mid, a1 - a_mid)
+
+
+def _lane_site(st, lanes, others, roads, kit):
+    """Islands between the lanes, a pump every PUMP_STEP_M along each (clear of roads and buildings, as every pump),
+    a pillar at each island's end and the roof slab over all the lanes."""
+    c, u, n = lanes.centre, lanes.u, lanes.n
+    yaw = _yaw(u) - 90.0                        # a model's +y along the lanes
+    length = (lanes.a1 - lanes.a0) - 2 * ISLAND_END_M
+    if length < 3.0:
+        return None
+    count = max(1, int(round(length / PUMP_STEP_M)))
+    step = min(PUMP_STEP_M, length / count)
+    props, areas = [], []
+    for o0, o1 in zip(lanes.offsets[:-1], lanes.offsets[1:]):
+        m = c + n * ((o0 + o1) / 2)
+        for k in range(count):
+            p = m + u * ((k - (count - 1) / 2) * step)
+            if _clear(_area_pts(float(p[0]), float(p[1]), yaw), others, roads):
+                _pump(props, areas, kit, float(p[0]), float(p[1]), yaw, 0.0)
+        for s in (-1.0, 1.0):
+            q = m + u * (s * (length / 2 + 0.6))
+            props.append(dict(shape=_PILLAR, x=float(q[0]), y=float(q[1]), dz=0.0, yaw=yaw % 360.0,
+                              scale=[1.0, 1.0, 1.0], collide=True))
+    if not areas:
+        return None
+    across = (lanes.offsets[-1] - lanes.offsets[0]) + 2.0
+    along = (lanes.a1 - lanes.a0) + 2.0
+    props.append(dict(shape=_ROOF, x=float(c[0]), y=float(c[1]), dz=ROOF_DZ, yaw=yaw % 360.0,
+                      scale=[round(across / (2 * ROOF_HALF[0]), 3), round(along / (2 * ROOF_HALF[1]), 3), 1.0],
+                      collide=True))
+    return Site(st, props, areas, ())
+
+
+def layout(st, blds, roads, service=()):
+    """The station's forecourt (a Site), or None. The shop (find_shop); then, most exact first: the forecourt's mapped
+    drive lanes among the service roads (find_lanes: islands between them under a roof slab); under its canopy
+    (find_canopy) West Coast USA's canopy kit(s), hashed by station id, scaled to the canopy; a pump pair clear of
+    roads and buildings. A canopy outline found is dropped from the buildings either way. A convenience brand alone
+    (not st.confirmed) needs the lanes or the canopy."""
     shop = find_shop(st, blds)
     if shop is None:
         return None
     canopy = find_canopy(st, shop, blds, roads)
+    kit = KITS[_h(st.id, "kit") % len(KITS)]
     site = None
-    if canopy is not None:
-        site = _canopy_site(st, canopy, KITS[_h(st.id, "kit") % len(KITS)], blds, roads)
+    lanes = find_lanes(shop, service) if len(service) else None
+    if lanes is not None:
+        site = _lane_site(st, lanes, [b for b in blds if b is not canopy], roads, kit)
+        if site is not None and canopy is not None:
+            site.drop_ids = (canopy.id,)
+    if site is None and canopy is not None:
+        site = _canopy_site(st, canopy, kit, blds, roads)
     if site is None and st.confirmed:
         site = _pair_site(st, shop, blds, roads)
     if site is not None:
@@ -527,6 +653,27 @@ def drive_lines(frame, layers, x, y, r):
     return out
 
 
+def service_lines(frame, layers, x, y, r):
+    """Polylines (k, 2) of the service roads (class service: driveways, forecourt lanes, parking aisles) with a point
+    within r of (x, y) in frame, each road once (find_lanes picks the forecourt's lanes among them)."""
+    out, seen = [], set()
+    for f in layers:
+        if f is None or len(f) == 0 or "class" not in f.attrs:
+            continue
+        xy = f.xy_in(frame)
+        bb = f.boxes(frame)
+        near = np.flatnonzero((bb[:, 0] <= x + r) & (bb[:, 2] >= x - r) & (bb[:, 1] <= y + r) & (bb[:, 3] >= y - r))
+        for i in near.tolist():
+            fid = str(f.ids[i])
+            if fid in seen or str(f.attrs["class"][i]) != "service" or f.part_off[i + 1] == f.part_off[i]:
+                continue
+            seen.add(fid)
+            line = np.asarray(_outer(f, i, xy), np.float64)
+            if len(line) >= 2:
+                out.append(line)
+    return out
+
+
 REACH_M = SHOP_SEARCH_M + CANOPY_SEARCH_M + 10.0    # a station's canopy is within this of its position
 
 
@@ -579,8 +726,10 @@ def tile_sites(frame, tx, ty, md, elev):
         try:
             cds = [md.cell(k, layers=("buildings", "roads"), kind="demand")
                    for k in _cells_near(frame, st.x, st.y, REACH_M)]
+            rls = [c.layers.get("roads") for c in cds]
             site = layout(st, buildings_near(frame, [c.layers.get("buildings") for c in cds], st.x, st.y, REACH_M),
-                          drive_lines(frame, [c.layers.get("roads") for c in cds], st.x, st.y, REACH_M + 50.0))
+                          drive_lines(frame, rls, st.x, st.y, REACH_M + 50.0),
+                          service_lines(frame, rls, st.x, st.y, REACH_M))
         except Exception as e:
             log.debug("gas station %s: %s", st.id, e)
             continue
