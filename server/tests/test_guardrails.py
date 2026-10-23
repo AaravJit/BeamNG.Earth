@@ -55,8 +55,8 @@ class GuardrailMeshTest(unittest.TestCase):
     def setUp(self):
         self.frame = geodesy.EnuFrame(39.2834, -76.5934, 0.0)
 
-    def features(self, cls, tags=None):
-        xy = np.array([[10.0, 50.0], [90.0, 50.0]], np.float64)
+    def features(self, cls, tags=None, xy=None):
+        xy = np.array(xy if xy is not None else [[10.0, 50.0], [90.0, 50.0]], np.float64)
         lat, lon, _ = self.frame.enu_to_geodetic(xy[:, 0], xy[:, 1], np.zeros(2))
         attrs = {"subtype": np.array(["barrier"]), "class": np.array([cls])}
         if tags is not None:
@@ -90,6 +90,20 @@ class GuardrailMeshTest(unittest.TestCase):
         self.assertGreater(float(positions[:, 2].max()), 12.8)
         self.assertGreaterEqual(int(triangles.min()), 0)
         self.assertLess(int(triangles.max()), len(positions))
+
+    def test_mapped_line_is_clipped_contiguously_at_tile_seam(self):
+        feats = self.features("guard_rail", xy=[[10.0, 50.0], [190.0, 50.0]])
+        elev = lambda lat, lon: np.full(np.shape(lat), 12.0, np.float64)
+
+        left = guardrails.mesh(self.frame, lambda _key: feats, (0.0, 0.0, 100.0, 100.0),
+                               elev, (0.0, 0.0, 0.0))
+        right = guardrails.mesh(self.frame, lambda _key: feats, (100.0, 0.0, 200.0, 100.0),
+                                elev, (100.0, 0.0, 0.0))
+        self.assertIsNotNone(left)
+        self.assertIsNotNone(right)
+        # This horizontal line's rail sections meet at x=100 with no gap or overhang.
+        self.assertAlmostEqual(float(left[0][:, 0].max()), 100.0, places=4)
+        self.assertAlmostEqual(float(right[0][:, 0].min()), 0.0, places=4)
 
     def test_unrelated_barrier_produces_no_mesh(self):
         feats = self.features("fence", {"barrier": "fence"})
