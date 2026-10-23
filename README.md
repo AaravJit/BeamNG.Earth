@@ -139,6 +139,14 @@ downloaded file (or this folder); the map cache is `.cache/beamng-earth` in your
 
 More detail (traffic, the status bar, reporting problems, troubleshooting): [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
+**Multiplayer (BeamMP, in testing):** a BeamMP server runs BeamNG.Earth from the drop-in server package
+(`python3 tools/package.py --beammp`: its `Resources` folder goes into the server's). Every player needs the
+BeamNG.Earth app running (each builds the world on their own computer). A player who joins is sent to the others;
+players near each other share one world origin and split the work of building the distant landscape, while a player
+far from everyone builds their own. For that sharing, the other players must be able to reach your computer on TCP
+port 47621 (on the same network it just works; over the internet, forward that port, else you build everything
+yourself). Other players show on the world map (**M**) as green arrows.
+
 **Compute sharing (optional, for tinkerers):** another computer on your network can build part of the distant
 landscape for you. On it, from a copy of the same version's source: `python3 server/peerwork.py serve` (port 47620,
 `--workers N` processes; it downloads its own map data). On the computer you play on, set `BNGE_PEERS` to the
