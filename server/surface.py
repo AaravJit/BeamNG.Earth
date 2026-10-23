@@ -27,6 +27,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 import fast
+import mapgeom
 import heightmap
 import mapcells
 import roads as roadsmod
@@ -337,15 +338,20 @@ def _road_segments(frame, x0, y0, size, w, h, feats_list, urban_fn=None, widths=
         if feats is None or len(feats) == 0:
             continue
         specs = roadsmod.road_specs(feats, urban_fn, widths)
+        box = _feature_boxes(feats, frame)
+        ids = feats.ids.tolist()
         for i in range(len(feats)):
-            fid = str(feats.ids[i])
+            fid = str(ids[i])
             sp = specs[i]
             if sp is None or fid in seen or sp.kind not in PHOTO_ROAD_RGBA:
                 continue
             seen.add(fid)
+            m = sp.width / 2        # (all of the feature off the photo: none of its rings is in it)
+            if box[i, 1] < x0 - m or box[i, 0] > x0 + size + m or box[i, 3] < y0 - m or box[i, 2] > y0 + size + m:
+                continue
             hw = sp.width * px_m / 2
             for ring in roadsmod.ground_parts(feats, i):
-                e, n, _ = frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
+                e, n = mapgeom.enu_xy(feats, frame, ring)
                 c = (np.asarray(e) - x0) * px_m
                 r = (y0 + size - np.asarray(n)) * px_m
                 if len(c) < 2 or c.max() < -hw or c.min() > w + hw or r.max() < -hw or r.min() > h + hw:
@@ -356,6 +362,30 @@ def _road_segments(frame, x0, y0, size, w, h, feats_list, urban_fn=None, widths=
     if not segs:
         return None
     return np.concatenate(segs), np.concatenate(hws), np.concatenate(kind)
+
+
+def _feature_boxes(feats, frame):
+    """(n, 4) east min / max, north min / max of each feature's coordinates in frame (+-inf for none); kept with the
+    feats per frame, as their converted coordinates (mapgeom.Features.xy_in)."""
+    key = (frame.lat0, frame.lon0, frame.h0)
+    memo = feats.__dict__.setdefault("_boxes_in", {})
+    got = memo.get(key)
+    if got is not None:
+        return got
+    n = len(feats)
+    got = np.empty((n, 4))
+    got[:, 0::2], got[:, 1::2] = np.inf, -np.inf
+    a = feats.coord_off[feats.ring_off[feats.part_off[:-1]]]
+    b = feats.coord_off[feats.ring_off[feats.part_off[1:]]]
+    rows = np.flatnonzero(b > a)
+    if len(rows):
+        xy = feats.xy_in(frame)
+        for col, (u, f) in enumerate([(0, np.minimum), (0, np.maximum), (1, np.minimum), (1, np.maximum)]):
+            got[rows, col] = mapgeom._reduce(f, xy[:, u], a[rows], b[rows])
+    if len(memo) >= 2:
+        memo.pop(next(iter(memo)))
+    memo[key] = got
+    return got
 
 
 def photo_roads(rgb, frame, x0, y0, size, feats_list, urban_fn=None, widths=None):
