@@ -3985,7 +3985,7 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
         x0, y0, _, _ = tile_bbox(tx, ty)
         shape = f"guardrail_{aid}_{tx}_{ty}.cdae"
         cdae.write(os.path.join(out_dir, shape), guardrail_mesh[0], guardrail_mesh[1],
-                   uvs=guardrail_mesh[2], material="guardrail", object_name="mapped_guardrails")
+                   uvs=guardrail_mesh[2], material="bngEarth_mapped_guardrail", object_name="mapped_guardrails")
         data["guardrail"] = {"shape": f"{vfs_dir}/{shape}", "pos": [x0, y0, 0.0]}
     if walks:
         x0, y0, _, _ = tile_bbox(tx, ty)
