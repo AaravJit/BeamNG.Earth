@@ -39,6 +39,10 @@ def _is_guardrail(feats, i):
         values = json.loads(str(tags[i]))
     except (TypeError, ValueError):
         return False
+    # source_tags is optional in Overture and may be absent, JSON null, or another
+    # JSON value. Only an object can contain OSM tag keys.
+    if not isinstance(values, dict):
+        return False
     return str(values.get("barrier", "")).strip().lower() == "guard_rail"
 
 
