@@ -339,7 +339,9 @@ class RegionTest(unittest.TestCase):
         self.assertEqual(gs.style_of(48.8566, 2.3522), "europe")        # Paris
         self.assertEqual(gs.style_of(41.9028, 12.4964), "europe")       # Rome
         self.assertEqual(gs.style_of(47.37, 8.54), "europe")            # Zurich (alpine)
-        self.assertEqual(gs.style_of(40.403093, -80.041343), "default")   # the Pittsburgh area
+        self.assertEqual(gs.style_of(40.403093, -80.041343), "us_east")   # the Pittsburgh area
+        self.assertEqual(gs.style_of(33.75, -84.39), "us_east")         # Atlanta (us_south)
+        self.assertEqual(gs.style_of(34.05, -118.24), "default")        # Los Angeles
         self.assertEqual(gs.style_of(35.68, 139.69), "default")         # Tokyo
 
     def test_europe_canopy_italy_sections(self):
@@ -360,6 +362,48 @@ class RegionTest(unittest.TestCase):
         site = gs.layout(STATION, [SHOP], ROAD, style="europe")
         names = {p["shape"].rsplit("/", 1)[-1] for p in site.props if "pump" in p["shape"]}
         self.assertTrue(names and all(n.startswith("italy_petrolstation_pump_") for n in names), names)
+
+    def eca(self, site):
+        units = [p for p in site.props if p["shape"].endswith("eca_gastation_pumps.DAE")]
+        self.assertFalse([p for p in site.props if "s_fuel_" in p["shape"]], site.props)
+        return units
+
+    def test_us_east_canopy_eca_units(self):
+        # a 36 x 8 m canopy: islands across it every 7 m (5), East Coast's units of three islands over them, the second
+        # one back to cover the last three (the middle island shared)
+        roof = rect("roof", 0.0, 22.0, 36.0, 8.0, cls="roof")
+        site = gs.layout(STATION, [SHOP, roof], ROAD, style="us_east")
+        self.assertEqual(site.drop_ids, ("roof",))
+        units = self.eca(site)
+        self.assertEqual(len(units), 2)
+        for u in units:
+            self.assertAlmostEqual(u["yaw"] % 180.0, 0.0, places=3)            # its x (across its islands) along x
+            a = np.radians(u["yaw"])
+            ex, ey = np.array([np.cos(a), np.sin(a)]), np.array([-np.sin(a), np.cos(a)])
+            c = np.array([u["x"], u["y"]]) + ex * (gs.ECA_ROOF_XY[0] * u["scale"][0]) + ey * (gs.ECA_ROOF_XY[1] * u["scale"][1])
+            self.assertTrue(inside_box(roof, *c), (u, c))                      # its roof over the canopy
+        self.assertEqual(len(site.areas), 5)
+        xs = sorted(a["x"] for a in site.areas)
+        for x, want in zip(xs, (-14.0, -7.0, 0.0, 7.0, 14.0)):
+            self.assertAlmostEqual(x, want, delta=0.01)
+        for a in site.areas:
+            self.assertAlmostEqual(a["yaw"] % 180.0, 90.0, places=3)           # along the island, across the canopy
+            self.assertTrue(inside_box(roof, a["x"], a["y"]), a)
+
+    def test_us_east_lanes_islands_between_them(self):
+        # the four mapped lanes 7 m apart and 18 m long: three islands between them, three rows of units along them
+        site = gs.layout(STATION, [SHOP], ROAD, service=LADDER, style="us_east")
+        units = self.eca(site)
+        self.assertEqual(len(units), 3)
+        self.assertEqual(len(site.areas), 9)
+        self.assertEqual(sorted({round(a["x"], 2) for a in site.areas}), [-10.5, -3.5, 3.5])
+        for a in site.areas:
+            self.assertAlmostEqual(a["yaw"] % 180.0, 90.0, places=3)
+            self.assertTrue(12.0 < a["y"] < 30.0, a)
+
+    def test_us_east_pair_west_coast_pumps(self):
+        site = gs.layout(STATION, [SHOP], ROAD, style="us_east")
+        self.assertTrue(any(p["shape"].endswith("s_fuel_pump_2015.dae") for p in site.props))
 
     def test_tile_sites_by_region(self):
         md = station_md()
@@ -557,7 +601,7 @@ class TileTest(unittest.TestCase):
         recs, skip = gs.tile_sites(FRAME, 0, 0, md, flat)
         self.assertEqual(len(recs), 1)
         self.assertIn("b-roof", skip)
-        self.assertTrue(any(p["shape"].endswith("s_fuel_structure_06.dae") for p in recs[0]["props"]))
+        self.assertTrue(any(p["shape"].endswith("eca_gastation_pumps.DAE") for p in recs[0]["props"]))     # (us_east)
         self.assertEqual(len(gs.service_lines(FRAME, [md.all["roads"]], 240.0, 100.0, 100.0)), 4)
 
     def test_no_places_layer_no_stations(self):
@@ -671,20 +715,20 @@ class RealSpotsTest(unittest.TestCase):
     def test_speedway_tagged_canopy(self):
         rec, skip = self.site(40.403093, -80.041343)
         self.assertEqual(len(skip), 1, "the OSM roof left out")
-        self.assertTrue(any("s_fuel_structure_" in p["shape"] for p in rec["props"]))
+        self.assertTrue(any("eca_gastation_pumps" in p["shape"] for p in rec["props"]))    # (us_east)
         self.assertGreaterEqual(len(rec["areas"]), 4)
 
     def test_sheetz_ml_canopy(self):
         rec, skip = self.site(40.861281, -79.900648)
         self.assertEqual(len(skip), 1, "the imagery outline left out")
-        self.assertTrue(any("s_fuel_structure_" in p["shape"] for p in rec["props"]))
+        self.assertTrue(any("eca_gastation_pumps" in p["shape"] for p in rec["props"]))    # (us_east)
 
     def test_sunoco_pin_on_road(self):
         # the pin on the road; the store is the mapper's 190 m2 building; the untagged 179 m2 imagery outline between it
         # and the road is the canopy over the pumps (2026-10-23)
         rec, skip = self.site(40.465627, -79.955447)
         self.assertEqual(len(skip), 1, "the imagery canopy (the user confirmed it on satellite view, 2026-10-23)")
-        self.assertTrue(any("s_fuel_structure_" in p["shape"] for p in rec["props"]))
+        self.assertTrue(any("eca_gastation_pumps" in p["shape"] for p in rec["props"]))    # (us_east)
 
 
 if __name__ == "__main__":

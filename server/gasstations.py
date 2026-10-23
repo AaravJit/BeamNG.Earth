@@ -467,12 +467,15 @@ def _pair_site(st, shop, blds, roads, kit=None):
 # --- stations by region (the user, 2026-10-23: "I want to use them based on region so we should take advantage of the
 # italy assets for europe") ---------------------------------------------------------------------------------------
 EUROPE = {"alpine", "europe_north", "nordic", "mediterranean"}    # buildings.region_style's names
+US_EAST = {"us_east", "us_south"}       # East Coast USA's units (the user, 2026-10-23: "check the east coast etc.")
 
 
 def style_of(lat, lon):
-    """"europe" (Italy's petrol station set) or "default" (West Coast USA's) for a station at (lat, lon)."""
+    """"europe" (Italy's petrol station set), "us_east" (East Coast USA's) or "default" (West Coast USA's) for a
+    station at (lat, lon)."""
     import buildings
-    return "europe" if buildings.region_style(lat, lon).name in EUROPE else "default"
+    name = buildings.region_style(lat, lon).name
+    return "europe" if name in EUROPE else "us_east" if name in US_EAST else "default"
 
 
 _ITA = "/levels/italy/art/shapes/buildings/italy_petrolstation_"
@@ -515,6 +518,66 @@ def _italy_site(st, boxes, others, roads):
         if _clear(np.array([sign]), others, roads):
             props.append(dict(shape=ITA_SIGN, x=float(sign[0]), y=float(sign[1]), dz=0.0, yaw=yaw % 360.0,
                               scale=[1.0, 1.0, 1.0], collide=True))
+    if not areas:
+        return None
+    return Site(st, props, areas, ())
+
+
+# East Coast USA's unit (eca_gastation_pumps.DAE; its collision mesh, 2026-10-23): one model of three islands, a
+# dispenser on each and the roof over them, its origin at the ground. In its frame the islands are 1.46 m wide at
+# x = -5.215, 1.24 and 7.74, run along y over -9.2 .. -4.53 (centre -6.865) and are 0.2 m high; the dispensers at
+# y = -7.46; the roof 17.6 x 6.6 m (x -7.53 .. 10.1, y -10.04 .. -3.44) 4.7 m up. East Coast's own station (Gas_Station,
+# fuel_node_city / fuel_node_dealer) has a refuel area per island at the dispenser, 4 m across the island.
+ECA_UNIT = "/levels/east_coast_usa/art/shapes/buildings/eca_gastation_pumps.DAE"
+ECA_ISLAND_X = (-5.215, 1.24, 7.74)
+ECA_ISLAND_STEP = (ECA_ISLAND_X[2] - ECA_ISLAND_X[0]) / 2
+ECA_ISLAND_Y = -6.865
+ECA_PUMP_Y = -7.46
+ECA_DEPTH = 6.6                 # the roof's depth (y): a row of units every this much along the islands
+ECA_ROOF_XY = (1.285, -6.74)    # the roof's centre
+ECA_SCALE = (0.8, 1.25)
+
+
+def _eca_site(st, lanes, others, roads):
+    """East Coast's units over lanes (mapped or made up under a canopy): an island between each two lanes, the units'
+    islands on them (stretched to the lanes' gap; the last unit back over the one before when the islands are not a
+    multiple of three), rows of units along the islands; a refuel area at each island's dispenser per row, where it is
+    clear of roads and buildings. None without an area."""
+    c, u = lanes.centre, lanes.u
+    x = np.array([u[1], -u[0]])                 # the units' x: across the islands (their y along them, u)
+    sign = 1.0 if float(x @ lanes.n) >= 0 else -1.0
+    offs = lanes.offsets
+    mids = [sign * (o0 + o1) / 2 for o0, o1 in zip(offs[:-1], offs[1:])]      # the islands along x
+    if sign < 0:
+        mids = mids[::-1]
+    n_isl = len(mids)
+    gap = (mids[-1] - mids[0]) / (n_isl - 1) if n_isl > 1 else ECA_ISLAND_STEP
+    sx = float(np.clip(gap / ECA_ISLAND_STEP, *ECA_SCALE))
+    length = lanes.a1 - lanes.a0
+    rows = max(1, int(round(length / ECA_DEPTH)))
+    sy = float(np.clip(length / rows / ECA_DEPTH, *ECA_SCALE))
+    yaw = _yaw(x)
+    props, areas, done = [], [], set()
+    for row in range(rows):
+        along = (lanes.a0 + lanes.a1) / 2 + (row - (rows - 1) / 2) * (length / rows)
+        for j in range(max(1, int(math.ceil(n_isl / 3)))):
+            first = max(0, min(3 * j, n_isl - 3))
+            at = mids[first] + (ECA_ISLAND_X[1] - ECA_ISLAND_X[0]) * sx   # the unit's middle island
+            o = c + x * (at - ECA_ISLAND_X[1] * sx) + u * (along - ECA_ISLAND_Y * sy)
+            made = False
+            for i, ix in enumerate(ECA_ISLAND_X):
+                k = first + i
+                if k >= n_isl or (row, k) in done:
+                    continue
+                done.add((row, k))
+                p = c + x * mids[k] + u * (along - (ECA_ISLAND_Y - ECA_PUMP_Y) * sy)    # (the lanes' midpoint)
+                if _clear(_area_pts(float(p[0]), float(p[1]), _yaw(u)), others, roads):
+                    areas.append(dict(x=float(p[0]), y=float(p[1]), dz=AREA_DZ, yaw=_yaw(u) % 360.0,
+                                      half=list(AREA_HALF), icon=ICON_DZ))
+                    made = True
+            if made:
+                props.append(dict(shape=ECA_UNIT, x=float(o[0]), y=float(o[1]), dz=0.0, yaw=yaw % 360.0,
+                                  scale=[round(sx, 3), round(sy, 3), 1.0], collide=True))
     if not areas:
         return None
     return Site(st, props, areas, ())
@@ -719,10 +782,14 @@ def layout(st, blds, roads, service=(), style="default"):
         if site is not None:
             site.shop_id, site.drop_ids = shop.id, drop
         return site
+    if style == "us_east":
+        lane_site = lambda ln: _eca_site(st, ln, others, roads)         # noqa: E731
+    else:
+        lane_site = lambda ln: _lane_site(st, ln, others, roads, kit)   # noqa: E731
     if lanes is not None:
-        site = _lane_site(st, lanes, others, roads, kit)
+        site = lane_site(lanes)
     if site is None and canopies:
-        parts = [x for x in (_lane_site(st, _outline_lanes(c), others, roads, kit) for c in canopies) if x is not None]
+        parts = [x for x in (lane_site(_outline_lanes(c)) for c in canopies) if x is not None]
         if parts:
             site = Site(st, [p for x in parts for p in x.props], [a for x in parts for a in x.areas], ())
     if site is not None:

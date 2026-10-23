@@ -10,7 +10,8 @@
 local M = {}
 
 M.MATERIAL_FILES = { '/levels/west_coast_usa/art/shapes/buildings/main.materials.json',     -- m_gasstation_tyrannos
-  '/levels/west_coast_usa/art/shapes/objects/main.materials.json' }                         -- corrugation
+  '/levels/west_coast_usa/art/shapes/objects/main.materials.json',                          -- corrugation
+  '/levels/east_coast_usa/art/shapes/buildings/main.materials.json' }                       -- (US East's units)
 M.CLEAR_S = 0.5            -- the POI list gathered again at most this often (s)
 M.ENERGY = { 'gasoline', 'diesel' }
 M.now = os.clock
@@ -207,6 +208,7 @@ local WCA = '/levels/west_coast_usa/art/shapes/buildings/'
 local ITA = '/levels/italy/art/shapes/buildings/italy_petrolstation_'   -- (Europe's stations; materials: roads.lua's)
 M.PREWARM = { WCA .. 's_fuel_structure_06.dae', WCA .. 's_fuel_structure_07.dae',     -- (roof slab, pillar)
   ITA .. 'awningSt.DAE', ITA .. 'pump_b.DAE', ITA .. 'pump_c.DAE', ITA .. 'brandsign.DAE',
+  '/levels/east_coast_usa/art/shapes/buildings/eca_gastation_pumps.DAE',                  -- (US East's)
   WCA .. 's_fuel_pump_2015.dae', WCA .. 's_fuel_pump_2000.dae',
   WCA .. 's_fuel_pump_2015_trilobite.dae', WCA .. 's_fuel_pump_2015_apex.dae', WCA .. 's_fuel_pump_2000_nodeoline.dae',
   WCA .. 's_fuel_pump_2000_tyranos.dae', '/art/shapes/objects/bollard_yellow.dae' }
