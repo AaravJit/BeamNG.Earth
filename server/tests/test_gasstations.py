@@ -187,19 +187,43 @@ def road_gap(x, y):
 
 class LayoutTest(unittest.TestCase):
     def test_canopy_layout(self):
+        # a mapped canopy gets the lanes' style (the user, 2026-10-23): one roof slab over its outline, islands across
+        # its short side, one every ~7 m along its long side
         roof = rect("roof", 0.0, 22.0, 30.0, 21.0, cls="roof")
         site = gs.layout(STATION, [SHOP, roof], ROAD)
         self.assertEqual(site.drop_ids, ("roof",))
-        canopies = [p for p in site.props if "s_fuel_structure_" in p["shape"]]
-        self.assertEqual(len(canopies), 1)              # 15 m half length: one kit (half 8.6-11.1 m) along it
-        self.assertGreaterEqual(len(site.areas), 4)
+        self.assertEqual([p["shape"].rsplit("/", 1)[-1] for p in site.props if "s_fuel_structure_0" in p["shape"]
+                          and not p["shape"].endswith("_07.dae")], ["s_fuel_structure_06.dae"])
+        self.assertEqual(len(site.areas), 12)           # 4 islands (30 m / 7) of 3 pumps (19 m / 6.5)
+        for a in site.areas:
+            self.assertAlmostEqual(a["yaw"] % 180.0, 90.0, places=3)     # islands along y: across the short side
         for p in site.props + site.areas:
-            self.assertTrue(inside_box(roof, p["x"], p["y"]), p)
+            self.assertTrue(inside_box(roof, p["x"], p["y"], pad=1.5), p)
 
-    def test_long_canopy_tiles_kits(self):
+    def test_long_canopy_one_roof(self):
         roof = rect("roof", 0.0, 22.0, 46.0, 18.0, cls="roof")
         site = gs.layout(STATION, [SHOP, roof], ROAD)
-        self.assertEqual(len([p for p in site.props if "s_fuel_structure_" in p["shape"]]), 2)
+        self.assertEqual(len([p for p in site.props if p["shape"].endswith("s_fuel_structure_06.dae")]), 1)
+        self.assertEqual(len([p for p in site.props if p["shape"].endswith("s_fuel_structure_07.dae")]), 12)
+
+    def test_narrow_canopy_one_row_along_it(self):
+        # a Speedway near Pittsburgh: its mapped canopy is 73 x 8.6 m, one row of pumps down its length
+        roof = rect("roof", 0.0, 22.0, 73.0, 8.6, cls="roof")
+        site = gs.layout(STATION, [SHOP, roof], ROAD)
+        self.assertEqual(len(site.areas), 8)                           # 4 islands of ~16 m, 2 pumps each
+        for a in site.areas:
+            self.assertAlmostEqual(a["y"], 22.0, places=3)              # down the middle
+            self.assertAlmostEqual(a["yaw"] % 180.0, 0.0, places=3)     # along the canopy
+        pillars = [p for p in site.props if p["shape"].endswith("s_fuel_structure_07.dae")]
+        self.assertEqual(len(pillars), 8)                               # 71 m: 4 islands of < 20 m, a pillar at each end
+
+    def test_long_lanes_split_into_islands(self):
+        long_ladder = [lane(x, 12.0, x, 46.0) for x in (-14.0, -7.0, 0.0)]         # 34 m lanes
+        shop = rect("shop", 0.0, 75.0, 20.0, 18.0, cls="retail")
+        st = gs.Station("st", 0.0, 75.0, "Speedway", "", ("p",), True)
+        site = gs.layout(st, [shop], ROAD, long_ladder)
+        pillars = [p for p in site.props if p["shape"].endswith("s_fuel_structure_07.dae")]
+        self.assertEqual(len(pillars), 8)                               # 2 islands of 32 m: each split in 2
 
     def test_narrow_canopy_pumps_clear_of_the_shop(self):
         # review I3: a kit scaled down no further than KIT_SCALE[0] put pumps past a narrow canopy, into the shop
@@ -244,14 +268,15 @@ class LayoutTest(unittest.TestCase):
         can = rect("ml", 0.0, 20.0, 28.0, 18.0, src=ML, height=1.48)
         self.assertIsNotNone(gs.layout(st, [SHOP, can], ROAD))
 
-    def test_kit_hashed(self):
+    def test_pump_style_hashed(self):
         roof = rect("roof", 0.0, 22.0, 30.0, 21.0, cls="roof")
 
-        def kit(sid):
+        def style(sid):
             st = gs.Station(sid, 0.0, 45.0, "x", "", ("p",), True)
-            return next(p["shape"] for p in gs.layout(st, [SHOP, roof], ROAD).props if "structure" in p["shape"])
-        self.assertEqual(kit("abc"), kit("abc"))
-        self.assertEqual({kit(f"s{i}") for i in range(200)}, {k["shape"] for k in gs.KITS})
+            return next(p["shape"] for p in gs.layout(st, [SHOP, roof], ROAD).props
+                        if "s_fuel_pump_" in p["shape"] and not p["collide"])
+        self.assertEqual(style("abc"), style("abc"))
+        self.assertEqual({style(f"s{i}") for i in range(200)}, {k["pump"][1] for k in gs.KITS})
 
 
 def lane(x0, y0, x1, y1):

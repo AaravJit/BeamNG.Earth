@@ -204,8 +204,7 @@ end
 -- TSStatics kept for the session: a shape's first load stalls the frame (probe PP1: 625 ms for a prefab's first
 -- West Coast shapes, docs/research/2026-10-11-engine-probes.md), which mid-drive at speed would be a hitch.
 local WCA = '/levels/west_coast_usa/art/shapes/buildings/'
-M.PREWARM = { WCA .. 's_fuel_structure_01.dae', WCA .. 's_fuel_structure_02.dae', WCA .. 's_fuel_structure_03.dae',
-  WCA .. 's_fuel_structure_05.dae', WCA .. 's_fuel_structure_06.dae', WCA .. 's_fuel_structure_07.dae',
+M.PREWARM = { WCA .. 's_fuel_structure_06.dae', WCA .. 's_fuel_structure_07.dae',     -- (roof slab, pillar)
   WCA .. 's_fuel_pump_2015.dae', WCA .. 's_fuel_pump_2000.dae',
   WCA .. 's_fuel_pump_2015_trilobite.dae', WCA .. 's_fuel_pump_2015_apex.dae', WCA .. 's_fuel_pump_2000_nodeoline.dae',
   WCA .. 's_fuel_pump_2000_tyranos.dae', '/art/shapes/objects/bollard_yellow.dae' }

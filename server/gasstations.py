@@ -14,6 +14,7 @@ are hashes of the Overture ids, so every tile, anchor and BeamMP peer places the
 """
 import hashlib
 import logging
+import math
 import re
 from dataclasses import dataclass
 
@@ -296,9 +297,12 @@ def find_canopy(st, shop, blds, roads):
 
 # --- the forecourt -----------------------------------------------------------------------------------------------
 _WCA = "/levels/west_coast_usa/art/shapes/buildings/"
-# West Coast USA's own canopy kits (docs/research/2026-10-23-gas-station-probe.md §1): the canopy shape, its model's
-# half size across (x) and along (y), its pumps' positions in its frame (fuel_station_1/2/3/5), their yaw relative to
-# the canopy, their height over its origin and their (base, brand) shapes (p_fuel_pump_<year>_<brand>.prefab.json)
+# West Coast USA's own canopy kits (docs/research/2026-10-23-gas-station-probe.md section 1): the canopy shape, its
+# model's half size across (x) and along (y), its pumps' positions in its frame (fuel_station_1/2/3/5), their yaw
+# relative to the canopy, their height over its origin and their (base, brand) shapes
+# (p_fuel_pump_<year>_<brand>.prefab.json). Only the pump shapes are used now (a station's style, hashed): canopies are
+# the roof slab over islands (_lane_site; the user, 2026-10-23, after a Sheetz near Pittsburgh: the same style for the
+# Speedway's mapped canopy)
 KITS = (
     dict(shape=_WCA + "s_fuel_structure_01.dae", half=(8.11, 11.11), dyaw=0.0, dz=0.33,
          pumps=((-6.08, -6.07), (-2.76, 1.37), (-0.86, -8.40), (0.46, 8.60), (2.46, -0.95), (5.68, 6.28)),
@@ -313,7 +317,6 @@ KITS = (
          pumps=((-4.74, 2.38), (0.05, -5.30), (0.29, 5.50), (5.08, -2.16)),
          pump=(_WCA + "s_fuel_pump_2000.dae", _WCA + "s_fuel_pump_2000_tyranos.dae")),
 )
-KIT_SCALE = (0.7, 1.4)          # a kit's canopy scaled to its share of the mapped canopy, within this
 BOLLARD = "/art/shapes/objects/bollard_yellow.dae"      # (global art; West Coast's fs_6: scale 1.5 1.5 1)
 PAIR_GAP_M = 5.6                # the two pumps of a station without a canopy (fs_6)
 # A refuel area per pump, centred on it (gasStationMarker.lua: the vehicle's box against the area's, its scale as
@@ -358,32 +361,6 @@ def _area_pts(x, y, yaw):
     ex, ey = np.array([np.cos(a), np.sin(a)]), np.array([-np.sin(a), np.cos(a)])
     return np.array([(x, y)] + [(x, y) + ex * (sx * AREA_HALF[0]) + ey * (sy * AREA_HALF[1])
                                 for sx in (-1, 1) for sy in (-1, 1)], np.float64)
-
-
-def _canopy_site(st, canopy, kit, blds=(), roads=()):
-    """The kit(s) under the canopy; a pump whose refuel area is not clear of the roads and of every other building
-    (spec section 2.5's hard checks: a kit scaled no smaller than KIT_SCALE[0] can reach past a narrow canopy, review
-    I3) is left out; None when none is left."""
-    others = [b for b in blds if b is not canopy]
-    c, u, hl, hw = _obox(canopy.ring)
-    v = np.array([-u[1], u[0]])                 # the kit's x (across); its y (along) is u
-    kx, ky = kit["half"]
-    n = max(1, int(round(hl / ky)))
-    sy = float(np.clip(hl / n / ky, *KIT_SCALE))
-    sx = float(np.clip(hw / kx, *KIT_SCALE))
-    yaw = _yaw(u) - 90.0                        # the model's +y onto u
-    props, areas = [], []
-    for k in range(n):
-        o = c + u * ((2 * k + 1 - n) * hl / n)
-        props.append(dict(shape=kit["shape"], x=float(o[0]), y=float(o[1]), dz=0.0, yaw=yaw % 360.0,
-                          scale=[sx, sy, 1.0], collide=True))
-        for lx, ly in kit["pumps"]:
-            p = o + v * (lx * sx) + u * (ly * sy)
-            if _clear(_area_pts(float(p[0]), float(p[1]), yaw), others, roads):
-                _pump(props, areas, kit, float(p[0]), float(p[1]), yaw, kit["dz"])
-    if not areas:
-        return None
-    return Site(st, props, areas, (canopy.id,))
 
 
 def _seg_dist(pts, a, b):
@@ -456,6 +433,8 @@ LANE_SEARCH_M = 60.0            # lanes' midpoints this close to the shop's cent
 LANE_MIN = 3                    # lanes of one forecourt (two islands)
 ISLAND_END_M = 1.0              # an island stops this short of its lanes' ends
 PUMP_STEP_M = 6.5               # pumps along an island (West Coast's fuel_station_4)
+ISLAND_MAX_M = 20.0             # a longer island is split, a pillar at each piece's ends (a 73 m canopy's row)
+ISLAND_BREAK_M = 2.0            # the gap between the pieces
 _PILLAR = _WCA + "s_fuel_structure_07.dae"     # (fs_4: a 4.9 m pillar at each island's end ...)
 _ROOF = _WCA + "s_fuel_structure_06.dae"       # (... and a 14 x 17.2 m roof slab 4.8 m up)
 ROOF_HALF = (7.0, 8.61)
@@ -541,19 +520,22 @@ def _lane_site(st, lanes, others, roads, kit):
     length = (lanes.a1 - lanes.a0) - 2 * ISLAND_END_M
     if length < 3.0:
         return None
-    count = max(1, int(round(length / PUMP_STEP_M)))
-    step = min(PUMP_STEP_M, length / count)
+    pieces = max(1, int(math.ceil(length / ISLAND_MAX_M)))
+    piece = (length - (pieces - 1) * ISLAND_BREAK_M) / pieces
+    count = max(1, int(round(piece / PUMP_STEP_M)))
+    step = min(PUMP_STEP_M, piece / count)
     props, areas = [], []
     for o0, o1 in zip(lanes.offsets[:-1], lanes.offsets[1:]):
-        m = c + n * ((o0 + o1) / 2)
-        for k in range(count):
-            p = m + u * ((k - (count - 1) / 2) * step)
-            if _clear(_area_pts(float(p[0]), float(p[1]), yaw), others, roads):
-                _pump(props, areas, kit, float(p[0]), float(p[1]), yaw, 0.0)
-        for s in (-1.0, 1.0):
-            q = m + u * (s * (length / 2 + 0.6))
-            props.append(dict(shape=_PILLAR, x=float(q[0]), y=float(q[1]), dz=0.0, yaw=yaw % 360.0,
-                              scale=[1.0, 1.0, 1.0], collide=True))
+        for j in range(pieces):
+            m = c + n * ((o0 + o1) / 2) + u * (-length / 2 + piece / 2 + j * (piece + ISLAND_BREAK_M) + (lanes.a0 + lanes.a1) / 2)
+            for k in range(count):
+                p = m + u * ((k - (count - 1) / 2) * step)
+                if _clear(_area_pts(float(p[0]), float(p[1]), yaw), others, roads):
+                    _pump(props, areas, kit, float(p[0]), float(p[1]), yaw, 0.0)
+            for s in (-1.0, 1.0):
+                q = m + u * (s * (piece / 2 + 0.6))
+                props.append(dict(shape=_PILLAR, x=float(q[0]), y=float(q[1]), dz=0.0, yaw=yaw % 360.0,
+                                  scale=[1.0, 1.0, 1.0], collide=True))
     if not areas:
         return None
     across = (lanes.offsets[-1] - lanes.offsets[0]) + 2.0
@@ -564,12 +546,33 @@ def _lane_site(st, lanes, others, roads, kit):
     return Site(st, props, areas, ())
 
 
+ISLAND_GAP_M = 7.0              # islands under a mapped canopy without mapped lanes: one every this much (a Sheetz's
+                                # lanes: 7 m apart) along its long side, each across its short side ...
+NARROW_M = 14.0                 # ... unless it is narrower than this: one row down its length, cars either side (the
+                                # Speedway's 73 x 8.6 m, another Sheetz's 51 x 10 m)
+
+
+def _outline_lanes(canopy):
+    """Lanes made up for a mapped canopy without mapped ones: across its short side (its islands too), evenly along
+    its long side about ISLAND_GAP_M apart, inside its outline; a narrow one (NARROW_M): two lanes along its sides,
+    one row of islands down the middle."""
+    c, ul, hl, hw = _obox(canopy.ring)
+    if 2 * hw < NARROW_M:
+        return Lanes(c, ul, np.array([-ul[1], ul[0]]), (-(hw - 0.5), hw - 0.5), -hl, hl)
+    u = np.array([-ul[1], ul[0]])               # the lanes (and islands) across the short side
+    n = ul
+    islands = max(1, int(round((2 * hl - 1.0) / ISLAND_GAP_M)))
+    step = (2 * hl - 1.0) / islands
+    offsets = tuple(-(hl - 0.5) + k * step for k in range(islands + 1))
+    return Lanes(c, u, n, offsets, -hw, hw)
+
+
 def layout(st, blds, roads, service=()):
     """The station's forecourt (a Site), or None. The shop (find_shop); then, most exact first: the forecourt's mapped
-    drive lanes among the service roads (find_lanes: islands between them under a roof slab); under its canopy
-    (find_canopy) West Coast USA's canopy kit(s), hashed by station id, scaled to the canopy; a pump pair clear of
-    roads and buildings. A canopy outline found is dropped from the buildings either way. A convenience brand alone
-    (not st.confirmed) needs the lanes or the canopy."""
+    drive lanes among the service roads (find_lanes), else lanes made up under its canopy (find_canopy,
+    _outline_lanes): islands between them under a roof slab (_lane_site); else a pump pair clear of roads and
+    buildings. A canopy outline found is dropped from the buildings either way. A convenience brand alone (not
+    st.confirmed) needs the lanes or the canopy."""
     shop = find_shop(st, blds)
     if shop is None:
         return None
@@ -582,7 +585,9 @@ def layout(st, blds, roads, service=()):
         if site is not None and canopy is not None:
             site.drop_ids = (canopy.id,)
     if site is None and canopy is not None:
-        site = _canopy_site(st, canopy, kit, blds, roads)
+        site = _lane_site(st, _outline_lanes(canopy), [b for b in blds if b is not canopy], roads, kit)
+        if site is not None:
+            site.drop_ids = (canopy.id,)
     if site is None and st.confirmed:
         site = _pair_site(st, shop, blds, roads)
     if site is not None:
