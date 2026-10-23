@@ -1,11 +1,44 @@
 """geocode: the map's address search (Photon) request and response handling."""
 import sys
+import types
 import unittest
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import geocode  # noqa: E402
+
+
+class FakeNet:
+    """Captures the requested URL; answers with an empty Photon-shaped response."""
+    def __init__(self):
+        self.urls = []
+
+    def get(self, url, kind="demand"):
+        self.urls.append(url)
+        return types.SimpleNamespace(body=b'{"features": []}')
+
+
+class LangForTest(unittest.TestCase):
+    def test_dach_is_german(self):
+        self.assertEqual(geocode.lang_for(50.9375, 6.9603), "de")     # Koeln
+        self.assertEqual(geocode.lang_for(46.0207, 7.7491), "de")     # Zermatt
+        self.assertEqual(geocode.lang_for(48.2082, 16.3738), "de")    # Vienna
+
+    def test_elsewhere_is_english(self):
+        self.assertEqual(geocode.lang_for(39.2904, -76.6122), "en")   # Baltimore
+        self.assertEqual(geocode.lang_for(None, None), "en")
+
+    def test_search_and_reverse_pick_it_up(self):
+        net = FakeNet()
+        geocode.search("Koeln", 50.9375, 6.9603, net=net)
+        self.assertEqual(parse_qs(urlparse(net.urls[0]).query)["lang"], ["de"])
+        net = FakeNet()
+        geocode.search("fells point", 39.2904, -76.6122, net=net)
+        self.assertEqual(parse_qs(urlparse(net.urls[0]).query)["lang"], ["en"])
+        net = FakeNet()
+        geocode.reverse(46.0207, 7.7491, net=net)
+        self.assertEqual(parse_qs(urlparse(net.urls[0]).query)["lang"], ["de"])
 
 
 class GeocodeTest(unittest.TestCase):

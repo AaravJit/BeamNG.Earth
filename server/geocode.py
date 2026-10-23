@@ -15,6 +15,17 @@ PHOTON_URL = "https://photon.komoot.io/api/"
 LIMIT = 7
 MIN_CHARS = 3
 ATTRIBUTION = "Search: Photon by komoot, data (c) OpenStreetMap contributors (ODbL)"
+# DE/CH/AT, loosely (the user, 2026-10-23: Photon's lang="en" showed "Cologne", "Switzerland" to players there;
+# a player searching from around here almost certainly reads German better than Photon's English names)
+DACH_BOX = (45.5, 5.5, 55.2, 17.3)      # lat0, lon0, lat1, lon1
+
+
+def lang_for(lat, lon):
+    """"de" when (lat, lon) is in or near DACH, else "en" (Photon's own default). Pure."""
+    if lat is None or lon is None:
+        return "en"
+    lat0, lon0, lat1, lon1 = DACH_BOX
+    return "de" if lat0 <= float(lat) <= lat1 and lon0 <= float(lon) <= lon1 else "en"
 
 
 def url(q, lat=None, lon=None, limit=LIMIT, lang="en"):
@@ -66,7 +77,7 @@ def search(q, lat=None, lon=None, net=None):
     if len(q) < MIN_CHARS:
         return []
     net = net if net is not None else netfetch.default_fetcher()
-    return parse(json.loads(net.get(url(q, lat, lon), kind="demand").body.decode("utf-8")))
+    return parse(json.loads(net.get(url(q, lat, lon, lang=lang_for(lat, lon)), kind="demand").body.decode("utf-8")))
 
 
 # ------------------------------------------------------------------------------------------- where am I
@@ -98,7 +109,8 @@ def parse_place(data):
 def reverse(lat, lon, net=None):
     """The town, state and country around (lat, lon) (blocking). Raises netfetch.FetchError on network trouble."""
     net = net if net is not None else netfetch.default_fetcher()
-    return parse_place(json.loads(net.get(reverse_url(lat, lon), kind="demand").body.decode("utf-8")))
+    return parse_place(json.loads(net.get(reverse_url(lat, lon, lang=lang_for(lat, lon)), kind="demand")
+                                  .body.decode("utf-8")))
 
 
 def nearest_street(roads_layers, lat, lon, max_m=STREET_M):
