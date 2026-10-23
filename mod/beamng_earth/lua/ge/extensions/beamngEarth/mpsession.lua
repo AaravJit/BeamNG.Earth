@@ -156,6 +156,7 @@ local awayLog = {}          -- (test 'away') { { t, what, lat, lon } }
 local lateGoTo = nil         -- (test 'late': the go-to held until TEST_LATE_S)
 M.TEST_LATE_S = 45
 M.TEST_DELREMOTE_S = 40
+M.TEST_DROP_S, M.TEST_DROP_M = 40, 2500
 local brokenOf = {}         -- (test) remote game vehicle id -> broken beams
 
 -- (test) a remote car's broken beams, from its vehicle Lua
@@ -257,6 +258,13 @@ local function testStep(dt)
         log('I', 'beamngEarth', 'BeamMP test: removed the other player\'s car ' .. tostring(gid))
       end
     end
+  end
+  -- 'drop': TEST_DROP_S after the car, our car moved TEST_DROP_M east (BeamMP's teleport to a player far off our block)
+  if test.drop and testCarAt and not test.dropped and veh and testClock - testCarAt > M.TEST_DROP_S then
+    test.dropped = true
+    local p = veh:getPosition()
+    veh:setPosition(vec3(p.x + M.TEST_DROP_M, p.y, p.z + 5))
+    log('I', 'beamngEarth', 'BeamMP test: car moved ' .. M.TEST_DROP_M .. ' m east')
   end
   if test.damage and testCarAt and not testDamaged and veh and testClock - testCarAt > M.TEST_DAMAGE_S then
     testDamaged = true
