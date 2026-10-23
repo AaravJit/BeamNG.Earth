@@ -369,7 +369,7 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
         guardrail_mesh = guardrailsmod.mesh(frame, infra_fn, box, elev, (box[0], box[1], 0.0),
                                              decks=guardrail_decks)
     except Exception as ex:
-        log.debug("mapped guardrails: tile %s_%s: %s", tx, ty, ex)
+        log.warning("mapped guardrails: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
         guardrail_mesh = None
     cell_fn = lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads")   # noqa: E731
 
