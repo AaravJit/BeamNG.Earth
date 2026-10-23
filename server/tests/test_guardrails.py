@@ -39,6 +39,15 @@ class GuardrailTagTest(unittest.TestCase):
                           "tags": np.array(["not json"])})
         self.assertFalse(guardrails._is_guardrail(f, 0))
 
+    def test_non_object_json_tags_are_ignored(self):
+        # Overture source_tags is optional; malformed / non-object JSON must not abort
+        # guardrail generation for the whole road tile.
+        for raw in ('null', '[]', '42', '"text"'):
+            with self.subTest(raw=raw):
+                f = FakeFeatures({"class": np.array(["barrier"]), "subtype": np.array(["barrier"]),
+                                  "tags": np.array([raw])})
+                self.assertFalse(guardrails._is_guardrail(f, 0))
+
 
 class ClipSegmentTest(unittest.TestCase):
     def test_clips_to_tile(self):
