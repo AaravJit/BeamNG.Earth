@@ -53,6 +53,7 @@ URGENT_WORKERS = 16         # Dem.urgent(): its own fetch threads (with the 16 s
 # older than MIRROR_MAX_AGE_S it is made again (Mapterhorn adds lidar areas). DECODED_VERSION: raise it when what a
 # tile holds changes (the decoding, the ground filter).
 MIRROR_MB = 1024
+MIRROR_PRUNE_S = 120.0  # the mirror pruned at most this often per process (each prune walks it all)
 MIRROR_MAX_AGE_S = 30 * 86400
 DECODED_VERSION = 2          # 2: tiles past the lidar's depth upsampled from its deepest tile, not z12; its holes
                              # filled (fill_holes)
@@ -348,14 +349,19 @@ class Dem:
             return None
         with Dem._mirror_lock:
             Dem._mirror_written += TILE * TILE * 4
-            prune = Dem._mirror_written >= MIRROR_MB * 1e6 / 8
+            # (and at most every MIRROR_PRUNE_S: each prune walks the whole mirror, ~28k folders; a fresh place's
+            # DEM reads in a worker triggered it again and again, seconds of a far field's geometry, 2026-10-23)
+            now = time.monotonic()
+            prune = (Dem._mirror_written >= MIRROR_MB * 1e6 / 8
+                     and now - Dem._mirror_pruned >= MIRROR_PRUNE_S)
             if prune:
-                Dem._mirror_written = 0
+                Dem._mirror_written, Dem._mirror_pruned = 0, now
         if prune:
             self._mirror_prune()
         return self._mirror_get(key)
 
     _mirror_written = 0
+    _mirror_pruned = -1e9
     _mirror_lock = threading.Lock()
 
     def _mirror_prune(self):

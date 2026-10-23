@@ -147,6 +147,7 @@ def digest_arrays(arrays):
 # instead of swapped under memory pressure. At most MIRROR_MB on disk (the least recently read go first); the vector
 # layers' `en` (the cell frame's metres, Features.localize) is kept with them.
 MIRROR_MB = 2048
+MIRROR_PRUNE_S = 120.0  # the mirror pruned at most this often per process (each prune walks it all)
 MIRROR_SMALL = 65536    # bytes: an array this small is read into memory (no mapping)
 MEM_MB = 192        # decoded cell layers kept in memory per process (a road tile reads its ~4 cells, each read by
                     # its neighbours too: ~8 ms of decompression and a coordinate transform each time, 2026-10-15).
@@ -463,15 +464,18 @@ class MapData:
         return got if got is not None else arrays
 
     _mirror_written = 0
+    _mirror_pruned = -1e9
     _mirror_lock = threading.Lock()
 
     def _mirror_note(self, nbytes):
         """Count what this process wrote; every MIRROR_MB / 8 of it, the mirror cut back to MIRROR_MB."""
         with MapData._mirror_lock:
             MapData._mirror_written += nbytes
-            if MapData._mirror_written < MIRROR_MB * 1e6 / 8:
+            now = time.monotonic()
+            # (at most every MIRROR_PRUNE_S: each prune walks the whole mirror, as dem.Dem's)
+            if MapData._mirror_written < MIRROR_MB * 1e6 / 8 or now - MapData._mirror_pruned < MIRROR_PRUNE_S:
                 return
-            MapData._mirror_written = 0
+            MapData._mirror_written, MapData._mirror_pruned = 0, now
         self._mirror_prune()
 
     def _mirror_prune(self):
