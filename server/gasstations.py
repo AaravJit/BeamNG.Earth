@@ -261,3 +261,152 @@ def find_canopy(st, shop, blds, roads):
         if 0.0 < t <= 1.1 and lateral <= shl + 10.0:
             found.append(b)
     return found[0] if len(found) == 1 else None
+
+
+# --- the forecourt -----------------------------------------------------------------------------------------------
+_WCA = "/levels/west_coast_usa/art/shapes/buildings/"
+# West Coast USA's own canopy kits (docs/research/2026-10-23-gas-station-probe.md §1): the canopy shape, its model's
+# half size across (x) and along (y), its pumps' positions in its frame (fuel_station_1/2/3/5), their yaw relative to
+# the canopy, their height over its origin and their (base, brand) shapes (p_fuel_pump_<year>_<brand>.prefab.json)
+KITS = (
+    dict(shape=_WCA + "s_fuel_structure_01.dae", half=(8.11, 11.11), dyaw=0.0, dz=0.33,
+         pumps=((-6.08, -6.07), (-2.76, 1.37), (-0.86, -8.40), (0.46, 8.60), (2.46, -0.95), (5.68, 6.28)),
+         pump=(_WCA + "s_fuel_pump_2015.dae", _WCA + "s_fuel_pump_2015_trilobite.dae")),
+    dict(shape=_WCA + "s_fuel_structure_02.dae", half=(7.30, 10.50), dyaw=0.0, dz=-0.03,
+         pumps=((-7.69, -4.47), (-3.16, 2.18), (-1.46, -8.68), (1.31, 8.82), (3.00, -1.97), (7.54, 4.62)),
+         pump=(_WCA + "s_fuel_pump_2000.dae", _WCA + "s_fuel_pump_2000_nodeoline.dae")),
+    dict(shape=_WCA + "s_fuel_structure_03.dae", half=(6.50, 10.70), dyaw=180.0, dz=0.16,
+         pumps=((-2.92, -7.43), (-2.92, 0.03), (-2.92, 7.56), (2.87, -7.44), (2.87, 0.08), (2.87, 7.56)),
+         pump=(_WCA + "s_fuel_pump_2015.dae", _WCA + "s_fuel_pump_2015_apex.dae")),
+    dict(shape=_WCA + "s_fuel_structure_05.dae", half=(6.61, 8.61), dyaw=0.0, dz=0.05,
+         pumps=((-4.74, 2.38), (0.05, -5.30), (0.29, 5.50), (5.08, -2.16)),
+         pump=(_WCA + "s_fuel_pump_2000.dae", _WCA + "s_fuel_pump_2000_tyranos.dae")),
+)
+KIT_SCALE = (0.7, 1.4)          # a kit's canopy scaled to its share of the mapped canopy, within this
+BOLLARD = "/art/shapes/objects/bollard_yellow.dae"      # (global art; West Coast's fs_6: scale 1.5 1.5 1)
+PAIR_GAP_M = 5.6                # the two pumps of a station without a canopy (fs_6)
+# A refuel area per pump, centred on it (gasStationMarker.lua: the vehicle's box against the area's, its scale as
+# half extents): 1.6 m across the pump row, 2.2 along it, 2.75 up (West Coast: 0.6 across, so a car must touch the
+# pump; provisional until the in-game probe, probes/fuel_pump.lua)
+AREA_HALF = (1.6, 2.2, 2.75)
+AREA_DZ = 0.8
+ICON_DZ = 2.5
+ROAD_CLEAR_M = 3.0              # every piece of a pump pair this far from a public road's carriageway ...
+BLD_CLEAR_M = 1.0               # ... and from every building
+PAIR_HALF = (5.0, 4.0)          # the pump pair's footprint (half along the row, half across: the lanes beside it)
+
+
+@dataclass
+class Site:
+    station: Station
+    props: list         # {"shape", "x", "y", "dz", "yaw", "scale", "collide"} (anchor frame m, yaw degrees)
+    areas: list         # {"x", "y", "dz", "yaw", "half", "icon"}: one refuel area per pump (icon: its height over it)
+    drop_ids: tuple     # buildings left out of the mesh (the canopy outline)
+
+
+def _h(*vals):
+    return int.from_bytes(hashlib.blake2b(repr(vals).encode(), digest_size=8).digest(), "little")
+
+
+def _yaw(u):
+    return float(np.degrees(np.arctan2(u[1], u[0])))
+
+
+def _pump(props, areas, kit, x, y, yaw, dz):
+    py = (yaw + kit["dyaw"]) % 360.0
+    props.append(dict(shape=kit["pump"][0], x=x, y=y, dz=dz, yaw=py, scale=[1.0, 1.0, 1.0], collide=True))
+    props.append(dict(shape=kit["pump"][1], x=x, y=y, dz=dz, yaw=py, scale=[1.0, 1.0, 1.0], collide=False))
+    areas.append(dict(x=x, y=y, dz=dz + AREA_DZ, yaw=yaw % 360.0, half=list(AREA_HALF), icon=ICON_DZ))
+
+
+def _canopy_site(st, canopy, kit):
+    c, u, hl, hw = _obox(canopy.ring)
+    v = np.array([-u[1], u[0]])                 # the kit's x (across); its y (along) is u
+    kx, ky = kit["half"]
+    n = max(1, int(round(hl / ky)))
+    sy = float(np.clip(hl / n / ky, *KIT_SCALE))
+    sx = float(np.clip(hw / kx, *KIT_SCALE))
+    yaw = _yaw(u) - 90.0                        # the model's +y onto u
+    props, areas = [], []
+    for k in range(n):
+        o = c + u * ((2 * k + 1 - n) * hl / n)
+        props.append(dict(shape=kit["shape"], x=float(o[0]), y=float(o[1]), dz=0.0, yaw=yaw % 360.0,
+                          scale=[sx, sy, 1.0], collide=True))
+        for lx, ly in kit["pumps"]:
+            p = o + v * (lx * sx) + u * (ly * sy)
+            _pump(props, areas, kit, float(p[0]), float(p[1]), yaw, kit["dz"])
+    return Site(st, props, areas, (canopy.id,))
+
+
+def _seg_dist(pts, a, b):
+    """(M,) distance of each point to the nearest of segments a -> b ((K, 2) each)."""
+    d = b - a
+    L2 = np.maximum((d * d).sum(1), 1e-12)
+    t = np.clip(((pts[:, None, :] - a[None]) * d[None]).sum(2) / L2[None], 0.0, 1.0)
+    q = a[None] + d[None] * t[:, :, None]
+    return np.hypot(*(q - pts[:, None, :]).transpose(2, 0, 1)).min(1)
+
+
+def _clear(pts, blds, roads):
+    """Whether every point is ROAD_CLEAR_M off every public road's carriageway and BLD_CLEAR_M off every building."""
+    import polygon
+    for line, half in roads:
+        if (_seg_dist(pts, line[:-1], line[1:]) < half + ROAD_CLEAR_M).any():
+            return False
+    for b in blds:
+        lo, hi = b.ring.min(0) - BLD_CLEAR_M, b.ring.max(0) + BLD_CLEAR_M
+        near = pts[((pts >= lo) & (pts <= hi)).all(1)]
+        if not len(near):
+            continue
+        if polygon.contains_points(b.ring, near).any() or (_seg_dist(near, b.ring[:-1], b.ring[1:]) < BLD_CLEAR_M).any():
+            return False
+    return True
+
+
+def _pair_site(st, shop, blds, roads):
+    """Two pumps in a row parallel to the shop's front, on open ground between the shop and its nearest road, as near
+    the shop as fits; None when nothing fits."""
+    sc = _centre(shop.ring)
+    q, dist, _ = _nearest_on(roads, sc)
+    if q is None or dist < 1.0:
+        return None
+    a = (q - sc) / dist                         # toward the road
+    r = np.array([-a[1], a[0]])                 # along the row
+    _, su, shl, shw = _obox(shop.ring)
+    reach = float(abs(su @ a) * shl + abs(su[0] * a[1] - su[1] * a[0]) * shw)    # the shop's half depth toward the road
+    kit = KITS[_h(st.id, "kit") % len(KITS)]
+    gr, ga = np.meshgrid(np.linspace(-PAIR_HALF[0], PAIR_HALF[0], 11), np.linspace(-PAIR_HALF[1], PAIR_HALF[1], 9))
+    grid = np.c_[gr.ravel(), ga.ravel()]
+    for t in np.arange(reach + PAIR_HALF[1] + BLD_CLEAR_M, dist, 1.0):
+        for lat in (0.0, 4.0, -4.0, 8.0, -8.0):
+            c = sc + a * t + r * lat
+            if not _clear(c + grid[:, :1] * r + grid[:, 1:] * a, blds, roads):
+                continue
+            props, areas = [], []
+            yaw = _yaw(r) - 90.0                # the kit's y (its pump rows) along r
+            for s in (-0.5, 0.5):
+                p = c + r * (s * PAIR_GAP_M)
+                _pump(props, areas, kit, float(p[0]), float(p[1]), yaw, 0.0)
+            for s in (-1.0, 1.0):
+                for o in (-0.3, 0.3):
+                    p = c + r * (s * (PAIR_GAP_M / 2 + 1.2)) + a * o
+                    props.append(dict(shape=BOLLARD, x=float(p[0]), y=float(p[1]), dz=0.0, yaw=_yaw(r) % 360.0,
+                                      scale=[1.5, 1.5, 1.0], collide=True))
+            return Site(st, props, areas, ())
+    return None
+
+
+def layout(st, blds, roads):
+    """The station's forecourt (a Site), or None: the shop (find_shop); under its canopy (find_canopy) West Coast
+    USA's canopy kit(s), hashed by station id, scaled to the canopy, the canopy outline dropped from the buildings;
+    without one, a pump pair clear of roads and buildings. A convenience brand alone (not st.confirmed) needs the
+    canopy."""
+    shop = find_shop(st, blds)
+    if shop is None:
+        return None
+    canopy = find_canopy(st, shop, blds, roads)
+    if canopy is not None:
+        return _canopy_site(st, canopy, KITS[_h(st.id, "kit") % len(KITS)])
+    if not st.confirmed:
+        return None
+    return _pair_site(st, shop, blds, roads)

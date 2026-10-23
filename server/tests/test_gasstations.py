@@ -135,5 +135,76 @@ class CanopyTest(unittest.TestCase):
         self.assertIsNone(gs.find_shop(STATION, [rect("far", 300.0, 300.0, 20.0, 20.0)]))
 
 
+def inside_box(bld, x, y, pad=0.5):
+    c, u, hl, hw = gs._obox(bld.ring)
+    v = np.array([x, y]) - c
+    return abs(v @ u) <= hl + pad and abs(v[0] * u[1] - v[1] * u[0]) <= hw + pad
+
+
+def road_gap(x, y):
+    return abs(y) - 5.0         # from ROAD's carriageway edge
+
+
+class LayoutTest(unittest.TestCase):
+    def test_canopy_layout(self):
+        roof = rect("roof", 0.0, 22.0, 30.0, 21.0, cls="roof")
+        site = gs.layout(STATION, [SHOP, roof], ROAD)
+        self.assertEqual(site.drop_ids, ("roof",))
+        canopies = [p for p in site.props if "s_fuel_structure_" in p["shape"]]
+        self.assertEqual(len(canopies), 1)              # 15 m half length: one kit (half 8.6-11.1 m) along it
+        self.assertGreaterEqual(len(site.areas), 4)
+        for p in site.props + site.areas:
+            self.assertTrue(inside_box(roof, p["x"], p["y"]), p)
+
+    def test_long_canopy_tiles_kits(self):
+        roof = rect("roof", 0.0, 22.0, 46.0, 18.0, cls="roof")
+        site = gs.layout(STATION, [SHOP, roof], ROAD)
+        self.assertEqual(len([p for p in site.props if "s_fuel_structure_" in p["shape"]]), 2)
+
+    def test_no_canopy_pump_pair(self):
+        site = gs.layout(STATION, [SHOP], ROAD)
+        self.assertEqual(site.drop_ids, ())
+        pumps = [p for p in site.props if "s_fuel_pump_" in p["shape"] and p["collide"]]
+        self.assertEqual(len(pumps), 2)
+        self.assertEqual(len(site.areas), 2)
+        for p in pumps:
+            self.assertTrue(5.0 < p["y"] < 36.0, p)                     # between the road and the shop's front
+        self.assertAlmostEqual(pumps[0]["y"], pumps[1]["y"], places=6)  # a row parallel to the shop's front
+
+    def test_pin_on_road_pumps_off_road(self):
+        # a Sunoco near Pittsburgh: Microsoft's pin on the road beside the station
+        st = gs.Station("sun", 3.0, 0.0, "Sunoco Gas Station", "", ("p",), True)
+        shop = rect("shop", 0.0, 30.0, 12.0, 10.0)
+        site = gs.layout(st, [shop], ROAD)
+        self.assertIsNotNone(site)
+        for p in site.props:
+            self.assertGreater(road_gap(p["x"], p["y"]), gs.ROAD_CLEAR_M, p)
+            self.assertFalse(inside_box(shop, p["x"], p["y"], pad=gs.BLD_CLEAR_M), p)
+
+    def test_no_room_no_site(self):
+        shop = rect("shop", 0.0, 13.0, 20.0, 10.0)          # 3 m between the road's edge and the shop
+        st = gs.Station("st", 0.0, 13.0, "Shell", "Shell", ("p",), True)
+        self.assertIsNone(gs.layout(st, [shop], ROAD))
+
+    def test_no_shop_no_site(self):
+        st = gs.Station("st", 0.0, 200.0, "Shell", "Shell", ("p",), True)
+        self.assertIsNone(gs.layout(st, [SHOP], ROAD))
+
+    def test_conv_brand_needs_canopy(self):
+        st = gs.Station("wawa", 0.0, 45.0, "Wawa", "Wawa", ("p",), False)
+        self.assertIsNone(gs.layout(st, [SHOP], ROAD))
+        can = rect("ml", 0.0, 20.0, 28.0, 18.0, src=ML, height=1.48)
+        self.assertIsNotNone(gs.layout(st, [SHOP, can], ROAD))
+
+    def test_kit_hashed(self):
+        roof = rect("roof", 0.0, 22.0, 30.0, 21.0, cls="roof")
+
+        def kit(sid):
+            st = gs.Station(sid, 0.0, 45.0, "x", "", ("p",), True)
+            return next(p["shape"] for p in gs.layout(st, [SHOP, roof], ROAD).props if "structure" in p["shape"])
+        self.assertEqual(kit("abc"), kit("abc"))
+        self.assertEqual({kit(f"s{i}") for i in range(200)}, {k["shape"] for k in gs.KITS})
+
+
 if __name__ == "__main__":
     unittest.main()
