@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -10,6 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import geodesy
 import guardrails
 import mapgeom
+import roads
 
 
 class FakeFeatures:
@@ -104,6 +106,20 @@ class GuardrailMeshTest(unittest.TestCase):
         # This horizontal line's rail sections meet at x=100 with no gap or overhang.
         self.assertAlmostEqual(float(left[0][:, 0].max()), 100.0, places=4)
         self.assertAlmostEqual(float(right[0][:, 0].min()), 0.0, places=4)
+
+    def test_road_tile_writer_exports_guardrail_mesh_reference(self):
+        vertices = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], np.float32)
+        triangles = np.array([[0, 1, 2]], np.int32)
+        uvs = np.zeros((3, 2), np.float32)
+        with __import__("tempfile").TemporaryDirectory() as tmp, mock.patch("cdae.write") as write_mesh:
+            path, count = roads.write_tile(tmp, "vfs", 7, 1, 2, [],
+                                           guardrail_mesh=(vertices, triangles, uvs))
+            with open(os.path.join(tmp, "roads_7_1_2.json"), encoding="utf-8") as f:
+                data = json.load(f)
+        self.assertEqual(count, 0)
+        self.assertEqual(path, "vfs/roads_7_1_2.json")
+        self.assertEqual(data["guardrail"], {"shape": "vfs/guardrail_7_1_2.cdae", "pos": [256.0, 512.0, 0.0]})
+        write_mesh.assert_called_once()
 
     def test_unrelated_barrier_produces_no_mesh(self):
         feats = self.features("fence", {"barrier": "fence"})
