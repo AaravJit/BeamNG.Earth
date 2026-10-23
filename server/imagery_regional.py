@@ -11,6 +11,9 @@ Kinds: XYZ caches ({z}/{x}/{y}; {ty} is the TMS row 2^z - 1 - y), and WMS / ArcG
 WMS = ("SERVICE=WMS&REQUEST=GetMap&VERSION=1.3.0&STYLES=&CRS=EPSG:3857&BBOX={bbox}&WIDTH={size}&HEIGHT={size}"
        "&FORMAT=image/jpeg")
 ARCGIS_EXPORT = "bbox={bbox}&bboxSR=3857&imageSR=3857&size={size},{size}&format=jpg&f=image"
+# a WMS without Web Mercator: the tile's extent in latitude / longitude (imagery.lat_lon_bbox)
+WMS_4326 = ("SERVICE=WMS&REQUEST=GetMap&VERSION=1.3.0&STYLES=&CRS=EPSG:4326&BBOX={bbox4326}&WIDTH={size}&HEIGHT={size}"
+            "&FORMAT=image/jpeg")
 
 # name: (url, attribution, (south, west, north, east), kind, leaf_off)
 #   kind "xyz": an XYZ / TMS cache; "export": a WMS / ArcGIS export (lazy)
@@ -64,6 +67,10 @@ REGIONAL = {
     "it_pcn": ("http://wms.pcn.minambiente.it/ogc?map=/ms_ogc/WMS_v1.3/raster/ortofoto_colore_12.map&"
                "LAYERS=OI.ORTOIMMAGINI.2012.32,OI.ORTOIMMAGINI.2012.33&" + WMS,
                "Geoportale Nazionale (MASE) orthophoto 2012", (35.40, 6.60, 47.10, 18.60), "export", False),
+    # Poland (a user's tip, 2026-10-22, from MapNG's developer): GUGiK's national orthophoto (Geoportal, ~25 cm; free
+    # to download and use for any purpose, no access constraints in its INSPIRE record); its WMS has no Web Mercator
+    "poland": ("https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMS/HighResolution?LAYERS=Raster&" + WMS_4326,
+               "Ortofotomapa (c) GUGiK, geoportal.gov.pl", (49.00, 14.12, 54.84, 24.15), "export", False),
     "czechia": ("https://ags.cuzk.gov.cz/arcgis1/rest/services/ORTOFOTO_WM/MapServer/tile/{z}/{y}/{x}",
                 "(c) CUZK ortofoto (CC BY 4.0)", (48.55, 12.09, 51.06, 18.86), "xyz", False),
     "estonia": ("https://tiles.maaamet.ee/tm/tms/1.0.0/foto@GMC/{z}/{x}/{ty}.jpg", "Ortofoto: Maa-amet",

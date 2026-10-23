@@ -1,5 +1,6 @@
 """seacarve: the sea floor carved under ocean polygons, deterministic and continuous across the shoreline
 and across cells; the far tiles' DEM sea sunk; which water-tile samples are sea; near()."""
+import gc
 import math
 import os
 import sys
@@ -141,6 +142,8 @@ class SeaCarveTest(unittest.TestCase):
         b = sc.water(lat, lon)
         mapped = next(r for r, _, _ in sc._mem.values() if r is not None)[0]
         self.assertFalse(mapped.flags.owndata or mapped.flags.writeable, "a view of the raw copy's mapping")
+        del sc, mapped
+        gc.collect()  # the mappings closed: Windows removes no mapped file
         for r in raws:
             os.remove(r)
         c = seacarve.SeaCarver(BathyMapData(), self.tmp.name).water(lat, lon)

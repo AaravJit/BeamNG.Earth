@@ -747,9 +747,10 @@ class Tracker:
         if self.pool is not None:
             self.pool.shutdown(wait=False, cancel_futures=True)
 
-    def on_pose(self, conn, aid, x, y, loop, build, view=None):
+    def on_pose(self, conn, aid, x, y, loop, build, view=None, foci=()):
         """As roads.Tracker.on_pose: the tiles within send_m of the car (x, y) and of the camera when it is away
-        (view), the car's first; dropped beyond drop_m of both."""
+        (view), the car's first; dropped beyond drop_m of both. foci: other vehicles' collision foci (x, y, r, ...)
+        whose trees collide: the tiles within r + 128 m of each, after the car's and camera's, kept within r + 256 m."""
         import roads as roadsmod
         if aid != self.aid:
             for f in self.futs.values():
@@ -762,10 +763,17 @@ class Tracker:
         skip = {k for p in spots for k in roadsmod.tiles_near(*p, self.skip_m)} if self.skip_m else ()
         car = set(roadsmod.tiles_near(x, y, self.send_m))
         seen = set(roadsmod.tiles_near(*view, self.send_m)) - car if view else set()
-        want = [k for k in car | seen if k not in self.sent and k not in self.building and k not in skip]
+        others = set()
+        for f in foci:
+            others.update(roadsmod.tiles_near(f[0], f[1], min(self.send_m, f[2] + roadsmod.TILE / 2)))
+        others -= car | seen
+        want = [k for k in car | seen | others if k not in self.sent and k not in self.building and k not in skip]
         car_key = roadsmod.view_key(conn, aid, x, y)
         cam_key = roadsmod.view_key(conn, aid, *view) if seen else None
-        want.sort(key=lambda k: (1, cam_key(k)) if k in seen else (0, car_key(k)))
+
+        def focus_d(k):
+            return min(roadsmod.tile_distance(k[0], k[1], f[0], f[1]) for f in foci)
+        want.sort(key=lambda k: (2, focus_d(k)) if k in others else (1, cam_key(k)) if k in seen else (0, car_key(k)))
         # at most per_pose in flight: each waits in a thread of the loop's shared executor, and a teleport's
         # hundreds (one per pose, uncapped) held every thread while the road tiles under the car waited for one
         # (Sinaia 2026-10-15: bare ground for minutes)
@@ -773,7 +781,8 @@ class Tracker:
             self.building.add((tx, ty))
             fut = self.futs[(tx, ty)] = loop.run_in_executor(self.pool, build, aid, tx, ty)
             fut.add_done_callback(lambda f, k=(tx, ty), a=aid: self._built(conn, a, k, f))
-        for k in [k for k in self.sent if all(roadsmod.tile_distance(k[0], k[1], *p) > self.drop_m for p in spots)]:
+        for k in [k for k in self.sent if all(roadsmod.tile_distance(k[0], k[1], *p) > self.drop_m for p in spots)
+                  and all(roadsmod.tile_distance(k[0], k[1], f[0], f[1]) > f[2] + roadsmod.TILE for f in foci)]:
             self.sent.discard(k)
             conn.send({"type": f"{self.kind}_drop", "anchorId": aid, "key": f"{k[0]}_{k[1]}"})
 

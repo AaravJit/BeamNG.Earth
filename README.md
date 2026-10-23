@@ -4,8 +4,11 @@ A 1:1 scale, streamed Earth for [BeamNG.drive](https://www.beamng.com/): drive a
 planet on real elevation data and satellite imagery, with distance-based level of detail and the
 real curvature of the Earth.
 
-Status: beta (see VERSION). Tested on BeamNG.drive 0.40.1 on Linux (Vulkan) and the Steam Deck. See
+Status: beta (see VERSION). Tested on BeamNG.drive 0.40.3 on Linux (Vulkan) and the Steam Deck. See
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is coming.
+
+**Community:** join the [Discord server](https://discord.gg/tgf) and head to the #beamng-earth channel to talk about
+the mod, report problems, and get an IP to join a BeamMP.Earth server (see [Multiplayer](#multiplayer-beammp)).
 
 ## Features (working today)
 **The world**
@@ -13,9 +16,11 @@ Status: beta (see VERSION). Tested on BeamNG.drive 0.40.1 on Linux (Vulkan) and 
   Europe, the US and more), Copernicus 30 m elsewhere with buildings and small tree stands filtered out of it.
 - Aerial and satellite imagery on the ground: open state and national orthophotos (Maryland's 15 cm photos,
   a dozen more US states, NAIP across the US, Switzerland, France, Spain, the Netherlands, Germany's states,
-  Austria, Japan, parts of Australia and Canada, and more), Sentinel-2 cloudless everywhere else; shadows and
+  Austria, Poland, Czechia, Japan, parts of Australia and Canada, and more), Sentinel-2 cloudless everywhere else; shadows and
   colour seams taken out of the photos, the season's colours graded in, cliffs drawn as rock.
 - A real view distance out to the horizon, with the Earth's curvature.
+- Both poles: Antarctica's ice sheet up to the South Pole (2,835 m) from the Copernicus DEM, the Arctic's sea ice
+  at the North Pole, the polar day and night of the real sky, and a minimap compass that points to true north.
 - Ground materials from land cover (grass, dirt, rock, sand, snow, mud, lawns, paved squares and parking
   lots) with 3D grass and bushes.
 - Trees and forests from a canopy height model, regional species (conifers, broadleaf, palms, desert
@@ -23,7 +28,7 @@ Status: beta (see VERSION). Tested on BeamNG.drive 0.40.1 on Linux (Vulkan) and 
 - Buildings from Overture / OpenStreetMap with regional styles (US siding and brick, Alpine chalets, Nordic
   wood, Mediterranean stucco, East Asian and Latin American looks), real heights, roofs, windows, shopfronts,
   porches, churches with steeples, glass towers, far-away buildings drawn as a skyline.
-- Roads as meshes with lane markings, sidewalks and curbs, curb ramps, storm drains, cobblestone streets,
+- Roads painted into the ground itself (no floating road surface), with lane markings, sidewalks and curbs, curb ramps, storm drains, cobblestone streets,
   traffic islands, roundabouts, rural motorways with shoulders and toll booths; the ground graded under them, with
   retaining walls where a road is cut into a hill (dry stone in the mountains and towns, concrete along major roads)
   and stone parapets along mountain roads' drops; street lights, utility poles with wires, traffic signals,
@@ -32,7 +37,8 @@ Status: beta (see VERSION). Tested on BeamNG.drive 0.40.1 on Linux (Vulkan) and 
   that keep clear of the roads under them; tunnels through hills, with portals, lights and low arches where little
   is over them.
 - Water: the sea with real depth (cars sink), lakes, and rivers kept beside the roads.
-- Airports with graded, marked runways; landmarks such as the pyramids of Giza.
+- Airports with graded, marked runways; racetracks (circuits, ovals and pit lanes, with their real banking);
+  landmarks such as the pyramids of Giza.
 
 **Time, weather and physics**
 - **Real time**: the sun, moon and stars are where they really are for the place, the date and the clock
@@ -61,12 +67,18 @@ Status: beta (see VERSION). Tested on BeamNG.drive 0.40.1 on Linux (Vulkan) and 
 - **Traffic**: stock BeamNG traffic and police can be switched on, and parked cars line the streets and fill
   parking lots (stock BeamNG parking).
 
+**Multiplayer (BeamMP, in testing)**
+- Play the real world together on a BeamMP server (every player runs the BeamNG.Earth app): players who join are
+  sent to the others, cars show in the right place and with their dents in everyone's world, other players show on
+  the world map, and players near each other split the work of building the world (see "Multiplayer" below).
+
 **Map and navigation**
 - A level select with famous places and a **Random location** button (it starts you on a road).
 - World map (**M**): pan and zoom the globe, satellite or street map (EOX) with a roads & labels overlay,
   borders and place names (the **Layers** button), search for addresses and places as you type, teleport
   anywhere. Works with a controller, laid out like the stock map.
-- GPS routes to any destination (OSRM on OpenStreetMap), with the stock route arrows on the road.
+- GPS routes to any destination (OSRM on OpenStreetMap), with the stock route arrows on the road and the route
+  on the game's minimap (bottom left), which shows the roads around you.
 - **Autodrive**: the car drives itself along the GPS route (in lane, legal speed, minding traffic).
 - Saved places and recent places.
 
@@ -74,13 +86,18 @@ Status: beta (see VERSION). Tested on BeamNG.drive 0.40.1 on Linux (Vulkan) and 
 - A slim status bar (street, town, country, world loading), a connection banner when something is
   wrong and the data credits on screen, as BeamNG UI apps in a ".Earth" app layout (based on Freeroam's;
   move or resize them in the UI apps editor), and a one-time welcome page about the project.
-- Settings in the pause menu, keybinds, in-game reports (notes and performance recordings to share).
+- Settings in the pause menu, keybinds, in-game reports (notes and performance recordings to share), and a
+  wireframe view (Ctrl+Alt+W) that shows how the ground, the distant terrain and the roads are built.
 - Easy setup: one download per system (Windows .exe, Linux AppImage) that installs the mod and starts the server
   and the game; from the source, `install.py` installs everything and `start.py` keeps the mod in sync.
 - Runs on a Steam Deck (aim: 30 fps on the Handheld graphics preset).
+- Uses your graphics card for some of the world server's work (colour matching of the photos, compressing the distant
+  textures) when it can, so the server needs less of your CPU; without a usable one the CPU does it as before.
 - Offline play from the download cache (with a size cap and "clear cache").
-- Update check: the mod tells you in game (and on its settings page, with a link) when a newer version is on
-  GitHub.
+- Updates: the mod tells you in game (and on its settings page, with a link) when a newer version is on GitHub;
+  with the downloaded app (.exe / AppImage), **Update now** downloads it next to your copy, checks it against
+  GitHub's checksum, and the next time you start BeamNG.Earth the new version starts (your old file and shortcut
+  keep working).
 
 ## How it works
 - A **companion server** (`server/`: Python, with its heavy work in a Rust module, `native/earthfast`) downloads
@@ -133,6 +150,13 @@ downloaded file (or this folder); the map cache is `.cache/beamng-earth` in your
 
 More detail (traffic, the status bar, reporting problems, troubleshooting): [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
+**Compute sharing (optional, for tinkerers):** another computer on your network can build part of the distant
+landscape for you. On it, from a copy of the same version's source: `python3 server/peerwork.py serve` (port 47620,
+`--workers N` processes; it downloads its own map data). On the computer you play on, set `BNGE_PEERS` to the
+helpers before starting BeamNG.Earth, for example `BNGE_PEERS=192.168.1.20:47620,192.168.1.21:47620`. Helpers
+running other code are left out, and anything a helper fails on is built on your own computer. Only use helpers on a
+network you trust: the connection is not encrypted.
+
 ### Developer setup
 `python3 install.py` also works from a checkout (mod copy, `.venv`, then `python3 start.py`); by hand:
 1. Python 3.10+ with the packages in `server/requirements.txt`. The server needs its Rust module: the checkout
@@ -154,15 +178,45 @@ whenever `main` gets a `VERSION` without one. Release zip of the source: `python
 Tests: `cd server && python3 -m unittest discover -s tests -t tests` and
 `cd mod/tests && for f in test_*.lua; do luajit $f; done`.
 
+## Multiplayer (BeamMP)
+
+BeamNG.Earth runs on [BeamMP](https://beammp.com/) servers (in testing): drive the real world together.
+
+**Joining a server**
+1. Install BeamMP (its launcher) and the BeamNG.Earth app (see Install and play above), the same version as the
+   server's. Every player needs the BeamNG.Earth app running: each builds the world on their own computer.
+2. Get an IP: join the [Discord server](https://discord.gg/tgf) for the address of a BeamMP.Earth server.
+3. Start the BeamNG.Earth app and the BeamMP launcher, in either order: the app starts the game, or, if the BeamMP
+   launcher started it already, just the world server (on Linux the game then runs without the grass patch).
+4. In the game: Multiplayer > Direct Connect with the server's IP and port.
+
+You are sent to where the others are. Cars show in the right place, with their dents, in everyone's world; other
+players show on the world map (**M**) as green arrows; players far away (another country) are hidden until you meet.
+
+**Sharing the work:** players near each other share one world origin and split the building of the distant
+landscape (each piece is built once and sent to the others; faster computers take more), while a player far from
+everyone builds their own. For that the other players must reach your computer on TCP port 47621: on the same network
+it just works; over the internet, forward that port in your router, or you simply build everything yourself. Another
+port: set the environment variable `BNGE_SHARE_PORT` before starting the app.
+
+**Hosting a server:** download `BeamNG.Earth-BeamMP-Server-<version>.zip` from the
+[Releases](https://github.com/TecnaGamer/BeamNG.Earth/releases) page and follow the guide inside
+(`BeamNG.Earth-README.md`). In short: unzip it into a BeamMP server's folder, set
+`Map = "/levels/beamng_earth/info.json"` in `ServerConfig.toml`, forward the server's port (TCP and UDP) for players
+over the internet, and start it (its log shows `[BeamNG.Earth] plugin loaded`). The server needs no world data and
+little CPU. From the source, `python3 tools/package.py --beammp` builds the same zip.
+
 ## Data sources and attribution
 The repository contains only code; all map data is downloaded at runtime and cached locally.
 - Imagery: state and national orthophoto services where they are open (Maryland, a dozen more US
-  states, Switzerland, France, Spain, the Netherlands, Germany's states, Japan, parts of Australia and
+  states, Switzerland, France, Spain, the Netherlands, Germany's states, Poland (GUGiK), Japan, parts of Australia and
   Canada, and more), USDA NAIP and USGS The National Map (public domain) in the US, and Sentinel-2
   cloudless by EOX IT Services GmbH everywhere (https://s2maps.eu, contains modified Copernicus Sentinel
   data; 2016 release CC BY 4.0, 2023 release CC BY-NC-SA 4.0, non-commercial).
-- Elevation: Mapterhorn (see https://mapterhorn.com/attribution), AWS Terrain Tiles / Mapzen.
-- Roads, buildings, water and places: Overture Maps / OpenStreetMap contributors; trees from a
+- Elevation: Mapterhorn (see https://mapterhorn.com/attribution), AWS Terrain Tiles / Mapzen; the polar caps from
+  85 deg on: Copernicus DEM GLO-30 (produced using Copernicus WorldDEM-30 (c) DLR e.V. 2010-2014 and (c) Airbus
+  Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA).
+- Roads, buildings, water and places: Overture Maps / OpenStreetMap contributors (lane counts, widths and speed limits from OpenStreetMap via OSM US Layercake); trees from a
   canopy height model; airports from OurAirports.
 Each source's terms apply to the downloaded data; the in-game window shows the attribution line.
 The full list of data sources, services, libraries, tools and references, with licences and the

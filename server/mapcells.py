@@ -185,6 +185,22 @@ def cells_for_bbox(lat0, lon0, lat1, lon1, z=ZOOM, max_cells=4096):
     return [CellKey(z, ix % n, iy) for iy in range(iy0, iy1 + 1) for ix in range(ix0, ix1 + 1)]
 
 
+def cells_for_points(lat, lon, pad_lat=0.0, pad_lon=0.0, z=ZOOM, max_cells=4096):
+    """The cells of the points' box (cells_for_bbox, padded), or, for points spread farther apart than max_cells
+    cells (a long road; one that runs to a pole, its longitudes all round the globe: the South Pole Traverse), the
+    cells around each point (cells_near_points). Points past MAX_LAT have none."""
+    lat = np.asarray(lat, np.float64).ravel()
+    lon = np.asarray(lon, np.float64).ravel()
+    if not lat.size:
+        return []
+    try:
+        return cells_for_bbox(float(lat.min()) - pad_lat, float(lon.min()) - pad_lon,
+                              float(lat.max()) + pad_lat, float(lon.max()) + pad_lon, z, max_cells)
+    except ValueError:
+        m = np.abs(lat) <= MAX_LAT + pad_lat
+        return cells_near_points(lat[m], lon[m], pad_lat, pad_lon, z)
+
+
 def cells_near_points(lat, lon, pad_lat, pad_lon, z=ZOOM):
     """The cells that intersect the box [lat - pad_lat, lat + pad_lat] x [lon - pad_lon, lon + pad_lon] of any
     point, in row-major order like cells_for_bbox (a subset of the points' bbox cells, perhaps a cell more on an

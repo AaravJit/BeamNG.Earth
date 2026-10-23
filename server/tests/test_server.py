@@ -261,7 +261,9 @@ class ServerTest(ServerHarness):
 
         # --- teleport: anchor 1 with its first terrain at (0, 0) ---
         a1 = self.prepare_anchor(1, LAT, LON)
-        self.assertEqual(set(a1), {"type", "requestId", "anchorId", "lat", "lon", "groundZ", "floorZ", "terrain"})
+        self.assertEqual(set(a1), {"type", "requestId", "anchorId", "lat", "lon", "groundZ", "floorZ", "terrain",
+                                   "provisional"})
+        self.assertFalse(a1["provisional"], "no grading here: the first block is the graded one")
         self.assertIsNone(a1["floorZ"], "not in a tunnel")
         aid = a1["anchorId"]
         h = self.check_terrain(a1["terrain"], 0.0, 0.0)
@@ -410,7 +412,8 @@ class ServerTest(ServerHarness):
         self.pose(aid2, 0, 0, held={})                      # empty Lua table: may encode as {}
         # Deleted gradually, not in one burst (a burst stalled the game ~300 ms, in-game 2026-10-10):
         # once deletion has started there are still files left for a while.
-        end = time.monotonic() + 5
+        # (delete_interval 2 ms: on Windows ~16 ms, its event loop's timer resolution)
+        end = time.monotonic() + 5 + 0.02 * before
         partial = False
         while time.monotonic() < end:
             n = len(glob.glob(os.path.join(self.server.out_dir, f"far_{aid}_*")))
@@ -723,7 +726,7 @@ class MeshServerTest(ServerHarness):
         self.assertEqual(tiles[0]["level"], ex)
         # textures: DXT1 with mips, the layout's size per level (32 cells: TEX_NEAR for the two
         # finest levels, TEX_FAR beyond; 64: 256 px to L1, 512 from L2); shapes name the material
-        # and have the layout's triangle count (8704 with 64 cells)
+        # and have the layout's triangle count (8704 with 64 cells) up to L0
         for m in tiles[:3] + [t for t in tiles if t["level"] >= 0][:3] + [t for t in tiles if t["level"] >= 2][:2]:
             with open(self.fs(m["texture"]), "rb") as f:
                 w, h, mips, fourcc, _ = imagery.read_dds_info(f.read())
@@ -736,7 +739,10 @@ class MeshServerTest(ServerHarness):
             shape = cdae.read(self.fs(m["shape"]))
             self.assertEqual(shape["materials"][0]["name"], m["material"])
             self.assertEqual(shape["meshes"][0]["tverts2"][0], shape["meshes"][0]["verts"][0])
-            self.assertEqual(shape["meshes"][0]["indices"][0], 3 * lay.tris)
+            if m["level"] < ff.ADAPT_MIN_LEVEL:      # the lattice; adaptive meshes beyond (no more)
+                self.assertEqual(shape["meshes"][0]["indices"][0], 3 * lay.tris)
+            else:
+                self.assertLessEqual(shape["meshes"][0]["indices"][0], 3 * lay.tris)
         # the terrain block is physics only: following it changes no tile
         c.send({"type": "prepare_terrain", "requestId": 5, "anchorId": aid, "cx": 512, "cy": 0})
         tr, seen = c.until(lambda m: m["type"] == "terrain_ready", timeout=60)

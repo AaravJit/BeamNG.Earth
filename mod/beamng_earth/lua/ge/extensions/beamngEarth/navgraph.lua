@@ -73,6 +73,17 @@ function M.lanes(out, back, leftHand)
   return leftHand and (plus .. minus) or (minus .. plus)
 end
 
+-- A link steeper than this (rise over run) is left out of the graph: no car drives it, and the AI given a path over
+-- one circled under it for ever (GitHub #131: Baltimore's East Eager Street, a bridge whose first node stood 6.4 m
+-- over its junction with Greenmount Avenue 8 m away; the steepest real streets are ~0.37, San Francisco's).
+M.MAX_GRADE = 0.45
+
+-- Pure: is the link between graph nodes p and q ({x, y, z}) too steep to drive (MAX_GRADE)?
+function M.tooSteep(p, q)
+  local run = math.sqrt((p[1] - q[1]) ^ 2 + (p[2] - q[2]) ^ 2)
+  return math.abs(p[3] - q[3]) > M.MAX_GRADE * math.max(run, 1.0)
+end
+
 -- Pure-ish (needs vec3): the stock map's node table of graph g clipped to box b: {name = {pos, radius,
 -- links = {other = edge}}}, every edge shared by both ends (double-sided) with in/out nodes, positions and radii.
 -- Returns nodes, node count, edge count and the cuts: { x, y } of each kept node with a road to a node left out.
@@ -102,7 +113,7 @@ function M.toNodes(g, b, edgeM, leftHand)
         cutList[#cutList + 1] = { keep[k][1], keep[k][2] }
       end
     end
-    if keep[a] and keep[bb] and a ~= bb then
+    if keep[a] and keep[bb] and a ~= bb and not M.tooSteep(keep[a], keep[bb]) then
       local A, B = node(a), node(bb)
       if not A.links[bb] then
         local edge = { drivability = e[7], oneWay = e[3] == 1, lanes = M.lanes(e[4], e[5], leftHand),
@@ -277,6 +288,10 @@ local function apply(b)
   end
   if keep then pcall(gps.afterGraph, keep, m.nodes) end    -- before the vehicles' new map
   be:queueAllObjectLua('mapmgr.requestMap()')
+  -- the minimap (the navigation app, in 0.40's freeroam layout and ours) indexes the map's roads once and keeps them:
+  -- it showed the first graph's streets, or none, as the player drove on (the user, 2026-10-22)
+  local mr = rawget(_G, 'ui_apps_minimap_roads')
+  if mr and mr.reset then pcall(mr.reset) end
   pendingSignals = ts and nodes or nil     -- next frame: a second, smaller hitch instead of one big one
   cuts = cl
   stats.applies, stats.lastMs, stats.nodes, stats.edges = stats.applies + 1, (os.clock() - t0) * 1000, nn, ne

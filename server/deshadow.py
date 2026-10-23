@@ -60,6 +60,8 @@ import os
 import threading
 import time
 from collections import OrderedDict
+
+import mercator
 from dataclasses import dataclass
 
 import numpy as np
@@ -799,16 +801,19 @@ class Deshadow:
         for the ones within NEAR_M)."""
         z = REGION_Z
         w = TILE * 2 ** z
+        with self._lock:
+            self._center = (lat, lon)
+            self._queue = sorted((self._distance(rk), s, rk) for _, s, rk in self._queue)
+        if abs(lat) >= mercator.MAX_LAT:        # no Web-Mercator imagery to correct (the poles)
+            return
         lat_r = math.radians(lat)
         x = (lon / 360.0 + 0.5) * w
         y = (0.5 - math.asinh(math.tan(lat_r)) / (2 * math.pi)) * w
         rpx = radius / res_at(lat, z)
         with self._lock:
-            self._center = (lat, lon)
-            self._queue = sorted((self._distance(rk), s, rk) for _, s, rk in self._queue)
             now = time.monotonic()
-            for ry in range(int((y - rpx) // TILE), int((y + rpx) // TILE) + 1):
-                for rx in range(int((x - rpx) // TILE), int((x + rpx) // TILE) + 1):
+            for ry in range(max(0, int((y - rpx) // TILE)), min(2 ** z - 1, int((y + rpx) // TILE)) + 1):
+                for rx in mercator.columns(x, rpx, TILE, 2 ** z):
                     rk = (rx % 2 ** z, ry)
                     if not 0 <= ry < 2 ** z:
                         continue

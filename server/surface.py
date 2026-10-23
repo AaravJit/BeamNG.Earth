@@ -26,9 +26,9 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from PIL import Image, ImageDraw
 
+import fast
 import heightmap
 import mapcells
-import mapdata as mapdatamod
 import roads as roadsmod
 import staging
 
@@ -66,6 +66,9 @@ CLASS_MATERIAL = {0: DIRT, 10: GRASS, 20: DUSTY, 30: GRASS, 40: DIRT, 50: DIRT, 
 LAWN_SHARE_HUMID = 0.9
 LAWN_SHARE_DRY = 0.75
 LAWN_PATCH_M = 30.0
+# Past Web Mercator's limit (+-85.05 deg) there are no map cells: all of it is ice, Antarctica's ice sheet and the
+# Arctic Ocean's year-round sea ice (the user, 2026-10-22: "add polar support"), WorldCover's "snow and ice".
+POLAR_CLASS = 70
 ROCK_SLOPE_DEG = 35.0       # steeper ground is rock (cliffs, scree), except snow
 # Organic borders (user 2026-10-11: rectangular grass in Monument Valley). WorldCover's 10 m square
 # pixels give stair-stepped, ruler-straight class borders, which the grass makes visible. Every
@@ -208,8 +211,9 @@ def warp(lat, lon):
 
 
 # road surface kind (roads.py) -> material; drawn in this order (paved last: it wins at junctions)
-ROAD_MATERIAL = {"dirt": DIRT, "gravel": LOOSE, "cobble": COBBLE, "paved": ASPHALT}
-ROAD_ORDER = ("dirt", "gravel", "cobble", "paved")
+ROAD_MATERIAL = {"dirt": DIRT, "gravel": LOOSE, "cobble": COBBLE, "paved": ASPHALT,
+                 "rock": ROCK, "grass": GRASS}     # rock and grass roads: the ground's own materials (roads.terrain_surface)
+ROAD_ORDER = ("dirt", "gravel", "rock", "grass", "cobble", "paved")
 
 
 def grid_affine(lat, lon):
@@ -250,7 +254,7 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, e
     seen = set()
 
     def line(x, y, spec, aisle):
-        width, kind = spec.width, spec.kind
+        width, kind = spec.width, roadsmod.surface_material_kind(spec)
         if aisle:
             width += 2 * AISLE_STALLS_M         # the stalls either side (parking.aisle_spots): no grass under cars
         walks = roadsmod.has_sidewalks(spec)
@@ -262,7 +266,9 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, e
         # sits half a sample off the line (PIL), its one edge a metre short
         px = max(1, int(math.ceil(width / square - 1e-9)))
         px += 1 - px % 2
-        c, r = to_px(x, y)
+        # to a millionth of a sample: PIL floors, and a line on a sample row came out 63.99999999996 on Windows (its
+        # libm, the affine fit), drawn a sample north of where it lands on Linux
+        c, r = (np.round(v, 6) for v in to_px(x, y))
         vx = 0 if walks else 2 * int(math.ceil(VERGE_M / square))     # (even: the verge stays odd, centred)
         if c.max() < -px - vx or c.min() > w + px + vx or r.max() < -px - vx or r.min() > h + px + vx:
             return
@@ -305,6 +311,116 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, e
         m = np.asarray(layers[k]) > 0
         out[m] = ROAD_MATERIAL[k]
     return out
+
+
+# Roads in the ground (the user, 2026-10-22: "I dont love that we are applying a floating road texture over the normal
+# terrain"): by default (BNGE_ROADS_IN_GROUND=0 turns it off) the road tiles carry no carriageway mesh (roads.ROADS_IN_GROUND) and the
+# ground's photos have the carriageways painted in at their width (photo_roads): the drawn block's base photo and the
+# far tiles' textures down to PHOTO_ROADS_MAX_TEXEL (the near ring the block does not cover, where the meshes were);
+# the asphalt / cobble terrain layer (paint_roads) gives them their grain up close. Markings, curbs and sidewalks stay
+# meshes.
+# colour and opacity by surface, blended in this order (paved last: it wins at junctions); a trace of the photo is kept
+# (stains, patches), and most of it on unpaved tracks, which the photo shows well and a flat colour drew as stripes
+PHOTO_ROAD_RGBA = {"dirt": (122, 104, 82, 0.45), "gravel": (128, 118, 102, 0.6), "cobble": (112, 104, 96, 0.85),
+                   "paved": (95, 95, 94, 0.92)}
+PHOTO_ROADS_MAX_TEXEL = 2.0     # m per texel: coarser far tiles keep the photo's own roads (far, under a pixel wide)
+
+
+def _road_segments(frame, x0, y0, size, w, h, feats_list, urban_fn=None, widths=None):
+    """(segs (m, 4), half widths (m,), kind index into PHOTO_ROAD_RGBA (m,)) of the carriageways of feats_list in pixel
+    coordinates of a w x h photo over [x0, x0 + size] x [y0, y0 + size] (row 0 north), or None when none is in it."""
+    px_m = w / size
+    kinds = list(PHOTO_ROAD_RGBA)
+    segs, hws, kind = [], [], []
+    seen = set()
+    for feats in feats_list:
+        if feats is None or len(feats) == 0:
+            continue
+        specs = roadsmod.road_specs(feats, urban_fn, widths)
+        for i in range(len(feats)):
+            fid = str(feats.ids[i])
+            sp = specs[i]
+            if sp is None or fid in seen or sp.kind not in PHOTO_ROAD_RGBA:
+                continue
+            seen.add(fid)
+            hw = sp.width * px_m / 2
+            for ring in roadsmod.ground_parts(feats, i):
+                e, n, _ = frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
+                c = (np.asarray(e) - x0) * px_m
+                r = (y0 + size - np.asarray(n)) * px_m
+                if len(c) < 2 or c.max() < -hw or c.min() > w + hw or r.max() < -hw or r.min() > h + hw:
+                    continue
+                segs.append(np.stack([c[:-1], r[:-1], c[1:], r[1:]], axis=1))
+                hws.append(np.full(len(c) - 1, hw))
+                kind.append(np.full(len(c) - 1, kinds.index(sp.kind), np.uint8))
+    if not segs:
+        return None
+    return np.concatenate(segs), np.concatenate(hws), np.concatenate(kind)
+
+
+def photo_roads(rgb, frame, x0, y0, size, feats_list, urban_fn=None, widths=None):
+    """The photo rgb (H x W x 3, row 0 = north, covering [x0, x0 + size] x [y0, y0 + size] of frame) with the
+    carriageways of feats_list (road Features: roads.road_specs widths, ground parts only) painted in, antialiased
+    (earthfast.paint_lines, PHOTO_ROAD_RGBA). Pure (a new array)."""
+    fast.require(49, "roads in the ground")
+    h, w = rgb.shape[:2]
+    got = _road_segments(frame, x0, y0, size, w, h, feats_list, urban_fn, widths)
+    if got is None:
+        return rgb
+    colors = np.array([PHOTO_ROAD_RGBA[k] for k in PHOTO_ROAD_RGBA], np.float32)
+    return fast._ef.paint_lines(np.ascontiguousarray(rgb, np.uint8), *got, colors)
+
+
+def _square_roads(frame, x0, y0, size, surface):
+    """The road Features of surface's cached cells around [x0, x0 + size]² of frame (never waits)."""
+    gx = x0 + np.array([0.0, size, 0.0, size, size / 2])
+    gy = y0 + np.array([0.0, 0.0, size, size, size / 2])
+    la, lo, _ = frame.enu_to_geodetic(gx, gy, np.zeros(5))
+    feats, _ = surface.roads(np.asarray(la), np.asarray(lo))
+    return feats
+
+
+def paint_square(rgb, frame, x0, y0, size, surface, widths=None):
+    """photo_roads for a ground photo over [x0, x0 + size]² of frame with the roads of surface's cached cells (a
+    Surface; never waits); as it was when its texels are coarser than PHOTO_ROADS_MAX_TEXEL or no cell is cached."""
+    if surface is None or size / max(rgb.shape[1], 1) > PHOTO_ROADS_MAX_TEXEL:
+        return rgb
+    feats = _square_roads(frame, x0, y0, size, surface)
+    if not feats:
+        return rgb
+    return photo_roads(rgb, frame, x0, y0, size, feats, surface.urban, widths)
+
+
+# The near tiles' asphalt (mesh near-visual mode, where the tiles are the ground seen): a mask of the built
+# carriageways (paved, cobble) beside the tile's texture, far_<a>_<key>_road.dds (road_mask_name), finer than the photo
+# (farfield.NEAR_MASK_PX; the GPU has room, the CPU less, the user 2026-10-22); the mod's material gives the masked
+# part a second layer of the stock asphalt (its colour, grain and bumps, world-locked; satmat.lua), the rest the photo.
+ROAD_MASK_MAX_TEXEL = 1.0       # m per texel of the mask
+ROAD_MASK_KINDS = ("paved", "cobble")
+
+
+def road_mask_name(texture):
+    """The road mask file beside a far tile's texture (far_<a>_<key>[_r<n>].dds -> far_<a>_<key>_road.dds)."""
+    import re
+    return re.sub(r"(_r\d+)?\.dds$", "_road.dds", texture)
+
+
+def road_mask(frame, x0, y0, size, px, surface, widths=None):
+    """The built carriageways' coverage (px x px uint8, 255 on the road, antialiased) of a tile photo's square
+    [x0, x0 + size]² (its gutter included: the mask lines up with it on UV0), or None (texels coarser than
+    ROAD_MASK_MAX_TEXEL, no roads, no cell cached)."""
+    if surface is None or size / max(px, 1) > ROAD_MASK_MAX_TEXEL:
+        return None
+    feats = _square_roads(frame, x0, y0, size, surface)
+    if not feats:
+        return None
+    got = _road_segments(frame, x0, y0, size, px, px, feats, surface.urban, widths)
+    if got is None:
+        return None
+    colors = np.array([(255.0, 255.0, 255.0, 1.0 if k in ROAD_MASK_KINDS else 0.0) for k in PHOTO_ROAD_RGBA],
+                      np.float32)
+    out = fast._ef.paint_lines(np.zeros((px, px, 3), np.uint8), *got, colors)[..., 0]
+    return out if out.any() else None
 
 
 # A road without sidewalks gets a verge of VERGE_M a side painted bare where the ground would carry grass or shrubs:
@@ -501,15 +617,14 @@ class Surface:
     def _cached(self, key):
         """The cell's land-cover Raster from the cache, None if absent (a fetch is queued) or no
         coverage (open ocean: the layer is stored as missing)."""
-        arrays = self.md._load(self.md.path(key, "landcover"))
-        if arrays is None:
+        if not self.md.has(key, "landcover"):
             self._queue(key)
             return None
-        arrays = dict(arrays)
-        arrays.pop("provenance", None)
-        if "missing" in arrays:
+        try:        # (mapdata's memory LRU: a far tile's road paint and every block read the same cells again)
+            return self.md.cell(key, layers=("landcover",), kind="background").layers.get("landcover")
+        except Exception as e:      # an unreadable cache file: like a missing one
+            log.debug("surface: land cover of %s: %s: %s", key, type(e).__name__, e)
             return None
-        return mapdatamod._raster_from(arrays)
 
     def _queue(self, key, layers=("landcover",)):
         with self._lock:
@@ -560,7 +675,7 @@ class Surface:
         keys = []
         for layer in ("landcover", "land_use", "infrastructure"):
             for k in cells:
-                if self.md._load(self.md.path(k, layer)) is None:
+                if not self.md.has(k, layer):
                     self._queue(k, (layer,))
                     keys.append(k)
         deadline = time.monotonic() + timeout_s
@@ -576,8 +691,8 @@ class Surface:
         lat = np.asarray(lat, np.float64)
         lon = np.asarray(lon, np.float64)
         out, complete = [], True
-        for key in mapcells.cells_for_bbox(float(lat.min()), float(lon.min()), float(lat.max()), float(lon.max())):
-            if self.md._load(self.md.path(key, "roads")) is None:
+        for key in mapcells.cells_for_points(lat, lon):
+            if not self.md.has(key, "roads"):
                 self._queue(key, ("roads",))
                 complete = False
                 continue
@@ -594,9 +709,9 @@ class Surface:
         lat = np.asarray(lat, np.float64)
         lon = np.asarray(lon, np.float64)
         out = []
-        for key in mapcells.cells_for_bbox(float(lat.min()), float(lon.min()), float(lat.max()), float(lon.max())):
+        for key in mapcells.cells_for_points(lat, lon):
             for layer in ("infrastructure", "land_use"):
-                if self.md._load(self.md.path(key, layer)) is None:
+                if not self.md.has(key, layer):
                     self._queue(key, (layer,))
                     continue
                 try:
@@ -616,7 +731,7 @@ class Surface:
         lat, lon = warp(lat, lon)
         out = np.zeros(lat.shape, np.uint8)
         complete = True
-        for key in mapcells.cells_for_bbox(float(lat.min()), float(lon.min()), float(lat.max()), float(lon.max())):
+        for key in mapcells.cells_for_points(lat, lon):
             r = self._cached(key)
             lon0, lat0, lon1, lat1 = key.bounds()
             inside = (lat >= lat0) & (lat < lat1) & (lon >= lon0) & (lon < lon1)
@@ -626,6 +741,7 @@ class Surface:
                 complete = complete and not self._is_queued(key)
                 continue
             out[inside] = r.sample(lon[inside], lat[inside])
+        out[np.abs(lat) > mapcells.MAX_LAT] = POLAR_CLASS
         return out, complete
 
     def _is_queued(self, key):

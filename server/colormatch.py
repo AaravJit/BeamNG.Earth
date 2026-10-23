@@ -69,6 +69,8 @@ from collections import OrderedDict
 
 import numpy as np
 
+import mercator
+
 import fast
 import pacer
 import staging
@@ -275,6 +277,26 @@ def _seam_pass(arrs, half, depth, offs, nseg, gate):
                                    [int(o) for o in offs], full, gate, AGREE, max(2, nseg - 2))
     return score, list(Dm)
 
+def _seams_gpu(w, Lw, n_ang, half, depth, offs, nseg, gate):
+    """detect_seams' angle loop on the GPU (earthfast.seam_detect_gpu: the same rotations, sums, medians and gate in
+    float32; the CPU path's sums are float64, so a few borderline cells differ), or None: no GPU (or BNGE_GPU=0),
+    or it failed (logged once; the CPU path then)."""
+    global _GPU_FAILED
+    if _GPU_FAILED or not fast.gpu():
+        return None
+    try:
+        src = np.ascontiguousarray(np.concatenate([w[None], np.moveaxis(Lw, -1, 0)]), np.float32)
+        return fast._ef.seam_detect_gpu(src, n_ang, half, depth, [int(o) for o in offs],
+                                        0.3 * depth * (2 * half + 1), gate, AGREE, max(2, nseg - 2))
+    except Exception as e:
+        _GPU_FAILED = True
+        log.warning("colormatch: GPU seam detection failed (%s); the CPU from now on", e)
+        return None
+
+
+_GPU_FAILED = False
+
+
 def detect_seams(Lu, Ls, w, seg=16, nseg=NSEG, depth=3, n_ang=N_ANG, thr=THR, gate=GATE, min_len=100):
     """Long, consistent steps of the log ratio that S2 does not explain. Lu, Ls: log linear USGS /
     S2 [h, w, 3] on the detection grid; w: cell weights. The step is measured on nseg consecutive
@@ -290,7 +312,10 @@ def detect_seams(Lu, Ls, w, seg=16, nseg=NSEG, depth=3, n_ang=N_ANG, thr=THR, ga
     half = seg // 2
     offs = [int(round((k - (nseg - 1) / 2) * seg)) for k in range(nseg)]
     Lw = L * w[..., None]
-    for k in range(n_ang):
+    gpu = _seams_gpu(w, Lw, n_ang, half, depth, offs, nseg, gate)
+    if gpu is not None:                 # every angle at once on the GPU (~0.2 s, the CPU path ~13 s a region)
+        best, ang, Dbest = gpu
+    for k in range(n_ang if gpu is None else 0):
         pacer.pace()
         deg = 180.0 * k / n_ang
         arrs = [_rot(w, deg)]
@@ -1038,14 +1063,16 @@ class ColorMatch:
     def prepare(self, lat, lon, radius=PREP_M):
         """Anchor set: queue the fields of the regions within radius, nearest first."""
         n = 2 ** self.rz
-        x = (lon / 360.0 + 0.5) * n * TILE
-        y = (0.5 - math.asinh(math.tan(math.radians(lat))) / (2 * math.pi)) * n * TILE
-        rpx = radius / (EARTH_CIRC * math.cos(math.radians(lat)) / (TILE * n))
         with self._lock:
             self._center = (lat, lon)
             self._queue = sorted((self._distance(rk), s, rk) for _, s, rk in self._queue)
-        for ry in range(int((y - rpx) // TILE), int((y + rpx) // TILE) + 1):
-            for rx in range(int((x - rpx) // TILE), int((x + rpx) // TILE) + 1):
+        if abs(lat) >= mercator.MAX_LAT:        # no Web-Mercator imagery to match (the poles)
+            return
+        x = (lon / 360.0 + 0.5) * n * TILE
+        y = (0.5 - math.asinh(math.tan(math.radians(lat))) / (2 * math.pi)) * n * TILE
+        rpx = radius / (EARTH_CIRC * math.cos(math.radians(lat)) / (TILE * n))
+        for ry in range(max(0, int((y - rpx) // TILE)), min(n - 1, int((y + rpx) // TILE)) + 1):
+            for rx in mercator.columns(x, rpx, TILE, n):
                 rk = (rx % n, ry)
                 if 0 <= ry < n and self._distance(rk) <= radius + 6000 and not self._peek(rk):
                     with self._lock:

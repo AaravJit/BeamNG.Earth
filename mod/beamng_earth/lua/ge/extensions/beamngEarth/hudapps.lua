@@ -64,6 +64,87 @@ function M.update(now, get)
   return true
 end
 
+-- The minimap's label (BeamNG 0.40's navigation app; the user, 2026-10-22: "change the text on top of the minimap"):
+-- the stock app shows the name of the level's city zone the camera is in (gameplay_city.getHighestPrioZone), else the
+-- level's title, "BeamNG.Earth" in our level, which has no zones. The town of the status bar's location takes the
+-- zones' place (the street until the town is known): getHighestPrioZone is wrapped while in our level, a level's own
+-- zone still first. Its callers (the minimap, photo mode's speed camera) only read the zone's name.
+-- Pure: the label for a location { street, place, region, country }, or nil (the stock fallback).
+function M.minimapName(l)
+  if not l then return nil end
+  if l.place ~= nil and l.place ~= '' then return l.place end
+  if l.street ~= nil and l.street ~= '' then return l.street end
+  return nil
+end
+
+local zoneOrig, zoneWrap = nil, nil
+-- getName(): the label now (or nil). Installed again if the city extension was reloaded since.
+function M.hookCityZone(getName)
+  local city = rawget(_G, 'gameplay_city')
+  if not city or type(city.getHighestPrioZone) ~= 'function' then return false end
+  if city.getHighestPrioZone == zoneWrap then return true end
+  local orig = city.getHighestPrioZone
+  local zone = { name = '' }
+  zoneOrig = orig
+  zoneWrap = function(pos, ...)
+    local z = orig(pos, ...)
+    if z ~= nil then return z end
+    local name = getName()
+    if not name then return nil end
+    zone.name = name
+    return zone
+  end
+  city.getHighestPrioZone = zoneWrap
+  return true
+end
+
+function M.unhookCityZone()
+  local city = rawget(_G, 'gameplay_city')
+  if city and zoneWrap and city.getHighestPrioZone == zoneWrap then city.getHighestPrioZone = zoneOrig end
+  zoneOrig, zoneWrap = nil, nil
+end
+
+-- The minimap's compass (the user, 2026-10-22: "fix the minimap north"): the stock compass points along the world's +y,
+-- which is north only at our anchor (geodesy Anchor:northAt). Its drawCompass reads the minimap's world-to-map
+-- transform (ui_apps_minimap_utils.getWorldToMapTransform: the 2nd and 4th values are where world +y points on the
+-- map); while in our level that call, and only that caller's, gets true north at the camera turned through the same
+-- transform. The roads, route and vehicles keep the plain transform.
+-- Pure: the map direction of world direction (tx, ty) under the transform's linear part.
+function M.mapNorth(xx, xy, yx, yy, tx, ty)
+  return xx * tx + xy * ty, yx * tx + yy * ty
+end
+
+local northOrig, northWrap = nil, nil
+-- getNorth(): true north at the camera as a world direction (x, y), or nil (leave the compass as it is).
+function M.hookMinimapNorth(getNorth)
+  local utils = rawget(_G, 'ui_apps_minimap_utils')
+  local dbg = rawget(_G, 'debug')
+  if not utils or type(utils.getWorldToMapTransform) ~= 'function' or not dbg or not dbg.getinfo then return false end
+  if utils.getWorldToMapTransform == northWrap then return true end
+  local orig = utils.getWorldToMapTransform
+  northOrig = orig
+  northWrap = function(...)
+    local xx, xy, yx, yy, ox, oy = orig(...)
+    local info = dbg.getinfo(2, 'n')
+    if info and info.name == 'drawCompass' and xx then
+      local tx, ty = getNorth()
+      if tx then
+        local nx, ny = M.mapNorth(xx, xy, yx, yy, tx, ty)
+        return xx, nx, yx, ny, ox, oy
+      end
+    end
+    return xx, xy, yx, yy, ox, oy
+  end
+  utils.getWorldToMapTransform = northWrap
+  return true
+end
+
+function M.unhookMinimapNorth()
+  local utils = rawget(_G, 'ui_apps_minimap_utils')
+  if utils and northWrap and utils.getWorldToMapTransform == northWrap then utils.getWorldToMapTransform = northOrig end
+  northOrig, northWrap = nil, nil
+end
+
 function M._reset()
   mounted, nMounted, lastSend, lastKey, lastFull, M.sends = {}, 0, -math.huge, nil, -math.huge, 0
 end

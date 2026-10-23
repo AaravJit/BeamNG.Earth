@@ -4,6 +4,7 @@ far split around the player, the wording against the sources' own credits, chang
 the one-per-second throttle, the re-send on hello, and the default server without any of it. No
 network: synthetic DEM and imagery, fake weather fetches."""
 import asyncio
+import gc
 import io
 import json
 import math
@@ -26,6 +27,7 @@ import farfield as ff  # noqa: E402
 import geodesy  # noqa: E402
 import imagery  # noqa: E402
 import netfetch  # noqa: E402
+import polardem  # noqa: E402
 import test_server  # noqa: E402
 import test_weather  # noqa: E402
 import weather  # noqa: E402
@@ -60,8 +62,10 @@ class WordingTest(unittest.TestCase):
         self.assertEqual(set(credits.IMAGERY), set(imagery.SOURCES))
 
     def test_elevation_and_weather(self):
-        self.assertEqual(set(credits.ELEVATION), {demmod.MAPTERHORN["name"], demmod.AWS["name"]})
+        self.assertEqual(set(credits.ELEVATION), {demmod.MAPTERHORN["name"], demmod.AWS["name"], polardem.SOURCE})
         self.assertIn("mapterhorn.com/attribution", credits.ELEVATION["mapterhorn"])
+        # the Copernicus DEM's required wording (its licence)
+        self.assertIn("provided under COPERNICUS by the European Union and ESA", credits.ELEVATION[polardem.SOURCE])
         self.assertEqual(credits.full_label(credits.WEATHER_ID), weather.CREDIT)
         self.assertEqual(credits.label(credits.WEATHER_ID), "Open-Meteo")
         self.assertIn("Mapterhorn", earthd.ELEVATION_CREDIT)
@@ -167,6 +171,8 @@ class DemServedTest(unittest.TestCase):
         self.assertEqual(dem.served, {(12, 1, 7): "mapterhorn", (12, 2, 7): "aws-terrarium", (12, 3, 7): None})
         self.assertEqual(float(got[(12, 1, 7)][0, 0]), 128 * 256 + 10 - 32768)
         dem.pool.shutdown()
+        del dem, got
+        gc.collect()  # the decoded mirror's mappings closed: Windows deletes no mapped file
         tmp.cleanup()
 
     def test_served_through_the_failover(self):

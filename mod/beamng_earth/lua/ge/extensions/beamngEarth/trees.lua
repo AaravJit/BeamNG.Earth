@@ -182,11 +182,13 @@ local MATERIALS = {
 
 local stopwatch = require('beamngEarth/stopwatch')
 local tiles = {}        -- key "a:tx_ty" -> { anchor, cx, cy, rows, made = { i -> item }, shown = rank }
+local foci = {}         -- other vehicles' collision foci { x, y, r, trees } (M.setFoci, collisionfoci.lua)
 local ghostSince = nil               -- since the last rebase that left ghost tiles (M.transform)
 local types = {}        -- "shape" / "shape#n" (not solid) -> TSForestItemData
 local pop = {}          -- shape -> its items in the level
 local ready = false
 M.made, M.removed, M.errors = 0, 0, 0
+M.unknownGroups = {}      -- groups seen without a CATALOG entry (logged once each)
 
 local pool = {}          -- ids of empty Forests to reuse
 local forestCount = 0
@@ -230,6 +232,9 @@ local function setup()
   ready = true
   return true
 end
+
+-- Other vehicles' collision foci (collisionfoci.lua, through core.lua): solid trees round the ones with trees.
+function M.setFoci(f) foci = f or {} end
 
 -- Pure: the item type's name of a shape, solid (collides) or not.
 function M.typeName(shape, solid)
@@ -543,6 +548,13 @@ function M.update(anchorId, player, view)
   table.sort(order, function(a, b) return a[2] < b[2] end)
   local nearMade = false
   local rowsScanned = 0
+  -- solid round other players' cars too (collisionfoci.lua: the foci with trees; traffic has none)
+  local function nearFocus(t)
+    for _, f in ipairs(foci) do
+      if f.trees and boxDist(f, t) <= M.SOLID_M + (t.near and M.SOLID_HYST_M or 0) then return true end
+    end
+    return false
+  end
   local function finish()
     if nearMade then
       local ok, roads = pcall(require, 'beamngEarth/roads')
@@ -555,7 +567,7 @@ function M.update(anchorId, player, view)
     local function data() fd = fd or forest(t):getData(); return fd end
     local want = tileThreshold(o[2], t)
     local band = groupBand(t, o[2])
-    local near = o[3] <= M.SOLID_M or (t.near and o[3] <= M.SOLID_M + M.SOLID_HYST_M) or false
+    local near = o[3] <= M.SOLID_M or (t.near and o[3] <= M.SOLID_M + M.SOLID_HYST_M) or nearFocus(t) or false
     if want ~= t.shown or band ~= t.band or near ~= t.near or t.pending then
       t.pending = false
       if rowsScanned > M.ROWS_PER_FRAME then finish(); return end
@@ -565,6 +577,11 @@ function M.update(anchorId, player, view)
         local g = (t.groups or GROUPS)[(row[1] or 0) + 1]
         local cap = g and M.GROUP_MAX_M[g]
         if cap and o[2] > cap then r = 2 end     -- this group is not shown this far out
+        -- a group this mod has no shapes for (a newer server's): left out, not drawn as a tree
+        if g and not M.CATALOG[g] then
+          r = 2
+          if not M.unknownGroups[g] then M.unknownGroups[g] = true; log('W', 'beamngEarth.trees', 'no shapes for group ' .. g) end
+        end
         -- an item something else stands in for (navgraph.lua's switchable signal heads)
         if g and M.suppress and M.suppress(g, row[2], row[3]) then r = 2 end
         local solid = near and not M.NO_COLLIDE[g or '']

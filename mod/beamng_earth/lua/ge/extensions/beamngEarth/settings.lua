@@ -435,7 +435,17 @@ local function playerHeading()
   local ok, dir = pcall(function() return veh:getDirectionVector() end)
   if not ok or not dir then return nil end
   if math.abs(dir.x) + math.abs(dir.y) < 1e-6 then return nil end
-  return (math.deg(math.atan2(dir.x, dir.y)) + 360) % 360
+  local h = math.deg(math.atan2(dir.x, dir.y))
+  -- from true north (the map's up): the frame's +y is north only at the anchor
+  local core = ext('beamngEarth_core')
+  local st = core and core._state and core._state() or nil
+  local a = st and st.anchor
+  if a and a.northAt then
+    local okP, p = pcall(function() return veh:getPosition() end)
+    local okN, nx, ny = pcall(a.northAt, a, okP and p and p.x or 0, okP and p and p.y or 0)
+    if okN and tonumber(nx) and tonumber(ny) then h = h - math.deg(math.atan2(nx, ny)) end
+  end
+  return (h + 360) % 360
 end
 
 -- The map's tiles as files (the game's UI browser cancels every http request, even to 127.0.0.1): list
@@ -480,6 +490,14 @@ function M.mapTiles(list)
 end
 
 -- What the map polls every second: the player, the places, the tile endpoint, the credits.
+-- The other players of a BeamMP session for the map's arrows ({ { name, lat, lon, h } }), nil outside one.
+local function otherPlayers()
+  local okB, inMP = pcall(function() return require('beamngEarth/beammp').inSession() end)
+  if not okB or not inMP then return nil end
+  local ok, list = pcall(function() return require('beamngEarth/mpsession').others() end)
+  return ok and list or nil
+end
+
 function M.uiMapState()
   local core = ext('beamngEarth_core')
   local st = core and core._state and core._state() or nil
@@ -490,6 +508,7 @@ function M.uiMapState()
     connected = net.isConnected(), connection = net.state(),
     mapPort = net.isConnected() and st and st.mapPort or nil,
     player = (pl and pl.lat) and { lat = pl.lat, lon = pl.lon, heading = playerHeading(), speed = pl.speed } or nil,
+    others = otherPlayers(),
     places = ps.places, recent = ps.recent, cannotGo = ps.cannotGo,
     attribution = core and core.attribution and core.attribution() or '',
     creditsByArea = core and core.creditsByArea and core.creditsByArea() or nil,

@@ -72,10 +72,13 @@ import staging
 log = logging.getLogger("earthd.mapdata")
 
 LAYER_THREADS = 4               # layers of a cell built at once (each fetches through the shared limits)
+OSM_THREADS = 8                 # cells whose OpenStreetMap tags are read at once (alongside their Overture roads)
 VERSION = 2                     # pipeline version: bump when what a cell's layers contain changes
 # per layer, on top of VERSION (a layer's own change without re-fetching the others): roads 2 adds
 # the "oneway" rule (Overture access_restrictions by heading)
-LAYER_VERSIONS = {"roads": 2}
+# roads 3: OpenStreetMap's lanes, width, sidewalk, maxspeed... joined by way id (osmtags.py)
+# roads 4: OpenStreetMap's raceways appended (osmtags.raceways, GitHub #143)
+LAYER_VERSIONS = {"roads": 4}
                                 # (2: clipped polygon pieces `own`ed by their cell, exact cell edges,
                                 # the exact no-area test of clipped rings)
 VECTOR_LAYERS = ("roads", "connectors", "buildings", "water", "land_use", "infrastructure", "building_parts")
@@ -314,7 +317,11 @@ class MapData:
     def _build(self, key, layer, kind):
         """(content arrays, provenance record or None) of one layer, from the sources."""
         if layer in VECTOR_LAYERS:
+            # the roads' OpenStreetMap tags are read alongside Overture's (each half a fresh cell's wait)
+            osm = self._osm_pool().submit(self._osm_cell, key, kind) if layer == "roads" else None
             feats, sources = self.overture.query(layer, key, kind)
+            if osm is not None:
+                feats = self._osm(feats, osm.result())
             ox, oy = mapcells.owner(feats.attrs.get("cx", np.zeros(0)), feats.attrs.get("cy", np.zeros(0)), key.z)
             feats.own = (ox == key.x) & (oy == key.y)
             if feats.clipped is not None:
@@ -333,6 +340,39 @@ class MapData:
             prov = dict(CANOPY, files=r.files) if r is not None else None
         arrays["provenance"] = np.array(json.dumps(prov, sort_keys=True))
         return arrays
+
+    def _osm_pool(self):
+        with self._lock:
+            if getattr(self, "_osm_ex", None) is None:
+                self._osm_ex = ThreadPoolExecutor(OSM_THREADS, thread_name_prefix="osmtags")
+            return self._osm_ex
+
+    def _osm_cell(self, key, kind):
+        """(tags, raceways) of the cell's OpenStreetMap highways (osmtags.py); none when the source fails (the roads
+        keep their width guesses)."""
+        import osmtags
+        if self.fetcher is None:
+            return {}, []
+        try:
+            with self._lock:
+                if getattr(self, "osmtags", None) is None:
+                    self.osmtags = osmtags.OsmTags(self.raw_dir, self.fetcher)
+            return self.osmtags.cell(key.bounds(), kind)
+        except Exception as e:          # optional: the roads go on with their guesses
+            log.warning("mapdata: OSM road tags of %s: %s: %s", key, type(e).__name__, e)
+            return {}, []
+
+    @staticmethod
+    def _osm(feats, got):
+        """The roads with the cell's OpenStreetMap tags joined in and its raceways appended (Overture has none,
+        GitHub #143)."""
+        import mapgeom
+        import osmtags
+        tags, ways = got
+        if ways:
+            feats = mapgeom.concat(feats, osmtags.raceway_features(ways))
+        osmtags.join(feats, tags)
+        return feats
 
     def layer_arrays(self, key, layer, kind="demand"):
         """(arrays, hit) of one cell's layer: from the cache, or built and cached."""

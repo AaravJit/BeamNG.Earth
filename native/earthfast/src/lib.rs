@@ -1,5 +1,7 @@
 //! Geometry kernels for the world server (server/fast.py wraps them, with the Python versions as the fallback).
 //! All coordinates are metres in the anchor's local frame, f64.
+mod gpu;
+
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, IntoPyArray};
 use pyo3::types::PyBytes;
 use pyo3::prelude::*;
@@ -220,6 +222,126 @@ fn dual_side(a: PyReadonlyArray2<f64>, b: PyReadonlyArray2<f64>, gap_min: f64, g
         return (0.0, 0.0);
     }
     (ok_n as f64 / n as f64, side_sum / ok_n as f64)
+}
+
+/// The GPU the kernels run on ("name (backend)"), or None (no usable GPU, or BNGE_GPU=0): callers keep their CPU
+/// path. Made on first use.
+#[pyfunction]
+fn gpu_name(py: Python<'_>) -> Option<String> {
+    py.allow_threads(|| gpu::get().map(|g| g.name.clone()))
+}
+
+/// colormatch.detect_seams' angle loop on the GPU (gpu.rs): src (7, h, w) float32 = [w, w*L_0 .. w*L_5]. Returns
+/// (best [h, w], ang [h, w], D [h, w, 3]) float32. RuntimeError when there is no GPU or it failed.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn seam_detect_gpu<'py>(py: Python<'py>, src: PyReadonlyArray3<'py, f32>, n_ang: usize, half: i32, depth: i32,
+                        offs: Vec<i32>, full: f32, gate: f32, agree: f32, min_valid: u32)
+                        -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<f32>>, Bound<'py, numpy::PyArray3<f32>>)> {
+    let v = src.as_array();
+    let (c, h, w) = (v.shape()[0], v.shape()[1], v.shape()[2]);
+    if c != 7 {
+        return Err(pyo3::exceptions::PyValueError::new_err("seam_detect_gpu: src must be (7, h, w)"));
+    }
+    let data: Vec<f32> = v.iter().copied().collect();
+    let out = py.allow_threads(|| {
+        let g = gpu::get().ok_or_else(|| "no GPU".to_string())?;
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            gpu::seam_detect(g, &data, h, w, n_ang, half, depth, &offs, full, gate, agree, min_valid)
+        })).unwrap_or_else(|_| Err("the GPU kernel panicked".to_string()))
+    }).map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+    let n = h * w;
+    let best = numpy::ndarray::Array2::from_shape_vec((h, w), out[..n].to_vec()).unwrap();
+    let ang = numpy::ndarray::Array2::from_shape_vec((h, w), out[n..2 * n].to_vec()).unwrap();
+    let mut d = numpy::ndarray::Array3::<f32>::zeros((h, w, 3));
+    for ch in 0..3 {
+        for i in 0..n {
+            d[[i / w, i % w, ch]] = out[(2 + ch) * n + i];
+        }
+    }
+    Ok((best.into_pyarray(py), ang.into_pyarray(py), d.into_pyarray(py)))
+}
+
+/// BC1 blocks of several images (a texture's mip levels: [(h, w, 3) uint8]) on the GPU (gpu.rs): one bytes object
+/// per image, as bc1_encode's (float32 maths: a few blocks can differ from it). RuntimeError: no GPU or it failed.
+#[pyfunction]
+fn bc1_encode_gpu<'py>(py: Python<'py>, imgs: Vec<PyReadonlyArray3<'py, u8>>) -> PyResult<Vec<Bound<'py, PyBytes>>> {
+    let data: Vec<(usize, usize, Vec<u8>)> = imgs.iter().map(|a| {
+        let v = a.as_array();
+        (v.shape()[1], v.shape()[0], v.iter().copied().collect())
+    }).collect();
+    let out = py.allow_threads(|| {
+        let g = gpu::get().ok_or_else(|| "no GPU".to_string())?;
+        let refs: Vec<(usize, usize, &[u8])> = data.iter().map(|(w, h, b)| (*w, *h, b.as_slice())).collect();
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gpu::bc1_encode(g, &refs)))
+            .unwrap_or_else(|_| Err("the GPU kernel panicked".to_string()))
+    }).map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+    Ok(out.iter().map(|b| PyBytes::new(py, b)).collect())
+}
+
+/// roads._crossings: (part index, arc m along it, x, y) where a ground road crosses a deck part. Parts and ground
+/// lines are polylines one after another (pts (n, 2), starts (L + 1,), the last: n); per part, per ground line whose
+/// box meets the part's, per ground segment in order, the part's segments in order: numpy's float64 arithmetic of the
+/// Python it replaces (the underpass and bridge-approach planning's hot loop, 2026-10-22).
+#[pyfunction]
+fn segment_crossings(
+    py: Python<'_>,
+    parts: PyReadonlyArray2<f64>,
+    part_starts: PyReadonlyArray1<i64>,
+    ground: PyReadonlyArray2<f64>,
+    ground_starts: PyReadonlyArray1<i64>,
+) -> Vec<(usize, f64, f64, f64)> {
+    let pa = parts.as_array();
+    let ps = part_starts.as_array();
+    let ga = ground.as_array();
+    let gs = ground_starts.as_array();
+    let np_ = ps.len().saturating_sub(1);
+    let ng = gs.len().saturating_sub(1);
+    py.allow_threads(|| {
+        let bbox = |a: &numpy::ndarray::ArrayView2<f64>, i0: usize, i1: usize| {
+            let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+            for k in i0..i1 {
+                x0 = x0.min(a[[k, 0]]); x1 = x1.max(a[[k, 0]]);
+                y0 = y0.min(a[[k, 1]]); y1 = y1.max(a[[k, 1]]);
+            }
+            (x0, y0, x1, y1)
+        };
+        let gbox: Vec<_> = (0..ng).map(|g| bbox(&ga, gs[g] as usize, gs[g + 1] as usize)).collect();
+        let mut out = Vec::new();
+        for pi in 0..np_ {
+            let (i0, i1) = (ps[pi] as usize, ps[pi + 1] as usize);
+            if i1 < i0 + 2 { continue; }
+            let (lx0, ly0, lx1, ly1) = bbox(&pa, i0, i1);
+            let mut s = vec![0.0f64; i1 - i0];
+            for k in 1..(i1 - i0) {
+                let dx = pa[[i0 + k, 0]] - pa[[i0 + k - 1, 0]];
+                let dy = pa[[i0 + k, 1]] - pa[[i0 + k - 1, 1]];
+                s[k] = s[k - 1] + dx.hypot(dy);
+            }
+            for g in 0..ng {
+                let (gx0, gy0, gx1, gy1) = gbox[g];
+                if gx1 < lx0 || gx0 > lx1 || gy1 < ly0 || gy0 > ly1 { continue; }
+                let (j0, j1) = (gs[g] as usize, gs[g + 1] as usize);
+                for k in j0..j1.saturating_sub(1) {
+                    let (ax, ay) = (ga[[k, 0]], ga[[k, 1]]);
+                    let (dx, dy) = (ga[[k + 1, 0]] - ax, ga[[k + 1, 1]] - ay);
+                    for j in 0..(i1 - i0 - 1) {
+                        let (px, py_) = (pa[[i0 + j, 0]], pa[[i0 + j, 1]]);
+                        let (rx, ry) = (pa[[i0 + j + 1, 0]] - px, pa[[i0 + j + 1, 1]] - py_);
+                        let den = rx * dy - ry * dx;
+                        if !(den.abs() > 1e-12) { continue; }
+                        let (apx, apy) = (ax - px, ay - py_);
+                        let t = (apx * dy - apy * dx) / den;
+                        let u = (apx * ry - apy * rx) / den;
+                        if t >= 0.0 && t <= 1.0 && u >= 0.0 && u <= 1.0 {
+                            out.push((pi, s[j] + t * (s[j + 1] - s[j]), px + t * rx, py_ + t * ry));
+                        }
+                    }
+                }
+            }
+        }
+        out
+    })
 }
 
 /// roads._deck_crossings: (i, j, arc on i, arc on j) where polylines i < j cross away from their end points.
@@ -1401,42 +1523,48 @@ fn srgb_monotonic() -> bool {
     true
 }
 
-/// imagery.mip_arrays below level 0: the levels 1.. (uint8 [h, w, 3]) of a power-of-two image rgb: linear-light
+/// imagery.mip_arrays below level 0: the levels 1.. (uint8 [h, w, c], c 3 or 4) of a power-of-two image: linear-light
 /// (lut: the 256 float32 values of _TO_LIN) 2 x 2 averages, each from the previous unsharpened one, then sharpened
 /// by sharpen (3 x 3 box, edge-padded) where both sides are >= 4, back to sRGB (x ** (1 / 2.2)), as the numpy code
-/// in float32.
+/// in float32. A 4th channel (alpha: the terrain cache's ambient occlusion) is averaged as it is, not sharpened (the
+/// 3-channel loop read an RGBA image's bytes as RGB: grey mips under the photo's, GitHub #115, 2026-10-23).
 #[pyfunction]
 fn mip_levels<'py>(py: Python<'py>, rgb: PyReadonlyArray3<'py, u8>, lut: PyReadonlyArray1<'py, f32>, sharpen: f32)
-                   -> Vec<Bound<'py, numpy::PyArray3<u8>>> {
+                   -> PyResult<Vec<Bound<'py, numpy::PyArray3<u8>>>> {
     let img = rgb.as_array();
     let lut = lut.as_array();
+    let nc = img.shape()[2];
+    if nc != 3 && nc != 4 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!("mip_levels: 3 or 4 channels, not {}", nc)));
+    }
     let levels = py.allow_threads(|| {
     let (mut h, mut w) = (img.shape()[0], img.shape()[1]);
+    let to_lin = |i: usize, v: u8| -> f32 { if i % nc < 3 { lut[v as usize] } else { v as f32 / 255.0f32 } };
     let mut lin: Vec<f32> = match img.as_slice() {
-        Some(sl) => sl.iter().map(|&v| lut[v as usize]).collect(),
-        None => img.iter().map(|&v| lut[v as usize]).collect(),
+        Some(sl) => sl.iter().enumerate().map(|(i, &v)| to_lin(i, v)).collect(),
+        None => img.iter().enumerate().map(|(i, &v)| to_lin(i, v)).collect(),
     };
     let mut out = Vec::new();
     while h.max(w) > 1 {
         let (mut nh, mut nw) = (h, w);
         if h > 1 {
             nh = h / 2;
-            let mut nl = vec![0f32; nh * w * 3];
+            let mut nl = vec![0f32; nh * w * nc];
             for y in 0..nh {
-                for x in 0..w * 3 {
-                    nl[y * w * 3 + x] = 0.5f32 * (lin[(2 * y) * w * 3 + x] + lin[(2 * y + 1) * w * 3 + x]);
+                for x in 0..w * nc {
+                    nl[y * w * nc + x] = 0.5f32 * (lin[(2 * y) * w * nc + x] + lin[(2 * y + 1) * w * nc + x]);
                 }
             }
             lin = nl;
         }
         if w > 1 {
             nw = w / 2;
-            let mut nl = vec![0f32; nh * nw * 3];
+            let mut nl = vec![0f32; nh * nw * nc];
             for y in 0..nh {
                 for x in 0..nw {
-                    for c in 0..3 {
-                        nl[(y * nw + x) * 3 + c] =
-                            0.5f32 * (lin[(y * w + 2 * x) * 3 + c] + lin[(y * w + 2 * x + 1) * 3 + c]);
+                    for c in 0..nc {
+                        nl[(y * nw + x) * nc + c] =
+                            0.5f32 * (lin[(y * w + 2 * x) * nc + c] + lin[(y * w + 2 * x + 1) * nc + c]);
                     }
                 }
             }
@@ -1448,17 +1576,17 @@ fn mip_levels<'py>(py: Python<'py>, rgb: PyReadonlyArray3<'py, u8>, lut: PyReado
             let at = |y: isize, x: isize, c: usize| -> f32 {
                 let yy = y.clamp(0, h as isize - 1) as usize;
                 let xx = x.clamp(0, w as isize - 1) as usize;
-                lin[(yy * w + xx) * 3 + c]
+                lin[(yy * w + xx) * nc + c]
             };
-            let mut l2 = vec![0f32; h * w * 3];
-            let row = w * 3;
+            let mut l2 = lin.clone();           // (alpha kept as averaged)
+            let row = w * nc;
             // the interior: no clamping (the same sum, term by term)
             for y in 1..h - 1 {
                 for x in 1..w - 1 {
                     for c in 0..3 {
-                        let q = y * row + x * 3 + c;
-                        let blur = (lin[q - row - 3] + lin[q - row] + lin[q - row + 3] + lin[q - 3] + lin[q]
-                            + lin[q + 3] + lin[q + row - 3] + lin[q + row] + lin[q + row + 3]) / 9.0f32;
+                        let q = y * row + x * nc + c;
+                        let blur = (lin[q - row - nc] + lin[q - row] + lin[q - row + nc] + lin[q - nc] + lin[q]
+                            + lin[q + nc] + lin[q + row - nc] + lin[q + row] + lin[q + row + nc]) / 9.0f32;
                         l2[q] = lin[q] + sharpen * (lin[q] - blur);
                     }
                 }
@@ -1474,7 +1602,7 @@ fn mip_levels<'py>(py: Python<'py>, rgb: PyReadonlyArray3<'py, u8>, lut: PyReado
                             + at(y, x, c) + at(y, x + 1, c) + at(y + 1, x - 1, c) + at(y + 1, x, c)
                             + at(y + 1, x + 1, c)) / 9.0f32;
                         let v = at(y, x, c);
-                        l2[((y as usize) * w + x as usize) * 3 + c] = v + sharpen * (v - blur);
+                        l2[((y as usize) * w + x as usize) * nc + c] = v + sharpen * (v - blur);
                     }
                 }
             }
@@ -1483,15 +1611,19 @@ fn mip_levels<'py>(py: Python<'py>, rgb: PyReadonlyArray3<'py, u8>, lut: PyReado
             lin.clone()
         };
         let th = srgb_thresholds();
-        let bytes: Vec<u8> = lev.iter().map(|&v| {
+        let bytes: Vec<u8> = lev.iter().enumerate().map(|(i, &v)| {
             let c = v.clamp(0.0, 1.0);
-            th.partition_point(|&t| t <= c) as u8      // the byte the formula gives (monotonic: thresholds)
+            if i % nc < 3 {
+                th.partition_point(|&t| t <= c) as u8      // the byte the formula gives (monotonic: thresholds)
+            } else {
+                (c * 255.0f32 + 0.5f32) as u8
+            }
         }).collect();
-        out.push(numpy::ndarray::Array3::from_shape_vec((h, w, 3), bytes).unwrap());
+        out.push(numpy::ndarray::Array3::from_shape_vec((h, w, nc), bytes).unwrap());
     }
     out
     });
-    levels.into_iter().map(|a| a.into_pyarray(py)).collect()
+    Ok(levels.into_iter().map(|a| a.into_pyarray(py)).collect())
 }
 
 fn polyline_min_dist(l: &numpy::ndarray::ArrayView2<f64>, px: f64, py: f64) -> f64 {
@@ -1819,6 +1951,69 @@ fn season_noise<'py>(py: Python<'py>, x: PyReadonlyArray2<'py, f32>, y: PyReadon
         })
     });
     out.into_pyarray(py)
+}
+
+/// A TIFF tile of float32 samples stored with the floating-point predictor (3; the Copernicus DEM): each row holds
+/// its w values' bytes as 4 planes, most significant first, differenced byte by byte along the row (cog.py). Returns
+/// the (h, w) values in native order.
+#[pyfunction]
+fn float_predictor_f32<'py>(py: Python<'py>, data: &[u8], w: usize, h: usize) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    let row = w * 4;
+    if data.len() < row * h {
+        return Err(pyo3::exceptions::PyValueError::new_err("float_predictor_f32: tile data too short"));
+    }
+    let out = py.allow_threads(|| {
+        let mut v = vec![0f32; w * h];
+        let mut b = vec![0u8; row];
+        for r in 0..h {
+            let src = &data[r * row..(r + 1) * row];
+            let mut acc = 0u8;
+            for (k, &x) in src.iter().enumerate() {
+                acc = acc.wrapping_add(x);
+                b[k] = acc;
+            }
+            for c in 0..w {
+                v[r * w + c] = f32::from_be_bytes([b[c], b[w + c], b[2 * w + c], b[3 * w + c]]);
+            }
+        }
+        v
+    });
+    Ok(numpy::ndarray::Array2::from_shape_vec((h, w), out).unwrap().into_pyarray(py))
+}
+
+/// Bilinear samples of a grid (h, w float32, h and w >= 2) at fractional pixel coordinates (fx, fy: column, row of
+/// pixel centres): the cell's corners clamped into the grid (ix in [0, w - 2]) and the weights into [0, 1], as
+/// dem.sample did in numpy (float64 arithmetic in its order). The DEM's Web-Mercator mosaics and the polar DEM's
+/// latitude / longitude grids (polardem.py).
+#[pyfunction]
+fn bilinear_grid<'py>(
+    py: Python<'py>,
+    grid: PyReadonlyArray2<'py, f32>,
+    fx: PyReadonlyArray1<'py, f64>,
+    fy: PyReadonlyArray1<'py, f64>,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let g = grid.as_array();
+    let (h, w) = (g.shape()[0], g.shape()[1]);
+    if h < 2 || w < 2 {
+        return Err(pyo3::exceptions::PyValueError::new_err("bilinear_grid: the grid needs 2 x 2 pixels"));
+    }
+    let (xs, ys) = (fx.as_array(), fy.as_array());
+    if xs.len() != ys.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err("bilinear_grid: fx and fy differ in length"));
+    }
+    let out = py.allow_threads(|| {
+        numpy::ndarray::Array1::from_shape_fn(xs.len(), |i| {
+            let (x, y) = (xs[i], ys[i]);
+            let ix = (x.floor() as i64).clamp(0, w as i64 - 2) as usize;
+            let iy = (y.floor() as i64).clamp(0, h as i64 - 2) as usize;
+            let wx = (x - ix as f64).clamp(0.0, 1.0);
+            let wy = (y - iy as f64).clamp(0.0, 1.0);
+            let (v00, v10) = (g[[iy, ix]] as f64, g[[iy, ix + 1]] as f64);
+            let (v01, v11) = (g[[iy + 1, ix]] as f64, g[[iy + 1, ix + 1]] as f64);
+            (v00 * (1.0 - wx) + v10 * wx) * (1.0 - wy) + (v01 * (1.0 - wx) + v11 * wx) * wy
+        })
+    });
+    Ok(out.into_pyarray(py))
 }
 
 /// dem.decode_terrarium's arithmetic on the decoded image (h, w, 3|4 uint8): R * 256 + G + B / 256 - 32768 in float32,
@@ -2763,12 +2958,16 @@ fn terrain_at(grid: &numpy::ndarray::ArrayView2<f64>, i0: i64, j0: i64, cell: f6
 /// the terrain's heights at its corners (grid: as terrain_at); where the ground inside departs from that plane by more
 /// than tol (checked at the grid points inside and where its edges cross the terrain's edges) it is cut along the
 /// terrain's edges and every piece takes the terrain's heights: within tol of the drawn ground
-/// everywhere. Returns (points (m, 3), uvs (m, 2), triangles (r, 3), source triangle (r,)); points not shared.
+/// everywhere. In a terrain cell whose corners are more than step_m apart (a cutting's wall: the lattice draws it as teeth)
+/// no point goes over the cell's lowest corner + max_up (an edge line climbed those teeth in front of the wall as tents
+/// of white up to 1.3 m tall, the McGraw-Graben 2026-10-22: it stays at the road's level, the teeth over it).
+/// Returns (points (m, 3), uvs (m, 2), triangles (r, 3), source triangle (r,)); points not shared.
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (pts, uv, tris, cell, grid, i0, j0, tol, step_m=f64::INFINITY, max_up=f64::INFINITY))]
 fn follow_tris<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>, uv: PyReadonlyArray2<'py, f64>,
                     tris: PyReadonlyArray2<'py, i64>, cell: f64, grid: PyReadonlyArray2<'py, f64>, i0: i64, j0: i64,
-                    tol: f64)
+                    tol: f64, step_m: f64, max_up: f64)
                     -> (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<i64>>,
                         Bound<'py, PyArray1<i64>>) {
     let (pv, uvv, tv, gv) = (pts.as_array(), uv.as_array(), tris.as_array(), grid.as_array());
@@ -2829,10 +3028,23 @@ fn follow_tris<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>, uv: PyRead
                     }
                 }
             }
+            // the triangle's own plane (own heights at its corners): the cap over it
+            // in a terrain cell holding a step (corners more than step_m apart: a cutting's wall drawn by the lattice as
+            // teeth) no point over its lowest corner + max_up
+            let cap = |x: f64, y: f64| -> f64 {
+                if !step_m.is_finite() { return f64::INFINITY; }
+                let (gx, gy) = (x / cell - i0 as f64, y / cell - j0 as f64);
+                let (ny, nx) = (gv.shape()[0] as i64, gv.shape()[1] as i64);
+                let li = (gx.floor() as i64).clamp(0, nx - 2) as usize;
+                let lj = (gy.floor() as i64).clamp(0, ny - 2) as usize;
+                let c = [gv[[lj, li]], gv[[lj, li + 1]], gv[[lj + 1, li]], gv[[lj + 1, li + 1]]];
+                let (lo, hi) = c.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |a, &v| (a.0.min(v), a.1.max(v)));
+                if hi - lo > step_m { lo + max_up } else { f64::INFINITY }
+            };
             if !split {
                 let base = p_out.len() as i64;
                 for (k, q) in tri.iter().enumerate() {
-                    p_out.push([q[0], q[1], z[k]]);
+                    p_out.push([q[0], q[1], z[k].min(cap(q[0], q[1]))]);
                     uv_out.push([q[2], q[3]]);
                 }
                 t_out.push([base, base + 1, base + 2]);
@@ -2879,7 +3091,7 @@ fn follow_tris<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>, uv: PyRead
                 if area.abs() < 1e-8 { continue; }
                 let base = p_out.len() as i64;
                 for q in poly.iter() {
-                    p_out.push([q[0], q[1], ter(q[0], q[1])]);
+                    p_out.push([q[0], q[1], ter(q[0], q[1]).min(cap(q[0], q[1]))]);
                     uv_out.push([q[2], q[3]]);
                 }
                 for a in 1..(poly.len() as i64 - 1) {
@@ -3244,6 +3456,339 @@ fn first_probe_near_lines(pts: PyReadonlyArray2<f64>, starts: PyReadonlyArray1<i
     None
 }
 
+/// terrainpatch.mesh: a height grid z (ny, nx) over xs (nx,) and ys (ny,) as a mesh relative to (ox, oy, 0):
+/// positions (nx*ny, 3) float32 row-major (y rows, x columns), triangles (2*(nx-1)*(ny-1), 3) int32, two a quad
+/// (a b d, a d c: counter-clockwise from above), the first of every quad, then the second.
+#[pyfunction]
+fn grid_mesh<'py>(py: Python<'py>, xs: PyReadonlyArray1<'py, f64>, ys: PyReadonlyArray1<'py, f64>,
+                  z: PyReadonlyArray2<'py, f64>, ox: f64, oy: f64)
+                  -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i32>>)> {
+    let (xv, yv, zv) = (xs.as_array(), ys.as_array(), z.as_array());
+    let (nx, ny) = (xv.len(), yv.len());
+    if zv.shape() != [ny, nx] {
+        return Err(pyo3::exceptions::PyValueError::new_err("grid_mesh: z must be (len(ys), len(xs))"));
+    }
+    let mut pos = numpy::ndarray::Array2::<f32>::zeros((nx * ny, 3));
+    for j in 0..ny {
+        for i in 0..nx {
+            let k = j * nx + i;
+            pos[[k, 0]] = (xv[i] - ox) as f32;
+            pos[[k, 1]] = (yv[j] - oy) as f32;
+            pos[[k, 2]] = zv[[j, i]] as f32;
+        }
+    }
+    let q = nx.saturating_sub(1) * ny.saturating_sub(1);
+    let mut tris = numpy::ndarray::Array2::<i32>::zeros((2 * q, 3));
+    let mut t = 0;
+    for half in 0..2 {
+        for j in 0..ny.saturating_sub(1) {
+            for i in 0..nx.saturating_sub(1) {
+                let a = (j * nx + i) as i32;
+                let (b, c, d) = (a + 1, a + nx as i32, a + nx as i32 + 1);
+                let row = if half == 0 { [a, b, d] } else { [a, d, c] };
+                for m in 0..3 { tris[[t, m]] = row[m]; }
+                t += 1;
+            }
+        }
+    }
+    Ok((pos.into_pyarray(py), tris.into_pyarray(py)))
+}
+
+/// Which points lie on any of the triangles (2D): tris (n, 6) as x0 y0 x1 y1 x2 y2, pts (m, 2) -> bool (m,).
+/// The triangles are bucketed by their boxes in square cells of `cell` m; a point on an edge counts as on it.
+/// (plazas.py: a paved area's ground the road mesh already covers is left out.)
+#[pyfunction]
+fn points_on_tris<'py>(py: Python<'py>, tris: PyReadonlyArray2<'py, f64>, pts: PyReadonlyArray2<'py, f64>, cell: f64)
+                       -> PyResult<Bound<'py, PyArray1<bool>>> {
+    let t = tris.as_array();
+    let p = pts.as_array();
+    if t.ncols() != 6 || p.ncols() != 2 {
+        return Err(pyo3::exceptions::PyValueError::new_err("points_on_tris: tris (n, 6), pts (m, 2)"));
+    }
+    let (n, m) = (t.nrows(), p.nrows());
+    let mut out = vec![false; m];
+    if n == 0 || m == 0 || !(cell > 0.0) {
+        return Ok(out.into_pyarray(py));
+    }
+    let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for i in 0..n {
+        for k in 0..3 {
+            x0 = x0.min(t[[i, 2 * k]]); x1 = x1.max(t[[i, 2 * k]]);
+            y0 = y0.min(t[[i, 2 * k + 1]]); y1 = y1.max(t[[i, 2 * k + 1]]);
+        }
+    }
+    let nx = (((x1 - x0) / cell).floor() as usize + 1).min(4096);
+    let ny = (((y1 - y0) / cell).floor() as usize + 1).min(4096);
+    let ix = |x: f64| (((x - x0) / cell).floor().max(0.0) as usize).min(nx - 1);
+    let iy = |y: f64| (((y - y0) / cell).floor().max(0.0) as usize).min(ny - 1);
+    let mut cells: Vec<Vec<u32>> = vec![Vec::new(); nx * ny];
+    for i in 0..n {
+        let xs = [t[[i, 0]], t[[i, 2]], t[[i, 4]]];
+        let ys = [t[[i, 1]], t[[i, 3]], t[[i, 5]]];
+        let (a, b) = (ix(xs[0].min(xs[1]).min(xs[2])), ix(xs[0].max(xs[1]).max(xs[2])));
+        let (c, d) = (iy(ys[0].min(ys[1]).min(ys[2])), iy(ys[0].max(ys[1]).max(ys[2])));
+        for j in c..=d {
+            for k in a..=b {
+                cells[j * nx + k].push(i as u32);
+            }
+        }
+    }
+    for q in 0..m {
+        let (x, y) = (p[[q, 0]], p[[q, 1]]);
+        if x < x0 || x > x1 || y < y0 || y > y1 {
+            continue;
+        }
+        for &i in &cells[iy(y) * nx + ix(x)] {
+            let i = i as usize;
+            let (ax, ay, bx, by, cx, cy) = (t[[i, 0]], t[[i, 1]], t[[i, 2]], t[[i, 3]], t[[i, 4]], t[[i, 5]]);
+            let d1 = (bx - ax) * (y - ay) - (by - ay) * (x - ax);
+            let d2 = (cx - bx) * (y - by) - (cy - by) * (x - bx);
+            let d3 = (ax - cx) * (y - cy) - (ay - cy) * (x - cx);
+            let neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+            let pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+            if !(neg && pos) {
+                out[q] = true;
+                break;
+            }
+        }
+    }
+    Ok(out.into_pyarray(py))
+}
+
+/// The longest run (m) of wet points along the line xy (n, 2) that touches neither end, measured between the dry
+/// points either side of it (roads.wet_run_inside: a tunnel under a river, not a portal on its bank).
+#[pyfunction]
+fn wet_run_inside(xy: PyReadonlyArray2<f64>, wet: PyReadonlyArray1<bool>) -> PyResult<f64> {
+    let p = xy.as_array();
+    let w = wet.as_array();
+    let n = p.nrows();
+    if w.len() != n || p.ncols() != 2 {
+        return Err(pyo3::exceptions::PyValueError::new_err("wet_run_inside: xy (n, 2), wet (n,)"));
+    }
+    if n < 3 {
+        return Ok(0.0);
+    }
+    let mut s = vec![0.0f64; n];
+    for i in 1..n {
+        s[i] = s[i - 1] + ((p[[i, 0]] - p[[i - 1, 0]]).powi(2) + (p[[i, 1]] - p[[i - 1, 1]]).powi(2)).sqrt();
+    }
+    let (mut best, mut i) = (0.0f64, 0usize);
+    while i < n {
+        if !w[i] {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j + 1 < n && w[j + 1] {
+            j += 1;
+        }
+        if i > 0 && j < n - 1 {
+            best = best.max(s[j + 1] - s[i - 1]);
+        }
+        i = j + 1;
+    }
+    Ok(best)
+}
+
+/// surface.photo_roads: the photo rgb (h, w, 3) with thick lines painted in. segs (m, 4): segment ends in pixel
+/// coordinates (column, row; a pixel's centre at +0.5); hw (m,): half widths in pixels; kind (m,): index into colors
+/// (k, 4: r g b, opacity). Each kind's coverage is the largest over its segments of clamp(hw - distance + 0.5, 0, 1)
+/// (round ends and joints, a one-pixel antialiased edge); the kinds are blended over the photo in index order at their
+/// opacity times their coverage (the last kind wins where they overlap).
+#[pyfunction]
+fn paint_lines<'py>(py: Python<'py>, rgb: PyReadonlyArray3<'py, u8>, segs: PyReadonlyArray2<'py, f64>,
+                    hw: PyReadonlyArray1<'py, f64>, kind: PyReadonlyArray1<'py, u8>, colors: PyReadonlyArray2<'py, f32>)
+                    -> PyResult<Bound<'py, numpy::PyArray3<u8>>> {
+    let img = rgb.as_array();
+    let sg = segs.as_array();
+    let hw = hw.as_array();
+    let kd = kind.as_array();
+    let col = colors.as_array();
+    let m = sg.nrows();
+    if sg.ncols() != 4 || hw.len() != m || kd.len() != m || col.ncols() != 4 || img.shape()[2] != 3 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "paint_lines: rgb (h, w, 3), segs (m, 4), hw (m,), kind (m,), colors (k, 4)"));
+    }
+    let k = col.nrows();
+    if kd.iter().any(|&v| v as usize >= k) {
+        return Err(pyo3::exceptions::PyValueError::new_err("paint_lines: a kind past the colours"));
+    }
+    let out = py.allow_threads(|| {
+        let (h, w) = (img.shape()[0], img.shape()[1]);
+        let mut cov = vec![0f32; k * h * w];
+        for s in 0..m {
+            let (ax, ay, bx, by, r) = (sg[[s, 0]], sg[[s, 1]], sg[[s, 2]], sg[[s, 3]], hw[s]);
+            if !(r > 0.0) || !ax.is_finite() || !ay.is_finite() || !bx.is_finite() || !by.is_finite() {
+                continue;
+            }
+            let pad = r + 1.0;
+            let c0 = (ax.min(bx) - pad).floor().max(0.0);
+            let c1 = (ax.max(bx) + pad).ceil().min(w as f64);
+            let r0 = (ay.min(by) - pad).floor().max(0.0);
+            let r1 = (ay.max(by) + pad).ceil().min(h as f64);
+            if c0 >= c1 || r0 >= r1 {
+                continue;
+            }
+            let (dx, dy) = (bx - ax, by - ay);
+            let l2 = dx * dx + dy * dy;
+            let base = kd[s] as usize * h * w;
+            for j in r0 as usize..r1 as usize {
+                let py_ = j as f64 + 0.5;
+                for i in c0 as usize..c1 as usize {
+                    let px_ = i as f64 + 0.5;
+                    let t = if l2 > 0.0 { (((px_ - ax) * dx + (py_ - ay) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+                    let (ex, ey) = (px_ - ax - t * dx, py_ - ay - t * dy);
+                    let c = (r - (ex * ex + ey * ey).sqrt() + 0.5).clamp(0.0, 1.0) as f32;
+                    let v = &mut cov[base + j * w + i];
+                    if c > *v { *v = c; }
+                }
+            }
+        }
+        let mut out = img.to_owned();
+        for q in 0..k {
+            let base = q * h * w;
+            let c = [col[[q, 0]], col[[q, 1]], col[[q, 2]]];
+            let alpha = col[[q, 3]];
+            for j in 0..h {
+                for i in 0..w {
+                    let a = cov[base + j * w + i] * alpha;
+                    if a <= 0.0 { continue; }
+                    for ch in 0..3 {
+                        let v = out[[j, i, ch]] as f32 * (1.0 - a) + c[ch] * a;
+                        out[[j, i, ch]] = (v + 0.5).clamp(0.0, 255.0) as u8;
+                    }
+                }
+            }
+        }
+        out
+    });
+    Ok(out.into_pyarray(py))
+}
+
+/// farfield.build_tile's adaptive mesh: the right-triangulated irregular network (RTIN, a 4-8 hierarchy, as Mapbox's
+/// Martini, but with each triangle's true error: every grid point inside it) of a (2^k + 1)² height grid h [j, i]
+/// (j north) whose surface is within max_err (m) of every grid height.
+/// Returns (tris (m, 3) int64: grid indices j * n + i, counter-clockwise from +Z; surf (n, n): the mesh's surface at
+/// every grid point; the largest |surf - h|). The top split is the SW-NE diagonal and the finest cells split SW-NE
+/// where i + j is even, SE-NW where odd (the TerrainBlock's pattern, farfield.torque_split45), so surf on the regular
+/// grid triangulation is the mesh's surface exactly. The mesh has no T-junctions (a midpoint's error is at least its
+/// children's).
+#[pyfunction]
+fn rtin_mesh<'py>(py: Python<'py>, h: PyReadonlyArray2<'py, f64>, max_err: f64)
+                  -> PyResult<(Bound<'py, PyArray2<i64>>, Bound<'py, PyArray2<f64>>, f64)> {
+    let g = h.as_array();
+    let n = g.nrows();
+    let t = n.wrapping_sub(1);
+    if g.ncols() != n || n < 3 || !t.is_power_of_two() {
+        return Err(pyo3::exceptions::PyValueError::new_err("rtin_mesh: a (2^k + 1)² grid"));
+    }
+    let hv: Vec<f64> = g.iter().copied().collect();
+    let (tris, surf, worst) = py.allow_threads(|| {
+        let at = |x: usize, y: usize| hv[y * n + x];
+        let num = t * t * 2 - 2;
+        let parents = num - t * t;
+        let mut coords = vec![0usize; num * 4];
+        for i in 0..num {
+            let mut id = i + 2;
+            let (mut ax, mut ay, mut bx, mut by, mut cx, mut cy);
+            if id & 1 != 0 {
+                ax = 0; ay = 0; bx = t; by = t; cx = t; cy = 0;
+            } else {
+                ax = t; ay = t; bx = 0; by = 0; cx = 0; cy = t;
+            }
+            id >>= 1;
+            while id > 1 {
+                let (mx, my) = ((ax + bx) >> 1, (ay + by) >> 1);
+                if id & 1 != 0 {
+                    bx = ax; by = ay; ax = cx; ay = cy;
+                } else {
+                    ax = bx; ay = by; bx = cx; by = cy;
+                }
+                cx = mx; cy = my;
+                id >>= 1;
+            }
+            coords[i * 4..i * 4 + 4].copy_from_slice(&[ax, ay, bx, by]);
+        }
+        let mut errors = vec![0f64; n * n];
+        for i in (0..num).rev() {
+            let (ax, ay, bx, by) = (coords[i * 4], coords[i * 4 + 1], coords[i * 4 + 2], coords[i * 4 + 3]);
+            let (mx, my) = ((ax + bx) >> 1, (ay + by) >> 1);
+            let cx = (mx + my) as isize - ay as isize;
+            let cy = (my + ax) as isize - mx as isize;
+            let mid = my * n + mx;
+            // the triangle's true error: every grid point inside it against its plane (the hypotenuse midpoint alone
+            // let big flat triangles reach up a wall's step: spikes in front of the McGraw-Graben's walls, 2026-10-22)
+            let (cxu, cyu) = (cx as usize, cy as usize);
+            let (za, zb, zc) = (at(ax, ay), at(bx, by), at(cxu, cyu));
+            let (fax, fay, fbx, fby, fcx, fcy) = (ax as f64, ay as f64, bx as f64, by as f64, cx as f64, cy as f64);
+            let det = (fbx - fax) * (fcy - fay) - (fby - fay) * (fcx - fax);
+            let mut e = 0f64;
+            if det != 0.0 {
+                let (x0, x1) = (ax.min(bx).min(cxu), ax.max(bx).max(cxu));
+                let (y0, y1) = (ay.min(by).min(cyu), ay.max(by).max(cyu));
+                for y in y0..=y1 {
+                    for x in x0..=x1 {
+                        let (fx, fy) = (x as f64, y as f64);
+                        let w1 = ((fx - fax) * (fcy - fay) - (fy - fay) * (fcx - fax)) / det;
+                        let w2 = ((fbx - fax) * (fy - fay) - (fby - fay) * (fx - fax)) / det;
+                        let w0 = 1.0 - w1 - w2;
+                        if w0 < -1e-9 || w1 < -1e-9 || w2 < -1e-9 { continue; }
+                        let d = (w0 * za + w1 * zb + w2 * zc - hv[y * n + x]).abs();
+                        if d > e { e = d; }
+                    }
+                }
+            }
+            if e > errors[mid] { errors[mid] = e; }
+            if i < parents {
+                let (cx, cy) = (cx as usize, cy as usize);
+                let l = ((ay + cy) >> 1) * n + ((ax + cx) >> 1);
+                let r = ((by + cy) >> 1) * n + ((bx + cx) >> 1);
+                errors[mid] = errors[mid].max(errors[l]).max(errors[r]);
+            }
+        }
+        let mut tris: Vec<[i64; 3]> = Vec::new();
+        let mut surf = vec![f64::NAN; n * n];
+        let mut stack = vec![(0usize, 0usize, t, t, t, 0usize), (t, t, 0, 0, 0, t)];
+        while let Some((ax, ay, bx, by, cx, cy)) = stack.pop() {
+            let (mx, my) = ((ax + bx) >> 1, (ay + by) >> 1);
+            let leg = (ax as isize - cx as isize).abs() + (ay as isize - cy as isize).abs();
+            if leg > 1 && errors[my * n + mx] > max_err {
+                stack.push((cx, cy, ax, ay, mx, my));
+                stack.push((bx, by, cx, cy, mx, my));
+                continue;
+            }
+            let p = [(ax, ay), (bx, by), (cx, cy)];
+            let z = [at(ax, ay), at(bx, by), at(cx, cy)];
+            let cross = (bx as f64 - ax as f64) * (cy as f64 - ay as f64) - (by as f64 - ay as f64) * (cx as f64 - ax as f64);
+            let idx = |k: usize| (p[k].1 * n + p[k].0) as i64;
+            tris.push(if cross > 0.0 { [idx(0), idx(1), idx(2)] } else { [idx(0), idx(2), idx(1)] });
+            // the plane over the grid points of this triangle (barycentric; edges shared, the same value both sides)
+            let (x0, x1) = (ax.min(bx).min(cx), ax.max(bx).max(cx));
+            let (y0, y1) = (ay.min(by).min(cy), ay.max(by).max(cy));
+            let det = cross;
+            for y in y0..=y1 {
+                for x in x0..=x1 {
+                    let (fx, fy) = (x as f64, y as f64);
+                    let w1 = ((fx - ax as f64) * (cy as f64 - ay as f64) - (fy - ay as f64) * (cx as f64 - ax as f64)) / det;
+                    let w2 = ((bx as f64 - ax as f64) * (fy - ay as f64) - (by as f64 - ay as f64) * (fx - ax as f64)) / det;
+                    let w0 = 1.0 - w1 - w2;
+                    if w0 < -1e-9 || w1 < -1e-9 || w2 < -1e-9 { continue; }
+                    surf[y * n + x] = w0 * z[0] + w1 * z[1] + w2 * z[2];
+                }
+            }
+        }
+        let mut worst = 0f64;
+        for k in 0..n * n {
+            worst = worst.max((surf[k] - hv[k]).abs());
+        }
+        (tris, surf, worst)
+    });
+    let m = tris.len();
+    let tris = numpy::ndarray::Array2::from_shape_vec((m, 3), tris.into_iter().flatten().collect()).unwrap();
+    let surf = numpy::ndarray::Array2::from_shape_vec((n, n), surf).unwrap();
+    Ok((tris.into_pyarray(py), surf.into_pyarray(py), worst))
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -3276,6 +3821,12 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(tangents, m)?)?;
     m.add_function(wrap_pyfunction!(season_noise, m)?)?;
     m.add_function(wrap_pyfunction!(terrarium_heights, m)?)?;
+    m.add_function(wrap_pyfunction!(bilinear_grid, m)?)?;
+    m.add_function(wrap_pyfunction!(float_predictor_f32, m)?)?;
+    m.add_function(wrap_pyfunction!(segment_crossings, m)?)?;
+    m.add_function(wrap_pyfunction!(gpu_name, m)?)?;
+    m.add_function(wrap_pyfunction!(seam_detect_gpu, m)?)?;
+    m.add_function(wrap_pyfunction!(bc1_encode_gpu, m)?)?;
     m.add_function(wrap_pyfunction!(rf_pass, m)?)?;
     m.add_function(wrap_pyfunction!(vmedian, m)?)?;
     m.add_function(wrap_pyfunction!(bc1_encode, m)?)?;
@@ -3298,6 +3849,11 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(regional_groups, m)?)?;
     m.add_function(wrap_pyfunction!(clip_segments, m)?)?;
     m.add_function(wrap_pyfunction!(first_probe_near_lines, m)?)?;
-    m.add("VERSION", 45)?;
+    m.add_function(wrap_pyfunction!(grid_mesh, m)?)?;
+    m.add_function(wrap_pyfunction!(points_on_tris, m)?)?;
+    m.add_function(wrap_pyfunction!(wet_run_inside, m)?)?;
+    m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
+    m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
+    m.add("VERSION", 60)?;
     Ok(())
 }

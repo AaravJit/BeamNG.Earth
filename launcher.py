@@ -484,6 +484,8 @@ def windows_game_dir():
 def start_game(use_gcpatch, build="native", gfx="", user_dir=None):
     """Start the game; returns a Popen when this process started it directly, else None (through Steam)."""
     win_args = ["-gfx", gfx] if gfx else []
+    extra = os.environ.get("BNGE_GAME_ARGS", "").split()     # (tests: e.g. "-bngetest car,damage")
+    win_args += extra
     if IS_WIN:
         # as BeamMP's launcher: the game's own launcher (BeamNG.drive.exe) in its folder, waited on. Works under
         # Wine / Proton too (the .exe started with protontricks), where Steam's links do not reach Steam
@@ -519,7 +521,7 @@ def start_game(use_gcpatch, build="native", gfx="", user_dir=None):
                     env["BNGEARTH_USER_DIR"] = user_dir
             runtime = steam_runtime(exe)
             row("Game", "starting" + ("  (with the grass patch)" if lib else ""))
-            proc = subprocess.Popen(([runtime, "--verb=waitforexitandrun", "--"] if runtime else []) + [exe],
+            proc = subprocess.Popen(([runtime, "--verb=waitforexitandrun", "--"] if runtime else []) + [exe] + extra,
                                     cwd=os.path.dirname(os.path.dirname(exe)), env=env,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
             t0 = time.time()
@@ -784,10 +786,36 @@ def user_folder():
     return d
 
 
+def hand_over():
+    """A packaged copy with a newer one downloaded beside it by the in-game "Update now" (server selfupdate.py,
+    GitHub #140): start that one with these arguments instead. True when it was started."""
+    if not (FROZEN or os.environ.get("APPIMAGE")):
+        return False
+    try:
+        sys.path.insert(0, os.path.join(ROOT, "server"))
+        import install
+        import selfupdate
+        new = selfupdate.staged(install.version())
+    except Exception:                   # the old copy runs as before
+        return False
+    if not new:
+        return False
+    env = {k: v for k, v in os.environ.items() if k not in ("APPDIR", "APPIMAGE", "ARGV0", "OWD")}
+    try:
+        subprocess.Popen([new] + sys.argv[1:], env=env, cwd=os.path.dirname(new),
+                         **({"creationflags": subprocess.CREATE_NEW_CONSOLE} if IS_WIN else {"start_new_session": True}))
+    except OSError:
+        return False
+    print(f"Starting the updated BeamNG.Earth: {os.path.basename(new)}", flush=True)
+    return True
+
+
 def main():
     ensure_ca_certs()
     if len(sys.argv) > 1 and sys.argv[1] == "--server":
         run_server(sys.argv[2:])
+        return
+    if hand_over():
         return
     ap = argparse.ArgumentParser(description="Start the BeamNG.Earth world server and BeamNG.drive.")
     ap.add_argument("--no-game", action="store_true", help="only the server (start the game yourself)")

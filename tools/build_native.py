@@ -26,6 +26,8 @@ CRATE = os.path.join(ROOT, "native", "earthfast")
 
 
 WIN_TARGET = "x86_64-pc-windows-gnu"
+LINUX_TARGET = "x86_64-unknown-linux-gnu"
+LINUX_GLIBC = "2.35"           # the oldest glibc the Linux module runs on (the AppImage's own limit too)
 
 
 def windows():
@@ -46,6 +48,16 @@ def windows():
 def main():
     if "--windows" in sys.argv[1:]:
         windows()
+        return
+    if sys.platform.startswith("linux") and shutil.which("cargo-zigbuild") and shutil.which("zig"):
+        # against glibc LINUX_GLIBC (cargo-zigbuild), not this machine's: built on a rolling distro, the module asked
+        # for glibc 2.43 / 2.44 and failed to load on a Steam Deck (2.43 without the 2.44 symbols) and would on every
+        # older system (Ubuntu 22.04: 2.35), 2026-10-22
+        subprocess.run(["cargo", "zigbuild", "--release", "--target", f"{LINUX_TARGET}.{LINUX_GLIBC}"], cwd=CRATE,
+                       check=True)
+        install(os.path.join(CRATE, "target", LINUX_TARGET, "release", "libearthfast.so"),
+                os.path.join(ROOT, "server", "earthfast.abi3.so"))
+        print("built", os.path.join(ROOT, "server", "earthfast.abi3.so"), f"(glibc {LINUX_GLIBC})")
         return
     subprocess.run(["cargo", "build", "--release"], cwd=CRATE, check=True)
     rel = os.path.join(CRATE, "target", "release")

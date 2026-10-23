@@ -50,6 +50,11 @@ class RangeError(IOError):
     """A remote range could not be read (no mirror could deliver, or a bad answer)."""
 
 
+class Changed(RangeError):
+    """A file pinned to an ETag (RemoteFile if_match) changed on the server: the cached blocks are of the old version
+    (osmtags.py: a file rewritten in place)."""
+
+
 class Missing(RangeError):
     """The file does not exist (404 / 410; remembered by a marker <cache_dir>/404 for the host's
     miss_ttl, as dem.py and imagery.py remember missing tiles)."""
@@ -98,9 +103,13 @@ class RemoteFile:
     """See the module docstring. size: the file's length in bytes (from an index, e.g. the STAC
     item's file:size), or None to learn it from the first answer's Content-Range (then kept in
     <cache_dir>/size, so a later session can check the length of every cached block too). cache_dir
-    is the file's own directory (it also keys its blocks in the shared memory LRU)."""
+    is the file's own directory (it also keys its blocks in the shared memory LRU). if_match: the ETag of the
+    version the blocks must come from (a file that is rewritten in place: put the ETag into cache_dir too); a request
+    the server answers for another version raises Changed."""
 
-    def __init__(self, urls, size, cache_dir, fetcher):
+    def __init__(self, urls, size, cache_dir, fetcher, if_match=None, block=None):
+        self.if_match = if_match
+        self.block = block or BLOCK         # bytes per cached block (smaller for many small reads of many files)
         self.urls = (urls,) if isinstance(urls, str) else tuple(urls)
         self.cache_dir = cache_dir
         self.fetcher = fetcher
@@ -146,7 +155,7 @@ class RemoteFile:
             return None
         # a damaged block (a crash after os.replace but before the data reached the disk leaves it
         # short or empty): refetched. Without the file's size only a full block can be checked.
-        if len(b) != (self._block_len(i) if self.size is not None else BLOCK):
+        if len(b) != (self._block_len(i) if self.size is not None else self.block):
             return None
         with self._lock:
             self.stats["disk_blocks"] += 1
@@ -157,7 +166,7 @@ class RemoteFile:
         _mem_put((self._key, i), b)
 
     def _block_len(self, i):
-        return max(0, min(BLOCK, self.size - i * BLOCK))
+        return max(0, min(self.block, self.size - i * self.block))
 
     def _store(self, i, b):
         self._write(self._path(i), b)
@@ -165,15 +174,23 @@ class RemoteFile:
 
     def _fetch_run(self, i0, i1, kind):
         """Blocks i0..i1-1 in one Range request (mirrors in turn); stores and returns them."""
-        start = i0 * BLOCK
-        end = i1 * BLOCK if self.size is None else min(self.size, i1 * BLOCK)
+        start = i0 * self.block
+        end = i1 * self.block if self.size is None else min(self.size, i1 * self.block)
         marker = os.path.join(self.cache_dir, "404")
         if self.fetcher.miss_alive(marker, self.urls[0]):
             raise Missing(f"{self.urls[0]}: not found (remembered)")
         err = None
         for url in self.urls:
+            hd = {"Range": f"bytes={start}-{end - 1}"}
+            if self.if_match:
+                hd["If-Match"] = self.if_match
             try:
-                r = self.fetcher.get(url, kind=kind, headers={"Range": f"bytes={start}-{end - 1}"})
+                r = self.fetcher.get(url, kind=kind, headers=hd)
+            except netfetch.FetchFailed as e:
+                if self.if_match and getattr(e, "status", None) == 412:
+                    raise Changed(f"{url}: no longer {self.if_match}") from e
+                err = e
+                continue
             except netfetch.NotFound as e:
                 os.makedirs(self.cache_dir, exist_ok=True)
                 open(marker, "wb").close()
@@ -182,6 +199,8 @@ class RemoteFile:
                 err = e
                 continue
             body = r.body
+            if self.if_match and r.headers.get("etag", self.if_match).strip() != self.if_match:
+                raise Changed(f"{url}: {r.headers.get('etag')} is not {self.if_match}")
             if r.status == 206:
                 m = CONTENT_RANGE.match(r.headers.get("content-range", ""))
                 if not m or int(m.group(1)) != start:
@@ -204,7 +223,7 @@ class RemoteFile:
                 self.stats["net_bytes"] += len(body)
             out = {}
             for i in range(i0, i1):
-                b = body[(i - i0) * BLOCK:(i - i0 + 1) * BLOCK]
+                b = body[(i - i0) * self.block:(i - i0 + 1) * self.block]
                 if not b:
                     break
                 self._store(i, b)
@@ -217,7 +236,7 @@ class RemoteFile:
     def blocks(self, i0, i1, kind="demand"):
         """{i: bytes} for blocks i0..i1-1 (beyond the end of the file: absent)."""
         if self.size is not None:
-            i1 = min(i1, -(-self.size // BLOCK))
+            i1 = min(i1, -(-self.size // self.block))
         out, missing = {}, []
         for i in range(i0, i1):
             b = self._block_from_cache(i)
@@ -272,10 +291,10 @@ class RemoteFile:
             end = min(end, self.size)
         if end <= start:
             return b""
-        i0, i1 = start // BLOCK, (end - 1) // BLOCK + 1
+        i0, i1 = start // self.block, (end - 1) // self.block + 1
         got = self.blocks(i0, i1, kind)
         buf = b"".join(got[i] for i in range(i0, i1) if i in got)
-        return buf[start - i0 * BLOCK:end - i0 * BLOCK]
+        return buf[start - i0 * self.block:end - i0 * self.block]
 
 
 # --- fsspec filesystem for DuckDB ----------------------------------------------------------------

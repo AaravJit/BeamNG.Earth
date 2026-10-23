@@ -197,6 +197,15 @@ class FakeMapData:
     def has(self, key, layer):
         return self.path(key, layer) in self.cached
 
+    def cell(self, key, layers, kind="demand"):
+        """As MapData.cell for one raster layer: its Raster, None when stored as missing."""
+        import types
+        import mapdata as mapdatamod
+        arrays = dict(self.cached[self.path(key, layers[0])])
+        arrays.pop("provenance", None)
+        r = None if "missing" in arrays else mapdatamod._raster_from(arrays)
+        return types.SimpleNamespace(layers={layers[0]: r})
+
     def prefetch(self, key, layers):
         self.prefetched.append((key, layers))
         self.store(key)
@@ -387,6 +396,43 @@ class LotTest(unittest.TestCase):
         out = sf.paint_lots(idx, lat, lon, [Land()])
         self.assertEqual(out[12, 12], sf.ASPHALT)
         self.assertEqual(out[12, 37], sf.DIRT)
+
+
+class PhotoRoadsTest(unittest.TestCase):
+    """Roads in the ground (surface.photo_roads, earthfast.paint_lines)."""
+
+    def test_line_width_and_edge(self):
+        import fast
+        rgb = np.full((40, 40, 3), 200, np.uint8)
+        out = fast._ef.paint_lines(rgb, np.array([[5.0, 20.0, 35.0, 20.0]]), np.array([4.0]), np.array([0], np.uint8),
+                                   np.array([[0.0, 0.0, 0.0, 1.0]], np.float32))
+        col = out[:, 20, 0]
+        self.assertEqual(int(np.sum(col < 100)), 8, "eight pixels across a half width of 4")
+        self.assertTrue(np.all(col[[10, 30]] == 200), "outside untouched")
+        self.assertTrue(np.array_equal(rgb[20, 20], [200, 200, 200]), "the input untouched")
+
+    def test_last_kind_wins(self):
+        import fast
+        rgb = np.zeros((20, 20, 3), np.uint8)
+        segs = np.array([[0.0, 10.0, 20.0, 10.0], [10.0, 0.0, 10.0, 20.0]])
+        out = fast._ef.paint_lines(rgb, segs, np.array([3.0, 3.0]), np.array([0, 1], np.uint8),
+                                   np.array([[255, 0, 0, 1], [0, 0, 255, 1]], np.float32))
+        self.assertEqual(list(out[10, 10]), [0, 0, 255])
+        self.assertEqual(list(out[10, 2]), [255, 0, 0])
+
+    def test_road_painted_at_its_width(self):
+        import geodesy
+        import roads
+        import test_roads
+        frame = geodesy.EnuFrame(test_roads.LAT, test_roads.LON)
+        f = test_roads.features([[(-60, 0), (60, 0)]], ["residential"])
+        rgb = np.full((128, 128, 3), 30, np.uint8)
+        out = sf.photo_roads(rgb, frame, -64.0, -64.0, 128.0, [f])
+        width = roads.road_specs(f)[0].width
+        painted = int(np.sum(out[:, 64, 0] > 60))
+        self.assertLessEqual(abs(painted - width), 2, f"{painted} px painted across a {width:.1f} m road")
+        self.assertEqual(int(out[10, 64, 0]), 30, "the photo kept off the road")
+        self.assertTrue(np.array_equal(sf.photo_roads(rgb, frame, -64.0, -64.0, 128.0, []), rgb))
 
 
 if __name__ == "__main__":

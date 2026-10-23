@@ -196,6 +196,27 @@ def tree_hash(path):
     return h.hexdigest()
 
 
+def ensure_mod_active(user_dir):
+    """Turn the mod back on in the game's mod list (mods/db.json) if something turned it off: joining a BeamMP server
+    turns off every mod the server doesn't send and leaves them off afterwards (2026-10-22). Only this mod's entry
+    changes. True if it did."""
+    path = os.path.join(user_dir, "mods", "db.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            db = json.load(f)
+    except (OSError, ValueError):
+        return False
+    entry = db.get("mods", {}).get(MOD_NAME) if isinstance(db, dict) else None
+    if not isinstance(entry, dict) or entry.get("active") is not False:
+        return False
+    entry["active"] = True
+    tmp = path + ".bnge-tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(db, f, indent=2)
+    os.replace(tmp, path)
+    return True
+
+
 def install_mod(user_dir, assume_yes, dry_run, quiet=False):
     """Copy the mod into the user folder. Returns 'current', 'updated', 'installed', 'kept' or None (dry run);
     quiet: no messages but the notes (the launcher prints one status line)."""
@@ -208,6 +229,8 @@ def install_mod(user_dir, assume_yes, dry_run, quiet=False):
     packed = os.path.join(user_dir, "mods", MOD_NAME + ".zip")
     if os.path.isfile(packed):
         say(f"Note: there is also a zipped copy at {packed}; remove it so the game does not load two versions.")
+    if not dry_run and ensure_mod_active(user_dir):
+        say("Mod: it had been turned off in the game's mod list (a BeamMP server does that); turned it back on.")
     if os.path.isdir(dest):
         if tree_hash(dest) == tree_hash(MOD_SRC):
             note(f"Mod: already up to date in {dest}")

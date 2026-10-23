@@ -2,6 +2,45 @@
 
 What changed in each release of BeamNG.Earth, newest first.
 
+## 1.6.0 beta (2026-10-23)
+
+Works with BeamNG.drive 0.40.3.
+
+### Multiplayer (BeamMP, in testing)
+- **Want to play together? Join the [Discord](https://discord.gg/tgf) to get an IP to join a BeamMP.Earth server.**
+- **BeamNG.Earth on BeamMP servers.** A server runs it from the drop-in server package (see the README). Every player needs the BeamNG.Earth app running; a player who joins is sent to where the others are, and each player's car shows in the right place in everyone's world (within a few centimetres in testing), with its dents. Players far apart don't see each other's cars until they meet.
+- **Players near each other share the work of building the world.** Players close together use one shared world origin, and each piece of distant landscape is built once by one of them and sent to the others; a player far from everyone builds their own, and faster computers take a bigger share. In testing, a Steam Deck joining a desktop that had already loaded the area got most of its distant landscape from it (69 seconds instead of 110-150). Over the internet this needs TCP port 47621 open; otherwise each player builds their own.
+- **Other players on the world map**, as green arrows with their names.
+- **Reduced the chance of other players' cars showing as dark spheres** after one of you teleported far away and back. A car that ended up thousands of miles from your world could break and be removed by the game; far cars are now hidden until they come back, and a removed car comes back once its player is near.
+- **Reduced the chance of the BeamNG.Earth level going missing after playing on a BeamMP server.** Joining any BeamMP server turns off your other mods and leaves them off; the BeamNG.Earth launcher now turns BeamNG.Earth back on before the game starts.
+- **Your other cars stay where you left them.** A car of yours more than about 1.5 miles away is saved with its damage and taken out, and comes back when you return to it; other cars (yours, AI traffic, other players') now have collision with the roads, buildings and trees around them, not only the car you drive.
+
+### Faster loading
+- **Faster teleports to new places.** The car is placed as soon as the ground under it is there, in about 5 seconds on a first visit (it took 30-60 seconds); the levelled roads, walls and river beds are swapped in a little later. The distant landscape of a first visit also loads in about half the time.
+- **Your graphics card now takes some of the world server's work** (the colour matching of the aerial photos and the compression of the distant textures), so the server needs much less of your CPU. Without a usable graphics card the server does the same work on the CPU as before.
+- **Distant terrain is lighter on your graphics card:** flat land far away is drawn with far fewer triangles (75-85 % fewer over plains and cities, 25-35 % fewer in the mountains), while cliffs keep their full detail.
+- **Compute sharing (experimental, for tinkerers):** another computer on your network can build distant landscape for you (see the README). In testing, a Steam Deck with a mini PC and a desktop helping loaded the distant landscape of a first visit in 40-55 seconds instead of 110-150.
+
+### Look
+- **Reduced the chance of red and blue stripes over the ground** (GitHub #115). Since 1.5.0 the distant ground could be drawn grey-white with red and neon-blue stripes over it, worst at Low texture quality: the smaller versions of the ground's photo the game uses in the distance were made wrong. They now match the photo (in testing on a Steam Deck, the stripes were gone at the same spot).
+- **Roads are now part of the ground** instead of a road surface laid over it: the asphalt, cobbles and gravel are painted into the ground's own texture, with the lane markings, curbs and sidewalks on top. It also ends white diamond shapes that showed on some mountain roads (GitHub #135, the Stelvio Pass).
+- **Real lane counts and road widths** from OpenStreetMap where they are mapped (four-lane streets are drawn four lanes wide, with their lane lines).
+- **Racetracks are drawn** (GitHub #143): circuits, ovals and pit lanes from OpenStreetMap, with their real banking from the elevation data (in testing: Daytona's 31° turns, the Nürburgring). Roads and tunnels crossing a track no longer cut into it.
+- **Sidewalks follow the ground** (from FluffyProgramming's PR #82), and **sett and paving-stone streets stay cobbled, concrete streets are concrete** (from erkinalp's PR #119).
+- **Sharper ground in Poland** (the national aerial photos, about 25 cm) and **across northern Europe**, where the national aerial photos were skipped for the ground right around you north of about 47°.
+- **Sunken city roads get full-height concrete walls** instead of a 4 m wall with a bare earth cliff above it, and **reduced the chance of white "tents" along walls beside sunken roads.**
+- **Reduced the chance of bridges sitting on the road they cross** (GitHub #138, #142): where the elevation data has a short bridge filled in at deck height, the road under it now dips to pass beneath.
+- **Reduced the chance of paved areas layered and smeared over each other** (GitHub #127: overlapping ones are paved once) and **of tunnels showing through rivers and harbours** (GitHub #128: tunnels under water are left out).
+- **You can drive to the poles.** Teleporting near either pole used to freeze the world server. Antarctica's ice sheet now has its real heights up to the South Pole (2,835 m), and everything past 85 degrees is snow and ice.
+
+### Map and interface
+- **Minimap:** the .Earth layout now has BeamNG 0.40's round minimap at the bottom left, with the roads around you and your GPS route; its label shows the town you are in, and its N points to true north.
+- **Update now button** (GitHub #140): when a new version is out, the in-game notice can download it for you; the next time you start BeamNG.Earth, even from your old shortcut, the new version starts.
+- **Reduced the chance of Autodrive circling on steep roads** (GitHub #131).
+- **Wireframe view** (Ctrl+Alt+W): shows the world as triangle edges.
+
+If you want to talk about this mod with me or other people, join my Discord server at [discord.gg/tgf](https://discord.gg/tgf) and head to the #beamng-earth channel.
+
 ## 1.5.5 beta (2026-10-22)
 
 Works with BeamNG.drive 0.40.1.

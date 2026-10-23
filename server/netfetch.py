@@ -153,7 +153,8 @@ POLICIES = {
        for h in ("overturemaps-us-west-2.s3.us-west-2.amazonaws.com",
                  "overturemapswestus2.blob.core.windows.net",
                  "esa-worldcover.s3.eu-central-1.amazonaws.com",
-                 "dataforgood-fb-data.s3.amazonaws.com")},
+                 "dataforgood-fb-data.s3.amazonaws.com",
+                 "copernicus-dem-30m.s3.amazonaws.com")},      # the polar caps' DEM (polardem.py)
     # OurAirports' nightly CSV dump on GitHub Pages (airports.py): two files (~3 MB gzipped) once a week,
     # one request at a time, a hard cap well above a week's need; the copy on disk serves offline
     "davidmegginson.github.io": HostPolicy(rate=0.2, burst=2.0, max_conc=1, daily_budget=20, daily_hard=40,
@@ -171,6 +172,16 @@ POLICIES = {
     "raw.githubusercontent.com": HostPolicy(rate=0.1, burst=1.0, max_conc=1, daily_budget=24, daily_hard=48,
                                             cache_ttl=6 * 3600, miss_ttl=None, max_wait=5.0, timeout=8.0,
                                             max_attempts=1, optional=True),
+    # the one-click update (selfupdate.py, the player's button): the latest release's details, then its file (a
+    # redirect from github.com to GitHub's asset host, followed by urllib inside the session)
+    "api.github.com": HostPolicy(rate=0.2, burst=2.0, max_conc=1, daily_budget=20, daily_hard=40, max_wait=10.0,
+                                 timeout=30.0, max_attempts=1, optional=True),
+    "github.com": HostPolicy(rate=0.2, burst=2.0, max_conc=1, daily_budget=10, daily_hard=20, max_wait=10.0,
+                             timeout=60.0, max_attempts=1, optional=True),
+    # OSM US Layercake (osmtags.py): the OSM highways GeoParquet on Cloudflare, read in ranges (the footer once, a few
+    # MB per new area); optional: without it roads keep their width guesses
+    "data.openstreetmap.us": HostPolicy(rate=4.0, burst=8.0, max_conc=2, daily_budget=5000, allow_prefetch=True,
+                                        offline_ok=True, miss_ttl=None, binary=True, timeout=30.0, optional=True),
     # never at runtime (OSM Overpass, OSMF vector tiles, Protomaps builds): §3.3
     "overpass-api.de": HostPolicy(denied=True, daily_hard=0),
     "vector.openstreetmap.org": HostPolicy(denied=True, daily_hard=0),

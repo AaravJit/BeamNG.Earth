@@ -72,6 +72,27 @@ class PlazaMeshTest(unittest.TestCase):
             return _area(m[0][m[1]])
         self.assertAlmostEqual(area(a) + area(b), 40 * 20, delta=1.0)
 
+    def test_overlap_paved_once(self):
+        """GitHub #127 (Federation Square): a smaller area inside a larger one is paved once, by the smaller."""
+        big = ring([(-40, 10), (40, 10), (40, 70), (-40, 70)])
+        small = (ring([(-10, 30), (10, 30), (10, 50), (-10, 50)]), [], "asphalt")
+        flat = lambda la, lo: np.zeros(np.shape(la))    # noqa: E731
+        m = plazas.mesh(FRAME, (-256.0, 0.0, 256.0, 256.0), [big, small], flat, (0.0, 0.0, 0.0))
+        P, T, UV, mats, M = m
+        # (by triangle centres on the 2 m split: a few m2 along the smaller one's edge)
+        self.assertAlmostEqual(_area(P[T]), 80 * 60, delta=20.0, msg="the ground once, not 80*60 + 20*20")
+        stone = M == mats.index(plazas.ASPHALT[0])
+        self.assertAlmostEqual(_area(P[T[stone]]), 20 * 20, delta=2.0, msg="the smaller area keeps its paving")
+
+    def test_ground_under_the_road_mesh_left_out(self):
+        """GitHub #127: a pedestrian street's road mesh over a square: the square leaves that ground to it."""
+        sq = ring([(-40, 10), (40, 10), (40, 70), (-40, 70)])
+        flat = lambda la, lo: np.zeros(np.shape(la))    # noqa: E731
+        # a 10 m wide street across the square (two triangles), in the frame
+        cover = np.array([[-50, 35, 50, 35, 50, 45], [-50, 35, 50, 45, -50, 45]], float)
+        m = plazas.mesh(FRAME, (-256.0, 0.0, 256.0, 256.0), [sq], flat, (0.0, 0.0, 0.0), cover)
+        self.assertAlmostEqual(_area(m[0][m[1]]), 80 * 60 - 80 * 10, delta=40.0, msg="the street's ground left out")
+
 
 if __name__ == "__main__":
     unittest.main()

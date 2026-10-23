@@ -74,6 +74,7 @@ class _State:
                     if self.grading else None)
                 if self.graders[aid] is not None:
                     self.graders[aid].wet = self.sea.depth if getattr(self, "sea", None) is not None else None
+                    self.graders[aid].dem = self.dem          # (its urgent lane: _plan_missing)
                 for old in sorted(self.chunks)[:-ANCHORS_KEPT]:
                     del self.chunks[old], self.graders[old]
             return self.graders[aid], self.chunks[aid]
@@ -129,13 +130,12 @@ def init(cache_dir, offline, roads, grading, road_widths, surface, warm_q, log_l
     few cores (2026-10-19: at 180 mph the next block waited 6 s behind the road tiles ahead and a ball fell off the
     block's edge)."""
     global _s
-    if nice and hasattr(os, "nice"):
-        try:
-            os.nice(int(nice))
-        except OSError:
-            pass
-    logging.basicConfig(level=log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     import budget
+    try:
+        budget.lower_priority(nice, worker=True)    # (Windows: the far field's workers idle, budget.WIN_IDLE_ABOVE)
+    except (OSError, AttributeError):
+        pass
+    logging.basicConfig(level=log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     budget.apply()              # (this process's caches: smaller on a small machine)
     if os.environ.get("BNGE_TRACEMALLOC"):      # debug: this worker's memory (earthd's trace_mem)
         _trace_memory()
@@ -312,6 +312,19 @@ def navgraph(aid, lat, lon, zoom, x, y, out_dir, vfs_dir, serial, left_hand, mph
     return path, len(graph["nodes"]), len(graph["edges"])
 
 
+def terrain_patch(aid, lat, lon, zoom, box, path):
+    """earthd.Server.build_terrain_patch here (road-tile pool): the collision patch of the ground over box under a
+    collision island off the terrain block (terrainpatch.py), the block's own ground (graded, lifted under roads)."""
+    import terrainpatch
+    g, _ = _s.anchor(aid, lat, lon)
+    frame = geodesy.EnuFrame(lat, lon)
+
+    def elev(la, lo):
+        z = ground(frame, la, lo, _s.dem.sample(la, lo, zoom))
+        return g.apply(la, lo, z, gradingmod.ROAD_LIFT) if g is not None else z
+    return terrainpatch.build(frame, elev, box, path)
+
+
 def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, buildings=False, left_hand=False,
                mph=True, q=None):
     """earthd.Server.build_roads_tile here (road-tile pool): the anchor's road tile (tx, ty) built and
@@ -346,10 +359,18 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
         town = buildingsmod.coverage(items) < buildingsmod.POLES_COVERAGE
     rwalls = []
     ctx = []
+    box = roadsmod.tile_bbox(tx, ty)
+    cell_fn = lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads")   # noqa: E731
+
+    def drawn(la, lo):          # the block's ground: raised over the low arches as the terrain is (_make_heightmap)
+        return roadsmod.block_arch_raise(tunnels, cell_fn, frame, la, lo, elev(la, lo),
+                                         (box[0] - 8, box[1] - 8, box[2] + 8, box[3] + 8))
     chunks = roadsmod.build_tile(frame, tx, ty, cells, elev, urban, walks=walks, deck_context=ctx, bridges=bridges, widths=_s.widths,
                                  props=props, lines=lines, wires=wires, town=town, park=park,
                                  left_hand=left_hand, mph=mph, structures=buildingsmod.centres(items, tx, ty) if items else (),
-                                 tunnels=tunnels, walls=rwalls)
+                                 tunnels=tunnels, walls=rwalls,
+                                 ground=lambda x, y: roadmeshmod.drawn_ground(frame, drawn, np.c_[x, y], q),
+                                 terrain_paint=getattr(_s, "surface", None) is not None)
     if _s.airports is not None:         # runway markings, drawn by the road mesh like the lane lines
         chunks += _s.airports.tile_chunks(frame, tx, ty, elev, roadsmod.tile_bbox)
     x0, y0, _, _ = roadsmod.tile_bbox(tx, ty)
@@ -362,12 +383,6 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
         park = parkingmod.clear_of(park, props, drives)
         park = parkingmod.tile_lot_spots(frame, tx, ty, _s.md, elev, items, park)
         buildingsmod.brick_walks(walks, items, lat, lon)
-    box = roadsmod.tile_bbox(tx, ty)
-    cell_fn = lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads")   # noqa: E731
-
-    def drawn(la, lo):          # the block's ground: raised over the low arches as the terrain is (_make_heightmap)
-        return roadsmod.block_arch_raise(tunnels, cell_fn, frame, la, lo, elev(la, lo),
-                                         (box[0] - 8, box[1] - 8, box[2] + 8, box[3] + 8))
     mesh = roadmeshmod.build(frame, chunks, elev, (x0, y0, 0.0), lift, clip=box, follow=True, q=q, drawn=drawn)
     mesh = _with_plazas(mesh, frame, tx, ty, elev, (x0, y0, 0.0), getattr(_s, "surface", None))
     dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0), bridges.piers_in(roadsmod.tile_bbox(tx, ty)), ctx,
@@ -394,7 +409,13 @@ def _with_plazas(mesh, frame, tx, ty, elev, origin, surface):
         box = roadsmod.tile_bbox(tx, ty)
         la, lo, _ = frame.enu_to_geodetic(np.array([box[0], box[2]]), np.array([box[1], box[3]]), np.zeros(2))
         rings = plazas.polygons(surface.lots(la, lo))
-        return plazas.merge(mesh, plazas.mesh(frame, box, rings, elev, origin)) if rings else mesh
+        if not rings:
+            return mesh
+        cover = None
+        if mesh is not None and len(mesh[1]):
+            P, T = np.asarray(mesh[0], np.float64), np.asarray(mesh[1], np.int64)
+            cover = (P[T][:, :, :2] + np.asarray(origin, np.float64)[:2]).reshape(-1, 6)
+        return plazas.merge(mesh, plazas.mesh(frame, box, rings, elev, origin, cover))
     except Exception:                   # no plazas rather than no road tile
         log.exception("plazas of tile %s_%s", tx, ty)
         return mesh
@@ -500,14 +521,16 @@ WORKER_IMAGERY_TILES = 96      # decoded imagery tiles a far-tile worker keeps (
 
 def _imagery(tex):
     """This process's imagery.Imagery for the server's chain settings (tex: chain, tone, leaf_on, season_mode): the
-    imagery tiles on disk alone (strict: a missing tile fails the render)."""
+    imagery tiles on disk alone (strict: a missing tile fails the render), or, for a compute-sharing helper
+    (tex["online"], peerwork.py), fetched as needed."""
     import imagery as imagerymod
-    key = (tuple(tex["chain"]), tex["tone"], tex["leaf_on"], tex["season_mode"])
+    online = bool(tex.get("online"))
+    key = (tuple(tex["chain"]), tex["tone"], tex["leaf_on"], tex["season_mode"], online)
     if _s.imagery is None or _s.imagery[0] != key:
-        im = imagerymod.Imagery(os.path.join(_s.cache_dir, "imagery"), key[0], fetch_workers=1,
-                                mem_tiles=WORKER_IMAGERY_TILES, tone=key[1], fetcher=netfetch.Fetcher(offline=True),
-                                leaf_on=key[2], season_mode=key[3])
-        im.strict = True
+        im = imagerymod.Imagery(os.path.join(_s.cache_dir, "imagery"), key[0], fetch_workers=4 if online else 1,
+                                mem_tiles=WORKER_IMAGERY_TILES, tone=key[1],
+                                fetcher=netfetch.Fetcher(offline=not online), leaf_on=key[2], season_mode=key[3])
+        im.strict = not online
         _s.imagery = (key, im)
     return _s.imagery[1]
 
@@ -520,6 +543,7 @@ def base_photo(lat, lon, x0, y0, size, px, tex, buildings, rock_zoom, path, cach
     server renders it, fetching what is missing). In the server process it ran 2 s alone but 8-11 s next to the
     rest of the world's threads on a Steam Deck (one interpreter lock), and the next block waited for it."""
     import imagery as imagerymod
+    import roads as roadsmod
     import rockface as rockfacemod
     import staging
     from PIL import Image
@@ -539,6 +563,12 @@ def base_photo(lat, lon, x0, y0, size, px, tex, buildings, rock_zoom, path, cach
                 rgb = buildingsmod.fill_photo(rgb, mask, size, px)
         except Exception as e:      # the photo stays as it is
             log.info("base photo: building mask: %s", e)
+    if roadsmod.ROADS_IN_GROUND:          # (earthd.Server.write_base)
+        try:
+            import surface as surfacemod
+            rgb = surfacemod.paint_square(rgb, frame, x0, y0, size, getattr(_s, "surface", None), _s.widths)
+        except Exception as e:      # the photo stays as it is
+            log.info("base photo: roads: %s", e)
     try:            # (earthd.Server.write_base)
         n = 65
         xs = x0 + np.arange(n) * (size / (n - 1))
@@ -580,6 +610,21 @@ def far_tile(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout, tex):
             rgb = rockfacemod.rock(rgb, frame, *sq, g, x0, y0, tile.size / (g.shape[1] - 1))
         except Exception as e:
             log.debug("rock faces of %s: %s", tile.key, e)
+    import roads as roadsmod
+    if roadsmod.ROADS_IN_GROUND:          # (earthd.Server.road_faces)
+        try:
+            import surface as surfacemod
+            rgb = surfacemod.paint_square(rgb, frame, *sq, getattr(_s, "surface", None), _s.widths)
+        except Exception as e:
+            log.debug("road faces of %s: %s", tile.key, e)
+    if tex.get("mask") and tex["mask"][1]:  # (earthd.Server.write_road_mask)
+        try:
+            import surface as surfacemod
+            mask = surfacemod.road_mask(frame, *sq, tex["mask"][1], getattr(_s, "surface", None), _s.widths)
+            if mask is not None:
+                imagerymod.write_dds(tex["mask"][0], np.repeat(mask[..., None], 3, axis=2))
+        except Exception as e:
+            log.debug("road mask of %s: %s", tile.key, e)
     return built, (imagerymod.write_dds(tex["path"], rgb), used)
 
 
@@ -611,6 +656,7 @@ def _accounted(fn):
 
 
 build = _accounted(build)
+terrain_patch = _accounted(terrain_patch)
 roads_tile = _accounted(roads_tile)
 far_buildings_tile = _accounted(far_buildings_tile)
 base_entry = _accounted(base_entry)

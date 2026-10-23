@@ -76,6 +76,11 @@
       <div v-if="target" class="marker target" :style="{ left: targetScreen.x + 'px', top: targetScreen.y + 'px' }">
         <div class="cross"></div>
       </div>
+      <!-- the other players (a BeamMP session) -->
+      <div v-for="o in otherMarkers" :key="'o' + o.name" class="marker other" :style="{ left: o.sx + 'px', top: o.sy + 'px' }">
+        <div class="arrow" :style="{ transform: 'rotate(' + (o.h || 0) + 'deg)' }" :class="{ noheading: o.h == null }"></div>
+        <span class="marker-label">{{ o.name }}</span>
+      </div>
       <!-- the player -->
       <div v-if="playerScreen" class="marker player" :style="{ left: playerScreen.x + 'px', top: playerScreen.y + 'px' }">
         <div class="arrow" :style="{ transform: 'rotate(' + (state.player.heading || 0) + 'deg)' }" :class="{ noheading: state.player.heading == null }"></div>
@@ -412,6 +417,10 @@ const onScreen = p => p.x > -50 && p.y > -50 && p.x < w.value + 50 && p.y < h.va
 const placeMarkers = computed(() =>
   (state.value.places || []).map(p => ({ ...p, ...(() => { const s = screen(p.lat, p.lon); return { sx: s.x, sy: s.y } })() }))
     .filter(p => onScreen({ x: p.sx, y: p.sy })))
+
+const otherMarkers = computed(() =>
+  (state.value.others || []).map(o => { const s = screen(o.lat, o.lon); return { ...o, sx: s.x, sy: s.y } })
+    .filter(o => onScreen({ x: o.sx, y: o.sy })))
 
 const playerScreen = computed(() => {
   const p = state.value.player
@@ -1178,6 +1187,15 @@ const fmtLatLon = mm.fmtLatLon
   filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.8));
 }
 .marker.player .arrow.noheading { clip-path: circle(45%); }
+.marker.other { z-index: 3; pointer-events: none; }
+.marker.other .arrow {
+  position: absolute; left: -9px; top: -11px; width: 18px; height: 22px;
+  background: #3ddc84;
+  clip-path: polygon(50% 0, 100% 100%, 50% 75%, 0 100%);
+  transform-origin: 50% 50%;
+  filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.8));
+}
+.marker.other .arrow.noheading { clip-path: circle(40%); }
 .marker.target { z-index: 3; pointer-events: none; }
 .marker.target .cross {
   position: absolute; left: -10px; top: -10px; width: 20px; height: 20px; border: 2px solid #ff4b4b; border-radius: 50%;

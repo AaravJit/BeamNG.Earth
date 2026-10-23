@@ -79,6 +79,62 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(roads.surface_kind("track", "asphalt"), "paved")
         self.assertEqual(roads.surface_kind("primary", "gravel"), "gravel")
         self.assertEqual(roads.surface_kind("primary", "unpaved"), "dirt")
+        # the detail after a colon (or a second value after a semicolon) does not lose the base surface: İzmir's
+        # sett streets were drawn as dirt/gravel tracks (2026-10-22)
+        for v in ("cobblestone:flattened", "sett:pattern", "paving_stones:30", "sett;asphalt"):
+            self.assertEqual(roads.surface_kind("residential", v), "cobble", v)
+        self.assertEqual(roads.surface_kind("residential", "concrete:lanes"), "paved")
+        # interlocking concrete pavers, under the names the map gives them
+        for v in ("interlocking_pavers", "interlocking_stones"):
+            self.assertEqual(roads.surface_kind("residential", v), "cobble", v)
+        # the rock family and grass are unpaved, never a marked asphalt street (gridmap v2's Rock/Grass are
+        # TerrainMaterials: a heightfield shader, not something a road decal can carry)
+        for v in ("rock", "bedrock", "rocky", "grass", "grass_paver"):
+            self.assertEqual(roads.surface_kind("residential", v), "dirt", v)
+        for v in ("stone", "stones"):           # (OSM: mostly stone paving)
+            self.assertEqual(roads.surface_kind("residential", v), "cobble", v)
+        # a value not understood at all is the class's own surface, not the dirt road
+        self.assertEqual(roads.surface_kind("residential", "whatever"), "paved")
+        self.assertEqual(roads.surface_kind("track", "whatever"), "dirt")
+
+    def test_surface_token(self):
+        self.assertEqual(roads.surface_token("sett:pattern"), "sett")
+        self.assertEqual(roads.surface_token("sett;asphalt"), "sett")
+        self.assertEqual(roads.surface_token(" Concrete:Lanes "), "concrete")
+        self.assertIsNone(roads.surface_token(None))
+
+    def test_deferred_specs_keep_their_own_surface(self):
+        # no mapped width + an urban sample: these go through the deferred (ask) path, which used to reuse the
+        # surface token left over from the last feature scanned (Codex on PR #119)
+        f = features([[(0, 0), (10, 0)]] * 2, ["residential", "residential"],
+                     surfaces=[(0, "concrete"), (1, "asphalt")])
+        s = roads.road_specs(f, urban_fn=lambda lat, lon: np.ones(len(lat), bool))
+        self.assertEqual([sp.surf for sp in s], ["concrete", "asphalt"])
+
+    def test_rock_and_grass_live_in_the_ground_layer(self):
+        def spec(surf):
+            return roads.Spec(6.0, "dirt", False, "residential", False, 2.5, 0, None, surf=surf)
+
+        for v in ("rock", "rocky", "bedrock"):
+            self.assertEqual(roads.terrain_surface(spec(v)), "rock", v)
+            self.assertEqual(roads.surface_material_kind(spec(v)), "rock", v)
+        for v in ("grass", "grass_paver"):
+            self.assertEqual(roads.terrain_surface(spec(v)), "grass", v)
+            self.assertEqual(roads.surface_material_kind(spec(v)), "grass", v)
+        # everything else is drawn as a road decal, with its own mask material
+        self.assertIsNone(roads.terrain_surface(spec("asphalt")))
+        self.assertEqual(roads.surface_material_kind(spec("asphalt")), "dirt")
+        self.assertIsNone(roads.terrain_surface(spec("sett:pattern")))
+
+    def test_concrete_streets_get_gridmap_v2_concrete(self):
+        f = features([[(0, 0), (10, 0)]] * 2, ["residential", "secondary"],
+                     surfaces=[(0, "concrete"), (1, "asphalt")])
+        s = roads.road_specs(f)
+        self.assertEqual(s[0].surf, "concrete")
+        self.assertEqual(s[0].kind, "paved", "marks, widths and the tyres' feel stay a paved road's")
+        self.assertEqual(roads.look_of(s[0])["m"], "m_gm_concrete_plain")
+        self.assertEqual(roads.look_of(s[1])["m"], "road_asphalt_2lane")
+        self.assertEqual(roads.look_of(s[0])["tl"], roads.LOOK["paved"]["tl"], "the texture length is asphalt's")
 
     def test_specs_width_and_left_out(self):
         f = features([[(0, 0), (10, 0)]] * 6, ["residential", "footway", "primary", "tertiary", "track", "secondary"],
@@ -190,6 +246,14 @@ class GeometryTest(unittest.TestCase):
 
 
 class BuildTileTest(unittest.TestCase):
+    """The road tiles with their carriageway meshes (BNGE_ROADS_IN_GROUND=0; InGroundTest: the default)."""
+
+    def setUp(self):
+        self._rig, roads.ROADS_IN_GROUND = roads.ROADS_IN_GROUND, False
+
+    def tearDown(self):
+        roads.ROADS_IN_GROUND = self._rig
+
     def test_build_clips_and_styles(self):
         f = features([[(-300, 50), (300, 50)], [(100, 10), (100, 200)]], ["primary", "track"])
         chunks = [c for c in roads.build_tile(FRAME, 0, 0, [f], flat) if c["m"] in {l["m"] for l in roads.LOOK.values()}]
@@ -326,6 +390,79 @@ class BuildTileTest(unittest.TestCase):
             names = [m["name"] for m in shape["materials"]]      # the ones it uses, in the list's order (cdae.encode)
         self.assertEqual(names, [m for m in sidewalks.MATERIALS if m in names])
         self.assertIn("curbs", names)
+
+    def test_sidewalks_follow_the_ground(self):
+        # a straight street (two vertices) across a 5 m dip: the road mesh drapes on the ground every 2 m, the
+        # sidewalks ran as a chord between the vertices, up to 5 m in the air beside it
+        import sidewalks
+
+        def dip(lat, lon):
+            e = (np.asarray(lon) - LON) * M_LON
+            return 10.0 - 5.0 * np.exp(-((e - 128.0) / 30.0) ** 2)
+
+        def ground(xy):
+            la, lo, _ = FRAME.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
+            return FRAME.geodetic_to_enu(la, lo, dip(la, lo))[2]
+        f = features([[(-300, 100), (300, 100)]], ["secondary"])
+        walks = []
+        chunks = roads.build_tile(FRAME, 0, 0, [f], dip, lambda la, lo: np.ones(np.shape(la), bool), walks=walks)
+        # both sides (1.5.5 leaves a sidewalk out where the ground falls away from the road, so a side can be in
+        # pieces); every piece is checked below
+        self.assertEqual({w["side"] for w in walks}, {1, -1})
+        for w in walks:
+            curb, _ = sidewalks.run_geometry(w["pts"], w["side"], w["w"])
+            s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(curb[:, :2], axis=0).T))]
+            fine = np.arange(0.0, s[-1], 0.5)               # between the run's points too (the mesh is linear there)
+            xy = np.stack([np.interp(fine, s, curb[:, c]) for c in range(2)], axis=1)
+            dz = np.interp(fine, s, curb[:, 2]) - ground(xy)
+            self.assertLess(np.abs(dz).max(), 0.05, "the curb on the ground under it")
+        for c in chunks:                                    # storm drains in the gutter, on the ground too
+            if c["m"] == roads.DRAIN["m"]:
+                n = np.array(c["n"])
+                self.assertLess(np.abs(n[:, 2] - ground(n[:, :2])).max(), 0.05)
+
+    def test_sidewalks_on_the_drawn_ground(self):
+        # the road surfaces lie on the terrain block's own heights (its 2 m lattice rounded to the quantum, each
+        # square cut south-west to north-east: roadmesh.follow), elev's smooth curve off them by up to the quantum and
+        # more between the samples; the curbs take the same ground (the user, 2026-10-21)
+        import roadmesh
+        import sidewalks
+
+        def hill(lat, lon):
+            e = (np.asarray(lon) - LON) * M_LON
+            n = (np.asarray(lat) - LAT) * M_LAT
+            return 10.0 + 0.04 * e - 3.0 * np.exp(-((e - 128.0) ** 2 + (n - 147.0) ** 2) / 8.0 ** 2)   # a dip on the street
+
+        def ground(x, y):
+            return roadmesh.drawn_ground(FRAME, hill, np.c_[x, y], 1 / 32)
+        f = features([[(-300, 40), (300, 190)]], ["secondary"])
+        walks = []
+        chunks = roads.build_tile(FRAME, 0, 0, [f], hill, lambda la, lo: np.ones(np.shape(la), bool), walks=walks,
+                                  ground=ground)
+        # both sides (1.5.5 leaves a sidewalk out where the ground falls away from the road, so a side can be in
+        # pieces); every piece is checked below
+        self.assertEqual({w["side"] for w in walks}, {1, -1})
+        for w in walks:
+            curb, _ = sidewalks.run_geometry(w["pts"], w["side"], w["w"])
+            s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(curb[:, :2], axis=0).T))]
+            fine = np.arange(0.0, s[-1], 0.5)
+            xy = np.stack([np.interp(fine, s, curb[:, c]) for c in range(2)], axis=1)
+            dz = np.interp(fine, s, curb[:, 2]) - ground(xy[:, 0], xy[:, 1])
+            self.assertLess(np.abs(dz).max(), 0.025, "the curb on the drawn ground under it")
+        for c in chunks:
+            if c["m"] == roads.DRAIN["m"]:
+                n = np.array(c["n"])
+                self.assertLess(np.abs(n[:, 2] - ground(n[:, 0], n[:, 1])).max(), 0.025)
+
+    def test_sidewalks_on_flat_ground_keep_their_points(self):
+        # the drape adds points only where the ground bends: a flat street's runs are as before (MAX_SPACING apart)
+        f = features([[(-300, 100), (300, 100)]], ["secondary"])
+        walks = []
+        roads.build_tile(FRAME, 0, 0, [f], flat, lambda la, lo: np.ones(np.shape(la), bool), walks=walks)
+        for w in walks:
+            p = w["pts"]
+            length = float(np.hypot(*np.diff(p[:, :2], axis=0).T).sum())
+            self.assertEqual(len(p), math.ceil(length / roads.MAX_SPACING - 1e-9) + 1)
 
     def test_sidewalk_profile_faces_out(self):
         import sidewalks
@@ -751,6 +888,41 @@ class TrackerTest(unittest.TestCase):
             drops = {tuple(map(int, m["key"].split("_"))) for m in conn.sent if m["type"].endswith("_drop")}
             self.assertEqual(drops, seen, kind)
 
+    def test_other_vehicles_foci_get_their_tiles_after_the_cars_and_keep_them(self):
+        # BeamMP support (the user, 2026-10-22): collision islands round other players' cars (the mod's
+        # collisionfoci.lua); road tiles for every focus, tree tiles for the ones whose trees collide
+        import vegetation
+        for make, kind in ((roads.Tracker, "roads"), (vegetation.Tracker, "veg")):
+            conn, built = FakeConn(), []
+            tr = make()
+            focus = (4000.0, 0.0, 320.0, True)
+
+            async def go(foci, n=60):
+                loop = asyncio.get_running_loop()
+                for _ in range(n):
+                    tr.on_pose(conn, 1, 0.0, 0.0, loop, lambda aid, tx, ty: (built.append((tx, ty)), (f"/p/{tx}_{ty}", 1))[1],
+                               foci=foci)
+                    await asyncio.sleep(0.01)
+            send = roads.SEND_M if kind == "roads" else vegetation.SEND_M
+            car = set(roads.tiles_near(0, 0, send))
+            near = set(roads.tiles_near(4000.0, 0.0, min(send, 320.0 + roads.TILE / 2)))
+            asyncio.run(go((focus,)))
+            self.assertEqual(set(built), car | near, kind)
+            self.assertEqual(set(built[:len(car)]), car, f"{kind}: the car's tiles first")
+            self.assertFalse([m for m in conn.sent if m["type"].endswith("_drop")], f"{kind}: none dropped")
+            asyncio.run(go((), 2))              # the other car gone: its tiles go
+            drops = {tuple(map(int, m["key"].split("_"))) for m in conn.sent if m["type"].endswith("_drop")}
+            self.assertEqual(drops, near, kind)
+
+    def test_parse_foci(self):
+        import earthd
+        f = earthd.parse_foci([{"x": 10, "y": -20, "r": 320, "trees": True}, {"x": 1, "y": 2},
+                               {"x": float("nan"), "y": 0, "r": 80}, {"x": 1e9, "y": 0, "r": 80},
+                               {"x": 5, "y": 5, "r": 99999}, "junk"])
+        self.assertEqual(f, ((10.0, -20.0, 320.0, True), (5.0, 5.0, earthd.FOCI_R_MAX_M, False)))
+        self.assertEqual(earthd.parse_foci(None), ())
+        self.assertEqual(len(earthd.parse_foci([{"x": 0, "y": 0, "r": 80}] * 40)), earthd.FOCI_MAX)
+
     def test_drops_far_and_resends_on_anchor_change(self):
         conn, tr, built = self.run_poses([(1, 0.0, 0.0), (1, 3000.0, 0.0), (2, 3000.0, 0.0)])
         drops = [m for m in conn.sent if m["type"] == "roads_drop"]
@@ -822,6 +994,24 @@ class PaintRoadsTest(unittest.TestCase):
         lo = LON + np.array([-200.0, 200.0]) / M_LON
         out = sf.paint_roads(idx, lat, lon, [f], 2.0, extra=[(la, lo, roads.Spec(7.0, "paved", False, "residential"))])
         self.assertEqual(int(out[64, 10]), sf.ASPHALT)
+
+
+class InGroundTest(unittest.TestCase):
+    """Carriageways painted into the ground (roads.ROADS_IN_GROUND, the default): no carriageway meshes, the markings
+    kept."""
+
+    def setUp(self):
+        self._rig, roads.ROADS_IN_GROUND = roads.ROADS_IN_GROUND, True
+
+    def tearDown(self):
+        roads.ROADS_IN_GROUND = self._rig
+
+    def test_no_carriageway_mesh_markings_kept(self):
+        f = features([[(-300, 50), (300, 50)]], ["primary"])
+        chunks = roads.build_tile(FRAME, 0, 0, [f], flat)
+        surfaces = {l["m"] for l in roads.LOOK.values()}
+        self.assertFalse([c for c in chunks if c["m"] in surfaces], "no carriageway mesh")
+        self.assertTrue([c for c in chunks if c["m"] not in surfaces], "its lines stay")
 
 
 if __name__ == "__main__":

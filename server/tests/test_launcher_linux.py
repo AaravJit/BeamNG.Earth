@@ -22,6 +22,7 @@ def touch(path, mtime=None):
         os.utime(path, (mtime, mtime))
 
 
+@unittest.skipIf(os.name == "nt", "Linux: the launcher's Windows paths (LOCALAPPDATA, USERPROFILE) ignore HOME")
 class FlatpakSteam(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -114,6 +115,7 @@ class GameClosed(unittest.TestCase):
         self.assertGreaterEqual(clock[0], 12 + launcher.GAME_GONE_S)
 
 
+@unittest.skipIf(os.name == "nt", "Linux: ensure_ca_certs leaves Windows alone")
 class CaCerts(unittest.TestCase):
     """The packaged app's OpenSSL looks in /usr/lib/ssl (Ubuntu's): elsewhere SSL_CERT_FILE points at a bundle."""
     NONE = mock.Mock(cafile="/usr/lib/ssl/cert.pem", capath="/nonexistent/certs")

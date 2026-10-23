@@ -10,6 +10,15 @@ local framing = require('beamngEarth/framing')
 local M = {}
 
 M.HOST, M.PORT = '127.0.0.1', 47613
+-- A second game on one PC (tests: two BeamMP players) talks to its own server: BeamNG.drive.exe -bngeport 47614
+do
+  local ok, args = pcall(function() return Engine.getStartingArgs() end)
+  if ok and type(args) == 'table' then
+    for i, a in ipairs(args) do
+      if a == '-bngeport' and tonumber(args[i + 1]) then M.PORT = tonumber(args[i + 1]) end
+    end
+  end
+end
 local RECONNECT_S = 2.0
 local CONNECT_TIMEOUT_S = 2.0
 local RECV_CHUNK = 65536

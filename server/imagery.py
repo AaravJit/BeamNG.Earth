@@ -13,7 +13,7 @@ image sits exactly on the terrain) -> Web-Mercator pixel at a zoom whose ground 
 about the texel size (never finer than the source's max zoom) -> bilinear. Each sample takes the
 first source of the chain that has data there: a source tile that is 404, or uniform (blank)
 while a later source remains, counts as missing, so the chain falls back per source tile.
-Samples no source covers (beyond +-85.05 deg, or 404 everywhere) get FALLBACK_RGB.
+Samples no source covers (404 everywhere) get FALLBACK_RGB; beyond +-85.05 deg (all ice) POLAR_RGB.
 
 Caching: raw tiles on disk under <cache>/<source>/<z>/<x>/<y>.jpg (whatever format the server
 sent), 404s remembered as <y>.404 markers (as dem.py does; they expire after the host's miss_ttl,
@@ -54,15 +54,21 @@ log = logging.getLogger("earthd.imagery")
 TILE = 256
 MAX_LAT = demmod.MAX_LAT
 EARTH_CIRC = 40075016.686          # m, equatorial circumference (Web-Mercator scale)
+R_MERC = EARTH_CIRC / (2 * math.pi)  # m, the Web-Mercator sphere
 FETCH_WORKERS = 12      # (the photo hosts allow 12 / 6 at once, 2026-10-16)
 MEM_TILES = 512                    # decoded 256² RGB tiles kept in memory (~100 MB)
 # Attempts, retry delays, timeouts and the "source unreachable" backoff are the host's netfetch
 # policy now: once its circuit is open, its tiles fail at once instead of each paying the attempts
 # and timeouts (offline, every texture took ~10 s before the backoff existed), and fall back to
 # the next source or, with none left, to the palette material.
-MAX_MOSAIC = 36                    # source tiles per texture and source (zoom is lowered beyond)
+# source tiles per texture and source (zoom is lowered beyond). A 1024 m ground block at z17 takes 6 x 6 at 39 deg, 7 x 7
+# north of ~47.5 deg, 8 x 8 north of ~57 deg: at 36 every z17-only regional source (Germany, Poland, Czechia, the
+# Netherlands...) was skipped for the near ground there (found adding Poland, 2026-10-22); 81 = 9 x 9 (~64 deg),
+# a 2304 px RGBA mosaic (~21 MB) while one texture renders
+MAX_MOSAIC = 81
 MESH_CELLS = 8                     # render(): exact reprojection on an 8 x 8 grid of texture cells
 FALLBACK_RGB = (100, 89, 69)       # no imagery anywhere: the terrain material's dirt colour
+POLAR_RGB = (226, 232, 240)        # ... past Web Mercator's limit, where it is all ice (polar ice sheet, sea ice): snow
 BLANK_RANGE = 2                    # a tile whose pixels all lie within this many levels is uniform
 NODATA_MAX, NODATA_SHARE = 6, 0.02   # an export tile with > 2 % texels this black is outside the data
 NODATA_WHITE_MIN, NODATA_WHITE_SHARE = 250, 0.25   # ... or (nodata "white") > 25 % this white: white roofs
@@ -144,9 +150,14 @@ SOURCES["md6in"] = Source(
 BASE_CHAIN = ("md6in", "naipusda", "naip", "usgs", "eox2023", "eox2016")     # the chain before the regional sources
 # Regional aerial imagery (imagery_regional.py: state and national orthophoto services, each within its box)
 import imagery_regional  # noqa: E402
+# A state's tile cache serves the far rings from this zoom on; coarser rings (texels of ~15 m and more, kilometres
+# away) take USGS / Sentinel-2 (the user, 2026-10-22: "the world gen is really slow": Columbus's far field waited
+# 4 minutes on Ohio's cache at its 6 requests/s, ~1,000 tiles for the 2-4 km tiles: z15 / z14).  z16: L2 and nearer.
+REGIONAL_XYZ_MIN_ZOOM = 16
 for _n, (_url, _attr, _bounds, _kind, _leaf) in imagery_regional.REGIONAL.items():
-    if _kind == "xyz":          # a fast tile cache: also on the nearer far rings (z13+); blank z12 parents skipped
-        SOURCES[_n] = Source(_n, _url, 17, _attr, probe_zooms=(12,), min_zoom=13, bounds=_bounds, leaf_off=_leaf)
+    if _kind == "xyz":          # a tile cache: also on the nearer far rings (REGIONAL_XYZ_MIN_ZOOM+)
+        SOURCES[_n] = Source(_n, _url, 17, _attr, probe_zooms=(12,), min_zoom=REGIONAL_XYZ_MIN_ZOOM, bounds=_bounds,
+                             leaf_off=_leaf)
     else:                       # a WMS / ArcGIS export: one 1024 px image per z15 parent, ahead of the player
         SOURCES[_n] = Source(_n, _url, 17, _attr, min_zoom=17, export=2, lazy=True, bounds=_bounds, nodata="white",
                              leaf_off=_leaf)
@@ -279,6 +290,16 @@ def range_in_bounds(src, z, tx0, tx1, ty0, ty1):
     lat1 = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * ty0 / k))))
     lat0 = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * (ty1 + 1) / k))))
     return lon1 > w and lon0 < e and lat1 > s and lat0 < n
+
+
+def lat_lon_bbox(mb):
+    """An EPSG:3857 extent (minx, miny, maxx, maxy) as WMS 1.3.0's EPSG:4326 BBOX: "south,west,north,east" (latitude
+    first). The source draws it in plate carree: over an export parent (~1 km) its rows are within ~1e-4 of the
+    tile's Mercator rows (a fraction of a pixel)."""
+    x0, y0, x1, y1 = mb
+    lon = lambda x: math.degrees(x / R_MERC)                                            # noqa: E731
+    lat = lambda y: math.degrees(2.0 * math.atan(math.exp(y / R_MERC)) - math.pi / 2)  # noqa: E731
+    return f"{lat(y0):.7f},{lon(x0):.7f},{lat(y1):.7f},{lon(x1):.7f}"
 
 
 def mercator_bbox(z, x, y):
@@ -459,8 +480,8 @@ class Imagery:
             if data is not None:
                 self._count(src.name + ":disk")
                 return data
-            url = src.url.format(bbox=",".join(f"{v:.3f}" for v in mercator_bbox(z - k, x >> k, y >> k)),
-                                 size=TILE << k)
+            mb = mercator_bbox(z - k, x >> k, y >> k)
+            url = src.url.format(bbox=",".join(f"{v:.3f}" for v in mb), bbox4326=lat_lon_bbox(mb), size=TILE << k)
             if self.fetcher.miss_alive(miss, url):
                 return None
             kind = getattr(self._local, "kind", "demand")
@@ -955,8 +976,8 @@ class Imagery:
         cw = px // cells
         k = np.arange(cells + 1) * (size / cells)
         E, N = np.meshgrid(x0 + k, y0 + size - k)                 # [row (north first), col]
-        lat, lon, _ = frame.enu_to_geodetic(E, N, 0.0)
-        lat = np.clip(lat, -89.9, 89.9)
+        lat_raw, lon, _ = frame.enu_to_geodetic(E, N, 0.0)
+        lat = np.clip(lat_raw, -89.9, 89.9)
         zw = zoom_for(float(lat[cells // 2, cells // 2]), size / px)
         out = np.zeros((px, px, 3), np.uint8)
         filled = np.zeros((px, px), bool)
@@ -1018,7 +1039,17 @@ class Imagery:
             if error is not None:           # not known to be uncovered: do not bake a fallback
                 raise error
             out[~filled] = FALLBACK_RGB
-            used["none"] = int((~filled).sum())
+            if np.abs(lat_raw).max() > MAX_LAT:      # the polar caps: snow
+                i, j = np.nonzero(~filled)
+                t = size / px
+                la, _, _ = frame.enu_to_geodetic(x0 + (j + 0.5) * t, y0 + size - (i + 0.5) * t, 0.0)
+                cap = np.abs(la) > MAX_LAT
+                out[i[cap], j[cap]] = POLAR_RGB
+                if cap.any():
+                    used["polar"] = int(cap.sum())
+            used["none"] = int((~filled).sum()) - used.get("polar", 0)
+            if not used["none"]:
+                del used["none"]
         if relit is not None and relit.any():
             used["deshadow"] = int(relit.sum())
             res = self.lut[out]
@@ -1092,6 +1123,24 @@ def mip_chain(img):
     return [Image.fromarray(a, "RGB") for a in mip_arrays(np.asarray(img.convert("RGB")))]
 
 
+_BC1_GPU_FAILED = False
+
+
+def _bc1_gpu(levels):
+    """The levels' BC1 blocks on the GPU (earthfast.bc1_encode_gpu: the same encoder in float32, ~1 block in 1000
+    differs; a 512 px texture's CPU time 9.3 -> 2.0 ms), or None: no GPU, or it failed (logged once; the CPU encoder
+    from then on)."""
+    global _BC1_GPU_FAILED
+    if _BC1_GPU_FAILED or not fast.gpu() or getattr(fast._ef, "VERSION", 0) < 59:
+        return None
+    try:
+        return fast._ef.bc1_encode_gpu(levels)
+    except Exception as e:
+        _BC1_GPU_FAILED = True
+        log.warning("imagery: GPU BC1 encoding failed (%s); the CPU from now on", e)
+        return None
+
+
 def encode_dds(rgb):
     """DDS bytes of an RGB image (uint8 [h, w, 3], power-of-two sides): DXT1 (BC1, no alpha)
     with the full mip chain."""
@@ -1101,10 +1150,10 @@ def encode_dds(rgb):
     # the Rust BC1 encoder: endpoints on each block's principal axis, refined, nearest-colour indices (2026-10-16:
     # RMSE 3.39 -> 2.86 on 60 imagery tiles against Pillow's min / max 565 endpoints), without the GIL
     fast.require(0, "bc1_encode")
-    for lv in mip_arrays(rgb):
-        data = fast._ef.bc1_encode(np.ascontiguousarray(lv))
+    levels = [np.ascontiguousarray(lv) for lv in mip_arrays(rgb)]
+    blobs = _bc1_gpu(levels) or [fast._ef.bc1_encode(lv) for lv in levels]
+    for lv, data in zip(levels, blobs):
         assert len(data) == dxt1_size(lv.shape[1], lv.shape[0]), (lv.shape, len(data))
-        blobs.append(data)
     flags = DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PIXELFORMAT | DDSD_MIPMAPCOUNT | DDSD_LINEARSIZE
     head = (DDS_MAGIC
             + struct.pack("<7I", 124, flags, h, w, dxt1_size(w, h), 0, len(blobs))

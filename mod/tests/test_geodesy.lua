@@ -176,4 +176,28 @@ for _, c in ipairs({
   T.near(s * z, c.q[3], 1e-12, 'matToQuat z'); T.near(s * w, c.q[4], 1e-12, 'matToQuat w')
 end
 
+-- true north at a point of the frame (the minimap's compass)
+do
+  local a = g.newAnchor(39.2834, -76.5934)
+  local x, y = a:northAt(0, 0)
+  T.near(x, 0, 1e-9, 'northAt the anchor: +y'); T.near(y, 1, 1e-9, 'northAt the anchor: +y')
+  x, y = a:northAt(15000, 0)
+  local turn = math.deg(math.atan2(-x, y))
+  T.check(x < 0, 'east of the anchor, north leans west (meridians converge)')
+  T.near(turn, math.deg(15000 * math.tan(math.rad(39.2834)) / 6371000), 0.01, 'the turn is d tan(lat) / R')
+  T.near(x * x + y * y, 1, 1e-12, 'northAt is a unit direction')
+  local p = g.newAnchor(89.99, 20)
+  local pe, pn = p:geodeticToEnu(90, 0, 0)
+  for _, q in ipairs({ { 0, 3000 }, { 800, 1500 }, { -2000, -500 } }) do
+    local nx, ny = p:northAt(q[1], q[2])
+    local dx, dy = pe - q[1], pn - q[2]
+    local l = math.sqrt(dx * dx + dy * dy)
+    T.near(nx * dx / l + ny * dy / l, 1, 1e-6, 'near the North Pole, north is toward the pole')
+  end
+  local s = g.newAnchor(-89.99, 0)
+  local se, sn = s:geodeticToEnu(-90, 0, 0)
+  local nx, ny = s:northAt(0, -3000)
+  T.check(nx * (0 - se) + ny * (-3000 - sn) > 0, 'past the South Pole, north points away from it')
+end
+
 T.done('test_geodesy')

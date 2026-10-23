@@ -1,11 +1,29 @@
 """Blocking test client for earthd (framing from protocol.py)."""
+import os
 import socket
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import protocol  # noqa: E402
+
+
+def stop_server(proc):
+    """Stop an earthd a test started, its worker processes with it. On Windows terminate() kills the server alone:
+    its spawned pool workers (each holds both ends of its task queue, so no EOF) lived on and kept earthfast.pyd
+    locked. Safe to call twice (tearDown, then the cleanup a failed setUp leaves)."""
+    if proc.poll() is None:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+        else:
+            proc.terminate()
+    try:
+        proc.wait(10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
 
 
 class Client:

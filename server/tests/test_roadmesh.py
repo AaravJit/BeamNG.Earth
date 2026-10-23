@@ -102,6 +102,20 @@ class FollowTest(unittest.TestCase):
             return 10.0 + 0.8 * np.sin(e / 3.1) * np.cos(n / 2.3) + 0.05 * e
         return elev
 
+    def test_drawn_ground_is_the_road_surfaces_ground(self):
+        # the sidewalks' curbs on the ground the road surfaces lie on (the user, 2026-10-21): drawn_ground at every
+        # point follow_ground (the kernel the road mesh uses) cuts the triangles into is the height it gives them,
+        # on the cells' edges, diagonals and corners too
+        rng = np.random.default_rng(7)
+        P = np.r_[rng.uniform(-30, 30, (80, 2)), rng.integers(-15, 16, (20, 2)) * 2.0]
+        T = np.array([rng.choice(len(P), 3, replace=False) for _ in range(60)], np.int64)
+        grid, i0, j0 = roadmesh._height_grid(FRAME, self.bumpy(), P, 1 / 32)
+        fP, _, fT, _ = roadmesh.follow_ground(P, np.zeros((len(P), 2)), T, grid, i0, j0)
+        self.assertGreater(len(fP), len(P), "cut along the ground's triangles")
+        z = roadmesh.drawn_ground(FRAME, self.bumpy(), fP[:, :2], 1 / 32)
+        self.assertTrue(np.isfinite(z).all())
+        np.testing.assert_allclose(z, fP[:, 2], rtol=0, atol=1e-6)
+
     def test_with_filled_polygons(self):
         """A tile with corner asphalt (a filled polygon) follows the ground too: the polygon's points once took the
         name of the height quantum and every such road tile failed (a Steam Deck in Baltimore, 2026-10-20)."""
@@ -137,6 +151,22 @@ class FollowTest(unittest.TestCase):
         e1, e2 = a[:, 1] - a[:, 0], a[:, 2] - a[:, 0]
         self.assertTrue((e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0] > 0).all(), "facing up")
 
+
+    def test_no_climbing_a_step(self):
+        """A strip beside a cutting's wall: in the lattice cells holding the step it stays at the road's level instead
+        of climbing the lattice's teeth (FOLLOW_STEP_M / FOLLOW_MAX_UP), elsewhere it follows the ground."""
+        grid = np.zeros((10, 10))
+        grid[:, 5:] = 4.0                                   # a 4 m step between x = 8 and x = 10
+        grid[:, :5] += np.arange(5) * 0.1                   # a gentle slope before it (followed)
+        P = np.array([[1.0, 1.0], [9.5, 1.0], [9.5, 15.0], [1.0, 15.0]])
+        T = np.array([[0, 1, 2], [0, 2, 3]])
+        UV = np.zeros((4, 2))
+        Q, _, U, _ = roadmesh.follow_ground(P, UV, T, grid, 0, 0)
+        step = Q[:, 0] > 8.0
+        self.assertTrue(step.any())
+        self.assertLessEqual(Q[step, 2].max(), 0.4 + roadmesh.FOLLOW_MAX_UP + 1e-9, "held down at the step")
+        flat = Q[:, 0] < 7.9
+        self.assertGreater(Q[flat, 2].max(), 0.25, "the slope before it followed")
 
 if __name__ == "__main__":
     unittest.main()

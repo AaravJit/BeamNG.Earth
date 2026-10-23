@@ -23,6 +23,10 @@
 --   physics   the TerrainBlock's collidable square (the pending block dashed) and the
 --             terrain-follow prepare / commit squares, sampled on the physics ground.
 --   physicsTerrain  renders the invisible TerrainBlock (mesh mode) to compare it with the tiles.
+--   wireframe the whole scene as triangle edges (the engine's GFXDevice.renderWireframe, the world editor's
+--             "Wireframe Mode"): how the ground, the far tiles (adaptive from L1) and the roads are built (the user,
+--             2026-10-22: "create a wiremesh view debug so i can see how its build"). Input action
+--             "BeamNG.Earth: wireframe view" (Ctrl+Alt+W).
 --   rings     near radii around the player, the rebase and prefetch circles around the anchor
 --             origin, the far-field square (server RADIUS, a Chebyshev half-size).
 --   probe     a vertical line at the car: the physics ground, the tile under the car (level, its
@@ -49,7 +53,7 @@ local stopwatch = require('beamngEarth/stopwatch')
 
 local floor, min, max, abs, sqrt, huge = math.floor, math.min, math.max, math.abs, math.sqrt, math.huge
 
-M.OVERLAYS = { 'tint', 'outlines', 'loading', 'physics', 'physicsTerrain', 'rings', 'probe' }
+M.OVERLAYS = { 'tint', 'outlines', 'loading', 'physics', 'physicsTerrain', 'rings', 'probe', 'wireframe' }
 M.PANELS = { 'stats', 'graphs', 'map', 'controls', 'log' }
 M.PRESETS = {
   off = {},
@@ -314,6 +318,9 @@ local function updateActive()
   busy = active or tintPending()
 end
 
+-- The wireframe view on or off (input action beamngEarth_wireframe).
+function M.toggleWireframe() return M.set('wireframe', not on.wireframe) end
+
 -- Turn an overlay or panel on or off. Returns the new state, or nil + error for an unknown name.
 function M.set(name, value)
   if not known[name] then return nil, 'unknown dev tool ' .. tostring(name) end
@@ -336,6 +343,8 @@ function M.set(name, value)
       for name2 in pairs(tintState) do enqueueTint(name2) end
     end
     busy = active or tintPending()
+  elseif name == 'wireframe' then
+    if GFXDevice then GFXDevice.renderWireframe = value end
   elseif name == 'physicsTerrain' then
     if value then
       prevRender = terrain.isRenderEnabled()

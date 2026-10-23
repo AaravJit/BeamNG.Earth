@@ -99,6 +99,9 @@ M.square = 2.0   -- the block's square size (m per sample), from the last load
 M.runtimeMade = {}
 M.seenMats = {}         -- material names some block of this session listed (M.swap)
 M.looked = {}   -- material name -> the square size its look was applied for
+-- (M.swap) Windows only: the rebind was a guess at GitHub #115's stripes, whose cause was the terrain cache's mips
+-- (server bc7.dds, 4ad1642); kept on Windows until checked there, off elsewhere (~18 ms of every swap on a Deck)
+M.REBIND_AFTER_SWAP = rawget(_G, 'jit') ~= nil and jit.os == 'Windows'
 local baseNow = nil
 local function toSamples(metres) return math.max(1, math.floor(metres / M.square + 0.5)) end
 
@@ -349,6 +352,8 @@ function M.swap(terPath, squareSize, maxHeight, x, y, z, layers, base, baseSize)
   if base ~= nil then baseNow = base or nil end
   M.swaps = (M.swaps or 0) + 1
   applyRender(tb)
+  -- Windows: every slot rebound after the swap again, as 1.5.4 did (~18 ms more per swap; REBIND_AFTER_SWAP).
+  if base ~= nil and M.REBIND_AFTER_SWAP then M.setBase(base or nil, baseSize) end
   -- ms of the last swap: the base fields' preparation and the .ter's application, then the whole call; its materials
   M.lastSwap = { apply = tApply, total = sw(), mats = #slots, fresh = #fresh > 0 and fresh or nil }
   return true

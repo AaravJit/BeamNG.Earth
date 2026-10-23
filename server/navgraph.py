@@ -120,10 +120,11 @@ def driving_width(spec):
     return float(min(spec.width, w))
 
 
-def _lanes(width, oneway):
-    """Lanes (with the direction, against it) of a road whose driving lanes are `width` wide: the same number
-    each way on a two-way road (a lopsided split put the AI's centre line off the road's)."""
-    n = max(1, int(round(width / LANE_W_M)))
+def _lanes(width, oneway, known=None):
+    """Lanes (with the direction, against it) of a road whose driving lanes are `width` wide (known: OpenStreetMap's
+    lane count, both directions, osmtags.py): the same number each way on a two-way road (a lopsided split put the AI's
+    centre line off the road's)."""
+    n = int(known) if known else max(1, int(round(width / LANE_W_M)))
     if oneway:
         return n, 0
     k = max(1, n // 2)
@@ -264,7 +265,7 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
                         direction = int(ow.value[r])
             if direction == 0 and spec.oneway and spec.dir:     # a divided road's carriageway (roads.dual_carriageways)
                 direction = int(spec.dir)
-            lo, li = _lanes(w, direction != 0)
+            lo, li = _lanes(w, direction != 0, spec.lanes)
             profile = _speed_profile(xy, w, direction != 0)
             # this road's approaches at its two ends (the graph node next to the junction, whether traffic comes in)
             for end in (0, -1):

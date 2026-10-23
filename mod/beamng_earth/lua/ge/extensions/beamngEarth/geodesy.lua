@@ -76,6 +76,21 @@ function Anchor:geodeticToEnu(latDeg, lonDeg, h)
   return self:ecefToEnu(M.geodeticToEcef(latDeg, lonDeg, h))
 end
 
+-- True north at a point (e, n) of this frame, as a unit direction (x, y) of the frame's ground plane. The frame's +y
+-- is north only at the anchor; elsewhere the meridian turns by about d * tan(lat) / R (0.1 deg 15 km off at 39 deg,
+-- 1.5 deg at 85 deg, any direction near a pole, where north is toward the pole).
+function Anchor:northAt(e, n)
+  local lat, lon = M.ecefToGeodetic(self:enuToEcef(e, n, 0))
+  local sl, cl = sin(rad(lat)), cos(rad(lat))
+  local so, co = sin(rad(lon)), cos(rad(lon))
+  local nx, ny, nz = -sl * co, -sl * so, cl
+  local x = self.ex * nx + self.ey * ny + self.ez * nz
+  local y = self.nx * nx + self.ny * ny + self.nz * nz
+  local len = sqrt(x * x + y * y)
+  if len < 1e-9 then return 0, 1 end
+  return x / len, y / len
+end
+
 -- Coordinates of a point given in `self`'s ENU frame, expressed in `other`'s ENU frame
 -- (ENU_old -> ECEF -> ENU_new, docs/V1_SPEC.md "Floating origin / rebase").
 function Anchor:toFrame(other, e, n, u)

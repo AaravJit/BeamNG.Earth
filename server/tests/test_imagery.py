@@ -873,5 +873,16 @@ class NetworkImageryTest(unittest.TestCase):
         self.assertGreater(int(rgb[..., 2].mean()), int(rgb[..., 0].mean()))
 
 
+class LatLonBboxTest(unittest.TestCase):
+    def test_wms_4326_box(self):
+        """A WMS without Web Mercator gets the tile's extent as south,west,north,east in degrees (WMS 1.3.0)."""
+        s, w, n, e = map(float, imagery.lat_lon_bbox(imagery.mercator_bbox(15, 18296, 10771)).split(","))
+        self.assertLess(s, n)
+        self.assertLess(w, e)
+        self.assertAlmostEqual(w, 18296 / 2 ** 15 * 360 - 180, places=6)
+        self.assertTrue(52.0 < s < 52.5 and 20.9 < w < 21.1, "Warsaw")
+        self.assertIn("{bbox4326}", imagery.SOURCES["poland"].url)
+
+
 if __name__ == "__main__":
     unittest.main()

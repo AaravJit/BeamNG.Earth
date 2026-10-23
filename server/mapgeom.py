@@ -233,6 +233,57 @@ def empty(layer):
                     np.zeros(1, np.int64), np.zeros(1, np.int64), np.zeros((0, 2), np.float64))
 
 
+def concat(a, b):
+    """Features a with b's features after them (every id of b sorts after a's: the ids stay ascending), b's attrs
+    and rules joined in (columns one side lacks filled: "" for text, NaN for numbers, False for flags). Pure."""
+    if b is None or len(b) == 0:
+        return a
+    if len(a) and len(b) and not str(a.ids[-1]) < str(b.ids[0]):
+        raise ValueError("concat: b's ids must sort after a's")
+    n_a = len(a)
+    ids = np.array([str(x) for x in a.ids] + [str(x) for x in b.ids])
+    out = Features(a.layer, ids, np.r_[a.kind, b.kind].astype(np.uint8),
+                   np.r_[a.part_off, b.part_off[1:] + a.part_off[-1]].astype(np.int64),
+                   np.r_[a.ring_off, b.ring_off[1:] + a.ring_off[-1]].astype(np.int64),
+                   np.r_[a.coord_off, b.coord_off[1:] + a.coord_off[-1]].astype(np.int64),
+                   np.concatenate([a.lonlat.reshape(-1, 2), b.lonlat.reshape(-1, 2)]).astype(np.float64))
+
+    def fill(col, n):
+        if col.dtype.kind == "U":
+            return np.full(n, "", col.dtype)
+        if col.dtype.kind == "b":
+            return np.zeros(n, bool)
+        return np.full(n, np.nan, col.dtype if col.dtype.kind == "f" else np.float64)
+
+    for k in sorted(set(a.attrs) | set(b.attrs)):
+        ca = a.attrs.get(k)
+        cb = b.attrs.get(k)
+        ca = fill(cb, n_a) if ca is None else ca
+        cb = fill(ca, len(b)) if cb is None else cb
+        if ca.dtype.kind == "U" or cb.dtype.kind == "U":
+            out.attrs[k] = text_column(list(ca.tolist()) + list(cb.tolist()))
+        else:
+            out.attrs[k] = np.concatenate([ca, cb])
+    for k in sorted(set(a.rules) | set(b.rules)):
+        ra, rb = a.rules.get(k), b.rules.get(k)
+        parts = [r for r in (ra, rb) if r is not None]
+        textual = any(r.value.dtype.kind == "U" for r in parts)
+        vals = [v for r in parts for v in r.value.tolist()]
+        out.rules[k] = RuleTable(
+            np.r_[ra.feature if ra is not None else np.zeros(0, np.int32),
+                  (rb.feature + n_a) if rb is not None else np.zeros(0, np.int32)].astype(np.int32),
+            text_column(vals) if textual else np.array(vals, np.float32),
+            np.concatenate([r.start for r in parts]).astype(np.float32),
+            np.concatenate([r.end for r in parts]).astype(np.float32))
+    if a.own is not None or b.own is not None:
+        out.own = np.r_[a.own if a.own is not None else np.zeros(n_a, bool),
+                        b.own if b.own is not None else np.zeros(len(b), bool)]
+    if a.clipped is not None or b.clipped is not None:
+        out.clipped = np.r_[a.clipped if a.clipped is not None else np.zeros(n_a, bool),
+                            b.clipped if b.clipped is not None else np.zeros(len(b), bool)]
+    return out
+
+
 def text_column(values):
     """Python strings (None = missing) -> a fixed-width unicode array ("" = missing)."""
     v = ["" if x is None else str(x) for x in values]

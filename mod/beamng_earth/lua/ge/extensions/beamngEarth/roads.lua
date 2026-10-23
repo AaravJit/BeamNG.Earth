@@ -28,6 +28,7 @@ M.MATERIAL_FILES = { '/levels/west_coast_usa/art/road/main.materials.json',
   '/levels/johnson_valley/art/decalroad/main.materials.json',
   '/levels/italy/art/shapes/buildings/main.materials.json',        -- italy_cobblestone (paving stones)
   '/levels/driver_training/art/road/main.materials.json',          -- m_metal_grid_drain (storm drains)
+  '/levels/gridmap_v2/art/shapes/grid/main.materials.json',        -- m_gm_concrete_plain (concrete streets)
   '/levels/beamng_earth/art/shapes/beamngEarth/buildings.materials.json' }  -- buildings (server/buildings.py)
 M.FADE = '450 150'          -- distanceFade: start, range (m)
 M.enabled = true
@@ -292,6 +293,8 @@ function M.collideRadius(speed)
 end
 
 local lastRadius = M.COLLIDE_M[1]
+local foci = {}             -- other vehicles' collision islands { x, y, r } (M.setFoci)
+local collisionfoci = require('beamngEarth/collisionfoci')
 local lastSpeed = 0
 local holdActive = false
 local swapQuiet = nil       -- { frames left, stopwatch } after a terrain swap (M.terrainSwapped)    -- core's drop hold: the game paused, the car frozen where it was dropped (M.setHold)
@@ -311,8 +314,13 @@ function M.collideNear(t, extra)
   local veh = getPlayerVehicle and getPlayerVehicle(0)
   if not veh then return true end
   local r = M.radiusToward(veh:getPosition(), t.cx, t.cy, lastRadius, lastDir)
-  return M.nearPlayer(vec3(t.cx, t.cy, 0), r + (extra or 0) + M.TILE_M * 0.71)
+  if M.nearPlayer(vec3(t.cx, t.cy, 0), r + (extra or 0) + M.TILE_M * 0.71) then return true end
+  -- or near another vehicle's collision island (collisionfoci.lua: other players' cars, traffic)
+  return #foci > 0 and collisionfoci.near(foci, t.cx, t.cy, (extra or 0) + M.TILE_M * 0.71) or false
 end
+
+-- Other vehicles' collision foci (collisionfoci.lua, through core.lua): their tiles' colliders are made too.
+function M.setFoci(f) foci = f or {} end
 
 -- Every COLLIDE_CHECK_S: parked colliders whose tile came near queued; far tiles' colliders dropped.
 local function updateCollideRange()
@@ -640,6 +648,8 @@ end
 
 -- Once per frame (core onUpdate): deletions, then creations, within the governor's budget.
 local viewAt = nil  -- core.viewAway(): the camera's { x, y } when it is away from the car, else nil (M.nextWalk)
+local prewarmId, prewarmPath, prewarmWant = nil, nil, nil     -- (the materials' prewarm shape, below)
+local prewarmNow
 
 function M.update(gov, currentAnchor, player, view)
   viewAt = view
@@ -942,8 +952,7 @@ end
 -- Server hello.prewarm: a tiny shape listing every material the server's shapes use, loaded once when it connects
 -- (server/prewarm.py): a material's first shape in a session set it up (a tunnel's first tile 65 ms, later ones ~2 ms),
 -- now while the level starts. Kept far below the map (one per path; nil: an older server, nothing).
-local prewarmId, prewarmPath, prewarmWant = nil, nil, nil
-local function prewarmNow()
+prewarmNow = function()
   local path = prewarmWant
   -- (the hello comes at the main menu, before the level's objects and with the roads off outside our level)
   if not path or not M.enabled or not scenetree.MissionGroup then return end

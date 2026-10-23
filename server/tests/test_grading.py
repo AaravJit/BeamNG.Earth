@@ -274,8 +274,9 @@ class GraderTest(unittest.TestCase):
         bbox = mapcells.cells_for_bbox(float(la.min()), float(lo.min()), float(la.max()), float(lo.max()))
         self.assertGreater(len(bbox), 100)
         out = g.apply(la, lo, np.zeros(2))
-        # (each point's own cells and those whose plans reach it: a cell plans CLIP_MARGIN_M past its edges)
-        self.assertLessEqual(md.calls, 18, "the cells around the two points")
+        # (each point's own cells and those whose plans reach it: a cell plans CLIP_MARGIN_M past its edges; and the
+        # bridges of their neighbours, read for the underpasses: grading.UNDER_*)
+        self.assertLessEqual(md.calls, 30, "the cells around the two points")
         self.assertAlmostEqual(float(out[0]), 10.0, delta=0.05)
         near = mapcells.cells_near_points(la, lo, 1e-4, 1e-4)
         self.assertTrue(set(near) <= set(bbox))
@@ -349,6 +350,49 @@ class OverTunnels(unittest.TestCase):
         got = grading.Grader._over_tunnels(g, e, n)
         np.testing.assert_array_equal(got, [True, True, False, False, False, True, False])
         self.assertIsNone(grading.Grader._over_tunnels(g, np.array([50.0]), np.array([30.0])))
+
+
+class WallHeightTest(unittest.TestCase):
+    def test_city_concrete_walls_full_height(self):
+        """A major road's cutting in town keeps a full-height concrete wall (McGraw-Graben); stone walls elsewhere
+        stop at WALL_MAX_H_M with the slope above them (mountain passes)."""
+        import roads
+        city = roads.Spec(width=12.0, kind="paved", urban=True, cls="primary", oneway=False)
+        rural = roads.Spec(width=7.0, kind="paved", urban=False, cls="primary", oneway=False)
+        street = roads.Spec(width=7.0, kind="paved", urban=True, cls="residential", oneway=False)
+        self.assertEqual(grading.wall_max_h(city), grading.WALL_MAX_H_CITY_M)
+        self.assertEqual(grading.wall_max_h(rural), grading.WALL_MAX_H_M)
+        self.assertEqual(grading.wall_max_h(street), grading.WALL_MAX_H_M)
+
+
+class UnderpassTest(unittest.TestCase):
+    def test_road_dips_under_a_motorway_overpass(self):
+        """A local road crossing under a short motorway bridge whose terrain was interpolated at deck height (lidar
+        with the bridge removed) dips to the deck minus UNDER_CLEAR_M; a road crossing nothing is left alone."""
+        f = features([[(-200, 0), (200, 0)], [(0, -20), (0, 20)], [(-200, 300), (200, 300)]],
+                     ["residential", "motorway", "residential"], flags=[(1, "is_bridge")])
+        g = grading.Grader(FRAME, FakeMD(f), lambda la, lo: np.full(np.shape(la), 10.0))
+        la, lo, _ = FRAME.enu_to_geodetic(np.array([0.0, 150.0, 0.0]), np.array([0.0, 0.0, 300.0]), 0.0)
+        out = g.apply(la, lo, np.full(3, 10.0))
+        self.assertAlmostEqual(float(out[0]), 10.0 - grading.UNDER_CLEAR_M, delta=0.3, msg="under the deck")
+        self.assertAlmostEqual(float(out[1]), 10.0, delta=0.1, msg="back up past the ramp")
+        self.assertAlmostEqual(float(out[2]), 10.0, delta=0.1, msg="another road untouched")
+
+
+class RacewayKeepTest(unittest.TestCase):
+    def test_track_surface_is_the_terrain(self):
+        """A road crossing a racetrack at grade: on the track (its carriageway + margin) the terrain stays as it is
+        (a banked oval's slope), off it the road is graded as usual."""
+        f = features([[(-200, 0), (200, 0)], [(0, -100), (0, 100)]], ["raceway", "residential"])
+
+        def sloped(la, lo):         # a banking: the ground rising to the north
+            _e, n, _ = FRAME.geodetic_to_enu(np.asarray(la), np.asarray(lo), 0.0)
+            return 10.0 + 0.3 * np.asarray(n)
+        g = grading.Grader(FRAME, FakeMD(f), sloped)
+        la, lo, _ = FRAME.enu_to_geodetic(np.array([0.0, 0.0]), np.array([3.0, 60.0]), 0.0)
+        base = sloped(la, lo)
+        out = g.apply(la, lo, base)
+        self.assertAlmostEqual(float(out[0]), float(base[0]), places=6, msg="on the track: the terrain")
 
 
 if __name__ == "__main__":

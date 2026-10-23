@@ -274,6 +274,9 @@ class SeaCarver:
 
     # --- rasters --------------------------------------------------------------------------------
     def _water(self, key):
+        z, _, y = key
+        if not 0 <= y < (1 << z):       # past the Web-Mercator rows (the poles): no map cells, no water data
+            return None
         try:
             return self.md.cell(key, layers=("water",)).layers.get("water")
         except Exception as e:          # offline / fetch refused: no water there for now
@@ -284,6 +287,8 @@ class SeaCarver:
         """(depth, level) of cell (x, y): (CELL_PX + 2)² float32 each, pixel [j, i] centred on z16 pixel
         (x * CELL_PX - 1 + i + 0.5, y * CELL_PX - 1 + j + 0.5); level NaN away from water (spread
         LEVEL_PAD_PX onto the shore, for the lookups next to it); None when the cell has no water."""
+        if not 0 <= y < (1 << mapcells.ZOOM):     # past the Web-Mercator rows (the poles)
+            return None
         k = (x, y)
         now = time.monotonic()
         with self._lock:
