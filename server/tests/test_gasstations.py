@@ -755,9 +755,10 @@ class TileTest(unittest.TestCase):
 REAL = __import__("os").environ.get("BNGE_GAS_REAL") == "1"
 
 
-@unittest.skipUnless(REAL, "set BNGE_GAS_REAL=1 to lay out the user's three test stations from the real Overture data")
+@unittest.skipUnless(REAL, "set BNGE_GAS_REAL=1 to lay out three Pittsburgh-area stations from the real Overture data")
 class RealSpotsTest(unittest.TestCase):
-    """The stations the user checked on satellite view, 2026-10-23 (the Pittsburgh area)."""
+    """Real stations around Pittsburgh, one per kind of canopy data (picked 2026-10-23 from the stations laid out in
+    and around the city)."""
 
     @classmethod
     def setUpClass(cls):
@@ -776,23 +777,24 @@ class RealSpotsTest(unittest.TestCase):
         self.assertEqual(len(recs), 1, recs)
         return recs[0], skip
 
-    def test_speedway_tagged_canopy(self):
+    def test_tagged_canopy(self):
+        # a BP in Pittsburgh: its canopy a mapped building=roof, East Coast's units over it (us_east)
         rec, skip = self.site(40.403093, -80.041343)
         self.assertEqual(len(skip), 1, "the OSM roof left out")
-        self.assertTrue(any("eca_gastation_pumps" in p["shape"] for p in rec["props"]))    # (us_east)
+        self.assertTrue(any("eca_gastation_pumps" in p["shape"] for p in rec["props"]))
         self.assertGreaterEqual(len(rec["areas"]), 4)
 
-    def test_sheetz_ml_canopy(self):
+    def test_imagery_canopy(self):
+        # a Sunoco in Butler: no mapped canopy; the untagged imagery outline between the shop and the road is the canopy
         rec, skip = self.site(40.861281, -79.900648)
         self.assertEqual(len(skip), 1, "the imagery outline left out")
-        self.assertTrue(any("eca_gastation_pumps" in p["shape"] for p in rec["props"]))    # (us_east)
+        self.assertTrue(any("eca_gastation_pumps" in p["shape"] for p in rec["props"]))
 
-    def test_sunoco_pin_on_road(self):
-        # the pin on the road; the store is the mapper's 190 m2 building; the untagged 179 m2 imagery outline between it
-        # and the road is the canopy over the pumps (2026-10-23)
+    def test_pin_on_road(self):
+        # a Sunoco in Pittsburgh: its pin 2.4 m from the road; its two mapped canopies (two islands: West Coast's)
         rec, skip = self.site(40.465627, -79.955447)
-        self.assertEqual(len(skip), 1, "the imagery canopy (the user confirmed it on satellite view, 2026-10-23)")
-        self.assertTrue(any("s_fuel_structure_06" in p["shape"] for p in rec["props"]))    # (two islands: West Coast's)
+        self.assertEqual(len(skip), 2, "both mapped canopies left out")
+        self.assertTrue(any("s_fuel_structure_06" in p["shape"] for p in rec["props"]))
 
 
 if __name__ == "__main__":
