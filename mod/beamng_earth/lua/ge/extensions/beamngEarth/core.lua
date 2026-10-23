@@ -1140,6 +1140,10 @@ local function updateWorld(dt)
     st.pending = nil -- the next frame prefetches at the player's position
   end
 
+  -- an unstable car (NaN position or speed, the frames before the game resets it): no block asked for from it (the
+  -- server refused "cx is not finite", a Steam Deck test drive 2026-10-23)
+  local function finite(v) return type(v) == 'number' and v == v and v > -math.huge and v < math.huge end
+  if not (finite(pl.x) and finite(pl.y) and finite(pl.vx or 0) and finite(pl.vy or 0)) then return end
   -- terrain-follow, unless the altitude rule holds the block (high above the ground)
   local ga = st.groundAhead
   local gz = ga and ga.anchorId == st.anchorId and st.clock - ga.at <= follow.GROUND_STALE_S and ga.z or nil

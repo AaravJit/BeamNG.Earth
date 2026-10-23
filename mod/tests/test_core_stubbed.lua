@@ -279,6 +279,11 @@ local clusterMoves = calls.setClusterPosRelRot
 veh.pos = vec3(290, 0, 1200)
 frames(5)
 T.check(#received('prepare_terrain') == 0, 'below 300 m: no terrain request')
+local velWas = veh.vel
+veh.pos, veh.vel = vec3(305, 0, 1200), vec3(0 / 0, 0 / 0, 0)    -- an unstable car (NaN), before the game resets it
+frames(5)
+T.check(#received('prepare_terrain') == 0, 'a NaN speed: no terrain request')
+veh.pos, veh.vel = vec3(290, 0, 1200), velWas
 veh.pos = vec3(301, 0, 1200)
 T.check(pumpUntil(function() return #received('prepare_terrain') == 1 end, 5), 'prepare_terrain past 300 m')
 local pt = received('prepare_terrain')[1]
