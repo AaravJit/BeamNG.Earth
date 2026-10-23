@@ -1595,9 +1595,9 @@ local function onUpdate(dtReal, dtSim)
       if not ok then fociBroken = true; log('E', 'beamngEarth', 'far cars: ' .. tostring(err)) end
       t = mark('farcars', t)
     end
-    parking.update(st.anchorId, not (st.player and st.player.camera) and st.player or nil, pb)   -- (no car: none parked)
+    parking.update(st.anchorId, not (st.player and st.player.camera) and st.player or nil, pb, gov)  -- (no car: none parked)
     t = mark('parking', t)
-    navgraph.update(st.anchorId, pb)
+    navgraph.update(st.anchorId, pb, gov)
     t = mark('navgraph', t)
     updateSky(dtReal)
     updateGuard()
