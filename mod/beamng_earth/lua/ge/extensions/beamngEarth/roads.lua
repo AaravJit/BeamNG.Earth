@@ -241,6 +241,7 @@ local function dropTile(key)
   if t.deck then deleteQ[#deleteQ + 1] = t.deck end
   for _, w in ipairs({ 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'walkcol', 'tunnel' }) do if t[w] then deleteQ[#deleteQ + 1] = t[w] end end
   if t.wire then deleteQ[#deleteQ + 1] = t.wire end
+  if t.guardrail then deleteQ[#deleteQ + 1] = t.guardrail end
   -- and its meshes not made yet (from KyzoFox's 1.5.4, PR #64): a tile sent again under the same key left its old
   -- walkQ / held / createQ entries, which were then made for the new tile from pooled shape paths that had just been
   -- reported gone and refilled with another tile's shape: that tile's buildings drawn here at its ground height (houses
@@ -428,6 +429,9 @@ function M.onTile(msg, currentAnchor)
   if type(data.park) == 'table' and data.park[1] then      -- curbside parking spots (parking.lua)
     require('beamngEarth/parking').onRows(msg.anchorId, key, data.park)
     tiles[key].park = true
+  end
+  if type(data.guardrail) == 'table' and data.guardrail.shape and type(data.guardrail.pos) == 'table' then
+    walkQ[#walkQ + 1] = { key = key, walk = data.guardrail, what = 'guardrail', tile = tiles[key] }
   end
   if type(data.wire) == 'table' and data.wire.shape and type(data.wire.pos) == 'table' then    -- pole wires
     walkQ[#walkQ + 1] = { key = key, walk = data.wire, what = 'wire', tile = tiles[key] }
@@ -712,7 +716,7 @@ function M.update(gov, currentAnchor, player, view)
     if t then
       local t0 = now()
       loadMaterials()
-      local isRoad = q.what == 'road' or q.what == 'wire' or q.renderOnly   -- render-only meshes
+      local isRoad = q.what == 'road' or q.what == 'wire' or q.what == 'guardrail' or q.renderOnly   -- render-only meshes
       -- the buildings' and sidewalks' lean meshes are a collision detail (server cdae collision_only): never drawn
       local ok, id = pcall(createWalk, q.walk, (q.what == 'bldcol' or q.what == 'walkcol') and 'Collision Mesh' or not isRoad)
       if ok then slotMade(id, q.walk.shape) end
