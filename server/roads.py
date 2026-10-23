@@ -3952,7 +3952,7 @@ def shape_files(aid, tx, ty):
 
 
 def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None, deck_mesh=None, bld=None,
-               props=None, wires=None, park=None, tunnel_mesh=None):
+               props=None, wires=None, park=None, tunnel_mesh=None, fuel=None):
     """Write a tile's chunks (atomically), its sidewalk mesh (walks: build_tile's runs, if any:
     `walks_<a>_<tx>_<ty>.cdae`, announced in the tile as "walk": {shape, pos}) and its road mesh
     (road_mesh: roadmesh.build's result: `road_<a>_<tx>_<ty>.cdae`, "road": {shape, pos}; the mod then
@@ -4033,6 +4033,8 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
         data["props"] = {"groups": groups, "items": [[groups.index(r[0])] + r[1:] for r in props]}
     if park:                        # parking.py's spots [x, y, z, heading] for the stock parked cars (parking.lua)
         data["park"] = park
+    if fuel:                        # gasstations.tile_sites' stations: pumps and refuel areas (gasstations.lua)
+        data["fuel"] = fuel
     tmp = staging.tmp_for(path)
     with open(tmp, "w") as f:
         f.write(json.dumps(data, separators=(",", ":")))    # json.dump to a file streams through the pure-Python encoder

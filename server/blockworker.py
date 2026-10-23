@@ -336,7 +336,7 @@ def terrain_patch(aid, lat, lon, zoom, box, path):
 
 
 def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, buildings=False, left_hand=False,
-               mph=True, q=None):
+               mph=True, q=None, gas_stations=False):
     """earthd.Server.build_roads_tile here (road-tile pool): the anchor's road tile (tx, ty) built and
     written; returns roads.write_tile's (vfs path, chunks). In the server's process its Python made up
     ~80 % of the main process's busy threads (in-game profile 2026-10-13): the block photos and far
@@ -356,6 +356,10 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
     tunnels = tunnel_profiles(aid, frame, elev, g)
     walks = []
     urban = _s.surface.urban if _s.surface is not None else None
+    fuel, skip = [], frozenset()
+    if gas_stations:                    # pumps and refuel areas; their canopy outlines left out of the buildings
+        import gasstations
+        fuel, skip = gasstations.tile_sites(frame, tx, ty, _s.md, elev)
     props = [] if buildings else None
     lines = [] if buildings else None
     wires = [] if buildings else None
@@ -365,7 +369,7 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
         import buildings as buildingsmod
         items = buildingsmod.road_tile_items(frame, tx, ty, _s.md,
                                              lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)),
-                                             decks=_tile_decks(bridges, cells, tx, ty))
+                                             decks=_tile_decks(bridges, cells, tx, ty), skip=skip)
         town = buildingsmod.coverage(items) < buildingsmod.POLES_COVERAGE
     rwalls = []
     ctx = []
@@ -392,6 +396,9 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
         chunks += drives
         park = parkingmod.clear_of(park, props, drives)
         park = parkingmod.tile_lot_spots(frame, tx, ty, _s.md, elev, items, park)
+        if fuel:
+            import gasstations
+            park = gasstations.clear_park(park, fuel)
         buildingsmod.brick_walks(walks, items, lat, lon)
     mesh = roadmeshmod.build(frame, chunks, elev, (x0, y0, 0.0), lift, clip=box, follow=True, q=q, drawn=drawn)
     mesh = _with_plazas(mesh, frame, tx, ty, elev, (x0, y0, 0.0), getattr(_s, "surface", None))
@@ -405,7 +412,7 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
                                      lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)), None, None,
                                      items)
     return roadsmod.write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks if sidewalks else None, mesh, dmesh,
-                               bld, props, wires, park, tunnel_mesh=tmesh)
+                               bld, props, wires, park, tunnel_mesh=tmesh, fuel=fuel)
 
 
 def _with_plazas(mesh, frame, tx, ty, elev, origin, surface):

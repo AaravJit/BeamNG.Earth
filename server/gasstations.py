@@ -13,10 +13,13 @@ so a station's layout comes from the buildings and roads around it, not from the
 are hashes of the Overture ids, so every tile, anchor and BeamMP peer places the same station.
 """
 import hashlib
+import logging
 import re
 from dataclasses import dataclass
 
 import numpy as np
+
+log = logging.getLogger("earthd.gasstations")
 
 GAS_CATEGORIES = {"gas_station", "fueling_station"}
 CLOSED = {"closed", "permanently_closed", "temporarily_closed"}
@@ -41,13 +44,22 @@ CONV_BRANDS = {
 }
 
 
-def classify(category, taxonomy, wikidata, status):
-    """(gas, fuel_brand, conv_brand) of a place, or None when it is no candidate (or closed)."""
+_FUEL_NAMES = {v.lower() for v in FUEL_BRANDS.values()}
+_CONV_NAMES = {v.lower() for v in CONV_BRANDS.values()}
+
+
+def classify(category, taxonomy, wikidata, status, brand_name=""):
+    """(gas, fuel_brand, conv_brand) of a place, or None when it is no candidate (or closed). Without a brand Wikidata
+    id the brand's name, whole, against the lists' names (a Sheetz near Pittsburgh: "Sheetz", no id)."""
     if status is not None and str(status) in CLOSED:
         return None
     gas = str(category or "") in GAS_CATEGORIES or str(taxonomy or "") in GAS_CATEGORIES
     wd = str(wikidata or "")
-    fuel, conv = wd in FUEL_BRANDS, wd in CONV_BRANDS
+    if wd:
+        fuel, conv = wd in FUEL_BRANDS, wd in CONV_BRANDS
+    else:
+        bn = str(brand_name or "").strip().lower()
+        fuel, conv = bn in _FUEL_NAMES, bn in _CONV_NAMES
     if not (gas or fuel or conv):
         return None
     return gas, fuel, conv
@@ -95,7 +107,7 @@ def pins(frame, layers):
             if fid in seen:
                 continue
             c = classify(col("basic_category", i), col("taxonomy", i), col("brand_wikidata", i),
-                         col("operating_status", i) or None)
+                         col("operating_status", i) or None, col("brand_name", i))
             if c is None:
                 continue
             seen.add(fid)
@@ -171,6 +183,8 @@ CANOPY_RECT_MIN = 0.85      # area / its oriented box's: a canopy is a rectangle
 CANOPY_AREA_M2 = (120.0, 900.0)
 CANOPY_MAX_H_M = 7.0
 ROOF_CLASSES = {"roof"}     # OSM building=roof (the Speedway's canopy: outbuilding / roof)
+ROAD_SLACK_M = 20.0         # a canopy may face any public road this much farther from the shop than the nearest (a
+                            # corner lot: a Sheetz near Pittsburgh faces the road 59 m away, the nearest is 49 m)
 
 
 def _area(ring):
@@ -211,7 +225,8 @@ def _named(b, st):
 
 def find_shop(st, blds):
     """The station's shop: among the buildings (not roofs) within SHOP_SEARCH_M of the station, one named like the
-    station, else the nearest; None without one."""
+    station, else the nearest a mapper drew, else the nearest imagery outline (one of those next to a station is often
+    its canopy: a Sunoco near Pittsburgh, its pin on the road, 2026-10-23); None without one."""
     p = np.array([st.x, st.y])
     near = []
     for b in blds:
@@ -219,15 +234,16 @@ def find_shop(st, blds):
             continue
         d = float(np.hypot(*(_centre(b.ring) - p)))
         if d <= SHOP_SEARCH_M:
-            near.append((not _named(b, st), d, b.id, b))
-    return min(near, key=lambda r: r[:3])[3] if near else None
+            near.append((not _named(b, st), b.src in ML_SOURCES, d, b.id, b))
+    return min(near, key=lambda r: r[:4])[4] if near else None
 
 
 def find_canopy(st, shop, blds, roads):
     """The station's canopy among blds, or None (then no building is touched): the nearest tagged roof within
     CANOPY_SEARCH_M of the shop; else an untagged imagery outline (ML_SOURCES) that is not the shop, a canopy-sized
-    rectangle no taller than CANOPY_MAX_H_M, between the shop and its nearest road (projected on the line from the
-    shop's centre to that road), and the only one that passes (the user, 2026-10-23, on turning a car wash into a
+    rectangle no taller than CANOPY_MAX_H_M, between the shop and a public road (projected on the line from the
+    shop's centre to that road's nearest point; the nearest road or one at most ROAD_SLACK_M farther), and the only one
+    that passes (the user, 2026-10-23, on turning a car wash into a
     canopy: "I wouldn't like that")."""
     sc = _centre(shop.ring)
     roofs = [(float(np.hypot(*(_centre(b.ring) - sc))), b.id, b) for b in blds
@@ -235,10 +251,12 @@ def find_canopy(st, shop, blds, roads):
     roofs = [r for r in roofs if r[0] <= CANOPY_SEARCH_M]
     if roofs:
         return min(roofs, key=lambda r: r[:2])[2]
-    q, dist, _ = _nearest_on(roads, sc)
-    if q is None or dist < 1.0:
+    fronts = [_nearest_on([rl], sc) for rl in roads]
+    fronts = [(q, d) for q, d, _ in fronts if q is not None and d >= 1.0]
+    if not fronts:
         return None
-    axis = (q - sc) / dist
+    dmin = min(d for _, d in fronts)
+    fronts = [(q, d) for q, d in fronts if d <= dmin + ROAD_SLACK_M]
     _, _, shl, _ = _obox(shop.ring)
     found = []
     for b in blds:
@@ -256,10 +274,13 @@ def find_canopy(st, shop, blds, roads):
         if area / max(4.0 * hl * hw, 1e-9) < CANOPY_RECT_MIN:
             continue
         v = c - sc
-        t = float(v @ axis) / dist
-        lateral = abs(float(v[0] * axis[1] - v[1] * axis[0]))
-        if 0.0 < t <= 1.1 and lateral <= shl + 10.0:
-            found.append(b)
+        for q, dist in fronts:
+            axis = (q - sc) / dist
+            t = float(v @ axis) / dist
+            lateral = abs(float(v[0] * axis[1] - v[1] * axis[0]))
+            if 0.0 < t <= 1.1 and lateral <= shl + 10.0:
+                found.append(b)
+                break
     return found[0] if len(found) == 1 else None
 
 
@@ -410,3 +431,136 @@ def layout(st, blds, roads):
     if not st.confirmed:
         return None
     return _pair_site(st, shop, blds, roads)
+
+
+# --- the map data around a station, and the road tile's records --------------------------------------------------
+def _outer(f, i, xy):
+    a = f.coord_off[f.ring_off[f.part_off[i]]]
+    b = f.coord_off[f.ring_off[f.part_off[i]] + 1]
+    return xy[a:b]
+
+
+def buildings_near(frame, layers, x, y, r):
+    """Bld of the buildings (mapgeom.Features, one per map cell; a building in two cells taken once, by id) whose
+    outline's centre is within r of (x, y) in frame."""
+    out, seen = [], set()
+    for f in layers:
+        if f is None or len(f) == 0:
+            continue
+        a = f.attrs
+        xy = f.xy_in(frame)
+        for i in range(len(f)):
+            fid = str(f.ids[i])
+            if fid in seen or f.part_off[i + 1] == f.part_off[i]:
+                continue
+            ring = np.asarray(_outer(f, i, xy), np.float64)
+            if len(ring) < 4 or np.hypot(*(ring[:-1].mean(0) - (x, y))) > r:
+                continue
+            seen.add(fid)
+
+            def txt(k):
+                v = a[k][i] if k in a else None
+                return "" if v is None else str(v)
+            h = a["height"][i] if "height" in a else None
+            out.append(Bld(fid, ring, txt("class"), txt("name"), txt("src_dataset"),
+                           float(h) if h is not None and np.isfinite(h) else None))
+    return out
+
+
+def drive_lines(frame, layers, x, y, r):
+    """(centreline (k, 2), half carriageway width) of the public roads (buildings.THROUGH_CLASSES) with a point within
+    r of (x, y) in frame, each road once."""
+    import buildings
+    import roads
+    out, seen = [], set()
+    for f in layers:
+        if f is None or len(f) == 0 or "class" not in f.attrs:
+            continue
+        xy = f.xy_in(frame)
+        for i in range(len(f)):
+            fid, cls = str(f.ids[i]), str(f.attrs["class"][i])
+            if fid in seen or cls not in buildings.THROUGH_CLASSES or f.part_off[i + 1] == f.part_off[i]:
+                continue
+            line = np.asarray(_outer(f, i, xy), np.float64)
+            if len(line) < 2 or _seg_dist(np.array([[x, y]]), line[:-1], line[1:])[0] > r:
+                continue
+            seen.add(fid)
+            out.append((line, roads.carriageway(cls, "paved", False) / 2.0))
+    return out
+
+
+REACH_M = SHOP_SEARCH_M + CANOPY_SEARCH_M + 10.0    # a station's canopy is within this of its position
+
+
+def _cells_near(frame, x, y, r):
+    import mapcells
+    la, lo, _ = frame.enu_to_geodetic(np.array([x - r, x + r, x - r, x + r]), np.array([y - r, y - r, y + r, y + r]),
+                                      0.0)
+    return mapcells.cells_for_bbox(float(np.min(la)), float(np.min(lo)), float(np.max(la)), float(np.max(lo)))
+
+
+def _record(site, frame, elev):
+    """A site as the road tile's JSON record (anchor frame, heights on the ground: elev(lat, lon))."""
+    pts = [(p["x"], p["y"]) for p in site.props] + [(a["x"], a["y"]) for a in site.areas]
+    xs, ys = np.array([p[0] for p in pts], np.float64), np.array([p[1] for p in pts], np.float64)
+    la, lo, _ = frame.enu_to_geodetic(xs, ys, 0.0)
+    z = np.asarray(frame.geodetic_to_enu(la, lo, np.asarray(elev(la, lo), np.float64))[2], np.float64).ravel()
+    sla, slo, _ = frame.enu_to_geodetic(np.array([site.station.x]), np.array([site.station.y]), 0.0)
+    n = len(site.props)
+
+    def r3(v):
+        return round(float(v), 3)
+    return {"id": site.station.id, "name": site.station.name, "brand": site.station.brand,
+            "ll": [round(float(sla[0]), 7), round(float(slo[0]), 7)],
+            "props": [{"shape": p["shape"], "pos": [r3(p["x"]), r3(p["y"]), r3(z[k] + p["dz"])], "yaw": round(p["yaw"], 2),
+                       "scale": [round(v, 3) for v in p["scale"]], "collide": p["collide"]}
+                      for k, p in enumerate(site.props)],
+            "areas": [{"pos": [r3(a["x"]), r3(a["y"]), r3(z[n + k] + a["dz"])], "yaw": round(a["yaw"], 2),
+                       "half": list(a["half"]), "icon": [r3(a["x"]), r3(a["y"]), r3(z[n + k] + a["dz"] + a["icon"])]}
+                      for k, a in enumerate(site.areas)]}
+
+
+def tile_sites(frame, tx, ty, md, elev):
+    """(records of the stations whose position lies in road tile (tx, ty), ids of the canopy outlines to leave out of
+    its buildings): every station within REACH_M of the tile is laid out, so a canopy whose centroid (buildings.py's
+    owner rule) is in this tile is dropped here even when its station is the neighbour's. md: mapdata.MapData;
+    elev(lat, lon) the physics ground. Without places data (offline, no file): no stations."""
+    import roads
+    x0, y0, x1, y1 = roads.tile_bbox(tx, ty)
+    try:
+        keys = roads.cells_of_tile(frame, tx, ty, margin=REACH_M + MERGE_M)
+        places = [md.cell(k, layers=("places",), kind="demand").layers.get("places") for k in keys]
+        stations = merge(pins(frame, places))
+    except Exception as e:      # an unreachable source costs the stations, not the tile
+        log.debug("gas stations of road tile %d_%d: %s", tx, ty, e)
+        return [], frozenset()
+    recs, skip = [], set()
+    for st in stations:
+        if not (x0 - REACH_M <= st.x < x1 + REACH_M and y0 - REACH_M <= st.y < y1 + REACH_M):
+            continue
+        try:
+            cds = [md.cell(k, layers=("buildings", "roads"), kind="demand")
+                   for k in _cells_near(frame, st.x, st.y, REACH_M)]
+            site = layout(st, buildings_near(frame, [c.layers.get("buildings") for c in cds], st.x, st.y, REACH_M),
+                          drive_lines(frame, [c.layers.get("roads") for c in cds], st.x, st.y, REACH_M + 50.0))
+        except Exception as e:
+            log.debug("gas station %s: %s", st.id, e)
+            continue
+        if site is None:
+            continue
+        skip.update(site.drop_ids)
+        if x0 <= st.x < x1 and y0 <= st.y < y1:
+            recs.append(_record(site, frame, elev))
+    return recs, frozenset(skip)
+
+
+PARK_CLEAR_M = 3.0      # a parked car's spot centre this far from every refuel area's edge and every prop
+
+
+def clear_park(park, recs):
+    """parking.py's spot rows [x, y, z, heading, ...] without those on a station's forecourt (recs: tile_sites')."""
+    pts = [(p["pos"][0], p["pos"][1], PARK_CLEAR_M) for r in recs for p in r["props"]]
+    pts += [(a["pos"][0], a["pos"][1], max(a["half"][0], a["half"][1]) + PARK_CLEAR_M) for r in recs for a in r["areas"]]
+    if not pts or not park:
+        return park
+    return [s for s in park if all((s[0] - x) ** 2 + (s[1] - y) ** 2 > d * d for x, y, d in pts)]

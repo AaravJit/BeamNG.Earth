@@ -88,6 +88,7 @@ import surface as surfacemod  # noqa: E402
 import navgraph as navgraphmod  # noqa: E402
 import prewarm as prewarmmod  # noqa: E402
 import parking as parkingmod  # noqa: E402
+import gasstations as gasstationsmod  # noqa: E402
 import roads as roadsmod  # noqa: E402
 import randomplace as randomplacemod  # noqa: E402
 import placepreview as placepreviewmod  # noqa: E402
@@ -517,7 +518,7 @@ class Server:
                  colormatch="off", credits=None, cache=None, retex_rate=RETEX_RATE, surface=None,
                  mapdata=None, grading=False, road_widths=False, block_pools=(), sidewalks=True, buildings=False, traffic=False, far_pool=None,
                  road_pool=None, airports_db=None, sea=None, vegetation=None, leaf_on=True, season_mode="off",
-                 far_bld_pool=None):
+                 far_bld_pool=None, gas_stations=False):
         """kfun: K(L) for every level (default: the layout's K table); near_radii: the min-level
         radii (default: the layout's); cells: 32 (v1.3.1) or 64 (M1, mesh mode only); tex: texture
         px per level from the finest (default: tex_near, tex_near, tex_far with 32 cells,
@@ -716,6 +717,8 @@ class Server:
         # street widths measured between the buildings (roadwidth.py), decided once per road per run
         self.sidewalks = sidewalks  # raised sidewalk meshes with the road tiles (sidewalks.py)
         self.buildings = buildings  # building meshes with the road tiles (buildings.py)
+        # gas stations with refuelling with the road tiles (gasstations.py; the user, 2026-10-23)
+        self.gas_stations = bool(gas_stations) and mapdata is not None
         self.traffic = bool(traffic) and mapdata is not None   # the AI road graph around the player (navgraph.py)
         self.road_widths = (roadwidthmod.RoadWidths(
             lambda key: mapdata.cell(key, layers=("buildings",), kind="demand").layers.get("buildings"),
@@ -1116,7 +1119,8 @@ class Server:
             res = self.road_pool.submit(
                 blockworker.roads_tile, aid, anchor.lat, anchor.lon, anchor.zooms[0], tx, ty, self.out_dir,
                 self.vfs_dir, self.sidewalks, DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0,
-                self.buildings, self.left_hand(anchor), self.mph(anchor), self.anchor_q(anchor)).result()
+                self.buildings, self.left_hand(anchor), self.mph(anchor), self.anchor_q(anchor),
+                self.gas_stations).result()
             log.debug("road tile %d_%d: %.2f s (queue + build)", tx, ty, time.perf_counter() - t0)
             return res
         cells = [self.mapdata.cell(k, layers=("roads",), kind="demand").layers.get("roads")
@@ -1143,6 +1147,9 @@ class Server:
                     elev)
                 anchor.tunnels.wet = self.sea.depth if self.sea is not None else None
                 self._tunnel_ground(anchor, g)
+        fuel, skip = [], frozenset()
+        if self.gas_stations:       # pumps and refuel areas; their canopy outlines left out of the buildings
+            fuel, skip = gasstationsmod.tile_sites(anchor.frame, tx, ty, self.mapdata, elev)
         props = [] if self.buildings else None
         lines = [] if self.buildings else None
         wires = [] if self.buildings else None
@@ -1152,7 +1159,7 @@ class Server:
             items = buildingsmod.road_tile_items(
                 anchor.frame, tx, ty, self.mapdata,
                 lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom)),
-                decks=blockworker._tile_decks(anchor.bridges, cells, tx, ty))
+                decks=blockworker._tile_decks(anchor.bridges, cells, tx, ty), skip=skip)
             town = buildingsmod.coverage(items) < buildingsmod.POLES_COVERAGE
         rwalls = []
         ctx = []
@@ -1181,6 +1188,7 @@ class Server:
             chunks += drives
             park = parkingmod.clear_of(park, props, drives)
             park = parkingmod.tile_lot_spots(anchor.frame, tx, ty, self.mapdata, elev, items, park)
+            park = gasstationsmod.clear_park(park, fuel)
             buildingsmod.brick_walks(walks, items, anchor.lat, anchor.lon)
         mesh = roadmeshmod.build(anchor.frame, chunks, elev, (x0, y0, 0.0),
                                  DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0,
@@ -1197,7 +1205,7 @@ class Server:
                                          lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom)),
                                          None, None, items)
         return roadsmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, chunks, walks if self.sidewalks else None,
-                                   mesh, dmesh, bld, props, wires, park, tunnel_mesh=tmesh)
+                                   mesh, dmesh, bld, props, wires, park, tunnel_mesh=tmesh, fuel=fuel)
 
     def ground_z_at(self, anchor, e, n):
         """The ground's height (the frame's up) at (e, n) of anchor's frame, from the elevation data (not graded: the
@@ -4015,6 +4023,7 @@ async def main_async(args):
                     road_widths=args.road_widths == "on" and args.roads == "on",
                     sidewalks=args.sidewalks == "on",
                     buildings=args.buildings == "on" and args.roads == "on",
+                    gas_stations=args.gas_stations == "on" and args.roads == "on",
                     traffic=args.traffic == "on" and args.roads == "on",
                     block_pools=block_pools, far_pool=far_pool, road_pool=road_pool, airports_db=airports_db,
                     far_bld_pool=far_bld_pool,
@@ -4342,6 +4351,9 @@ def main():
     ap.add_argument("--buildings", choices=("on", "off"), default="off",
                     help="3D buildings from the Overture footprints with the road tiles (buildings.py; needs --roads "
                          "on): heights and roofs predicted where the data has none")
+    ap.add_argument("--gas-stations", choices=("on", "off"), default="off",
+                    help="gas stations with refuelling at real stations (gasstations.py; Overture places, needs "
+                         "--roads on): West Coast USA's pumps and canopies, the stock refuel prompt")
     ap.add_argument("--traffic", choices=("on", "off"), default="on",
                     help="the AI road graph around the player for BeamNG's own traffic and AI (navgraph.py; needs "
                          "--roads on): the mod hands it to map.reset. On by default since 2026-10-14: whether cars "

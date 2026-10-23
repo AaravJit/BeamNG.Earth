@@ -30,6 +30,12 @@ class ClassifyTest(unittest.TestCase):
         self.assertIsNone(gs.classify("gas_station", "gas_station", "", "permanently_closed"))
         self.assertEqual(gs.classify("gas_station", "gas_station", "Q458363", "open"), (True, True, False))
 
+    def test_brand_name_without_wikidata(self):
+        # a Sheetz near Pittsburgh carries the brand's name but no Wikidata id (found 2026-10-23)
+        self.assertEqual(gs.classify("convenience_store", "convenience_store", "", "open", "Sheetz"), (False, False, True))
+        self.assertEqual(gs.classify("atm", "atm", None, "open", "MARATHON"), (False, True, False))
+        self.assertIsNone(gs.classify("convenience_store", "", "", "open", "Sheetz Bakery"))
+
     def test_brand_lists_disjoint(self):
         self.assertFalse(set(gs.FUEL_BRANDS) & set(gs.CONV_BRANDS))
         self.assertIn("Q7492551", gs.CONV_BRANDS)       # Sheetz
@@ -107,6 +113,17 @@ class CanopyTest(unittest.TestCase):
         wash = rect("wash", 0.0, 70.0, 28.0, 12.0, src=ML)
         self.assertIsNone(gs.find_canopy(STATION, SHOP, [SHOP, wash], ROAD))
 
+    def test_ml_toward_side_road_on_a_corner(self):
+        # a Sheetz near Pittsburgh: the canopy toward the second-nearest road (59 m; the nearest 49 m the other way)
+        side = (np.array([(-60.0, -300.0), (-60.0, 300.0)]), 5.0)          # 60 m west of the shop (front: 45 m)
+        can = rect("ml", -30.0, 45.0, 18.0, 28.0, src=ML, height=1.48)
+        self.assertIs(gs.find_canopy(STATION, SHOP, [SHOP, can], ROAD + [side]), can)
+
+    def test_ml_toward_far_back_road_none(self):
+        back = (np.array([(-300.0, 120.0), (300.0, 120.0)]), 5.0)          # 75 m behind the shop (front: 45 m)
+        wash = rect("wash", 0.0, 70.0, 28.0, 12.0, src=ML)
+        self.assertIsNone(gs.find_canopy(STATION, SHOP, [SHOP, wash], ROAD + [back]))
+
     def test_osm_untagged_not_canopy(self):
         b = rect("osm", 0.0, 20.0, 28.0, 18.0)
         self.assertIsNone(gs.find_canopy(STATION, SHOP, [SHOP, b], ROAD))
@@ -130,6 +147,15 @@ class CanopyTest(unittest.TestCase):
         named = rect("named", 30.0, 45.0, 20.0, 18.0, name="Speedway")
         st = gs.Station("st", 0.0, 32.0, "Speedway", "", ("p",), True)
         self.assertIs(gs.find_shop(st, [other, named]), named)
+
+    def test_shop_prefers_mapped_over_imagery(self):
+        # a Sunoco near Pittsburgh: the pin on the road, the nearest outline an untagged imagery one (likely the
+        # canopy), the store a mapper's building behind it
+        ml = rect("ml", 17.0, 10.0, 13.0, 13.0, src=ML)
+        osm = rect("osm", 39.0, 30.0, 14.0, 13.0)
+        st = gs.Station("sun", 0.0, 0.0, "Sunoco", "", ("p",), True)
+        self.assertIs(gs.find_shop(st, [ml, osm]), osm)
+        self.assertIs(gs.find_shop(st, [ml]), ml)               # where imagery is all there is
 
     def test_no_shop_far(self):
         self.assertIsNone(gs.find_shop(STATION, [rect("far", 300.0, 300.0, 20.0, 20.0)]))
@@ -204,6 +230,194 @@ class LayoutTest(unittest.TestCase):
             return next(p["shape"] for p in gs.layout(st, [SHOP, roof], ROAD).props if "structure" in p["shape"])
         self.assertEqual(kit("abc"), kit("abc"))
         self.assertEqual({kit(f"s{i}") for i in range(200)}, {k["shape"] for k in gs.KITS})
+
+
+# --- the road tile: map data in, station records and the canopies to leave out ------------------------------------
+import json  # noqa: E402
+import tempfile  # noqa: E402
+
+import geodesy  # noqa: E402
+import mapgeom as mg  # noqa: E402
+import roads  # noqa: E402
+
+FRAME = geodesy.EnuFrame(40.44, -80.00)
+
+
+def _ll(xy):
+    xy = np.asarray(xy, np.float64)
+    la, lo, _ = FRAME.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
+    return np.stack([lo, la], 1)
+
+
+def feats(layer, rows, kind):
+    """mapgeom.Features of rows [(id, xy (k, 2) or (x, y), {attr: value})], sorted by id."""
+    rows = sorted(rows, key=lambda r: r[0])
+    geoms = []
+    for _, xy, _ in rows:
+        xy = np.asarray(xy, np.float64).reshape(-1, 2)
+        geoms.append((kind, [[_ll(xy)]]))
+    f = mg.build(layer, np.array([r[0] for r in rows]), geoms)
+    keys = sorted({k for r in rows for k in r[2]})
+    for k in keys:
+        vals = [r[2].get(k) for r in rows]
+        if any(isinstance(v, str) for v in vals):
+            f.attrs[k] = np.array([v if v is not None else "" for v in vals], object)
+        else:
+            f.attrs[k] = np.array([np.nan if v is None else v for v in vals], np.float64)
+    return f
+
+
+def box_ring(cx, cy, w, h):
+    return [(cx - w / 2, cy - h / 2), (cx + w / 2, cy - h / 2), (cx + w / 2, cy + h / 2), (cx - w / 2, cy + h / 2),
+            (cx - w / 2, cy - h / 2)]
+
+
+class FakeCell:
+    def __init__(self, layers):
+        self.layers = layers
+
+
+class FakeMD:
+    """Every map cell holds the same layers (the code takes a feature in two cells once, by id)."""
+
+    def __init__(self, layers, fail=()):
+        self.all, self.fail = layers, set(fail)
+
+    def cell(self, key, layers=None, kind="demand"):
+        for name in layers or ():
+            if name in self.fail:
+                raise IOError(f"no {name}")
+        return FakeCell({k: self.all.get(k) for k in (layers or ())})
+
+
+def station_md(fail=()):
+    """A station on tile (0, 0)'s east edge: pin and shop in tile (0, 0), the canopy's centroid in tile (1, 0), the
+    road beyond it (x = 320)."""
+    x0, _, x1, _ = roads.tile_bbox(0, 0)
+    assert (x0, x1) == (0.0, roads.TILE)
+    places = feats("places", [("pla-1", (240.0, 100.0), {"basic_category": "gas_station", "name": "Speedway",
+                                                         "operating_status": "open"})], mg.POINT)
+    blds = feats("buildings", [("b-shop", box_ring(230.0, 100.0, 18.0, 20.0), {"class": "retail", "src_dataset": "OpenStreetMap"}),
+                               ("b-roof", box_ring(275.0, 100.0, 21.0, 30.0), {"class": "roof", "src_dataset": "OpenStreetMap"})],
+                 mg.POLYGON)
+    rds = feats("roads", [("r-1", [(320.0, -200.0), (320.0, 400.0)], {"class": "secondary"})], mg.LINE)
+    return FakeMD({"places": places, "buildings": blds, "roads": rds}, fail)
+
+
+def flat(la, lo):
+    return np.zeros(np.shape(la))
+
+
+class TileTest(unittest.TestCase):
+    def test_canopy_dropped_by_owning_tile_only(self):
+        md = station_md()
+        recs, skip = gs.tile_sites(FRAME, 0, 0, md, flat)
+        self.assertEqual(len(recs), 1)
+        self.assertIn("b-roof", skip)
+        r = recs[0]
+        self.assertEqual(r["name"], "Speedway")
+        self.assertTrue(r["areas"] and all(len(a["pos"]) == 3 and len(a["icon"]) == 3 for a in r["areas"]))
+        self.assertTrue(all(len(p["pos"]) == 3 for p in r["props"]))
+        for a in r["areas"]:                                    # under the roof (x 264.5..285.5)
+            self.assertTrue(262.0 < a["pos"][0] < 288.0, a)
+            self.assertGreater(a["icon"][2], a["pos"][2])
+        recs1, skip1 = gs.tile_sites(FRAME, 1, 0, md, flat)
+        self.assertEqual(recs1, [])
+        self.assertIn("b-roof", skip1)
+        json.dumps(recs)                                        # plain JSON
+
+    def test_no_places_layer_no_stations(self):
+        self.assertEqual(gs.tile_sites(FRAME, 0, 0, station_md(fail=("places",)), flat), ([], frozenset()))
+
+    def test_buildings_near_and_drive_lines(self):
+        md = station_md()
+        blds = gs.buildings_near(FRAME, [md.all["buildings"], md.all["buildings"]], 240.0, 100.0, 80.0)
+        self.assertEqual(sorted(b.id for b in blds), ["b-roof", "b-shop"])     # once each
+        roof = next(b for b in blds if b.id == "b-roof")
+        self.assertEqual((roof.cls, roof.src), ("roof", "OpenStreetMap"))
+        self.assertAlmostEqual(float(roof.ring[:-1, 0].mean()), 275.0, delta=0.05)
+        lines = gs.drive_lines(FRAME, [md.all["roads"]], 240.0, 100.0, 200.0)
+        self.assertEqual(len(lines), 1)
+        self.assertGreater(lines[0][1], 3.0)
+
+    def test_tile_buildings_skip(self):
+        import buildings
+        md = station_md()
+        a = buildings.tile_buildings(FRAME, 0, 0, 512, 256, [md.all["buildings"]], flat)
+        b = buildings.tile_buildings(FRAME, 0, 0, 512, 256, [md.all["buildings"]], flat, skip=frozenset({"b-roof"}))
+        self.assertEqual(len(a) - len(b), 1)
+
+    def test_write_tile_fuel(self):
+        rec = {"id": "x", "props": [], "areas": []}
+        chunk = {"m": "x", "w": 1, "tl": 1, "p": 1, "n": [[0, 0, 0], [1, 0, 0]]}
+        with tempfile.TemporaryDirectory() as tmp:
+            path, _ = roads.write_tile(tmp, "/vfs", 1, 0, 0, [chunk], fuel=[rec])
+            data = json.loads(Path(tmp, Path(path).name).read_text())
+            self.assertEqual(data["fuel"], [rec])
+            path, _ = roads.write_tile(tmp, "/vfs", 1, 0, 1, [chunk], fuel=[])
+            self.assertNotIn("fuel", json.loads(Path(tmp, Path(path).name).read_text()))
+
+    def test_clear_park(self):
+        rec = {"props": [{"pos": [100.0, 0.0, 0.0]}], "areas": [{"pos": [50.0, 0.0, 0.0], "half": [1.6, 2.2, 2.75]}]}
+        park = [[52.0, 1.0, 0.0, 0.0], [101.5, 0.0, 0.0, 0.0], [70.0, 0.0, 0.0, 0.0]]
+        self.assertEqual(gs.clear_park(park, [rec]), [[70.0, 0.0, 0.0, 0.0]])
+        self.assertEqual(gs.clear_park(park, []), park)
+
+    def test_flag_default_off_recommended_on(self):
+        import earthd
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+        try:
+            import start
+        finally:
+            sys.path.pop(0)
+        import inspect
+        self.assertIs(inspect.signature(earthd.Server).parameters["gas_stations"].default, False)
+        self.assertIn('ap.add_argument("--gas-stations", choices=("on", "off"), default="off"',
+                      Path(earthd.__file__).read_text(encoding="utf-8"))
+        self.assertIn(("--gas-stations", "on"), start.RECOMMENDED)
+
+
+REAL = __import__("os").environ.get("BNGE_GAS_REAL") == "1"
+
+
+@unittest.skipUnless(REAL, "set BNGE_GAS_REAL=1 to lay out the user's three test stations from the real Overture data")
+class RealSpotsTest(unittest.TestCase):
+    """The stations the user checked on satellite view, 2026-10-23 (the Pittsburgh area)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import mapdata
+        import netfetch
+        import overture
+        cache = mapdata.DEFAULT_CACHE
+        cls.md = mapdata.MapData(cache, netfetch.Fetcher(stats_dir=__import__("os").path.join(cache, "netstats")),
+                                 overture.RELEASE)
+
+    def site(self, lat, lon):
+        frame = geodesy.EnuFrame(lat, lon)
+        la, lo, _ = frame.enu_to_geodetic(-128.0, -128.0, 0.0)     # the pin in the middle of tile (0, 0)
+        frame = geodesy.EnuFrame(float(la), float(lo))
+        recs, skip = gs.tile_sites(frame, 0, 0, self.md, flat)
+        self.assertEqual(len(recs), 1, recs)
+        return recs[0], skip
+
+    def test_speedway_tagged_canopy(self):
+        rec, skip = self.site(40.403093, -80.041343)
+        self.assertEqual(len(skip), 1, "the OSM roof left out")
+        self.assertTrue(any("s_fuel_structure_" in p["shape"] for p in rec["props"]))
+        self.assertGreaterEqual(len(rec["areas"]), 4)
+
+    def test_sheetz_ml_canopy(self):
+        rec, skip = self.site(40.861281, -79.900648)
+        self.assertEqual(len(skip), 1, "the imagery outline left out")
+        self.assertTrue(any("s_fuel_structure_" in p["shape"] for p in rec["props"]))
+
+    def test_sunoco_pin_on_road(self):
+        # the pin on the road; the store is the mapper's 190 m2 building, never left out. The untagged 179 m2 imagery
+        # outline between it and the road is taken as the canopy (to be confirmed on satellite view by the user:)
+        rec, skip = self.site(40.465627, -79.955447)
+        self.assertGreaterEqual(len(rec["areas"]), 2)
+        self.assertLessEqual(len(skip), 1)
 
 
 if __name__ == "__main__":
