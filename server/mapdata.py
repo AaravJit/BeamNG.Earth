@@ -496,25 +496,7 @@ class MapData:
         self._mirror_prune()
 
     def _mirror_prune(self):
-        root = os.path.join(self.cache_dir, "mapdata-mirror")
-        entries, total = [], 0
-        for dirpath, dirnames, filenames in os.walk(root):
-            if "ok" in filenames:
-                try:
-                    n = sum(os.path.getsize(os.path.join(dirpath, f)) for f in filenames)
-                    entries.append((os.path.getmtime(os.path.join(dirpath, "ok")), n, dirpath))
-                    total += n
-                except OSError:
-                    pass
-                dirnames[:] = []
-        if total <= MIRROR_MB * 1e6:
-            return
-        import shutil
-        for _, n, dpath in sorted(entries):
-            shutil.rmtree(dpath, ignore_errors=True)
-            total -= n
-            if total <= 0.8 * MIRROR_MB * 1e6:
-                break
+        prune_mirror(self.cache_dir)
 
     # --- cells -----------------------------------------------------------------------------------
     def cell(self, key, layers=LAYERS, kind="demand"):
@@ -607,6 +589,33 @@ class MapData:
         except DEFERRED:
             return False
 
+
+
+def prune_mirror(cache_dir):
+    """The uncompressed mirror cut back to 80 % of MIRROR_MB when over it, the least recently written folders first
+    (a process's writes, and earthd at start: a session that only reads it never pruned it)."""
+    root = os.path.join(cache_dir, "mapdata-mirror")
+    entries, total = [], 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        if "ok" in filenames:
+            try:
+                n = sum(os.path.getsize(os.path.join(dirpath, f)) for f in filenames)
+                entries.append((os.path.getmtime(os.path.join(dirpath, "ok")), n, dirpath))
+                total += n
+            except OSError:
+                pass
+            dirnames[:] = []
+    if total <= MIRROR_MB * 1e6:
+        return 0
+    import shutil
+    removed = 0
+    for _, n, dpath in sorted(entries):
+        shutil.rmtree(dpath, ignore_errors=True)
+        total -= n
+        removed += 1
+        if total <= 0.8 * MIRROR_MB * 1e6:
+            break
+    return removed
 
 # --- CLI ------------------------------------------------------------------------------------------
 LANDCOVER_RGB = {0: (255, 255, 255), 10: (0, 100, 0), 20: (255, 187, 34), 30: (255, 255, 76), 40: (240, 150, 255),

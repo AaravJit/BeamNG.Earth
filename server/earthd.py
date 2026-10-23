@@ -4085,10 +4085,17 @@ def raise_open_files():
 
 
 def prune_own_caches(cache_dir):
-    """The caches outside the cap's MANAGED folders, each cut back to its own limit at start (cache.prune_dir): sea
-    carving's raw rasters, compute sharing's kept replies, the road widths' walls. Each grew run after run past its
+    """The caches outside the cap's MANAGED folders, each cut back to its own limit at start (cache.prune_dir): the map
+    data and DEM mirrors, sea carving's raw rasters, compute sharing's kept replies, the road widths' walls. Each grew run after run past its
     limit (35 GB on a Steam Deck under a 20 GB cap, 2026-10-23: players' C: drives filled)."""
+    try:
+        n = mapdatamod.prune_mirror(cache_dir)
+        if n:
+            log.info("cache: mapdata-mirror cut back: %d layer files' mirrors removed", n)
+    except Exception as e:
+        log.warning("cache: mapdata-mirror not cut back: %s", e)
     for sub, mb, match in (("seacarve", seacarvemod.RAW_MB, lambda n: n.endswith(".raw.npy")),
+                           (os.path.join("dem", "decoded"), demmod.MIRROR_MB, lambda n: n.endswith(".npy")),
                            ("peercache", peerworkmod.CACHE_BYTES / 1e6, None),
                            ("roadwidth", roadwidthmod.STORE_MB, lambda n: n.endswith(".npy"))):
         try:
