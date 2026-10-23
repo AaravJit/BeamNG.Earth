@@ -2844,21 +2844,29 @@ def photo_mask(frame, x0, y0, size, px, md):
             continue
         hs = f.attrs.get("height")
         ids = f.ids.tolist()
-        for i in _photo_candidates(f, frame, x0, y0, size):
-            if ids[i] in seen:      # (a building in two cells: the first cell's piece, as it is listed)
-                continue
-            ring = np.asarray(f.parts(i)[0][0], np.float64)
-            e, nn = mapgeom.enu_xy(f, frame, ring)
-            h = float(hs[i]) if hs is not None and np.isfinite(hs[i]) else 8.0
-            grow = (PHOTO_GROW_M + min(PHOTO_LEAN * h, PHOTO_LEAN_MAX_M)) / mpp
-            cx, cy = (e - x0) / mpp, (y0 + size - nn) / mpp
-            c = np.array([cx.mean(), cy.mean()])
-            pts = np.stack([cx, cy], 1)
-            d = pts - c
-            r = np.hypot(d[:, 0], d[:, 1])[:, None]
-            pts = pts + d / np.maximum(r, 1e-6) * grow          # grown out from its middle
-            draw.polygon([tuple(p) for p in pts], fill=255)
-            n += 1
+        rows, a, b = _photo_candidates(f, frame, x0, y0, size)
+        keep = [j for j, i in enumerate(rows) if ids[i] not in seen]  # (a building in two cells: the first piece)
+        if not keep:
+            seen.update(ids)
+            continue
+        rows, a, b = rows[keep], a[keep], b[keep]
+        # every kept outer ring grown out from its middle, all at once
+        h = np.full(len(rows), 8.0) if hs is None else np.asarray(hs, np.float64)[rows]
+        h = np.where(np.isfinite(h), h, 8.0)
+        grow = (PHOTO_GROW_M + np.minimum(PHOTO_LEAN * h, PHOTO_LEAN_MAX_M)) / mpp
+        ln = b - a
+        idx = np.repeat(a - np.r_[0, np.cumsum(ln)[:-1]], ln) + np.arange(int(ln.sum()))
+        xy = f.xy_in(frame)[idx]
+        cx, cy = (xy[:, 0] - x0) / mpp, (y0 + size - xy[:, 1]) / mpp
+        starts = np.r_[0, np.cumsum(ln)[:-1]]
+        mx = np.repeat(np.add.reduceat(cx, starts) / ln, ln)
+        my = np.repeat(np.add.reduceat(cy, starts) / ln, ln)
+        dx, dy = cx - mx, cy - my
+        g = np.repeat(grow, ln) / np.maximum(np.hypot(dx, dy), 1e-6)
+        pts = np.stack([cx + dx * g, cy + dy * g], 1).tolist()
+        for s0, m in zip(starts.tolist(), ln.tolist()):
+            draw.polygon([tuple(q) for q in pts[s0:s0 + m]], fill=255)
+        n += len(rows)
         seen.update(ids)
     if n == 0:
         return None
@@ -2867,11 +2875,12 @@ def photo_mask(frame, x0, y0, size, px, md):
 
 def _photo_candidates(f, frame, x0, y0, size):
     """Rows of f (a cell's buildings) whose outer ring's box meets the square [x0, x0 + size]² and that come first
-    among the rows of their id, ascending: photo_mask's buildings, its test made for all rows at once (one ring at a
+    among the rows of their id, ascending, with their outer rings' coordinate ranges [a, b): photo_mask's buildings, its test made for all rows at once (one ring at a
     time it was ~19k Python steps a block, most of a block photo's roof mask; 2026-10-23)."""
     m = len(f.kind)
+    none = (np.zeros(0, np.int64),) * 3
     if m == 0:
-        return []
+        return none
     p = f.part_off[:-1]
     has = (f.part_off[1:] > p)
     r = f.ring_off[np.minimum(p, len(f.ring_off) - 2)]
@@ -2884,7 +2893,7 @@ def _photo_candidates(f, frame, x0, y0, size):
     head[first] = True
     rows = np.flatnonzero(has & head)
     if len(rows) == 0:
-        return []
+        return none
     xy = f.xy_in(frame)
     a, b = a[rows], b[rows]
     order = np.argsort(a, kind="stable")       # (reduceat: ascending starts)
@@ -2894,7 +2903,7 @@ def _photo_candidates(f, frame, x0, y0, size):
     n_lo[order] = mapgeom._reduce(np.minimum, xy[:, 1], a[order], b[order])
     n_hi[order] = mapgeom._reduce(np.maximum, xy[:, 1], a[order], b[order])
     inside = ~((e_hi < x0) | (e_lo > x0 + size) | (n_hi < y0) | (n_lo > y0 + size))
-    return rows[inside].tolist()
+    return rows[inside], a[inside], b[inside]
 
 
 def _push_pull(c, w):
