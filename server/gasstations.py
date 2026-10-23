@@ -151,3 +151,113 @@ def merge(ps, merge_m=MERGE_M):
                            or CONV_BRANDS.get(named.wikidata, ""), tuple(ids),
                            any(p.gas or p.fuel_brand for p in g)))
     return sorted(out, key=lambda s: s.id)
+
+
+# --- the shop and the canopy -------------------------------------------------------------------------------------
+@dataclass(frozen=True, eq=False)
+class Bld:
+    id: str
+    ring: np.ndarray    # (k, 2) anchor frame, closed
+    cls: str
+    name: str
+    src: str
+    height: float | None
+
+
+SHOP_SEARCH_M = 60.0        # the shop: a building this close to the station's pins
+CANOPY_SEARCH_M = 50.0      # the canopy: this close to the shop (centre to centre)
+ML_SOURCES = {"Microsoft ML Buildings", "Google Open Buildings"}    # traced from imagery, never tagged by a mapper
+CANOPY_RECT_MIN = 0.85      # area / its oriented box's: a canopy is a rectangle
+CANOPY_AREA_M2 = (120.0, 900.0)
+CANOPY_MAX_H_M = 7.0
+ROOF_CLASSES = {"roof"}     # OSM building=roof (the Speedway's canopy: outbuilding / roof)
+
+
+def _area(ring):
+    x, y = ring[:, 0], ring[:, 1]
+    return 0.5 * abs(float(np.dot(x[:-1], y[1:]) - np.dot(y[:-1], x[1:])))
+
+
+def _centre(ring):
+    return ring[:-1].mean(axis=0)
+
+
+def _obox(ring):
+    import buildings
+    c, u, hl, hw = buildings.oriented_box(ring[:-1] if len(ring) > 1 and np.allclose(ring[0], ring[-1]) else ring)
+    return np.asarray(c, np.float64), np.asarray(u, np.float64), float(hl), float(hw)
+
+
+def _nearest_on(lines, p):
+    """(point, distance, line index) of the drive lines' centreline point nearest p."""
+    best = (None, np.inf, -1)
+    for k, (pts, _) in enumerate(lines):
+        a, b = pts[:-1], pts[1:]
+        d = b - a
+        L2 = np.maximum((d * d).sum(1), 1e-12)
+        t = np.clip(((p - a) * d).sum(1) / L2, 0.0, 1.0)
+        q = a + d * t[:, None]
+        dist = np.hypot(*(q - p).T)
+        i = int(np.argmin(dist))
+        if dist[i] < best[1]:
+            best = (q[i], float(dist[i]), k)
+    return best
+
+
+def _named(b, st):
+    words = _tokens(st.name + " " + st.brand)
+    return bool(words) and bool(_tokens(b.name) & words)
+
+
+def find_shop(st, blds):
+    """The station's shop: among the buildings (not roofs) within SHOP_SEARCH_M of the station, one named like the
+    station, else the nearest; None without one."""
+    p = np.array([st.x, st.y])
+    near = []
+    for b in blds:
+        if b.cls in ROOF_CLASSES:
+            continue
+        d = float(np.hypot(*(_centre(b.ring) - p)))
+        if d <= SHOP_SEARCH_M:
+            near.append((not _named(b, st), d, b.id, b))
+    return min(near, key=lambda r: r[:3])[3] if near else None
+
+
+def find_canopy(st, shop, blds, roads):
+    """The station's canopy among blds, or None (then no building is touched): the nearest tagged roof within
+    CANOPY_SEARCH_M of the shop; else an untagged imagery outline (ML_SOURCES) that is not the shop, a canopy-sized
+    rectangle no taller than CANOPY_MAX_H_M, between the shop and its nearest road (projected on the line from the
+    shop's centre to that road), and the only one that passes (the user, 2026-10-23, on turning a car wash into a
+    canopy: "I wouldn't like that")."""
+    sc = _centre(shop.ring)
+    roofs = [(float(np.hypot(*(_centre(b.ring) - sc))), b.id, b) for b in blds
+             if b is not shop and b.cls in ROOF_CLASSES]
+    roofs = [r for r in roofs if r[0] <= CANOPY_SEARCH_M]
+    if roofs:
+        return min(roofs, key=lambda r: r[:2])[2]
+    q, dist, _ = _nearest_on(roads, sc)
+    if q is None or dist < 1.0:
+        return None
+    axis = (q - sc) / dist
+    _, _, shl, _ = _obox(shop.ring)
+    found = []
+    for b in blds:
+        if b is shop or b.cls or b.name or b.src not in ML_SOURCES:
+            continue
+        if b.height is not None and np.isfinite(b.height) and b.height > CANOPY_MAX_H_M:
+            continue
+        c = _centre(b.ring)
+        if float(np.hypot(*(c - sc))) > CANOPY_SEARCH_M:
+            continue
+        area = _area(b.ring)
+        if not CANOPY_AREA_M2[0] <= area <= CANOPY_AREA_M2[1]:
+            continue
+        _, _, hl, hw = _obox(b.ring)
+        if area / max(4.0 * hl * hw, 1e-9) < CANOPY_RECT_MIN:
+            continue
+        v = c - sc
+        t = float(v @ axis) / dist
+        lateral = abs(float(v[0] * axis[1] - v[1] * axis[0]))
+        if 0.0 < t <= 1.1 and lateral <= shl + 10.0:
+            found.append(b)
+    return found[0] if len(found) == 1 else None
