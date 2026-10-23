@@ -40,6 +40,13 @@ M.FAST_V_1024 = 1e9                          -- no fast mode
 M.GRID_512 = 128
 M.PREPARE_DIST_512 = 128
 M.COMMIT_DIST_512 = 192
+-- The next block's centre at least MIN_LEAD ahead of a moving player (M.target): at town speeds LOOKAHEAD_S put it one
+-- grid step ahead, a move every 128 m, each a ~50 ms frame and a redraw of the sun's shadow map on a Steam Deck
+-- (2026-10-23, 17 of 21 such redraws on a Baltimore drive); 256 m halves the moves at 16-67 mph, the player still
+-- >= 229 m inside the edge in the offline model (the user: "you can try letting it get closer to the edge")
+M.MIN_LEAD_512 = 256        -- the next block's centre at least this far ahead of a moving player (M.target)
+M.MIN_LEAD_1024 = 0
+M.MIN_LEAD_V = 2            -- (moving: faster than this, m/s)
 M.HARD_COMMIT_DIST_512 = 320
 M.EDGE_MARGIN_512 = 250
 M.REACH_512 = 510 - M.EDGE_MARGIN_512        -- 260 m; the collidable east/north edge is at +510
@@ -65,6 +72,7 @@ M.HALF = lattice.HALF          -- block SW corner = centre - HALF
 M.GRID = M.GRID_1024           -- block centres snap to this grid
 M.PREPARE_DIST = M.PREPARE_DIST_1024         -- Chebyshev distance player -> centre that requests a new terrain
 M.COMMIT_DIST = M.COMMIT_DIST_1024           -- ... that commits a ready one (once its uncovered strip is live)
+M.MIN_LEAD = M.MIN_LEAD_1024
 M.HARD_COMMIT_DIST = M.HARD_COMMIT_DIST_1024 -- ... that commits a ready one regardless (still >= 320 m from the edge)
 M.EDGE_MARGIN = M.EDGE_MARGIN_1024           -- the new centre keeps the player at least this far from every edge
 M.LOOKAHEAD_S = M.LOOKAHEAD_S_1024           -- target = snap256(player + velocity * LOOKAHEAD_S)
@@ -85,6 +93,7 @@ function M.configure(size)
   local t = n == 512 and '_512' or '_1024'
   M.SIZE, M.HALF = n, n * M.SQUARE_SIZE / 2
   M.GRID, M.PREPARE_DIST, M.COMMIT_DIST = M['GRID' .. t], M['PREPARE_DIST' .. t], M['COMMIT_DIST' .. t]
+  M.MIN_LEAD = M['MIN_LEAD' .. t]
   M.HARD_COMMIT_DIST, M.EDGE_MARGIN, M.REACH = M['HARD_COMMIT_DIST' .. t], M['EDGE_MARGIN' .. t], M['REACH' .. t]
   M.LOOKAHEAD_S, M.RECHECK_S, M.FAST_MODE_V = M['LOOKAHEAD_S' .. t], M['RECHECK_S' .. t], M['FAST_V' .. t]
   REACH = M.REACH
@@ -131,7 +140,16 @@ end
 -- Centre of the next block for a player at (px, py) moving at (vx, vy) m/s.
 function M.target(px, py, vx, vy)
   local t, reach = mode(vx, vy)
-  return M.centreNear(px + (vx or 0) * t, py + (vy or 0) * t, px, py, reach)
+  local lx, ly = (vx or 0) * t, (vy or 0) * t
+  -- at town speeds LOOKAHEAD_S puts the next block one grid step ahead: a move every 128 m; at least MIN_LEAD ahead
+  -- (while moving), every move goes about twice as far
+  local v2 = (vx or 0) * (vx or 0) + (vy or 0) * (vy or 0)
+  local l2 = lx * lx + ly * ly
+  if M.MIN_LEAD > 0 and v2 > M.MIN_LEAD_V * M.MIN_LEAD_V and l2 < M.MIN_LEAD * M.MIN_LEAD then
+    local k = M.MIN_LEAD / math.sqrt(v2)
+    lx, ly = vx * k, vy * k
+  end
+  return M.centreNear(px + lx, py + ly, px, py, reach)
 end
 
 -- Seconds until a player at (px, py) moving at (vx, vy) is `dist` (Chebyshev) from (cx, cy)

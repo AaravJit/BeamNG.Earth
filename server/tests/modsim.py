@@ -138,6 +138,7 @@ def follow_table(size=1024):
     F = FOLLOW
     return {"SIZE": n, "HALF": n * F["SQUARE_SIZE"] / 2, "GRID": F["GRID" + t], "PREPARE_DIST": F["PREPARE_DIST" + t],
             "COMMIT_DIST": F["COMMIT_DIST" + t], "HARD_COMMIT_DIST": F["HARD_COMMIT_DIST" + t],
+            "MIN_LEAD": F["MIN_LEAD" + t],
             "EDGE_MARGIN": F["EDGE_MARGIN" + t], "REACH": F["REACH" + t], "LOOKAHEAD_S": F["LOOKAHEAD_S" + t],
             "RECHECK_S": F["RECHECK_S" + t], "FAST_MODE_V": F["FAST_V" + t]}
 
@@ -182,7 +183,12 @@ def follow_centre_near(tx, ty, px, py, reach=None, size=1024):
 
 def follow_target(px, py, vx, vy, size=1024):
     t, reach, _ = follow_mode(vx, vy, size)
-    return follow_centre_near(px + vx * t, py + vy * t, px, py, reach, size)
+    lx, ly = vx * t, vy * t
+    lead, v2 = follow_table(size)["MIN_LEAD"], vx * vx + vy * vy
+    if lead > 0 and v2 > FOLLOW["MIN_LEAD_V"] ** 2 and lx * lx + ly * ly < lead * lead:
+        k = lead / math.sqrt(v2)
+        lx, ly = vx * k, vy * k
+    return follow_centre_near(px + lx, py + ly, px, py, reach, size)
 
 
 def _axis_time(p, v, c, dist):
