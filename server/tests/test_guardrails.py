@@ -62,6 +62,7 @@ class ClipSegmentTest(unittest.TestCase):
                                                    (0.0, 0.0, 10.0, 10.0)))
 
 
+class GuardrailMaterialTest(unittest.TestCase):
     def test_guardrail_material_is_defined_and_opaque(self):
         root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         path = os.path.join(root, "mod", "beamng_earth", "levels", "beamng_earth", "art", "shapes",
