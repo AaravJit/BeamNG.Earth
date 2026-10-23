@@ -1229,3 +1229,22 @@ class PredictTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PerfLogTest(ServerHarness):
+    """The mod's performance log (perflog.lua): its lines go into the server's log, cut to size."""
+
+    def test_lines_logged(self):
+        self.hello()
+        with self.assertLogs("earthd", level="INFO") as cm:
+            self.c.send({"type": "perf_log", "lines": ["perf hitch 412 ms at 39.28345,-76.59341, 52 mph",
+                                                       "x" * 5000, 7, "two\nlines"] + ["more"] * 100})
+            self.c.send({"type": "pose", "anchorId": 1, "x": 0, "y": 0, "z": 0})     # (after the perf_log)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and sum("game: " in r for r in cm.output) < 39:
+                time.sleep(0.05)
+        got = [r.split("game: ", 1)[1] for r in cm.output if "game: " in r]
+        self.assertEqual(got[0], "perf hitch 412 ms at 39.28345,-76.59341, 52 mph")
+        self.assertEqual(len(got[1]), 2000, "a line cut to PERF_LOG_CHARS")
+        self.assertEqual(got[2], "two lines", "one log line each, not a number")
+        self.assertEqual(len(got), 39, "the first PERF_LOG_LINES entries of a message, the number among them left out")

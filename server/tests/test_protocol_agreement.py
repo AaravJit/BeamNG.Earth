@@ -114,6 +114,8 @@ MOD_TO_SERVER = {
     "cache": {"capGb": F(NUM, OPT), "clear": F(bool, OPT)},
     # the ground's collision patch under another vehicle's collision island off the block (terrainpatch.lua / .py)
     "terrain_patch": {"anchorId": F(int), "key": F(str), "x0": F(NUM), "y0": F(NUM), "x1": F(NUM), "y1": F(NUM)},
+    # the performance log (perflog.lua; additive): lines for the server's log (hitches, drops, minutes, the machine)
+    "perf_log": {"lines": F((list, dict))},
     # BeamMP shared generation (peerwork.py, mpsession.lua): our world server serves our group; the players on our
     # anchor ({id, host, port, code, weight} each)
     "share": {},

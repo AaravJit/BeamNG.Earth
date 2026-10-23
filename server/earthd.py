@@ -225,6 +225,7 @@ AHEAD_LAYERS = ("roads", "buildings", "building_parts", "infrastructure", "water
 FAST_BASE_V = 70.0              # m/s (157 mph): faster, a block waits at most BASE_FAST_WAIT_S for its photo after its
 BASE_FAST_WAIT_S = 0.15         # heights, then goes without it (block_base later): blocks took 0.6-3 s at 600 mph on a
                                 # Steam Deck, mostly the photo (heights 0.1-0.4 s), and the game paused 11 times a minute
+PERF_LOG_LINES, PERF_LOG_CHARS = 40, 2000   # a perf_log message's lines and characters a line, at most
 SLOW_BASE_S = 3.0               # a base photo slower than this is logged with its stages
 BASE_PX = 1024                  # detail mode: the block's base photo (1 km -> 1 m per texel; USGS is ~1.9 m)
 BASE_AO_VFS = "/levels/beamng_earth/art/terrains/bngEarth_base_ao.png"   # every surface layer's aoBaseTex
@@ -2928,6 +2929,12 @@ class Connection:
             self.spawn(self.terrain_patch(msg))
         elif kind == "cache":
             self.on_cache(msg)
+        elif kind == "perf_log":                # the mod's performance log (perflog.lua): its hitches, frame-rate drops,
+            # minute lines and the machine, into this log beside the blocks' own timings (the file players send)
+            lines = msg.get("lines")
+            for line in (lines if isinstance(lines, list) else [])[:PERF_LOG_LINES]:
+                if isinstance(line, str):
+                    log.info("game: %s", line[:PERF_LOG_CHARS].replace("\n", " "))
         elif kind == "roads_reset":             # the mod dropped its roads (settings): send them all again
             self.roads.close()
             self.roads = roadsmod.Tracker()

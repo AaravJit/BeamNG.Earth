@@ -88,6 +88,10 @@ the mod, report problems, and get an IP to join a BeamMP.Earth server (see [Mult
   move or resize them in the UI apps editor), and a one-time welcome page about the project.
 - Settings in the pause menu, keybinds, in-game reports (notes and performance recordings to share), and a
   wireframe view (Ctrl+Alt+W) that shows how the ground, the distant terrain and the roads are built.
+- A diagnostic log to send when something is slow: the world server's `logs/server.log` (in
+  `%LOCALAPPDATA%\beamng-earth` on Windows, `~/.cache/beamng-earth` on Linux) records your hardware and settings, every
+  hitch and frame-rate drop with where it happened and what was loading, and a summary every minute
+  ([docs/QUICKSTART.md](docs/QUICKSTART.md#something-wrong-tell-us)).
 - Easy setup: one download per system (Windows .exe, Linux AppImage) that installs the mod and starts the server
   and the game; from the source, `install.py` installs everything and `start.py` keeps the mod in sync.
 - Runs on a Steam Deck (aim: 30 fps on the Handheld graphics preset).

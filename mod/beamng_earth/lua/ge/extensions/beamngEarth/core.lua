@@ -80,6 +80,7 @@ local beammp = require('beamngEarth/beammp')           -- BeamMP sessions: the i
 local mpsession = require('beamngEarth/mpsession')     -- BeamMP sessions (the plugin's anchors, damage, joining)
 local mpanchor = require('beamngEarth/mpanchor')       -- BeamMP: other players' positions into our frame (PR #88)
 local seasonlook = require('beamngEarth/seasonlook')   -- the trees' leaves in the season (hello.season) -- the AI road graph for the stock traffic and AI (map.reset)
+local perflog = require('beamngEarth/perflog')         -- hitches and frame-rate drops into server.log (perflog.lua)
 
 local LEVEL_ID = 'beamng_earth'
 local MOD_VERSION = '0.4.0'
@@ -1444,6 +1445,91 @@ local function noteHitch(frameMs)
   end
   hitches[#hitches + 1] = h
   if #hitches > M.HITCH_KEEP then table.remove(hitches, 1) end
+  return h
+end
+
+-- The performance log (perflog.lua): where the player is and what the mod is doing, for its lines.
+local perfMetrics = {}
+local function perfEngine()
+  local dbg = Engine and Engine.Debug
+  if not (dbg and dbg.getLastPerformanceMetrics) then return nil end
+  for k in pairs(perfMetrics) do perfMetrics[k] = nil end
+  if not pcall(dbg.getLastPerformanceMetrics, perfMetrics) then return nil end
+  local out = {}
+  for k, v in pairs(perfMetrics) do
+    if type(v) == 'number' and not k:find('^phys') and not k:find('^virt') then out[k] = v end
+  end
+  return out
+end
+local function perfContext()
+  local c = {}
+  local p = st.player
+  if p then
+    c.lat, c.lon = p.lat, p.lon
+    c.mph = math.sqrt((p.vx or 0) ^ 2 + (p.vy or 0) ^ 2) * 2.23694
+  end
+  if st.block then c.block = string.format('%d,%d', st.block.cx, st.block.cy) end
+  local s = {}
+  if dropHold.active then s[#s + 1] = 'held until its ground loads' end
+  if st.guard and st.guard.pausedByUs then s[#s + 1] = 'held at the edge of the ground' end
+  if st.rebasing then s[#s + 1] = 'moving the world origin' end
+  if st.clock < (st.loadingUntil or 0) or st.placeFrames then s[#s + 1] = 'loading after a teleport' end
+  if not net.isConnected() then s[#s + 1] = 'world server not connected' end
+  if beammp.inSession() then s[#s + 1] = 'BeamMP' end
+  c.state = table.concat(s, ', ')
+  local d = {}
+  if st.commitFrames then d[#d + 1] = 'ground block swap' end
+  if st.terrainPending and st.terrainPending.sentAt then
+    d[#d + 1] = string.format('next block asked %.1fs ago', st.clock - st.terrainPending.sentAt)
+  end
+  local okF, fs = pcall(farfield.stats)
+  if okF and fs then
+    if (fs.queued or 0) > 0 then d[#d + 1] = 'far tiles ' .. fs.queued .. ' queued' end
+    if not fs.done then d[#d + 1] = 'far field loading' end
+  end
+  local okR, rs = pcall(roads.status)
+  if okR and rs and ((rs.queued or 0) + (rs.walksQueued or 0)) > 0 then
+    d[#d + 1] = 'road tiles ' .. ((rs.queued or 0) + (rs.walksQueued or 0)) .. ' queued'
+  end
+  local okT, ts = pcall(trees.status)
+  if okT and ts and (ts.pending or 0) > 0 then d[#d + 1] = 'tree tiles ' .. ts.pending .. ' pending' end
+  if (st.serverBacklog or 0) > 0 then d[#d + 1] = 'server backlog ' .. st.serverBacklog end
+  c.doing = table.concat(d, ', ')
+  c.extra = string.format('Lua %.0f MB%s', collectgarbage('count') / 1024,
+    st.terrainLatency and string.format(', last block %.1fs', st.terrainLatency) or '')
+  return c
+end
+local machineSent = false       -- the machine's lines sent to this server connection
+local machineTryAt = nil
+local function perfMachine()
+  local rep = rawget(_G, 'beamngEarth_report')
+  local okH, hw = pcall(function() return rep and rep.collectHardware and rep.collectHardware() end)
+  if not okH or not hw then return {} end
+  local okF, md = pcall(require('beamngEarth/issuefmt').formatHardware, hw)
+  if not okF or type(md) ~= 'table' then return {} end
+  local out = {}
+  for _, l in ipairs(md) do                -- its Markdown list lines, without the list and bold marks
+    local item = type(l) == 'string' and l:match('^%- (.*)$')
+    if item then out[#out + 1] = 'machine: ' .. (item:gsub('%*%*', '')) end
+  end
+  return out
+end
+local function perfFrame(ms, hrec)
+  local lines = perflog.frame(ms, st.clock, perfContext, hrec, marks, perfEngine)
+  if not net.isConnected() then
+    machineSent = false
+  elseif not machineSent and st.clock >= (machineTryAt or 0) then
+    local m = perfMachine()
+    if #m > 0 then
+      machineSent = true
+      net.send({ type = 'perf_log', lines = m })
+    else
+      machineTryAt = st.clock + 10           -- (the game's report extension not loaded yet)
+    end
+  end
+  if #lines == 0 then return end
+  for _, l in ipairs(lines) do log('I', 'beamngEarth', l) end
+  if net.isConnected() then net.send({ type = 'perf_log', lines = lines }) end
 end
 -- The hitches since the last call: [{ms, at (s), mod = {part = ms}, engine = {subsystem = ms}}].
 function M.hitches()
@@ -1474,7 +1560,15 @@ local function onUpdate(dtReal, dtSim)
     end
     return
   end
-  if frameMs0 > M.HITCH_MS and st.inOurLevel then pcall(noteHitch, frameMs0) end
+  local hrec = nil
+  if frameMs0 > M.HITCH_MS and st.inOurLevel then
+    local okH, h = pcall(noteHitch, frameMs0)
+    if okH then hrec = h end
+  end
+  if st.inOurLevel and not st.paused then
+    local okP, errP = pcall(perfFrame, frameMs0, hrec)
+    if not okP then log('W', 'beamngEarth', 'perf log: ' .. tostring(errP)) end
+  end
   prevMarks, marks = marks, prevMarks
   for k in pairs(marks) do marks[k] = nil end
   local t = hitchClock()
