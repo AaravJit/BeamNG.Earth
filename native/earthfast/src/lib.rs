@@ -3795,6 +3795,7 @@ fn rtin_mesh<'py>(py: Python<'py>, h: PyReadonlyArray2<'py, f64>, max_err: f64)
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
     m.add_function(wrap_pyfunction!(dsm::dsm_ground, m)?)?;
+    m.add_function(wrap_pyfunction!(dsm::fill_holes, m)?)?;
     m.add_function(wrap_pyfunction!(vegmask::mask_polys, m)?)?;
     m.add_function(wrap_pyfunction!(vegmask::road_segments, m)?)?;
     m.add_function(wrap_pyfunction!(vegmask::disc_max, m)?)?;
@@ -3861,6 +3862,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(wet_run_inside, m)?)?;
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 64)?;
+    m.add("VERSION", 65)?;
     Ok(())
 }

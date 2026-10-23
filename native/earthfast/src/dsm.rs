@@ -179,3 +179,78 @@ pub fn dsm_ground<'py>(py: Python<'py>, a: PyReadonlyArray2<'py, f32>, px_m: f32
     });
     numpy::ndarray::Array2::from_shape_vec((rows, cols), out).unwrap().into_pyarray(py)
 }
+
+/// dem.fill_holes in Rust (2026-10-23: its numpy rounds, a pad and a full-tile pass each, were seconds of a road
+/// plan's DEM reads in lidar areas): a lidar tile's exact-0 holes filled from their surroundings. Each round (k at
+/// most), every still-empty cell with a filled 4-neighbour takes the mean of those (edge cells' outside neighbours:
+/// the edge, numpy's pad "edge"), all from the round's start (float32, numpy's order of additions). What is left
+/// is a wide zero area: it and the band of holes within k cells of it (zero padding outside) are set to 0.
+#[pyfunction]
+pub fn fill_holes<'py>(py: Python<'py>, a: PyReadonlyArray2<'py, f32>, k: usize) -> Bound<'py, PyArray2<f32>> {
+    let arr = a.as_array();
+    let (n, m) = (arr.shape()[0], arr.shape()[1]);
+    let src: Vec<f32> = arr.iter().copied().collect();
+    let out = py.allow_threads(|| {
+        let hole: Vec<bool> = src.iter().map(|&v| v == 0.0).collect();
+        let mut out = src.clone();
+        if !hole.iter().any(|&h| h) || hole.iter().all(|&h| h) {
+            return out;
+        }
+        let mut todo = hole.clone();
+        let idx = |i: isize, j: isize| -> usize {
+            (i.clamp(0, n as isize - 1) as usize) * m + j.clamp(0, m as isize - 1) as usize
+        };
+        for _ in 0..k {
+            if !todo.iter().any(|&t| t) {
+                break;
+            }
+            let snap = out.clone();
+            let mut got: Vec<usize> = Vec::new();
+            let mut vals: Vec<f32> = Vec::new();
+            for i in 0..n as isize {
+                for j in 0..m as isize {
+                    let c = i as usize * m + j as usize;
+                    if !todo[c] {
+                        continue;
+                    }
+                    let (u, d, l, r) = (idx(i - 1, j), idx(i + 1, j), idx(i, j - 1), idx(i, j + 1));
+                    let v = |q: usize| -> f32 { if todo[q] { 0.0 } else { 1.0 } };
+                    let s = snap[u] * v(u) + snap[d] * v(d) + snap[l] * v(l) + snap[r] * v(r);
+                    let w = v(u) + v(d) + v(l) + v(r);
+                    if w > 0.0 {
+                        got.push(c);
+                        vals.push(s / w);
+                    }
+                }
+            }
+            for (c, val) in got.iter().zip(vals) {
+                out[*c] = val;
+                todo[*c] = false;
+            }
+        }
+        if todo.iter().any(|&t| t) {
+            let mut wide = todo.clone();
+            for _ in 0..k {
+                let prev = wide.clone();
+                let at = |i: isize, j: isize| -> bool {
+                    i >= 0 && j >= 0 && i < n as isize && j < m as isize && prev[i as usize * m + j as usize]
+                };
+                for i in 0..n as isize {
+                    for j in 0..m as isize {
+                        let c = i as usize * m + j as usize;
+                        if !wide[c] && hole[c] && (at(i - 1, j) || at(i + 1, j) || at(i, j - 1) || at(i, j + 1)) {
+                            wide[c] = true;
+                        }
+                    }
+                }
+            }
+            for (c, w) in wide.iter().enumerate() {
+                if *w {
+                    out[c] = 0.0;
+                }
+            }
+        }
+        out
+    });
+    numpy::ndarray::Array2::from_shape_vec((n, m), out).unwrap().into_pyarray(py)
+}

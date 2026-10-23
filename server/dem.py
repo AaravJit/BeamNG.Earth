@@ -117,31 +117,8 @@ def fill_holes(a, k=HOLE_FILL_MAX_PX):
     Spangen on land, 2026-10-21): a polder at -1.5 m got 0 m pits, and seacarve read them as the sea. Zeros take
     the mean of their non-zero 4-neighbours, k rounds; zero areas wider than that (the sea, which reads exactly
     0) keep 0, the band filled into their edge too. Pure."""
-    a = np.asarray(a, np.float32)
-    hole = a == 0
-    if not hole.any() or hole.all():
-        return a
-    out = a.copy()
-    todo = hole.copy()
-    for _ in range(k):
-        if not todo.any():
-            break
-        p = np.pad(out, 1, mode="edge")
-        v = np.pad(~todo, 1, mode="edge").astype(np.float32)
-        s = (p[:-2, 1:-1] * v[:-2, 1:-1] + p[2:, 1:-1] * v[2:, 1:-1] + p[1:-1, :-2] * v[1:-1, :-2]
-             + p[1:-1, 2:] * v[1:-1, 2:])
-        n = v[:-2, 1:-1] + v[2:, 1:-1] + v[1:-1, :-2] + v[1:-1, 2:]
-        got = todo & (n > 0)
-        out[got] = s[got] / n[got]
-        todo &= ~got
-    if todo.any():
-        # what is left is a wide zero area: it and the rim filled into it stay 0
-        wide = todo.copy()
-        for _ in range(k):
-            p = np.pad(wide, 1)
-            wide = wide | ((p[:-2, 1:-1] | p[2:, 1:-1] | p[1:-1, :-2] | p[1:-1, 2:]) & hole)
-        out[wide] = 0.0
-    return out
+    fast.require(65, "dem.fill_holes")     # (earthfast fill_holes, 2026-10-23: the same values as the numpy rounds)
+    return fast._ef.fill_holes(np.ascontiguousarray(a, np.float32), int(k))
 
 
 def _resize(a, size):

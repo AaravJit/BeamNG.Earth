@@ -1343,7 +1343,9 @@ class Server:
         q = self.anchor_q(anchor)
         base = None
         if self.near_visual == "detail" and self.imagery is not None:
-            base = self.base_pool.submit(self._base_photo, anchor, cx, cy, self._base_process(LANE_REQUEST), True)
+            # (here, not in a block process: the other lane's process can still be busy with the old place's block,
+            # and the photo waited 16 s behind it on a Deck, 2026-10-23)
+            base = self.base_pool.submit(self._base_photo, anchor, cx, cy, None, True)
             anchor.first_base = ((cx, cy), base)
         urgent = getattr(self.dem, "urgent", None)     # (test DEMs have no lane)
         with urgent() if urgent is not None else contextlib.nullcontext():
