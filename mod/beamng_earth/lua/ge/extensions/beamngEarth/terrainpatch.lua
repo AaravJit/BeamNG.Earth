@@ -6,6 +6,12 @@
 -- island wants it.
 local M = {}
 
+-- Off for now: each patch is one collision mesh of up to ~200k triangles (a 4 m grid), and in a Windows 0.40.1 player's
+-- BeamMP session (9 players, 2026-10-23) every static collision rebuild with them in took 16-26 s, against 0.002 s
+-- before the first patch and 0.09 s for 1.3M triangles in a Linux 0.40.3 session: the game froze every few seconds
+-- ("Loaded Static Collision in 20.353s", the unique meshes 0.15 -> 8.66 MB as the patches came). Far cars stand on
+-- their road, building and tree colliders only, as before 1.6.0.
+M.ENABLED = false
 M.MARGIN_M = 64         -- an island whose box lies this far inside the block needs no patch
 M.SNAP_M = 64           -- as the server's terrainpatch.SNAP_M / MAX_SIDE_M: the keys match its boxes
 M.MAX_SIDE_M = 1280
@@ -65,6 +71,10 @@ end
 -- Each frame (core.lua): aid the active anchor, foci (collisionfoci.last), active { x, y } (the active car), block the
 -- terrain block's box {x0, y0, x1, y1} or nil; send(msg) to the server.
 function M.update(dt, aid, foci, active, block, send)
+  if not M.ENABLED then
+    if next(patches) then M.clear() end
+    return
+  end
   clock = clock + (dt or 0)
   since = since + (dt or 0)
   if since < M.UPDATE_S then return end

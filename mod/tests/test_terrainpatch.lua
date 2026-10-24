@@ -7,6 +7,16 @@ dofile(dir .. '/stubs.lua')
 local tp = require('beamngEarth/terrainpatch')
 local cf = require('beamngEarth/collisionfoci')
 
+-- off by default (16-26 s collision rebuilds in a Windows BeamMP session): nothing asked
+do
+  local sent = {}
+  T.check(tp.ENABLED == false, 'patches off by default')
+  tp.update(5, 1, { { x = 5000, y = 0, r = 320 } }, { x = 0, y = 0 }, { -512, -512, 510, 510 },
+    function(m) sent[#sent + 1] = m end)
+  T.check(#sent == 0, 'off: no patch asked of the server')
+end
+tp.ENABLED = true       -- (the module's behaviour when on)
+
 -- snap: out to the 64 m grid, clipped to MAX_SIDE_M round the centre (as the server)
 local x0, y0, x1, y1 = tp.snap(10, -70, 650, 570)
 T.check(x0 == 0 and y0 == -128 and x1 == 704 and y1 == 576, 'snapped out: ' .. table.concat({ x0, y0, x1, y1 }, ' '))
