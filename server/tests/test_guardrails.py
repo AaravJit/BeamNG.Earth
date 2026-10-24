@@ -196,41 +196,56 @@ class GuardrailMeshTest(unittest.TestCase):
         self.assertLess((one[2] - 50.0) * one[12], 0.0)
         self.assertLess((back[2] - 50.0) * back[12], 0.0)
 
-    def test_outer_mapped_rail_is_suppressed_but_centre_separator_stays(self):
+    def test_bridge_guardrail_level_does_not_lift_underpass_rails(self):
         deck = {"m": "road_asphalt_2lane", "w": 8.0, "tl": 11.0, "p": 20,
                 "deck": True, "fixed": True, "fid": "bridge",
                 "n": [[0.0, 0.0, 20.0], [100.0, 0.0, 20.0]]}
+        decks = [{"n": deck["n"], "w": deck["w"]}]
         parapets = roadmesh.parapet_runs([deck])
         self.assertEqual(len(parapets), 2)
         outer = max(parapets, key=lambda item: float(np.mean(item["line"][:, 1])))
         y = float(np.mean(outer["line"][:, 1]))
-        elev = lambda lat, lon: np.full(np.shape(lat), 20.0, np.float64)
+        upper_elev = lambda lat, lon: np.full(np.shape(lat), 20.0, np.float64)
 
-        mapped_outer = self.features("guard_rail", tags={"two_sided": "yes"},
+        mapped_outer = self.features("guard_rail", tags={"two_sided": "yes", "bridge": "yes"},
                                       xy=[[10.0, y], [90.0, y]])
         rows = guardrails.forest_rows(self.frame, lambda _key: mapped_outer,
-                                      (0.0, -20.0, 100.0, 20.0), elev, parapets=parapets)
+                                      (0.0, -20.0, 100.0, 20.0), upper_elev,
+                                      decks=decks, parapets=parapets)
         self.assertEqual(rows, [], "do not place metal on top of the generated concrete parapet")
 
-        lower_rows = guardrails.forest_rows(
-            self.frame, lambda _key: mapped_outer, (0.0, -20.0, 100.0, 20.0),
-            lambda lat, lon: np.full(np.shape(lat), 12.0, np.float64), parapets=parapets)
-        self.assertTrue(lower_rows, "an XY-overlapping guardrail on a lower level must not be suppressed")
+        # Lower-level lines share XY with the bridge, but must keep their own elevation. Test both
+        # an untagged barrier (infer from the terrain/deck height difference) and explicit layer=-1.
+        lower_elev = lambda lat, lon: np.full(np.shape(lat), 12.0, np.float64)
+        for tags in ({"two_sided": "yes"}, {"two_sided": "yes", "layer": "-1"}):
+            with self.subTest(tags=tags):
+                lower = self.features("guard_rail", tags=tags, xy=[[10.0, y], [90.0, y]])
+                lower_rows = guardrails.forest_rows(
+                    self.frame, lambda _key: lower, (0.0, -20.0, 100.0, 20.0), lower_elev,
+                    decks=decks, parapets=parapets)
+                self.assertTrue(lower_rows, "an XY-overlapping lower guardrail must not be suppressed")
+                for row in lower_rows:
+                    self.assertAlmostEqual(row[3], 12.0, delta=0.1,
+                                           msg="lower guardrails must not be raised onto the bridge")
 
         centre = self.features("guard_rail", xy=[[10.0, 0.0], [90.0, 0.0]])
         rows = guardrails.forest_rows(self.frame, lambda _key: centre,
-                                      (0.0, -20.0, 100.0, 20.0), elev, parapets=parapets)
+                                      (0.0, -20.0, 100.0, 20.0), upper_elev,
+                                      decks=decks, parapets=parapets)
         self.assertTrue(rows, "a central separator is not coincident with either outer parapet")
 
         # Adjacent bridge decks can each have an inner concrete parapet. A real central divider
         # between them must still remain when it is close, but not on top of, those parapets.
         second_deck = {**deck, "fid": "bridge2", "n": [[0.0, 10.0, 20.0], [100.0, 10.0, 20.0]]}
+        paired_decks = [{"n": deck["n"], "w": deck["w"]},
+                        {"n": second_deck["n"], "w": second_deck["w"]}]
         paired_parapets = roadmesh.parapet_runs([deck, second_deck])
         centre_gap = self.features("guard_rail", tags={"two_sided": "yes"},
                                     xy=[[10.0, 5.0], [90.0, 5.0]])
         rows = guardrails.forest_rows(self.frame, lambda _key: centre_gap,
-                                      (0.0, -20.0, 100.0, 20.0), elev, parapets=paired_parapets)
-        self.assertTrue(rows, "the central divider must survive near, but distinct from, both parapets")
+                                      (0.0, -20.0, 100.0, 20.0), upper_elev,
+                                      decks=paired_decks, parapets=paired_parapets)
+        self.assertTrue(rows, "the central divider must survive near, but not on, both parapets")
 
     def test_guardrails_pitch_to_the_ground_grade(self):
         feats = self.features("guard_rail", xy=[[10.0, 50.0], [90.0, 50.0]])
