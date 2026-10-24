@@ -284,6 +284,7 @@ def _is_two_sided(feats, i):
 
 # Keep this tight: a central divider between adjacent bridge decks can be close to both inner parapets.
 PARAPET_DUPLICATE_M = 0.7
+PARAPET_LEVEL_TOLERANCE_M = 1.0
 PARAPET_PARALLEL_DOT = 0.75
 PARAPET_MATCH_SHARE = 0.75
 PARAPET_MATCH_SAMPLES = 7
@@ -291,12 +292,15 @@ PARAPET_MATCH_SAMPLES = 7
 
 def _parapet_segments(parapets):
     """Flatten generated bridge-parapet centre lines into XY segments for matching."""
-    starts, ends = [], []
+    starts, ends, z_starts, z_ends = [], [], [], []
     for parapet in parapets or ():
         line = np.asarray(parapet.get("line", ()) if isinstance(parapet, dict) else parapet,
                           np.float64).reshape(-1, 2)
         if len(line) < 2:
             continue
+        z = np.asarray(parapet.get("z", ()) if isinstance(parapet, dict) else (), np.float64).reshape(-1)
+        if len(z) != len(line):
+            z = np.full(len(line), np.nan, np.float64)
         a, b = line[:-1], line[1:]
         d = b - a
         length = np.hypot(d[:, 0], d[:, 1])
@@ -304,6 +308,8 @@ def _parapet_segments(parapets):
         if keep.any():
             starts.append(a[keep])
             ends.append(b[keep])
+            z_starts.append(z[:-1][keep])
+            z_ends.append(z[1:][keep])
     if not starts:
         return None
     a, b = np.concatenate(starts), np.concatenate(ends)
@@ -315,10 +321,12 @@ def _parapet_segments(parapets):
         "unit": d / length[:, None],
         "lo": np.minimum(a, b),
         "hi": np.maximum(a, b),
+        "za": np.concatenate(z_starts),
+        "zb": np.concatenate(z_ends),
     }
 
 
-def _overlaps_bridge_parapet(a, b, segments):
+def _overlaps_bridge_parapet(a, b, segments, level=None):
     """Whether a module runs along a generated concrete parapet, not merely across it."""
     if segments is None:
         return False
@@ -345,6 +353,9 @@ def _overlaps_bridge_parapet(a, b, segments):
                     samples[:, None, 1] - nearest[:, :, 1])
     parallel = np.abs(unit @ tangent) >= PARAPET_PARALLEL_DOT
     matches = (dist <= PARAPET_DUPLICATE_M) & parallel[None, :]
+    if level is not None:
+        parapet_z = segments["za"][box][None, :] + t * (segments["zb"][box] - segments["za"][box])[None, :]
+        matches &= np.isfinite(parapet_z) & (np.abs(parapet_z - float(level)) <= PARAPET_LEVEL_TOLERANCE_M)
     return float(matches.any(axis=1).mean()) >= PARAPET_MATCH_SHARE
 
 
@@ -452,8 +463,10 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=()):
                 for group, p, a, b, rank, reverse in candidates:
                     # Match the original mapped line before offsets for two-sided models. Otherwise
                     # a central separator near the inner parapets could be shifted onto the match band.
-                    if _overlaps_bridge_parapet(a, b, parapet_segments):
-                        continue
+                    # Keep the source segment and check height later so a lower road beneath a bridge
+                    # is not mistaken for the bridge's own guardrail.
+                    source_a, source_b = a, b
+                    parapet_xy_match = _overlaps_bridge_parapet(source_a, source_b, parapet_segments)
                     if two_sided:
                         # The model's visible side is opposite its back axis. Keep the backs
                         # toward the centre gap and the visible faces outward on both sides.
@@ -464,19 +477,21 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=()):
                             side = 1.0 if reverse else -1.0
                             offset = normal * (0.5 * TWO_SIDED_SPACING_M * side)
                             p, a, b = p + offset, a + offset, b + offset
-                    placements.append((group, p, a, b, rank, reverse))
+                    placements.append((group, p, a, b, rank, reverse, parapet_xy_match, source_a, source_b))
 
     if not placements:
         return []
 
     # One batched terrain/deck query for all module origins and their grade endpoints.
     sample_points = []
-    for _, p, a, b, _, _ in placements:
+    for _, p, a, b, _, _, _, _, _ in placements:
         sample_points.extend((p, a, b))
     heights = _surface_z(frame, np.asarray(sample_points, np.float64), elev, decks)
     rows = []
-    for i, (group, p, a, b, rank, reverse) in enumerate(placements):
+    for i, (group, p, a, b, rank, reverse, parapet_xy_match, source_a, source_b) in enumerate(placements):
         z, za, zb = (float(heights[3 * i]), float(heights[3 * i + 1]), float(heights[3 * i + 2]))
+        if parapet_xy_match and _overlaps_bridge_parapet(source_a, source_b, parapet_segments, level=z):
+            continue
         forward = np.array([float(b[0] - a[0]), float(b[1] - a[1]), zb - za], np.float64)
         length = float(np.linalg.norm(forward))
         if length < 1e-6:
