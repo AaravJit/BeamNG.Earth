@@ -19,6 +19,9 @@ SNAP_M = 128.0              # boxes are snapped out to this grid (keys stay the 
 # game rebuilt its collision with patches in; Linux builds 1.3M triangles in 0.09 s either way).
 PIECE_M = 128.0             # 16 x 16 quads, 512 triangles a piece (a Steam Deck in a 3-player session made 977 cells
                             # of 64 m as another player drove 4 km; these are a quarter as many)
+# The pieces' material: one the level loads (main.materials.json), with no ground type, as the missing default was
+# (cdae's default "bngEarthDae" has no Material: an engine error line for every piece loaded, 195 in one PC session)
+MATERIAL = "bngEarthFar_v3"
 
 
 def snap_box(x0, y0, x1, y1):
@@ -83,7 +86,7 @@ def build(frame, elev, box, prefix, step=STEP_M):
             j0, j1 = int(round((py0 - box[1]) / step)), int(round((py1 - box[1]) / step))
             pos, tris = mesh(xs[i0:i1 + 1], ys[j0:j1 + 1], z[j0:j1 + 1, i0:i1 + 1], (cx, cy))
             tmp = path + ".part"
-            cdae.write(tmp, pos, tris, collision_only=True)
+            cdae.write(tmp, pos, tris, collision_only=True, material=MATERIAL)
             os.replace(tmp, path)               # (whole or not at all: the game may load it at once)
         out.append((path, (cx, cy)))
         total += per_piece
