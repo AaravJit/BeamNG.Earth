@@ -899,6 +899,9 @@ def beammp_up(user_dir, build, args):
         elif answer is not None:
             import install
             exe = bmplaunch.download(dd, f"BeamNG.Earth/{install.version()}", say=lambda m: say("  " + m))
+            if exe:     # (BeamMP's own installer sets the firewall up; started from here Windows asks once)
+                say("  Windows Firewall may ask whether the BeamMP launcher may use the network: allow it, or "
+                    "multiplayer cannot connect.")
     if not exe:
         if not IS_WIN:
             row("Multiplayer", "BeamMP not found (BeamMP has no Linux download: build it from "

@@ -191,7 +191,8 @@ BeamNG.Earth runs on [BeamMP](https://beammp.com/) servers (in testing): drive t
 1. Start the BeamNG.Earth app (the same version as the server's). It starts BeamMP with the game: the official BeamMP
    launcher, unchanged (BeamMP's code is AGPL-3.0, [github.com/BeamMP](https://github.com/BeamMP)). On Windows, if
    BeamMP is not installed, the app offers to download its official launcher from BeamMP's GitHub releases (about
-   7 MB, checked against the checksum BeamMP publishes). BeamMP has no Linux download: build its launcher from source
+   7 MB, checked against the checksum BeamMP publishes; Windows Firewall then asks once whether it may use the network:
+   allow it). BeamMP has no Linux download: build its launcher from source
    and the app finds it (`~/BeamMP-Launcher`, or set `BEAMMP_LAUNCHER`). `--no-beammp` starts the game without it.
 2. In the game, log in to BeamMP (main menu, Multiplayer: an account or a guest).
 3. Pick a server in BeamMP's own server list: in its **Maps** filter, pick **Beamng Earth** to
