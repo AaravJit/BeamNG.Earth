@@ -8,7 +8,7 @@
 // is drawn in BeamMP's content panel over its own view, so BeamMP's sidebar and its "connecting / downloading mods"
 // overlay stay. Joining goes through BeamMP's own connectToServer (its overlay, recents and mod downloads as for any
 // server). If BeamMP's page ever changes shape, the button just doesn't appear.
-import { lua, useBridge } from "@/bridge"
+import { useBridge } from "@/bridge"
 
 const BEAMMP_STATE = "/ui/ui-vue/mods/BeamMP/shared/beammpState.js"
 const POLL_MS = 300
@@ -85,7 +85,10 @@ function render(st) {
 
 async function poll() {
   try {
-    const st = await lua.extensions.beamngEarth_serverlist.state()
+    // (an expression evaluated with its value passed back, as BeamMP's own page asks Lua: the bridge's lua.extensions
+    // proxy did not reach this extension)
+    const st = await new Promise(resolve =>
+      window.bngApi.engineLua("beamngEarth_serverlist and beamngEarth_serverlist.state()", resolve))
     render(st || {})
     if (st && st.state === "loading") pollTimer = setTimeout(poll, POLL_MS)
   } catch (e) {

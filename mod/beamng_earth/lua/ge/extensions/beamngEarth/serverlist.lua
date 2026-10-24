@@ -5,7 +5,8 @@
 -- Plain HTTP with luasocket at settimeout(0), stepped in onUpdate: nothing here blocks a frame. The UI polls state().
 local M = {}
 
-M.LIST_URL = 'http://10.0.0.5:47640/servers'   -- (the list service; set to its public address before a release)
+M.LIST_URL = 'http://earth.tgforever.net/servers'   -- (the list service, native/serverlist, behind Caddy on the
+                                                    -- mini PC; plain HTTP: the game's luasocket has no TLS)
 M.TIMEOUT_S = 6
 
 local req = nil             -- { sock, phase = 'connect' | 'send' | 'recv', buf, t, host, port, path }

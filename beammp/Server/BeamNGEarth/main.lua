@@ -22,13 +22,15 @@ local G = {}
 -- others connect to it: over the internet, each player forwards this port to their computer; on one network nothing
 -- is needed). Sent to each player when they join. A player whose port is taken uses the next free one (up to 9 more).
 G.SHARE_PORT = 47621
--- The BeamNG.Earth server list: players with BeamNG.Earth find this server in the "BeamNG.Earth" tab of BeamMP's
--- server browser. Set Private = true in ServerConfig.toml as well, so BeamMP's own public list (which every BeamMP
--- player sees, with or without BeamNG.Earth) leaves it out. false: on neither list (friends join by address).
+-- The BeamNG.Earth server list (the "BeamNG.Earth" tab of BeamMP's server browser, seen only by players with
+-- BeamNG.Earth). In ServerConfig.toml, Private = false with your AuthKey puts this server on it; this plugin then keeps
+-- it off BeamMP's own public list (every BeamMP player sees that one, with or without BeamNG.Earth) by switching
+-- BeamMP's Private setting on while the server runs (the file is not changed). Private = true, or no AuthKey: on
+-- neither list, players join with Direct Connect. G.LISTED = false keeps a public server off our list too.
 G.LISTED = true
 -- ===================================================================================================================
 
-G.LIST_URL = 'http://10.0.0.5:47640/announce'   -- (the list service, native/serverlist; its public address for releases)
+G.LIST_URL = 'https://earth.tgforever.net/announce'   -- (the list service, native/serverlist)
 G.ANNOUNCE_MS = 60000       -- (the list drops a server 3 minutes after its last announce)
 G.ANNOUNCE_FILE = 'bnge_announce.json'
 
@@ -170,10 +172,21 @@ function G.readConfig(text)
       if k == 'Name' and str then cfg.name = str
       elseif k == 'Port' then cfg.port = tonumber(v)
       elseif k == 'MaxPlayers' then cfg.maxPlayers = tonumber(v)
-      elseif k == 'Private' then cfg.private = v == 'true' end
+      elseif k == 'Private' then cfg.private = v == 'true'
+      elseif k == 'AuthKey' and str then cfg.authKey = str end
     end
   end
   return cfg
+end
+
+-- Pure: is this a real BeamMP key (keymaster.beammp.com's form, not the placeholder of zeros)?
+function G.validKey(k)
+  return type(k) == 'string' and k:match('^%x+%-%x+%-%x+%-%x+%-%x+$') ~= nil and (k:gsub('[0%-]', '')) ~= ''
+end
+
+-- Pure: does this server go on the BeamNG.Earth list? (ServerConfig public with a real key, and G.LISTED)
+function G.listable(cfg)
+  return G.LISTED ~= false and cfg.private == false and G.validKey(cfg.authKey)
 end
 
 -- Pure: what the list shows of this server: { port, name, players, maxPlayers, place } (place: where the players are,
@@ -242,23 +255,34 @@ if MP and MP.RegisterEvent then
     end
   end
 
-  -- this server on the BeamNG.Earth list (G.LISTED), every ANNOUNCE_MS and at start
-  function BNGE_announce()
-    if not G.LISTED then return end
+  local function serverConfig()
     local f = io.open('ServerConfig.toml', 'r')
     local cfg = G.readConfig(f and f:read('*a') or '')
     if f then f:close() end
-    if not cfg.port then return end
+    return cfg
+  end
+
+  -- a public server with its key goes on our list and off BeamMP's (its Private setting on while it runs: BeamMP's
+  -- heartbeat sends it each time); otherwise direct connect only
+  local startCfg = serverConfig()
+  if G.listable(startCfg) then
+    local okSet = pcall(MP.Set, MP.Settings.Private, true)
+    print('[BeamNG.Earth] public server: on the BeamNG.Earth server list'
+      .. (okSet and ', kept off BeamMP\'s public list' or ' (could not keep it off BeamMP\'s public list)'))
+  else
+    print('[BeamNG.Earth] not on any server list (Private = true or no AuthKey in ServerConfig.toml): players join with '
+      .. 'Direct Connect')
+  end
+
+  -- this server on the BeamNG.Earth list, every ANNOUNCE_MS and at start
+  function BNGE_announce()
+    local cfg = serverConfig()
+    if not cfg.port or not G.listable(cfg) then return end
     local out = io.open(G.ANNOUNCE_FILE, 'w')
     if not out then return end
     out:write(encode(G.announcement(cfg, G.live())))
     out:close()
     os.execute(G.announceCmd(G.LIST_URL, G.ANNOUNCE_FILE, package.config:sub(1, 1) == '\\'))
-    if not G.announced then
-      G.announced = true
-      print(string.format('[BeamNG.Earth] on the BeamNG.Earth server list as "%s"%s', tostring(cfg.name),
-        cfg.private and '' or ' (also on BeamMP\'s public list: set Private = true in ServerConfig.toml to leave it)'))
-    end
   end
 
   MP.RegisterEvent('BNGE_announce', 'BNGE_announce')
