@@ -1440,6 +1440,11 @@ local function drawUi(dt)
     local ok, err = pcall(drawUpdateNotice)
     if not ok then updateInfo = nil; log('E', 'beamngEarth', 'update notice: ' .. tostring(err)) end
   end
+end
+
+-- BeamMP: its window and the session (other players' anchors, cars, damage). Timed as its own part ('beammp'): inside
+-- drawUi a BeamMP car's spawn was logged as a 1.1 s "draw" hitch (2026-10-24, a three-player test).
+local function updateBeamMP(dt)
   if not beammpBroken then
     local ok, err = pcall(beammp.update, dt, st.inOurLevel, net.isConnected(), settings)
     if not ok then beammpBroken = true; log('E', 'beamngEarth', 'BeamMP window: ' .. tostring(err)) end
@@ -1736,7 +1741,9 @@ local function onUpdate(dtReal, dtSim)
     t = mark('sky', t)
   end
   drawUi(dtReal)
-  mark('draw', t)
+  t = mark('draw', t)
+  updateBeamMP(dtReal)
+  mark('beammp', t)
 end
 
 -- After physics, before rendering (main.lua:819-824): measure when a rebase's vehicle move became
