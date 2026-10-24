@@ -603,7 +603,12 @@ function M.update(dt, anchor, player)
   for gid in pairs(hide) do
     if not deactivated[gid] then
       local veh = vehicle(gid)
-      if veh then veh:setActive(0); deactivated[gid] = true end
+      if veh then
+        veh:setActive(0)
+        deactivated[gid] = true
+        log('I', 'beamngEarth', string.format('BeamMP: car %s (%s) switched off here (%s)', tostring(gid),
+          tostring(sids[gid]), mpanchor.isFar(sids[gid]) and 'far' or 'its owner\'s anchor not known'))
+      end
     end
   end
   local tp = require('beamngEarth/terrainpatch')
@@ -622,8 +627,22 @@ function M.update(dt, anchor, player)
         elseif w then
           log('I', 'beamngEarth', string.format('BeamMP: car %s back on, its ground in after %.1f s', tostring(gid),
             now - w.since))
+        else
+          -- (its packet's height against our ground there: a remote car came back on two instabilities later in a
+          -- three-player test, cause not pinned down, 2026-10-24)
+          local _, _, pz = mpanchor.lastPos(sids[gid])
+          local gz = x and be and be.getSurfaceHeightBelow and be:getSurfaceHeightBelow(vec3(x, y, (pz or 0) + 50))
+          log('I', 'beamngEarth', string.format('BeamMP: car %s back on at %.0f, %.0f, z %.2f (our ground %.2f)',
+            tostring(gid), x or 0, y or 0, pz or -1, gz or -1))
         end
-        if veh then veh:setActive(1) end
+        if veh then
+          veh:setActive(1)
+          -- BeamMP's own reset of its position sync (smoothers, the remote clock, a clean teleport onto the next
+          -- packet): switched off a minute while its player teleported away and back (their car reset, its clock
+          -- restarted), the car came back on with that state stale and two instabilities followed within 0.2 s, on the
+          -- right spot and height (a three-player test, 2026-10-24)
+          veh:queueLuaCommand('if positionVE and positionVE.onReset then positionVE.onReset() end')
+        end
         deactivated[gid], waitGround[gid] = nil, nil
       else
         if not w then
