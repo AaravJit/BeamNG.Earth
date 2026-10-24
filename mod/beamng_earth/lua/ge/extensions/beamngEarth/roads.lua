@@ -393,15 +393,17 @@ local function createChunk(chunk)
   return r:getId()
 end
 
--- Server message `roads_tile` {anchorId, key, path, n}.
+-- Server message `roads_tile` {anchorId, key, path, n, data (the file's JSON, optional), slots}.
 function M.onTile(msg, currentAnchor)
   if not M.enabled then return false end
   switchAnchor(currentAnchor)
   if msg.anchorId ~= currentAnchor then return false end
   local key = tileKey(msg.anchorId, msg.key)
   if tiles[key] then dropTile(key) end
-  local text = readFile(msg.path)
-  local ok, data = pcall(jsonDecode, text or '')
+  -- the file's JSON in the message (server staging.inline_json: Windows' first read of a file the server just wrote took
+  -- up to 0.5 s in the frame), else the file
+  local ok, data = true, msg.data
+  if type(data) ~= 'table' then ok, data = pcall(jsonDecode, readFile(msg.path) or '') end
   if not ok or type(data) ~= 'table' or type(data.chunks) ~= 'table' then
     lastError = 'unreadable road tile ' .. tostring(msg.path)
     return false
@@ -466,7 +468,8 @@ function M.onFarTile(msg, currentAnchor)
   if not M.enabled then return false end
   switchAnchor(currentAnchor)
   if msg.anchorId ~= currentAnchor then return false end
-  local ok, data = pcall(jsonDecode, readFile(msg.path) or '')
+  local ok, data = true, msg.data              -- (in the message, else the file: as onTile)
+  if type(data) ~= 'table' then ok, data = pcall(jsonDecode, readFile(msg.path) or '') end
   if not ok or type(data) ~= 'table' then lastError = 'unreadable far building tile ' .. tostring(msg.path); return false end
   local key = tileKey(msg.anchorId, msg.key)
   local old = far[key]

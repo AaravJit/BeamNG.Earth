@@ -111,3 +111,22 @@ def replace_cached(tmp, path):
                     pass
                 return False
             time.sleep(wait)
+
+
+INLINE_MAX = 1 << 20        # bytes: a session file this small or smaller goes inside its message (inline_json)
+
+
+def inline_json(out_dir, vfs_path, max_bytes=INLINE_MAX):
+    """The parsed JSON of a session file (vfs_path's name in out_dir), to send inside its message (its "data") so the
+    game does not open the file: on Windows the game's first read of a file the server just wrote took 6.8 ms on
+    average and up to 552 ms, in the frame (a 4-minute highway drive on a Windows test PC, 2026-10-24: 1,176 tile files
+    read; 0.03 ms on Linux). None when it cannot be read or is larger than max_bytes (the mod reads the file then)."""
+    import json
+    try:
+        path = os.path.join(out_dir, os.path.basename(vfs_path))
+        if os.path.getsize(path) > max_bytes:
+            return None
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None

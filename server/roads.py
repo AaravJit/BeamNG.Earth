@@ -3926,6 +3926,10 @@ class Tracker:
         path, n = res
         self.sent.add(key)
         m = {"type": "roads_tile", "anchorId": aid, "key": f"{key[0]}_{key[1]}", "path": path, "n": n}
+        out_dir = getattr(getattr(conn, "s", None), "out_dir", None)
+        data = staging.inline_json(out_dir, path) if out_dir else None
+        if data is not None:                # (the game need not open the file: staging.inline_json)
+            m["data"] = data
         pool = getattr(getattr(conn, "s", None), "pool_shapes", None)
         if pool is not None:                # its meshes at pooled shape paths (matslots.py)
             slots = pool(conn, shape_files(aid, *key))
