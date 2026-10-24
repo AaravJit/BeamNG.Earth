@@ -839,11 +839,11 @@ PAD_MARGIN_M = 6.0          # around the islands or pumps: room to drive round t
 PAD_BLD_GAP_M = 0.5         # short of a neighbour's walls
 PAD_SHOP_LINK_M = 10.0      # the shop's front this close: the asphalt reaches it
 DRIVEWAY_W_M = 8.0          # a driveway made up where none is mapped ...
-DRIVEWAY_MAX_M = 40.0       # ... to a road at most this far from the pad
+DRIVEWAY_MAX_M = 45.0       # ... to a road at most this far from the pad
 DRIVEWAY_MAPPED_M = 3.0     # a service road with a point this near the pad and one this near a road's edge: mapped
 # a corner lot's second entrance (the user, 2026-10-23, at the Speedway: "there is an entrance where you added tho IRL
 # as well"): another public road this near the pad, crossing the first at least this much (not a street behind it)
-DRIVEWAY_CORNER_M = 25.0
+DRIVEWAY_CORNER_M = 45.0    # (the Speedway's side street: 40 m from its pad)
 DRIVEWAY_CORNER_DEG = 45.0
 
 
