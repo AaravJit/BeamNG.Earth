@@ -18,9 +18,9 @@ do
   tp.ENABLED = true
 end
 
--- snap: out to the 64 m grid, clipped to MAX_SIDE_M round the centre (as the server)
+-- snap: out to the 128 m grid, clipped to MAX_SIDE_M round the centre (as the server)
 local x0, y0, x1, y1 = tp.snap(10, -70, 650, 570)
-T.check(x0 == 0 and y0 == -128 and x1 == 704 and y1 == 576, 'snapped out: ' .. table.concat({ x0, y0, x1, y1 }, ' '))
+T.check(x0 == 0 and y0 == -128 and x1 == 768 and y1 == 640, 'snapped out: ' .. table.concat({ x0, y0, x1, y1 }, ' '))
 x0, y0, x1, y1 = tp.snap(0, 0, 4000, 100)
 T.check(x1 - x0 <= tp.MAX_SIDE_M + 2 * tp.SNAP_M and x1 - x0 >= tp.MAX_SIDE_M, 'clipped to the max side (then snapped out)')
 
@@ -34,7 +34,8 @@ local keys = {}
 for k in pairs(w) do keys[#keys + 1] = k end
 T.check(#keys == 1, 'one patch (the far car): ' .. table.concat(keys, ','))
 local box = w[keys[1]]
-T.check(box[1] <= 2000 - cf.PLAYER_R and box[3] >= 2000 + cf.PLAYER_R, 'the patch covers the far car\'s island')
+T.check(box[1] <= 2000 - tp.PATCH_R and box[3] >= 2000 + tp.PATCH_R and box[3] - box[1] <= 2 * tp.PATCH_R + 2 * tp.SNAP_M,
+  'the patch covers PATCH_R round the far car (not its whole island)')
 T.check(not keys[1]:find('-', 1, true), 'keys carry no minus sign (the server\'s key pattern)')
 -- a lone traffic car well inside the block: none
 local inside = cf.islands(cf.compute({ { id = 3, x = 200, y = 100, kind = 'traffic' } }, nil), nil)

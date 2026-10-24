@@ -10,14 +10,15 @@ import os
 
 import numpy as np
 
-STEP_M = 4.0                # grid spacing: 640 m square = 25.6k quads, ~51k triangles (~2 ms of a collision rebuild)
+STEP_M = 8.0                # grid spacing (the ground a far car rests on; 4 m until 2026-10-24: 4x the cells for it)
 MAX_SIDE_M = 1280.0         # a patch's side at most
-SNAP_M = 64.0               # boxes are snapped out to this grid (keys stay the same while a car moves a little)
+SNAP_M = 128.0              # boxes are snapped out to this grid (keys stay the same while a car moves a little)
 # A patch is written as PIECE_M squares, one collision mesh each: the Windows game builds a collision mesh in time
 # growing with about the square of its triangles (a Windows 10 / RTX 3060 test PC, 2026-10-24: one 51k-triangle patch
 # 3.81 s, the same ground as 16 meshes 0.09 s, 12.8k triangles in one mesh 0.28 s; players froze 6-26 s each time the
 # game rebuilt its collision with patches in; Linux builds 1.3M triangles in 0.09 s either way).
-PIECE_M = 64.0              # 16 x 16 quads, 512 triangles a piece
+PIECE_M = 128.0             # 16 x 16 quads, 512 triangles a piece (a Steam Deck in a 3-player session made 977 cells
+                            # of 64 m as another player drove 4 km; these are a quarter as many)
 
 
 def snap_box(x0, y0, x1, y1):

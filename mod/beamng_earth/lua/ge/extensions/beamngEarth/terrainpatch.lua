@@ -12,7 +12,11 @@ local M = {}
 -- test PC one 51k-triangle patch 3.81 s, the same ground as 16 meshes 0.09 s (2026-10-24). Linux builds either fast.
 M.ENABLED = true
 M.MARGIN_M = 64         -- an island whose box lies this far inside the block needs no patch
-M.SNAP_M = 64           -- as the server's terrainpatch.SNAP_M / MAX_SIDE_M: the keys match its boxes
+M.SNAP_M = 128          -- as the server's terrainpatch.SNAP_M / MAX_SIDE_M: the keys match its boxes
+-- The ground under a far car reaches PATCH_R round it (not its whole island: the roads, buildings and trees reach
+-- collisionfoci's 320 m, the ground needs only where the car gets before the next patch; the whole island's 704 m
+-- box made a Steam Deck keep 977 cells as another player drove 4 km, 2026-10-24).
+M.PATCH_R = 256
 M.MAX_SIDE_M = 1280
 M.KEEP_S = 10
 M.MAX_INFLIGHT = 2
@@ -20,7 +24,7 @@ M.RETRY_S = 5
 M.UPDATE_S = 1
 -- A patch's pieces are world cells (the server names them by anchor and 64 m cell): one TSStatic per cell, shared by
 -- every patch over it and kept until the last lets go, so a far car moving on adds a row of cells, not a new patch's
--- 121 shape files (every distinct shape path a session loads costs frame time for good, teleport-degradation). The
+-- shape files (every distinct shape path a session loads costs frame time for good, teleport-degradation). The
 -- cells are made PIECES_PER_FRAME a frame: all 121 of a 704 m patch in one frame held a Windows test PC 1.0 s
 -- (2026-10-24, ~8 ms each, the shape's first load).
 M.PIECES_PER_FRAME = 2
@@ -51,7 +55,13 @@ function M.wanted(islands, b)
     local inside = b and isl.x0 >= b[1] + M.MARGIN_M and isl.y0 >= b[2] + M.MARGIN_M
       and isl.x1 <= b[3] - M.MARGIN_M and isl.y1 <= b[4] - M.MARGIN_M
     if not hasActive and not inside then
-      local x0, y0, x1, y1 = M.snap(isl.x0, isl.y0, isl.x1, isl.y1)
+      local bx0, by0, bx1, by1 = math.huge, math.huge, -math.huge, -math.huge
+      for _, m in ipairs(isl.members) do
+        bx0, by0 = math.min(bx0, m.x - M.PATCH_R), math.min(by0, m.y - M.PATCH_R)
+        bx1, by1 = math.max(bx1, m.x + M.PATCH_R), math.max(by1, m.y + M.PATCH_R)
+      end
+      if bx0 > bx1 then bx0, by0, bx1, by1 = isl.x0, isl.y0, isl.x1, isl.y1 end
+      local x0, y0, x1, y1 = M.snap(bx0, by0, bx1, by1)
       local key = (string.format('%d_%d_%d_%d', x0, y0, x1, y1):gsub('-', 'm'))
       out[key] = { x0, y0, x1, y1 }
     end
