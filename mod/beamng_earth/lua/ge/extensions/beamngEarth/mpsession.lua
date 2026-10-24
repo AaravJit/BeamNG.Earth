@@ -925,10 +925,17 @@ end
 -- getNodes also lists every node's position and every beam: ~200 KB for a pickup, decoded on every other player's
 -- game; it also called a global Round that BeamNG 0.40's vehicle Lua lacks, so it was never sent.) A copy without
 -- our mod applies the same message with BeamMP's applyNodes: the listed beams only. (Vehicle Lua)
-local DAMAGE_VE = [[local s = { nodes = {}, beams = {} } for _, b in pairs(v.data.beams) do local c = b.cid ]]
-  .. [[local br, df = obj:beamIsBroken(c), obj:getBeamDeformation(c) if br or df > 0.001 then ]]
+-- A beam is bent when its rest length is 2 mm or more off its length in the car's jbeam (node positions): BeamNG's
+-- getBeamDeformation flags few of them (17 beams on a copy with 134 broken), and its dents were lost.
+local DAMAGE_VE = [[local s = { nodes = {}, beams = {} } local nodes = v.data.nodes or {} ]]
+  .. [[for _, b in pairs(v.data.beams) do local c = b.cid local br, df = obj:beamIsBroken(c), obj:getBeamDeformation(c) ]]
+  .. [[local bent = df > 0.001 if not br and not bent then local n1, n2 = nodes[b.id1], nodes[b.id2] ]]
+  .. [[if n1 and n2 and n1.pos and n2.pos then bent = math.abs(obj:getBeamRestLength(c) - (n1.pos - n2.pos):length()) > 0.002 end end ]]
+  .. [[if br or bent then ]]
   .. [[s.beams[tostring(c + 1)] = { math.floor(obj:getBeamRestLength(c) * 1000 + 0.5) / 1000, br, math.floor(df * 1000 + 0.5) / 1000 } end end ]]
   .. [[obj:queueGameEngineLua("nodesGE.sendNodes('" .. jsonEncode(s) .. "', " .. obj:getID() .. ")")]]
+
+M.DAMAGE_VE = DAMAGE_VE      -- (tests)
 
 -- Our own cars' damage to the players near (see the top). (lat, lon): our place.
 function M.sendDamage(lat, lon, dt)

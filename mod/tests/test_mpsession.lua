@@ -173,16 +173,18 @@ T.check(#cmds == 1 and cmds[1]:find('nodesGE.sendNodes', 1, true) and cmds[1]:fi
 do  -- run it as vehicle Lua: only the broken and bent beams go out
   local got, gl = nil, nil
   local env = { pairs = pairs, tostring = tostring, math = math,
-    v = { data = { beams = { { cid = 0 }, { cid = 1 }, { cid = 2 } } } },
+    v = { data = { beams = { { cid = 0, id1 = 0, id2 = 1 }, { cid = 1, id1 = 0, id2 = 1 }, { cid = 2, id1 = 0, id2 = 1 },
+      { cid = 3, id1 = 0, id2 = 1 } }, nodes = { [0] = { pos = vec3(0, 0, 0) }, [1] = { pos = vec3(1.23456, 0, 0) } } } },
     obj = { beamIsBroken = function(_, c) return c == 0 end, getBeamDeformation = function(_, c) return c == 1 and 0.25 or 0 end,
-      getBeamRestLength = function() return 1.23456 end, getID = function() return 20 end,
+      getBeamRestLength = function(_, c) return c == 3 and 1.1 or 1.23456 end, getID = function() return 20 end,
       queueGameEngineLua = function(_, c) gl = c end },
     jsonEncode = function(t) got = t return 'J' end }
   local fn = assert(loadstring(cmds[1]))
   setfenv(fn, env)
   fn()
   T.check(got and got.beams['1'] and got.beams['1'][2] == true and got.beams['2'] and got.beams['2'][3] == 0.25
-    and got.beams['3'] == nil and next(got.nodes) == nil and got.beams['1'][1] == 1.235, 'the broken and bent beams only, rounded')
+    and got.beams['3'] == nil and next(got.nodes) == nil and got.beams['1'][1] == 1.235
+    and got.beams['4'] and got.beams['4'][1] == 1.1, 'the broken and bent beams only (rest length off its jbeam length too), rounded')
   T.check(gl == "nodesGE.sendNodes('J', 20)", 'sent on BeamMP\'s full-damage path')
 end
 ms.sendDamage(36.5, -118.1, 0.5)
