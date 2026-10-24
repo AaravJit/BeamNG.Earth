@@ -67,6 +67,22 @@ T.check(got[#got] == 'p:5-0:{"pos":[1,2,3]}', 'an unknown player\'s position: un
 positionGE.handle('Xn:4-0:{}')
 T.check(got[#got] == 'Xn:4-0:{}', 'another kind of packet: untouched')
 
+-- sanitize: a non-finite number anywhere drops the packet; a teleport-fast speed is zeroed (the position kept)
+T.check(ma.sanitize({ pos = { 1, 2, 3 }, vel = { 1, 0, 0 }, rot = { 0, 0, 0, 1 } }), 'sanitize: a sane packet')
+T.check(not ma.sanitize({ pos = { 1, 0 / 0, 3 } }), 'sanitize: NaN position dropped')
+T.check(not ma.sanitize({ pos = { 1, 2, 3 }, rvel = { math.huge, 0, 0 } }), 'sanitize: infinite angular velocity dropped')
+T.check(not ma.sanitize({ pos = { 1, 2, 3 }, rot = { 0, 0, 0 / 0, 1 } }), 'sanitize: NaN rotation dropped')
+local fast = { pos = { 1, 2, 3 }, vel = { 3000, 0, 0 }, rvel = { 5, 5, 5 } }
+T.check(ma.sanitize(fast) and fast.vel[1] == 0 and fast.rvel[1] == 0 and fast.pos[1] == 1,
+  'sanitize: a 3000 m/s teleport artefact: velocities zeroed, position kept')
+local before = #got
+local saved = jsonDecode
+jsonDecode = function() return { pos = { 0 / 0, 0, 0 } } end
+positionGE.handle('p:4-0:{"pos":[1,2,3]}')
+positionGE.handle('p:9-0:{"pos":[1,2,3]}')      -- (a player with no anchor known: no conversion, still checked)
+jsonDecode = saved
+T.check(#got == before, 'a NaN packet never reaches BeamMP, converted or not')
+
 ma.reset()
 T.check(not ma.knows(4), 'reset: the anchors forgotten')
 T.done('test_mpanchor')
