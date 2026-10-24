@@ -360,16 +360,6 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
     rwalls = []
     ctx = []
     box = roadsmod.tile_bbox(tx, ty)
-    import guardrails as guardrailsmod
-    infra_fn = lambda key: _s.md.cell(key, layers=("infrastructure",), kind="demand").layers.get("infrastructure")
-    try:
-        guardrail_decks = [{"n": np.column_stack((xy, z)), "w": spec.width}
-                           for _fid, spec, xy, z, _lon in bridges.parts(
-                               cells, (box[0]-10, box[1]-10, box[2]+10, box[3]+10))]
-        guardrail_rows = guardrailsmod.forest_rows(frame, infra_fn, box, elev, decks=guardrail_decks)
-    except Exception as ex:
-        log.warning("mapped guardrails: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
-        guardrail_rows = []
     cell_fn = lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads")   # noqa: E731
 
     def drawn(la, lo):          # the block's ground: raised over the low arches as the terrain is (_make_heightmap)
@@ -393,10 +383,25 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
         park = parkingmod.clear_of(park, props, drives)
         park = parkingmod.tile_lot_spots(frame, tx, ty, _s.md, elev, items, park)
         buildingsmod.brick_walks(walks, items, lat, lon)
+
+    # These are the exact concrete parapet runs the bridge mesh will render; use the same geometry
+    # to avoid stacking OSM metal guardrails over them without suppressing central separators.
+    parapets = roadmeshmod.parapet_runs(chunks, ctx)
+    import guardrails as guardrailsmod
+    infra_fn = lambda key: _s.md.cell(key, layers=("infrastructure",), kind="demand").layers.get("infrastructure")
+    try:
+        guardrail_decks = [{"n": np.column_stack((xy, z)), "w": spec.width}
+                           for _fid, spec, xy, z, _lon in bridges.parts(
+                               cells, (box[0]-10, box[1]-10, box[2]+10, box[3]+10))]
+        guardrail_rows = guardrailsmod.forest_rows(frame, infra_fn, box, elev,
+                                                   decks=guardrail_decks, parapets=parapets)
+    except Exception as ex:
+        log.warning("mapped guardrails: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
+        guardrail_rows = []
     mesh = roadmeshmod.build(frame, chunks, elev, (x0, y0, 0.0), lift, clip=box, follow=True, q=q, drawn=drawn)
     mesh = _with_plazas(mesh, frame, tx, ty, elev, (x0, y0, 0.0), getattr(_s, "surface", None))
     dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0), bridges.piers_in(roadsmod.tile_bbox(tx, ty)), ctx,
-                              bridges.beams_in(roadsmod.tile_bbox(tx, ty)))
+                              bridges.beams_in(roadsmod.tile_bbox(tx, ty)), parapets=parapets)
     tmesh = roadmeshmod.tunnel(chunks, (x0, y0, 0.0), rwalls)
     bld = None
     if buildings:
