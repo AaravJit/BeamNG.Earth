@@ -83,7 +83,8 @@ the mod, report problems, and get an IP to join a BeamMP.Earth server (see [Mult
 - Saved places and recent places.
 
 **Interface and tools**
-- A slim status bar (street, town, country, world loading), a connection banner when something is
+- A slim status bar (street, town, country, and under it the loading progress of the ground, roads & buildings, trees and
+  distant land after a teleport), the Earth coordinates above the minimap, a connection banner when something is
   wrong and the data credits on screen, as BeamNG UI apps in a ".Earth" app layout (based on Freeroam's;
   move or resize them in the UI apps editor), and a one-time welcome page about the project.
 - Settings in the pause menu, keybinds, in-game reports (notes and performance recordings to share), and a
