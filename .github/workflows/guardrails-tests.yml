@@ -5,6 +5,9 @@ on:
   push:
     branches:
       - feature/mapped-guardrails
+permissions:
+  contents: read
+
   pull_request:
     paths:
       - "server/guardrails.py"
