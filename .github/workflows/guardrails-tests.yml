@@ -17,6 +17,8 @@ on:
       - "server/earthd.py"
       - "server/junctions.py"
       - "server/mapcells.py"
+      - "server/mapdata.py"
+      - "server/overture.py"
       - "server/mapgeom.py"
       - "server/geodesy.py"
       - "server/staging.py"
