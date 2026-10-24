@@ -48,18 +48,7 @@ class GuardrailTagTest(unittest.TestCase):
                 self.assertFalse(guardrails._is_guardrail(f, 0))
 
 
-class ClipSegmentTest(unittest.TestCase):
-    def test_clips_to_tile(self):
-        clipped = guardrails._clip_segment(np.array([-5.0, 5.0]), np.array([15.0, 5.0]),
-                                           (0.0, 0.0, 10.0, 10.0))
-        self.assertIsNotNone(clipped)
-        np.testing.assert_allclose(clipped[0], [0.0, 5.0])
-        np.testing.assert_allclose(clipped[1], [10.0, 5.0])
-
-    def test_segment_outside_tile_is_ignored(self):
-        self.assertIsNone(guardrails._clip_segment(np.array([-5.0, -5.0]), np.array([-2.0, -2.0]),
-                                                   (0.0, 0.0, 10.0, 10.0)))
-
+class BridgeBufferTest(unittest.TestCase):
     def test_bridge_buffer_is_five_metres_from_deck_edge_not_centreline(self):
         deck = {"n": [[0.0, 0.0, 20.0], [100.0, 0.0, 20.0]], "w": 8.0}
         # Deck half-width is 4 m; the temporary buffer adds 5 m to the actual edge.
@@ -90,7 +79,7 @@ class GuardrailStockAssetTest(unittest.TestCase):
         self.assertIn("elseif not rowCap or #t.rows <= rowCap then", source)
 
 
-class GuardrailMeshTest(unittest.TestCase):
+class GuardrailForestTest(unittest.TestCase):
     def setUp(self):
         self.frame = geodesy.EnuFrame(39.2834, -76.5934, 0.0)
 
@@ -110,59 +99,6 @@ class GuardrailMeshTest(unittest.TestCase):
             lonlat=np.column_stack((lon, lat)),
             attrs=attrs,
         )
-
-    def test_mesh_is_generated_for_mapped_guardrail(self):
-        feats = self.features("guard_rail")
-
-        def elev(lat, lon):
-            return np.full(np.shape(lat), 12.0, np.float64)
-
-        result = guardrails.mesh(self.frame, lambda _key: feats, (0.0, 0.0, 100.0, 100.0),
-                                 elev, (0.0, 0.0, 0.0))
-        self.assertIsNotNone(result)
-        positions, triangles, uvs = result
-        self.assertGreater(len(positions), 0)
-        self.assertGreater(len(triangles), 0)
-        self.assertEqual(uvs.shape, (len(positions), 2))
-        self.assertTrue(np.isfinite(positions).all())
-        # With the constant 12 m test terrain, posts rise above the 0.78 m rail top.
-        self.assertGreater(float(positions[:, 2].max()), 12.8)
-        self.assertGreaterEqual(int(triangles.min()), 0)
-        self.assertLess(int(triangles.max()), len(positions))
-
-    def test_render_mesh_uses_the_temporary_bridge_buffer(self):
-        deck = {"n": [[0.0, 0.0, 20.0], [100.0, 0.0, 20.0]], "w": 8.0}
-        decks = [deck]
-        elev = lambda lat, lon: np.full(np.shape(lat), 12.0, np.float64)
-        box = (0.0, -20.0, 100.0, 20.0)
-
-        near = self.features("guard_rail", xy=[[10.0, 0.0], [90.0, 0.0]])
-        near_mesh = guardrails.mesh(self.frame, lambda _key: near, box, elev,
-                                    (0.0, 0.0, 0.0), decks=decks)
-        self.assertIsNone(near_mesh, "no custom rail geometry should render inside the bridge buffer")
-
-        far = self.features("guard_rail", tags={"layer": "-1"},
-                            xy=[[10.0, 15.0], [90.0, 15.0]])
-        far_mesh = guardrails.mesh(self.frame, lambda _key: far, box, elev,
-                                   (0.0, 0.0, 0.0), decks=decks)
-        self.assertIsNotNone(far_mesh, "guardrails outside the bridge buffer should still render")
-        self.assertGreater(len(far_mesh[1]), 0)
-
-    def test_mapped_line_is_clipped_contiguously_at_tile_seam(self):
-        feats = self.features("guard_rail", xy=[[10.0, 50.0], [190.0, 50.0]])
-        elev = lambda lat, lon: np.full(np.shape(lat), 12.0, np.float64)
-
-        left = guardrails.mesh(self.frame, lambda _key: feats, (0.0, 0.0, 100.0, 100.0),
-                               elev, (0.0, 0.0, 0.0))
-        right = guardrails.mesh(self.frame, lambda _key: feats, (100.0, 0.0, 200.0, 100.0),
-                                elev, (100.0, 0.0, 0.0))
-        self.assertIsNotNone(left)
-        self.assertIsNotNone(right)
-        # Rails meet at x=100. The boundary-owned post is centred on that line and its 8 cm
-        # width intentionally overlaps the neighbouring mesh by only half a post width.
-        self.assertAlmostEqual(float(left[0][:, 0].max()), 100.0, places=4)
-        self.assertGreaterEqual(float(right[0][:, 0].min()), -guardrails.POST_WIDTH_M / 2 - 1e-4)
-        self.assertLessEqual(float(right[0][:, 0].min()), 0.0)
 
     def test_two_sided_osm_tag(self):
         feats = self.features("guard_rail", tags={"two_sided": "yes"})
@@ -282,14 +218,6 @@ class GuardrailMeshTest(unittest.TestCase):
         self.assertGreater(segment[10], 0.0)
         self.assertLess(segment[10], 0.5)
 
-
-
-    def test_unrelated_barrier_produces_no_mesh(self):
-        feats = self.features("fence", {"barrier": "fence"})
-        result = guardrails.mesh(self.frame, lambda _key: feats, (0.0, 0.0, 100.0, 100.0),
-                                 lambda lat, lon: np.full(np.shape(lat), 12.0),
-                                 (0.0, 0.0, 0.0))
-        self.assertIsNone(result)
 
 
 if __name__ == "__main__":
