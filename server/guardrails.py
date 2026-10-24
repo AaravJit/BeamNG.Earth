@@ -282,7 +282,72 @@ def _is_two_sided(feats, i):
     return str(values.get("two_sided", "")).strip().lower() in ("yes", "true", "1")
 
 
-def forest_rows(frame, infra_fn, exact, elev, decks=()):
+PARAPET_DUPLICATE_M = 1.5
+PARAPET_PARALLEL_DOT = 0.75
+PARAPET_MATCH_SHARE = 0.75
+PARAPET_MATCH_SAMPLES = 7
+
+
+def _parapet_segments(parapets):
+    """Flatten generated bridge-parapet centre lines into XY segments for matching."""
+    starts, ends = [], []
+    for parapet in parapets or ():
+        line = np.asarray(parapet.get("line", ()) if isinstance(parapet, dict) else parapet,
+                          np.float64).reshape(-1, 2)
+        if len(line) < 2:
+            continue
+        a, b = line[:-1], line[1:]
+        d = b - a
+        length = np.hypot(d[:, 0], d[:, 1])
+        keep = length > 1e-6
+        if keep.any():
+            starts.append(a[keep])
+            ends.append(b[keep])
+    if not starts:
+        return None
+    a, b = np.concatenate(starts), np.concatenate(ends)
+    d = b - a
+    length = np.hypot(d[:, 0], d[:, 1])
+    return {
+        "a": a,
+        "b": b,
+        "unit": d / length[:, None],
+        "lo": np.minimum(a, b),
+        "hi": np.maximum(a, b),
+    }
+
+
+def _overlaps_bridge_parapet(a, b, segments):
+    """Whether a module runs along a generated concrete parapet, not merely across it."""
+    if segments is None:
+        return False
+    a, b = np.asarray(a, np.float64), np.asarray(b, np.float64)
+    d = b - a
+    length = float(np.hypot(d[0], d[1]))
+    if length < 1e-6:
+        return False
+    tangent = d / length
+    lo = np.minimum(a, b) - PARAPET_DUPLICATE_M
+    hi = np.maximum(a, b) + PARAPET_DUPLICATE_M
+    box = ((segments["hi"][:, 0] >= lo[0]) & (segments["lo"][:, 0] <= hi[0]) &
+           (segments["hi"][:, 1] >= lo[1]) & (segments["lo"][:, 1] <= hi[1]))
+    if not box.any():
+        return False
+    pa, pb, unit = segments["a"][box], segments["b"][box], segments["unit"][box]
+    v = pb - pa
+    v2 = np.maximum(np.sum(v * v, axis=1), 1e-12)
+    samples = a[None, :] + np.linspace(0.1, 0.9, PARAPET_MATCH_SAMPLES)[:, None] * d[None, :]
+    delta = samples[:, None, :] - pa[None, :, :]
+    t = np.clip(np.sum(delta * v[None, :, :], axis=2) / v2[None, :], 0.0, 1.0)
+    nearest = pa[None, :, :] + t[:, :, None] * v[None, :, :]
+    dist = np.hypot(samples[:, None, 0] - nearest[:, :, 0],
+                    samples[:, None, 1] - nearest[:, :, 1])
+    parallel = np.abs(unit @ tangent) >= PARAPET_PARALLEL_DOT
+    matches = (dist <= PARAPET_DUPLICATE_M) & parallel[None, :]
+    return float(matches.any(axis=1).mean()) >= PARAPET_MATCH_SHARE
+
+
+def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=()):
     """Return Forest-item rows for the stock Italy guardrail model.
 
     Row layout matches trees.lua:
@@ -293,6 +358,7 @@ def forest_rows(frame, infra_fn, exact, elev, decks=()):
     """
     if infra_fn is None:
         return []
+    parapet_segments = _parapet_segments(parapets)
     x0, y0, x1, y1 = map(float, exact)
     corners_x = np.array([x0, x0, x1, x1], np.float64)
     corners_y = np.array([y0, y1, y0, y1], np.float64)
@@ -393,6 +459,10 @@ def forest_rows(frame, infra_fn, exact, elev, decks=()):
                             side = 1.0 if reverse else -1.0
                             offset = normal * (0.5 * TWO_SIDED_SPACING_M * side)
                             p, a, b = p + offset, a + offset, b + offset
+                    # Only suppress a mapped rail that follows a generated bridge parapet for
+                    # most of the module's length. Central separators and crossing lines remain.
+                    if _overlaps_bridge_parapet(a, b, parapet_segments):
+                        continue
                     placements.append((group, p, a, b, rank, reverse))
 
     if not placements:
