@@ -65,7 +65,7 @@ T.check(errored and not errored.pending and errored.retryAt, 'the failed one wai
 -- patch over a shared cell adds no object
 local pk, pk2 = sent[2].key, sent[3] and sent[3].key
 local parts = {}
-for i = 1, 5 do parts[i] = { path = '/temp/patch_7_' .. i .. '_0.cdae', x = i * 64 - 32, y = 32 } end
+for i = 1, 5 do parts[i] = { path = '/temp/patch_7_' .. i .. '_0.cdae', x = i * 64 - 32, y = 2032 } end
 tp.onPatch({ anchorId = 7, key = pk, tris = 2560, parts = parts })
 local _, cellsNow, queueNow = tp.state()
 T.check(#queueNow == 5, 'cells queued, none made in the message handler: ' .. #queueNow)
@@ -81,14 +81,14 @@ T.check(#queueNow == 0 and o1 and o1.fields.shapeName == '/temp/patch_7_1_0.cdae
 -- groundReady: on the block (MARGIN_M in), or under a cell a collision rebuild came after
 T.check(tp.groundReady(0, 0), 'on the block: ground')
 tp.update(0.01, 7, f, { x = 0, y = 0 }, nil, send)          -- (no block: only the cells)
-T.check(not tp.groundReady(32, 32), 'a cell made, no rebuild since: not solid yet')
+T.check(not tp.groundReady(32, 2032), 'a cell made, no rebuild since: not solid yet')
 rebuilds = rebuilds + 1
-T.check(tp.groundReady(32, 32) and tp.groundReady(32 + tp.PIECE_M / 2 - 1, 32), 'after a rebuild: solid under the cell')
+T.check(tp.groundReady(32, 2032) and tp.groundReady(32 + tp.PIECE_M / 2 - 1, 2032), 'after a rebuild: solid under the cell')
 T.check(not tp.groundReady(5000, 5000), 'no cell, off the block: no ground')
 tp.update(0.01, 7, f, { x = 0, y = 0 }, block, send)
 local objs0 = S.calls.createObject_TSStatic or 0
 if pk2 then
-  tp.onPatch({ anchorId = 7, key = pk2, tris = 1024, parts = { parts[5], { path = '/temp/patch_7_6_0.cdae', x = 352, y = 32 } } })
+  tp.onPatch({ anchorId = 7, key = pk2, tris = 1024, parts = { parts[5], { path = '/temp/patch_7_6_0.cdae', x = 352, y = 2032 } } })
   for _ = 1, 3 do tp.update(0.01, 7, f, { x = 0, y = 0 }, block, send) end
   T.check((S.calls.createObject_TSStatic or 0) - objs0 == 1 and cellsNow['/temp/patch_7_5_0.cdae'].refs == 2,
     'a second patch: the shared cell reused, only the new one made')
@@ -106,5 +106,28 @@ T.check(#pieceIds == 1 and not scenetree.findObjectById(pieceIds[1]) and next(ce
 tp.update(10, 7, f, { x = 0, y = 0 }, block, send)
 tp.update(10, 8, {}, { x = 0, y = 0 }, block, send)
 T.check(next((tp.state())) == nil, 'anchor change: cleared')
+
+-- cells the block covers are not made; the block moving over a made cell deletes it, moving off makes it again
+do
+  tp.clear()
+  local sent2 = {}
+  local function send2(m) sent2[#sent2 + 1] = m end
+  local far = cf.compute({ { id = 1, x = 0, y = 0, kind = 'player' }, { id = 2, x = 3000, y = 0, kind = 'player' } }, 1, 0, 0)
+  local blk = { -512, -512, 512, 512 }
+  tp.update(10, 9, far, { x = 0, y = 0 }, blk, send2)
+  local key = sent2[1] and sent2[1].key
+  tp.onPatch({ anchorId = 9, key = key, tris = 512, parts = { { path = '/temp/p9_in.cdae', x = 64, y = 64 },
+    { path = '/temp/p9_out.cdae', x = 3000, y = 64 } } })
+  for _ = 1, 3 do tp.update(0.01, 9, far, { x = 0, y = 0 }, blk, send2) end
+  local _, cs = tp.state()
+  T.check(cs['/temp/p9_out.cdae'].id and not cs['/temp/p9_in.cdae'].id, 'a cell under the block not made, one off it made')
+  local moved = { 2500, -512, 3524, 512 }       -- the block over the far cell
+  tp.update(1.5, 9, far, { x = 3000, y = 0 }, moved, send2)
+  T.check(not cs['/temp/p9_out.cdae'].id, 'the block moved over a made cell: deleted')
+  tp.update(1.5, 9, far, { x = 0, y = 0 }, blk, send2)
+  for _ = 1, 3 do tp.update(0.01, 9, far, { x = 0, y = 0 }, blk, send2) end
+  T.check(cs['/temp/p9_out.cdae'].id ~= nil and not cs['/temp/p9_in.cdae'].id, 'the block moved off: made again')
+  tp.clear()
+end
 
 T.done('test_terrainpatch')

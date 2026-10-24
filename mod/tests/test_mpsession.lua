@@ -118,6 +118,28 @@ asked.go = nil
 handlers.bngeGoTo('t')
 T.check(asked.go == nil, 'go-to once a session')
 
+-- other players' cars off our block float (gravity off, left out of the collision foci), on it land again
+local blockBox = nil
+tp.block = function() return blockBox end
+other.pos = vec3(5000, 0, 0)
+ms.update(ms.HIDE_S, anchor, { x = 100, y = 0, z = 0 })
+T.check(not ms.isFloating(21), 'no block known: nothing floats')
+blockBox = { -512, -512, 512, 512 }
+other.cmds = {}
+ms.update(ms.HIDE_S, anchor, { x = 100, y = 0, z = 0 })
+T.check(ms.isFloating(21) and other.cmds[#other.cmds] == 'obj:setGravity(0)', 'off our block: floats, gravity off')
+other.pos = vec3(500, 0, 0)       -- (within FLOAT_IN_M of the edge: still floats)
+ms.update(ms.HIDE_S, anchor, { x = 100, y = 0, z = 0 })
+T.check(ms.isFloating(21), 'near the edge: still floating (hysteresis)')
+other.pos = vec3(0, 0, 0)
+core_environment = core_environment or {}
+local oldGetG = core_environment.getGravity
+core_environment.getGravity = function() return -9.81 end
+ms.update(ms.HIDE_S, anchor, { x = 100, y = 0, z = 0 })
+T.check(not ms.isFloating(21) and other.cmds[#other.cmds] == 'obj:setGravity(-9.81)', 'on our block: lands, gravity back')
+core_environment.getGravity = oldGetG
+blockBox = nil
+
 -- damage: due when a player comes near; after a change of DAMAGE_STEP that held DAMAGE_SETTLE_S
 T.check(ms.damageDue(true, 500, 0, 0, 0.5) == true, 'damage: a newcomer sees a damaged car: sent')
 T.check(ms.damageDue(true, 0, 0, 0, 0.5) == false, 'damage: a newcomer and an undamaged car: nothing to send')

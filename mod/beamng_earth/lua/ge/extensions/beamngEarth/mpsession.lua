@@ -35,6 +35,13 @@ M.HIDE_S = 0.5
 -- player back from a teleport across the world while this one had driven 3 km off). Its spot is a collision focus
 -- meanwhile (groundFoci), so the ground gets made; on after GROUND_WAIT_S whatever.
 M.GROUND_WAIT_S = 20
+-- Other players' cars off our terrain block float: gravity off, and no collision made round them (collisionfoci skips
+-- them: no solid roads, trees or terrain patches). Each player drives their own car; a copy off our block only has to
+-- follow it, and on terrain patches it could not keep up: in a three-player test (2026-10-24) a car driven at 104-120
+-- mph 3 miles from the others outran its patches on their screens and broke, 187-234 broken beams there against 46 on
+-- its own. Off the block when FLOAT_OUT_M from its edge or beyond, on it again FLOAT_IN_M inside (gravity back).
+M.FLOAT_OUT_M = 32
+M.FLOAT_IN_M = 96
 M.GOTO_OFFSET_M = 12        -- a joining player lands this far from the one it goes to (not on top of it)
 M.DAMAGE_STEP = 50          -- (the game's damage figure, map.objects[id].damage)
 M.DAMAGE_SETTLE_S = 2
@@ -51,6 +58,7 @@ local handlers = false
 local anchors = {}          -- tostring(server player id) -> { aLat, aLon, lat, lon } (bngeAnchors)
 local deactivated = {}      -- game vehicle id -> true: deactivated here
 local waitGround = {}       -- game vehicle id -> { x, y, since }: to come back on, waiting for its ground
+local floating = {}         -- game vehicle id -> true: floating here (off our block, gravity off)
 local poseIn, hideIn = 0, 0
 local joined = false        -- BeamMP joined and no pose sent yet: the first pose asks for the meeting place
 local wentTo = false        -- the session's one bngeGoTo done
@@ -494,6 +502,49 @@ function M.onPostJoin()
   anchors = {}
 end
 
+-- Is (x, y) m or more inside our terrain block (nil: no block known)?
+local function onBlock(x, y, m)
+  local b = require('beamngEarth/terrainpatch').block()
+  if not b then return nil end
+  return x >= b[1] + m and y >= b[2] + m and x <= b[3] - m and y <= b[4] - m
+end
+
+-- Is this other player's car floating here (collisionfoci leaves it out)?
+function M.isFloating(gid) return floating[tonumber(gid)] == true end
+
+local function gravityNow()
+  local ce = rawget(_G, 'core_environment')
+  local g = ce and ce.getGravity and ce.getGravity()
+  return tonumber(g) or -9.81
+end
+
+-- The other players' cars on (not switched off): float off our block, land on it. Gravity sent again each time to the
+-- floating ones (the real gravity, weather.lua, sets every vehicle's when it changes).
+local function updateFloating(owners)
+  for gid in pairs(owners) do
+    local veh = not deactivated[gid] and vehicle(gid)
+    if veh then
+      local p = veh:getPosition()
+      if floating[gid] then
+        if onBlock(p.x, p.y, M.FLOAT_IN_M) then
+          floating[gid] = nil
+          veh:queueLuaCommand('obj:setGravity(' .. gravityNow() .. ')')
+          log('I', 'beamngEarth', string.format('BeamMP: car %s on our block again: gravity back', tostring(gid)))
+        else
+          veh:queueLuaCommand('obj:setGravity(0)')
+        end
+      elseif onBlock(p.x, p.y, M.FLOAT_OUT_M) == false then
+        floating[gid] = true
+        veh:queueLuaCommand('obj:setGravity(0)')
+        log('I', 'beamngEarth', string.format('BeamMP: car %s off our block: floats', tostring(gid)))
+      end
+    end
+  end
+  for gid in pairs(floating) do
+    if not owners[gid] then floating[gid] = nil end       -- (gone)
+  end
+end
+
 -- Each frame (core.lua) in a BeamMP session in our level: anchor (core's st.anchor), player { x, y, z } in its frame
 -- (the car; the camera when there is none).
 function M.update(dt, anchor, player)
@@ -540,6 +591,10 @@ function M.update(dt, anchor, player)
         if o and anchor then        -- (where it stands here, as latitude / longitude: the conversion's check)
           local q = o:getPosition()
           r.lat, r.lon = anchor:enuToGeodetic(q.x, q.y, q.z)
+          -- (its height over our ground: a car that looks to float; floating: off our block on purpose)
+          r.z = q.z
+          r.gz = be and be.getSurfaceHeightBelow and be:getSurfaceHeightBelow(vec3(q.x, q.y, q.z + 2)) or nil
+          r.float = floating[gid] == true
         end
         remote[tostring(gid)] = r
       end
@@ -621,7 +676,8 @@ function M.update(dt, anchor, player)
       local x, y = mpanchor.lastPos(sids[gid])
       if not x and veh then local p = veh:getPosition(); x, y = p.x, p.y end
       local w = waitGround[gid]
-      if not x or tp.groundReady(x, y) or (w and now - w.since > M.GROUND_WAIT_S) then
+      local floats = x and onBlock(x, y, M.FLOAT_OUT_M) == false      -- (it floats there: no ground needed)
+      if not x or floats or tp.groundReady(x, y) or (w and now - w.since > M.GROUND_WAIT_S) then
         if w and x and not tp.groundReady(x, y) then
           log('W', 'beamngEarth', 'BeamMP: car ' .. tostring(gid) .. ' back on without ground under it (waited too long)')
         elseif w then
@@ -654,6 +710,7 @@ function M.update(dt, anchor, player)
       end
     end
   end
+  updateFloating(owners)
 end
 
 -- Collision foci (collisionfoci.lua) where cars switched off here are coming back on (waitGround): their ground made
@@ -708,6 +765,11 @@ function M.reset()
     local veh = vehicle(gid)
     if veh then veh:setActive(1) end
   end
+  for gid in pairs(floating) do
+    local veh = vehicle(gid)
+    if veh then veh:queueLuaCommand('obj:setGravity(' .. gravityNow() .. ')') end
+  end
+  floating = {}
   deactivated, anchors, poseIn, hideIn, joined, wentTo, camPlaced, lastPlayers = {}, {}, 0, 0, false, false, false, -1
   waitGround = {}
   members, sentDamage, damageSince, restoredAt, restores = {}, {}, {}, {}, {}

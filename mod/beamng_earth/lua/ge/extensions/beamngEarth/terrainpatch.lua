@@ -29,6 +29,13 @@ M.UPDATE_S = 1
 -- cells are made PIECES_PER_FRAME a frame: all 121 of a 704 m patch in one frame held a Windows test PC 1.0 s
 -- (2026-10-24, ~8 ms each, the shape's first load).
 M.PIECES_PER_FRAME = 2
+-- A cell the terrain block covers is not made (and goes when the block moves over it): the block is that ground
+-- already, and the cell (an 8 m grid) stood a little above it in places, an invisible bump under the player's own car
+-- and other cars standing on it above the visible ground (the user, 2026-10-24, driving back past two BeamMP players:
+-- "it looked like they were floating ... the collision terrain was a little broken"). An island 130 m or more off
+-- the block's centre already wants a patch (its 320 m box reaches past MARGIN_M), so patches overlapped the block
+-- all the time.
+M.COVER_MARGIN = 2
 
 local patches = {}      -- key -> { box, cells (paths), pending, wantedAt, retryAt }
 local cells = {}        -- path -> { path, x, y, refs, id (its TSStatic, once made) }
@@ -125,11 +132,19 @@ function M.clear()
 end
 
 -- The queued cells made, PIECES_PER_FRAME a frame; the collision rebuilt once the queue is empty.
+-- Pure: does the block box b {x0, y0, x1, y1} cover cell c's whole square (COVER_MARGIN in)?
+function M.covered(c, b)
+  if not b then return false end
+  local h, m = M.PIECE_M / 2, M.COVER_MARGIN
+  return c.x - h >= b[1] + m and c.y - h >= b[2] + m and c.x + h <= b[3] - m and c.y + h <= b[4] - m
+end
+
 local function makeQueued()
   local made = 0
   while made < M.PIECES_PER_FRAME and #queue > 0 do
     local c = table.remove(queue, 1)
-    if not c.dropped and not c.id then
+    c.queued = nil
+    if not c.dropped and not c.id and not M.covered(c, lastBlock) then
       makeCell(c)
       made = made + 1
     end
@@ -152,6 +167,21 @@ function M.update(dt, aid, foci, active, block, send)
   since = 0
   if aid ~= anchorId then M.clear(); anchorId = aid end
   if not aid then return end
+  -- the block moved: cells it now covers go, cells it left are made again
+  local gone = false
+  for _, c in pairs(cells) do
+    if M.covered(c, block) then
+      if c.id then
+        local o = scenetree.findObjectById(c.id)
+        if o then o:delete() end
+        c.id, c.reloadsAtMake, gone = nil, nil, true
+      end
+    elseif not c.id and not c.queued then
+      c.queued = true
+      queue[#queue + 1] = c
+    end
+  end
+  if gone then requestCollision() end
   local cf = require('beamngEarth/collisionfoci')
   local act = active and { x = active.x, y = active.y, r = cf.PLAYER_R, active = true } or nil
   local want = M.wanted(cf.islands(foci or {}, act), block)
@@ -193,6 +223,7 @@ function M.onPatch(msg)
       if not c then
         c = { path = part.path, x = tonumber(part.x) or 0, y = tonumber(part.y) or 0, refs = 0 }
         cells[part.path] = c
+        c.queued = true
         queue[#queue + 1] = c
       end
       c.refs = c.refs + 1
@@ -210,7 +241,8 @@ end
 function M.groundReady(x, y)
   if not M.ENABLED then return true end
   local b = lastBlock
-  if b and x >= b[1] + M.MARGIN_M and y >= b[2] + M.MARGIN_M and x <= b[3] - M.MARGIN_M and y <= b[4] - M.MARGIN_M then
+  local m = M.COVER_MARGIN
+  if b and x >= b[1] + m and y >= b[2] + m and x <= b[3] - m and y <= b[4] - m then
     return true
   end
   local h, n = M.PIECE_M / 2, reloadCount()
@@ -221,6 +253,9 @@ function M.groundReady(x, y)
   end
   return false
 end
+
+-- The terrain block's box {x0, y0, x1, y1} at the last update, or nil (mpsession: other players' cars float off it)
+function M.block() return lastBlock end
 
 -- (tests, the dev panel) key -> { box, cells, pending }; path -> cell; the queue
 function M.state() return patches, cells, queue end
