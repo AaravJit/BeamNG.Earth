@@ -298,9 +298,11 @@ class MapData:
     def _load(self, path):
         """A layer file's arrays, or None when it is missing or unreadable (truncated, a damaged
         deflate stream, another layout): a miss, rebuilt and written again."""
-        try:
+        def read():
             with np.load(path, allow_pickle=False) as z:
-                arrays = {k: z[k] for k in z.files}
+                return {k: z[k] for k in z.files}
+        try:
+            arrays = staging.read_held(read)
         except FileNotFoundError:
             return None
         except Exception as e:      # zipfile.BadZipFile, zlib.error, ValueError, EOFError, OSError...
