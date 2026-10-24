@@ -22,7 +22,15 @@ local G = {}
 -- others connect to it: over the internet, each player forwards this port to their computer; on one network nothing
 -- is needed). Sent to each player when they join. A player whose port is taken uses the next free one (up to 9 more).
 G.SHARE_PORT = 47621
+-- The BeamNG.Earth server list: players with BeamNG.Earth find this server in the "BeamNG.Earth" tab of BeamMP's
+-- server browser. Set Private = true in ServerConfig.toml as well, so BeamMP's own public list (which every BeamMP
+-- player sees, with or without BeamNG.Earth) leaves it out. false: on neither list (friends join by address).
+G.LISTED = true
 -- ===================================================================================================================
+
+G.LIST_URL = 'http://10.0.0.5:47640/announce'   -- (the list service, native/serverlist; its public address for releases)
+G.ANNOUNCE_MS = 60000       -- (the list drops a server 3 minutes after its last announce)
+G.ANNOUNCE_FILE = 'bnge_announce.json'
 
 G.PROTO = 2                 -- (2: anchors for the clients' conversion; 1 grouped players by anchor)
 G.MEET_M = 3000             -- a joining player farther than this from the others is sent to them
@@ -151,6 +159,45 @@ function G.config()
   return { sharePort = (port and port >= 1024 and port <= 65535) and port or nil }
 end
 
+-- Pure: the server's name, port and player cap from ServerConfig.toml's text.
+function G.readConfig(text)
+  local cfg = {}
+  for line in tostring(text or ''):gmatch('[^\r\n]+') do
+    local k, v = line:match('^%s*(%w+)%s*=%s*(.-)%s*$')
+    if k then
+      local str = v:match('^"(.-)"')        -- (a string first: a # inside it is not a comment)
+      v = v:gsub('%s*#.*$', '')
+      if k == 'Name' and str then cfg.name = str
+      elseif k == 'Port' then cfg.port = tonumber(v)
+      elseif k == 'MaxPlayers' then cfg.maxPlayers = tonumber(v)
+      elseif k == 'Private' then cfg.private = v == 'true' end
+    end
+  end
+  return cfg
+end
+
+-- Pure: what the list shows of this server: { port, name, players, maxPlayers, place } (place: where the players are,
+-- to a tenth of a degree, from the longest-joined player; nil when no one is on).
+function G.announcement(cfg, players)
+  local first = nil
+  for _, p in pairs(players) do
+    if not first or (p.joinedAt or 0) < (first.joinedAt or 0) then first = p end
+  end
+  local n = 0
+  for _ in pairs(players) do n = n + 1 end
+  return { port = cfg.port, name = cfg.name, players = n, maxPlayers = cfg.maxPlayers,
+    place = first and string.format('%.1f, %.1f', first.lat, first.lon) or nil }
+end
+
+-- Pure: the shell command that posts the announcement file to the list in the background (curl ships with Linux and
+-- with Windows 10 and later; BeamMP's server Lua has no HTTP of its own). The body goes in a file: a server name is
+-- never put on a command line.
+function G.announceCmd(url, file, windows)
+  local curl = string.format('curl -s -m 10 -H "Content-Type: application/json" --data-binary @%s "%s"', file, url)
+  if windows then return 'start "" /b ' .. curl .. ' >NUL 2>&1' end
+  return curl .. ' >/dev/null 2>&1 &'
+end
+
 -- ---------------------------------------------------------------------------------------------------------------
 -- BeamMP wiring (absent in the offline tests)
 if MP and MP.RegisterEvent then
@@ -195,6 +242,28 @@ if MP and MP.RegisterEvent then
     end
   end
 
+  -- this server on the BeamNG.Earth list (G.LISTED), every ANNOUNCE_MS and at start
+  function BNGE_announce()
+    if not G.LISTED then return end
+    local f = io.open('ServerConfig.toml', 'r')
+    local cfg = G.readConfig(f and f:read('*a') or '')
+    if f then f:close() end
+    if not cfg.port then return end
+    local out = io.open(G.ANNOUNCE_FILE, 'w')
+    if not out then return end
+    out:write(encode(G.announcement(cfg, G.live())))
+    out:close()
+    os.execute(G.announceCmd(G.LIST_URL, G.ANNOUNCE_FILE, package.config:sub(1, 1) == '\\'))
+    if not G.announced then
+      G.announced = true
+      print(string.format('[BeamNG.Earth] on the BeamNG.Earth server list as "%s"%s', tostring(cfg.name),
+        cfg.private and '' or ' (also on BeamMP\'s public list: set Private = true in ServerConfig.toml to leave it)'))
+    end
+  end
+
+  MP.RegisterEvent('BNGE_announce', 'BNGE_announce')
+  MP.CreateEventTimer('BNGE_announce', G.ANNOUNCE_MS)
+  pcall(BNGE_announce)
   MP.RegisterEvent('bngePose', 'BNGE_onPose')
   MP.RegisterEvent('onPlayerDisconnect', 'BNGE_onLeave')
   MP.RegisterEvent('BNGE_tick', 'BNGE_tick')
