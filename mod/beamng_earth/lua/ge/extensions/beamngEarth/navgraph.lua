@@ -26,9 +26,6 @@ M.enabled = true
 -- place's graph is in.
 M.GUARD_M = 40
 M.GUARD_S = 0.5
--- The server rebuilds after 400 m from a graph centre. Allow that movement plus the
--- terrain block's grid-centre offset; a graph farther away after teleport is an old in-flight result.
-M.TELEPORT_GRAPH_MAX_OFFSET_M = 600
 -- A car standing still this long (longer than a signal cycle), this far from the player, is respawned too: stock
 -- traffic respawns only cars far away and out of sight, so one wedged on a corner the map's road cuts through a
 -- building, or queued behind the player's parked car in a one-lane street, stood for good (Frederick, Fells Point
@@ -145,8 +142,7 @@ function M.onMessage(msg, currentAnchor)
   if not M.enabled or msg.anchorId ~= currentAnchor then return false end
   local ok, g = pcall(jsonDecode, readFile(msg.path) or '')
   if not ok or type(g) ~= 'table' or type(g.nodes) ~= 'table' or type(g.edges) ~= 'table' then return false end
-  graph = { anchor = msg.anchorId, serial = msg.serial, cx = tonumber(msg.cx), cy = tonumber(msg.cy),
-            nodes = g.nodes, edges = g.edges,
+  graph = { anchor = msg.anchorId, serial = msg.serial, nodes = g.nodes, edges = g.edges,
             signals = type(g.signals) == 'table' and g.signals or {}, rules = type(g.rules) == 'table' and g.rules or nil }
   dirty = true
   return true
@@ -467,34 +463,14 @@ end
 -- The player teleported: the traffic cars go inactive (no physics: their old positions have no ground) and come
 -- back on the new place's graph once it is in.
 local heldActive = nil
-local teleportPending = false
 function M.onTeleport()
-  teleportPending = true
   respawnAll = true
-  -- Invalidate the old graph even when a teleport keeps the same anchorId. The server builds
-  -- graphs asynchronously, so an old graph could otherwise drive the respawn guard during the
-  -- transition or arrive after teleport while still carrying the same anchorId.
-  graph, applied, dirty, foreign = nil, nil, false, false
-  pendingSignals = nil
-  lastApply, lastGuard = -math.huge, -math.huge
-  stillSince, seenAt, cuts = {}, {}, {}
   local gt = gameplay_traffic
   if gt and gt.getState() == 'on' and not heldActive then
     local vars = gt.getTrafficVars and gt.getTrafficVars() or {}
     heldActive = vars.activeAmount or math.huge
     pcall(gt.setActiveAmount, 0)
   end
-end
-
--- Called by core.lua only after the destination terrain and anchor have committed. Messages received while
--- teleportPending are intentionally not acted on; discard them so an old in-flight build cannot revive traffic.
-function M.onTeleportCommitted(aid)
-  if not teleportPending then return end
-  teleportPending = false
-  graph, applied, dirty, foreign = nil, nil, false, false
-  pendingSignals = nil
-  stillSince, seenAt, cuts = {}, {}, {}
-  lastApply, lastGuard = -math.huge, -math.huge
 end
 
 -- Every frame: a new graph, a moved block or a foreign reset applies the graph again; the traffic guard.
@@ -507,32 +483,16 @@ function M.boxMoved(a, b)
 end
 
 function M.update(aid, b)
-  if not M.enabled or not graph or teleportPending then return end
-  -- A teleport/rebase changes the coordinate frame before the replacement graph arrives.
-  -- Never run the old graph's guard against the new frame: it can forceTeleport traffic using stale nodes.
-  if graph.anchor ~= aid then
-    graph, applied = nil, nil
-    pendingSignals = nil
-    stillSince, seenAt, cuts = {}, {}, {}
-    return
-  end
-  -- Same-anchor teleports can still receive an older asynchronous graph after onTeleport.
-  -- Do not use it until its centre is near the new terrain block.
-  if respawnAll and b and b[4] and graph.cx and graph.cy then
-    local bx, by = (b[1] + b[3]) / 2, (b[2] + b[4]) / 2
-    if math.max(math.abs(graph.cx - bx), math.abs(graph.cy - by)) > M.TELEPORT_GRAPH_MAX_OFFSET_M then
-      graph, applied = nil, nil
-      pendingSignals = nil
-      dirty, foreign = false, false
-      stillSince, seenAt, cuts = {}, {}, {}
-      return
-    end
-  end
+  if not M.enabled or not graph then return end
   local t0 = os.clock()
   if applied and t0 - lastGuard >= M.GUARD_S then
     lastGuard = t0
     local ok, err = pcall(guard, b, false)
     if not ok then log('W', 'beamngEarth', 'navgraph guard: ' .. tostring(err)) end
+  end
+  if graph.anchor ~= aid then
+    graph = nil
+    return
   end
   if pendingSignals then
     local nodes = pendingSignals
@@ -586,7 +546,6 @@ function M.reset()
   heads = {}            -- (the level took them with it)
   graph, applied, dirty, lastApply, persistent, ours, foreign = nil, nil, false, -math.huge, nil, false, false
   started, respawnAll, lastGuard, heldActive = false, false, -math.huge, nil
-  teleportPending = false
   pendingSignals = nil
   stillSince = {}
   seenAt = {}
