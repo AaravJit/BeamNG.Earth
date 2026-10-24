@@ -50,13 +50,13 @@ class Download(unittest.TestCase):
         blob = b"MZ fake launcher"
         with tempfile.TemporaryDirectory() as d, \
                 mock.patch.object(bmplaunch, "_get", self.fake_get(blob, hashlib.sha256(blob).hexdigest())):
-            p = bmplaunch.download(d, "BeamNG.Earth/test", say=lambda m: None, win=True)
+            p = bmplaunch.download(d, "BeamNG.Earth/test", say=lambda m: None)
             self.assertEqual(p, os.path.join(d, "beammp", bmplaunch.EXE))
             self.assertEqual(Path(p).read_bytes(), blob)
 
     def test_checksum_mismatch_keeps_nothing(self):
         with tempfile.TemporaryDirectory() as d, mock.patch.object(bmplaunch, "_get", self.fake_get(b"x", "0" * 64)):
-            self.assertIsNone(bmplaunch.download(d, "BeamNG.Earth/test", say=lambda m: None, win=True))
+            self.assertIsNone(bmplaunch.download(d, "BeamNG.Earth/test", say=lambda m: None))
             self.assertFalse(os.path.exists(os.path.join(d, "beammp", bmplaunch.EXE)))
 
     def test_no_network(self):
@@ -67,30 +67,71 @@ class Download(unittest.TestCase):
 
 
 class LinuxBuild(unittest.TestCase):
-    """Linux: BeamMP's master build, attached to BeamNG.Earth's latest release (BeamMP-Launcher-linux + .sha256)."""
-    def test_from_our_release(self):
-        blob = b"\x7fELF fake launcher"
-        ours = {"tag_name": "v1.6.2", "assets": [
-            {"name": "BeamMP-Launcher-linux", "browser_download_url": "https://x/BeamMP-Launcher-linux"},
-            {"name": "BeamMP-Launcher-linux.sha256", "browser_download_url": "https://x/BeamMP-Launcher-linux.sha256"}]}
+    """Linux: BeamMP's launcher built here from its source, at its newest passing master commit, in a container."""
+    SHA = "8a7d63e175911ed00c7d46a6101c24f9b68f2b55"
 
+    def tgz(self):
+        import io
+        import tarfile
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            data = b"cmake_minimum_required(VERSION 3.10)"
+            info = tarfile.TarInfo(f"BeamMP-Launcher-{self.SHA}/CMakeLists.txt")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+        return buf.getvalue()
+
+    def fake_get(self, urls):
         def get(url, ua, timeout=60):
-            if url == bmplaunch.OUR_RELEASES:
-                return json.dumps(ours).encode()
-            if url.endswith(".sha256"):
-                return (hashlib.sha256(blob).hexdigest() + "  BeamMP-Launcher-linux").encode()
-            if url == bmplaunch.RELEASES:
-                raise AssertionError("not BeamMP's own release on Linux")
-            return blob
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(bmplaunch, "_get", get):
-            p = bmplaunch.download(d, "BeamNG.Earth/test", say=lambda m: None, win=False)
-            self.assertEqual(Path(p).read_bytes(), blob)
-            self.assertTrue(os.access(p, os.X_OK), "executable")
+            urls.append(url)
+            self.assertNotIn("@", ua)
+            if url == bmplaunch.PASSING_RUNS:
+                return json.dumps({"workflow_runs": [{"head_sha": self.SHA}]}).encode()
+            if url == bmplaunch.SOURCE_TGZ.format(sha=self.SHA):
+                return self.tgz()
+            raise AssertionError(url)
+        return get
 
-    def test_none_published_yet(self):
-        with tempfile.TemporaryDirectory() as d, \
-                mock.patch.object(bmplaunch, "_get", lambda url, ua, timeout=60: json.dumps({"assets": []}).encode()):
-            self.assertIsNone(bmplaunch.download(d, "BeamNG.Earth/test", say=lambda m: None, win=False))
+    def test_built_from_the_passing_commit(self):
+        urls, cmds = [], []
+
+        def run(cmd, **kw):
+            cmds.append(cmd)
+            out = [v.split(":")[0] for v in cmd if v.endswith(":/out:Z")][0]
+            src = [v.split(":")[0] for v in cmd if v.endswith(":/src:ro,Z")][0]
+            self.assertTrue(os.path.isfile(os.path.join(src, "CMakeLists.txt")), "BeamMP's source in the container")
+            Path(out, "BeamMP-Launcher").write_bytes(b"\x7fELF built")
+
+            class R:
+                returncode, stdout, stderr = 0, "", ""
+            return R()
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(bmplaunch, "_get", self.fake_get(urls)):
+            p = bmplaunch.build_linux(d, "BeamNG.Earth/test", say=lambda m: None, run=run, tool="/usr/bin/podman")
+            self.assertEqual(Path(p).read_bytes(), b"\x7fELF built")
+            self.assertTrue(os.access(p, os.X_OK))
+            self.assertEqual(cmds[0][:3], ["/usr/bin/podman", "run", "--rm"])
+            self.assertIn(bmplaunch.BUILD_IMAGE, cmds[0])
+            self.assertEqual(urls[0], bmplaunch.PASSING_RUNS, "the commit from BeamMP's passing master builds")
+            self.assertEqual(bmplaunch._settings(d).get("builtFrom"), self.SHA)
+            self.assertFalse(bmplaunch.rebuild_due(d))
+
+    def test_failed_build_keeps_nothing_new(self):
+        def run(cmd, **kw):
+            class R:
+                returncode, stdout, stderr = 2, "", "gmake: *** Error 1"
+            return R()
+        said = []
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(bmplaunch, "_get", self.fake_get([])):
+            self.assertIsNone(bmplaunch.build_linux(d, "BeamNG.Earth/test", say=said.append, run=run, tool="podman"))
+            self.assertFalse(os.path.exists(os.path.join(d, "beammp", bmplaunch.EXE)))
+            self.assertIn("Error 1", said[-1])
+
+    def test_no_container_tool(self):
+        said = []
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(bmplaunch, "container_tool", lambda: None):
+                self.assertIsNone(bmplaunch.build_linux(d, "BeamNG.Earth/test", say=said.append))
+        self.assertIn("podman or docker", said[0])
 
     def test_system_too_old(self):
         class R:

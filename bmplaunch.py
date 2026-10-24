@@ -3,10 +3,12 @@ launcher", the official BeamMP, unmodified). The official BeamMP launcher is fou
 BeamMP's GitHub releases and checked against the .sha256 published with it, then started with --no-launch before the
 game: it installs or updates BeamMP's mod in the game's mods/multiplayer and waits for the game, which connects to it
 by itself (port 4444). It is stopped when the game closes. BeamMP's code (AGPL-3.0) runs as BeamMP ships it; nothing of
-it is changed or kept in this project. Linux: BeamMP publishes no Linux release, but builds one on every change to its
-master branch (GitHub Actions, cmake-linux.yml); BeamNG.Earth's release workflow attaches the newest successful one to
-each BeamNG.Earth release (BeamMP-Launcher-linux, its .sha256, and BeamMP's source commit), and it comes from there.
-One built from source is used when found (BEAMMP_LAUNCHER, ~/BeamMP-Launcher, a BeamMP-Launcher on the PATH).
+it is changed or kept in this project. Linux: BeamMP publishes no Linux release, and BeamNG.Earth doesn't hand out
+BeamMP's program (the user, 2026-10-24: "i dont want to redsribute their launcher. just have our launcher build it
+itelf"): it is built on the player's computer from BeamMP's source (build_linux), at the newest commit of BeamMP's
+master branch whose own Linux build passed ("only use working builds from main"), inside an Ubuntu 24.04 container
+(podman or docker: no compiler needed; SteamOS ships podman). One built by the player is used when found
+(BEAMMP_LAUNCHER, ~/BeamMP-Launcher, a BeamMP-Launcher on the PATH).
 Whether BeamMP starts with BeamNG.Earth is the mod's setting beammpOnLaunch (the settings page; on_launch below).
 """
 import hashlib
@@ -23,8 +25,21 @@ IS_WIN = os.name == "nt"
 CORE_PORT = 4444                # the BeamMP launcher's port for the game (its Launcher.cfg default)
 READY_S = 120                   # its mod update (a few MB) and start, at most this long
 RELEASES = "https://api.github.com/repos/BeamMP/BeamMP-Launcher/releases/latest"
-OUR_RELEASES = "https://api.github.com/repos/TecnaGamer/BeamNG.Earth/releases/latest"   # (Linux: BeamMP's build)
-LINUX_ASSET = "BeamMP-Launcher-linux"
+# Linux: BeamMP's newest master commit whose Linux build passed (its GitHub Actions, readable without an account)
+PASSING_RUNS = ("https://api.github.com/repos/BeamMP/BeamMP-Launcher/actions/workflows/cmake-linux.yml/runs"
+                "?branch=master&event=push&status=success&per_page=1")
+SOURCE_TGZ = "https://github.com/BeamMP/BeamMP-Launcher/archive/{sha}.tar.gz"
+BUILD_IMAGE = "docker.io/library/ubuntu:24.04"
+HTTPLIB_H = "https://raw.githubusercontent.com/yhirose/cpp-httplib/v0.14.3/httplib.h"   # (as BeamMP's vcpkg one)
+# In the container: Ubuntu's build tools and libraries, httplib as its single header (Ubuntu's is a separate shared
+# library a player's system wouldn't have; BeamMP's CMakeLists only needs it found), BeamMP's own CMake build.
+BUILD_SCRIPT = (
+    "set -e; apt-get update -qq; DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "
+    "g++ make cmake curl ca-certificates libcurl4-openssl-dev libssl-dev zlib1g-dev nlohmann-json3-dev >/dev/null; "
+    "mkdir -p /tmp/hl/inc; curl -sSfL " + HTTPLIB_H + " -o /tmp/hl/inc/httplib.h; "
+    "echo 'add_library(httplib::httplib INTERFACE IMPORTED)' > /tmp/hl/httplib-config.cmake; "
+    "cmake -S /src -B /tmp/b -DCMAKE_BUILD_TYPE=Release -Dhttplib_DIR=/tmp/hl -DCMAKE_CXX_FLAGS=-I/tmp/hl/inc >/dev/null; "
+    "cmake --build /tmp/b -j\"$(nproc)\" >/dev/null; cp /tmp/b/BeamMP-Launcher /out/BeamMP-Launcher")
 EXE = "BeamMP-Launcher.exe" if IS_WIN else "BeamMP-Launcher"
 SETTINGS = "beammp.json"        # in the app's data folder: {"declined": true} once the player said no
 
@@ -44,6 +59,12 @@ def save_settings(data_dir, **kw):
     os.makedirs(data_dir, exist_ok=True)
     with open(os.path.join(data_dir, SETTINGS), "w", encoding="utf-8") as f:
         json.dump(d, f)
+
+
+def rebuild_due(data_dir):
+    """Linux: the launcher built here was too old for BeamMP's current mod ("Invalid lua communication"): build it again
+    at the next start."""
+    return bool(_settings(data_dir).get("rebuild"))
 
 
 def declined(data_dir):
@@ -184,16 +205,14 @@ def parse_sha256(text):
     return None
 
 
-def download(data_dir, user_agent, say=print, win=None):
-    """The BeamMP launcher into <data>/beammp, checked against its published SHA-256: on Windows BeamMP's latest
-    release, on Linux BeamMP's master build attached to BeamNG.Earth's latest release. Returns its path, or None (no
-    network, none published yet, a bad checksum: nothing is kept)."""
-    win = IS_WIN if win is None else win
+def download(data_dir, user_agent, say=print):
+    """Windows: the latest official BeamMP launcher into <data>/beammp, checked against its published SHA-256.
+    Returns its path, or None (no network, a bad checksum: nothing is kept)."""
     try:
-        release = json.loads(_get(RELEASES if win else OUR_RELEASES, user_agent, 30).decode("utf-8"))
-        picked = pick_assets(release, "BeamMP-Launcher.exe" if win else LINUX_ASSET)
+        release = json.loads(_get(RELEASES, user_agent, 30).decode("utf-8"))
+        picked = pick_assets(release)
         if not picked:
-            say("BeamMP: no launcher download in " + ("its" if win else "BeamNG.Earth's") + " latest release")
+            say("BeamMP: no launcher download in its latest release")
             return None
         exe_url, sha_url, version = picked
         want = parse_sha256(_get(sha_url, user_agent, 30).decode("utf-8", "replace"))
@@ -212,8 +231,6 @@ def download(data_dir, user_agent, say=print, win=None):
     with open(tmp, "wb") as f:
         f.write(blob)
     os.replace(tmp, dest)
-    if not win:
-        os.chmod(dest, 0o755)
     say(f"BeamMP: launcher {version} installed ({max(1, len(blob) // 1048576)} MB, checksum verified)")
     return dest
 
@@ -225,6 +242,78 @@ def game_user_path(user_dir):
     if base == "current" or base[:1].isdigit():
         return os.path.dirname(d)
     return d
+
+
+def container_tool(which=None):
+    """podman, else docker (a path), or None: what build_linux builds in."""
+    which = which or shutil.which
+    return which("podman") or which("docker")
+
+
+def passing_commit(user_agent):
+    """The newest commit of BeamMP's launcher on master whose Linux build passed (its GitHub Actions)."""
+    runs = json.loads(_get(PASSING_RUNS, user_agent, 30).decode("utf-8")).get("workflow_runs") or []
+    sha = runs[0].get("head_sha") if runs else None
+    return sha if isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha) else None
+
+
+def build_linux(data_dir, user_agent, say=print, run=None, tool=None):
+    """Linux: BeamMP's launcher built here from its source (see the top). Returns its path, or None (no container
+    tool, no network, a failed build: what is there is kept). Takes a few minutes the first time (the container image
+    and Ubuntu's packages), about a minute after."""
+    import tarfile
+    import tempfile
+    run = run or subprocess.run
+    tool = tool or container_tool()
+    if not tool:
+        say("BeamMP: building its launcher needs podman or docker (SteamOS has podman; on other systems install one, "
+            "or build it yourself: github.com/BeamMP/BeamMP-Launcher)")
+        return None
+    try:
+        sha = passing_commit(user_agent)
+        if not sha:
+            say("BeamMP: no passing build of its launcher found on GitHub")
+            return None
+        say(f"BeamMP: building its launcher from its source (commit {sha[:8]}): a few minutes the first time ...")
+        blob = _get(SOURCE_TGZ.format(sha=sha), user_agent, 300)
+    except Exception as e:                  # (no network, GitHub's rate limit...)
+        say(f"BeamMP: the source download failed ({e})")
+        return None
+    dest_dir = os.path.join(data_dir, "beammp")
+    os.makedirs(dest_dir, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=dest_dir) as work:
+        src = os.path.join(work, "src")
+        out = os.path.join(work, "out")
+        os.makedirs(out)
+        with tarfile.open(fileobj=__import__("io").BytesIO(blob), mode="r:gz") as tf:
+            try:
+                tf.extractall(work, filter="data")      # (no paths out of the folder)
+            except TypeError:                           # (a Python without extraction filters)
+                tf.extractall(work)
+        top = [d for d in os.listdir(work) if d.startswith("BeamMP-Launcher-")]
+        if not top:
+            say("BeamMP: the source archive is not what was expected")
+            return None
+        os.rename(os.path.join(work, top[0]), src)
+        cmd = [tool, "run", "--rm", "-v", f"{src}:/src:ro,Z", "-v", f"{out}:/out:Z", BUILD_IMAGE, "bash", "-c",
+               BUILD_SCRIPT]
+        try:
+            r = run(cmd, capture_output=True, text=True, timeout=1800)
+        except (OSError, subprocess.SubprocessError) as e:
+            say(f"BeamMP: the build did not run ({e})")
+            return None
+        built = os.path.join(out, "BeamMP-Launcher")
+        if r.returncode != 0 or not os.path.isfile(built):
+            tail = " ".join(((r.stderr or "") + (r.stdout or "")).strip().splitlines()[-3:])
+            say(f"BeamMP: the build failed ({tail[-300:]})")
+            return None
+        dest = os.path.join(dest_dir, EXE)
+        shutil.copyfile(built, dest + ".part")
+        os.chmod(dest + ".part", 0o755)
+        os.replace(dest + ".part", dest)
+    save_settings(data_dir, builtFrom=sha, rebuild=False)
+    say(f"BeamMP: launcher built from BeamMP's source, commit {sha[:8]}")
+    return dest
 
 
 def system_too_old(exe, run=None):

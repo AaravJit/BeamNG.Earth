@@ -903,9 +903,10 @@ def beammp_install(user_dir, dd, ask=None):
     import bmplaunch
     ask = ask or input
     say("BeamMP (multiplayer: play on BeamNG.Earth servers with other players) is not installed.")
+    question = ("  Install the official BeamMP launcher now (a few MB from GitHub)?" if IS_WIN else
+                "  Build BeamMP's launcher from its source now (a few minutes, once)?")
     try:
-        answer = ask("  Install the official BeamMP launcher now (a few MB from GitHub)? [Y]es / [N]o / [D]on't ask "
-                     "again: ")
+        answer = ask(question + " [Y]es / [N]o / [D]on't ask again: ")
     except (EOFError, OSError):
         return None                         # (no console to ask in: asked next time)
     answer = (answer or "").strip().lower()
@@ -918,8 +919,11 @@ def beammp_install(user_dir, dd, ask=None):
         say("  Not installed this time.")
         return None
     import install
-    exe = bmplaunch.download(dd, f"BeamNG.Earth/{install.version()}", say=lambda m: say("  " + m))
-    if exe and IS_WIN:          # (BeamMP's own installer sets the firewall up; started from here Windows asks once)
+    ua = f"BeamNG.Earth/{install.version()}"
+    if not IS_WIN:
+        return bmplaunch.build_linux(dd, ua, say=lambda m: say("  " + m))
+    exe = bmplaunch.download(dd, ua, say=lambda m: say("  " + m))
+    if exe:          # (BeamMP's own installer sets the firewall up; started from here Windows asks once)
         say("  Windows Firewall may ask whether the BeamMP launcher may use the network: allow it, or multiplayer "
             "cannot connect.")
     return exe
@@ -942,6 +946,9 @@ def beammp_up(user_dir, build, args):
         row("Multiplayer", "BeamMP not started (turned off: BeamNG.Earth settings, \"Start BeamMP with BeamNG.Earth\")")
         return None
     exe = bmplaunch.find(dd)
+    if exe and not IS_WIN and bmplaunch.rebuild_due(dd) and exe == os.path.join(dd, "beammp", bmplaunch.EXE):
+        import install          # (the one built here was too old for BeamMP's mod: built again from BeamMP's source)
+        exe = bmplaunch.build_linux(dd, f"BeamNG.Earth/{install.version()}", say=lambda m: say("  " + m)) or exe
     if not exe:
         exe = beammp_install(user_dir, dd)
     if exe and not IS_WIN:
@@ -969,6 +976,11 @@ def beammp_up(user_dir, build, args):
             if proc.poll() is not None:
                 return
             if bmplaunch.log_too_old(bmplaunch.read_log(log_path)):
+                if not IS_WIN and exe == os.path.join(dd, "beammp", bmplaunch.EXE):
+                    bmplaunch.save_settings(dd, rebuild=True)
+                    problem("BeamMP's launcher built here is older than BeamMP's mod (\"Invalid lua communication\").",
+                            "It is built again from BeamMP's newest source at the next start of BeamNG.Earth.")
+                    return
                 problem(f"BeamMP's launcher{' v' + version if version else ''} ({exe}) cannot talk to BeamMP's mod in "
                         "the game (\"Invalid lua communication\" in its log): it is older than the mod it downloaded.",
                         "Update BeamMP's launcher (on Linux: build the latest from github.com/BeamMP/BeamMP-Launcher)."
