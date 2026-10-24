@@ -1193,15 +1193,14 @@ class Server:
                                for _fid, spec, xy, z, _lon in anchor.bridges.parts(
                                    cells, (box[0]-10, box[1]-10, box[2]+10, box[3]+10))]
             guardrail_rows = guardrailsmod.forest_rows(anchor.frame, infra_fn, box, elev,
-                                                       decks=guardrail_decks, parapets=parapets)
+                                                       decks=guardrail_decks, parapets=parapets,
+                                                       bridge_rails=roadmeshmod.BRIDGE_RAILS)
         except Exception as ex:
             log.warning("mapped guardrails: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
-            guardrail_rows = []
-        if roadmeshmod.BRIDGE_RAILS:     # the bridge's own rails, from its deck edges
             try:
-                guardrail_rows = guardrail_rows + guardrailsmod.bridge_rows(parapets)
-            except Exception as ex:
-                log.warning("bridge guardrails: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
+                guardrail_rows = guardrailsmod.bridge_rows(parapets) if roadmeshmod.BRIDGE_RAILS else []
+            except Exception:
+                guardrail_rows = []
         mesh = roadmeshmod.build(anchor.frame, chunks, elev, (x0, y0, 0.0),
                                  DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0,
                                  clip=box, follow=True, q=self.anchor_q(anchor), drawn=drawn)

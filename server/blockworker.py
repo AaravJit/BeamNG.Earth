@@ -404,15 +404,14 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
                            for _fid, spec, xy, z, _lon in bridges.parts(
                                cells, (box[0]-10, box[1]-10, box[2]+10, box[3]+10))]
         guardrail_rows = guardrailsmod.forest_rows(frame, infra_fn, box, elev,
-                                                   decks=guardrail_decks, parapets=parapets)
+                                                   decks=guardrail_decks, parapets=parapets,
+                                                       bridge_rails=roadmeshmod.BRIDGE_RAILS)
     except Exception as ex:
         log.warning("mapped guardrails: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
-        guardrail_rows = []
-    if roadmeshmod.BRIDGE_RAILS:     # the bridge's own rails, from its deck edges
         try:
-            guardrail_rows = guardrail_rows + guardrailsmod.bridge_rows(parapets)
-        except Exception as ex:
-            log.warning("bridge guardrails: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
+            guardrail_rows = guardrailsmod.bridge_rows(parapets) if roadmeshmod.BRIDGE_RAILS else []
+        except Exception:
+            guardrail_rows = []
     mesh = roadmeshmod.build(frame, chunks, elev, (x0, y0, 0.0), lift, clip=box, follow=True, q=q, drawn=drawn)
     mesh = _with_plazas(mesh, frame, tx, ty, elev, (x0, y0, 0.0), getattr(_s, "surface", None))
     dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0), bridges.piers_in(roadsmod.tile_bbox(tx, ty)), ctx,
