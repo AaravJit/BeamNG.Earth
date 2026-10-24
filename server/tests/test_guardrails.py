@@ -167,11 +167,13 @@ class GuardrailForestTest(unittest.TestCase):
 
     BOX = (0.0, -20.0, 200.0, 20.0)
 
-    def rows_for(self, xy, ground, decks, parapets=(), tags=None, bridge_rails=False):
+    def rows_for(self, xy, ground, decks, parapets=(), tags=None, bridge_rails=False,
+                 supported_decks_out=None):
         f = self.features("guard_rail", tags=tags, xy=xy)
         return guardrails.forest_rows(self.frame, lambda _k: f, self.BOX,
                                       lambda lat, lon: np.full(np.shape(lat), float(ground), np.float64),
-                                      decks=decks, parapets=parapets, bridge_rails=bridge_rails)
+                                      decks=decks, parapets=parapets, bridge_rails=bridge_rails,
+                                      supported_decks_out=supported_decks_out)
 
     def test_mapped_rails_on_the_deck_edge_are_dropped(self):
         decks, parapets = self.deck_fixture()
@@ -315,8 +317,10 @@ class GuardrailForestTest(unittest.TestCase):
 
     def test_mapped_edge_rail_enables_both_edges_for_its_deck(self):
         decks, parapets = self.deck_fixture()
+        supported = set()
         rows = self.rows_for([[10.0, 4.5], [90.0, 4.5]], 20.0, decks, parapets,
-                             bridge_rails=True)
+                             bridge_rails=True, supported_decks_out=supported)
+        self.assertEqual(supported, {0})
         self.assertTrue(rows, "a mapped edge guardrail supports generation for its bridge deck")
         expected_y = 4.0 + roadmesh.PARAPET_W / 2.0
         ys = {round(row[2], 2) for row in rows}
@@ -328,12 +332,30 @@ class GuardrailForestTest(unittest.TestCase):
 
     def test_rails_elsewhere_near_a_bridge_do_not_trigger_bridge_generation(self):
         decks, parapets = self.deck_fixture()
+        supported = set()
         rows = self.rows_for([[10.0, 15.0], [90.0, 15.0]], 12.0, decks, parapets,
-                             bridge_rails=True)
+                             bridge_rails=True, supported_decks_out=supported)
+        self.assertEqual(supported, set())
         self.assertTrue(rows, "the mapped roadside rail should still be kept")
         self.assertTrue(all(abs(abs(row[2]) - (4.0 + roadmesh.PARAPET_W / 2.0)) > 0.5
                             for row in rows),
                         "a distant rail must not cause either bridge edge to be generated")
+
+    def test_only_the_deck_with_mapped_edge_evidence_is_reported(self):
+        chunks = [
+            {"m": "road_asphalt_2lane", "w": 8.0, "tl": 11.0, "p": 20,
+             "deck": True, "fixed": True, "fid": "lower",
+             "n": [[0.0, -10.0, 20.0], [100.0, -10.0, 20.0]]},
+            {"m": "road_asphalt_2lane", "w": 8.0, "tl": 11.0, "p": 30,
+             "deck": True, "fixed": True, "fid": "upper",
+             "n": [[0.0, 10.0, 30.0], [100.0, 10.0, 30.0]]},
+        ]
+        decks = [{"n": chunk["n"], "w": chunk["w"]} for chunk in chunks]
+        parapets = roadmesh.parapet_runs(chunks)
+        supported = set()
+        self.rows_for([[10.0, -5.5], [90.0, -5.5]], 20.0, decks, parapets,
+                      bridge_rails=True, supported_decks_out=supported)
+        self.assertEqual(supported, {0})
 
     def test_edge_offset_matches_the_parapet_strip_centre(self):
         self.assertAlmostEqual(guardrails.BRIDGE_EDGE_OFFSET_M, roadmesh.PARAPET_W / 2)

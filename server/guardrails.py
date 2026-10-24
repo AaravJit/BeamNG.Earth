@@ -582,8 +582,11 @@ def _self_doubles(rows, dist=0.9, dot=0.8, dz=1.5):
 
 
 
-def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=(), bridge_rails=False):
+def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=(), bridge_rails=False,
+                supported_decks_out=None):
     """Return Forest-item rows for the stock Italy guardrail model.
+    if supported_decks_out is not None:
+        supported_decks_out.clear()
 
     Row layout matches trees.lua:
       [group, x, y, z, yaw, unused, height, rank, forwardXYZ, backXYZ, upXYZ]
@@ -596,6 +599,7 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=(), bridge_rail
     aligned with the bridge deck stay at deck height. Explicit lower-level/tunnel tags keep underpass rails at
     ground level, and perpendicular crossings are not treated as bridge rails. Rails hanging far under a deck
     are dropped, and aligned approach rails join the bridge over JOIN_LENGTH_M.
+    When supplied, supported_decks_out receives the indices of decks supported by mapped rails.
     """
     # Bridge rails must be supported by mapped guardrail evidence on the corresponding deck edge;
     # never infer that every bridge needs railings just because a bridge mesh exists.
@@ -747,6 +751,7 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=(), bridge_rail
 
     # Build rails only for parapet runs supported by at least two mapped modules (about 5.8 m
     # of mapped guardrail). This filters out incidental crossings and bridges with no mapped rail data.
+    supported_decks = set()
     if bridge_rails:
         # A mapped rail on either edge or its approach supports the whole deck: roads commonly
         # have two physical sides even when OSM only mapped one of them. Do not enable unrelated decks.
@@ -760,6 +765,8 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=(), bridge_rail
         rails = _self_doubles(bridge_rows(supported)) if supported else []
 
     if not placements:
+        if supported_decks_out is not None:
+            supported_decks_out.update(supported_decks)
         return rails
 
     # Join first (moves the module's ends), then the two-sided offset on the moved line.
@@ -865,7 +872,10 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=(), bridge_rail
                      float(back[0]), float(back[1]), float(back[2]),
                      float(up[0]), float(up[1]), float(up[2])])
     # Whatever still lies on a rail the bridge built itself is a double.
-    return rails + _drop_doubles(rows, rails)
+    result = rails + _drop_doubles(rows, rails)
+    if supported_decks_out is not None:
+        supported_decks_out.update(supported_decks)
+    return result
 
 
 def bridge_rows(parapets):

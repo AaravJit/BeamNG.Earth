@@ -358,8 +358,8 @@ GIRDER_EVERY = 3.0      # m between girders across the deck
 PARAPET_W = 0.45        # m: the slab reaches this far past the road's edge, a parapet on it ...
 PARAPET_H = 0.9         # ... this high over the road
 PARAPET_COVER_DZ = 2.0  # m: another deck's surface within this height at an edge point: no parapet there
-BRIDGE_RAILS = True     # the deck's edges carry stock guardrail modules (guardrails.bridge_rows) over a low concrete
-BRIDGE_CURB_H = 0.3     # m curb, instead of the PARAPET_H concrete wall (False: the wall, and no deck rails)
+BRIDGE_RAILS = True     # stock rail modules on decks with mapped support; unsupported decks keep full parapets
+BRIDGE_CURB_H = 0.3     # m curb under generated guardrails, only on decks supported by mapped data
 PARAPET_MIN_M = 8.0     # m: a parapet run shorter than this is left out (stubs stood in the Queensboro Bridge's lanes
                         # where its two directions' decks meet and the cover test missed a few points, 2026-10-17)
 FOOTING_M = 2.0         # m a pier reaches into the ground
@@ -370,12 +370,14 @@ PIER_BENT_W = 16.0      # a deck wider than this stands on columns (a bent) rath
 PIER_COLUMN = 1.6       # m square columns of a bent
 
 
-def deck(chunks, origin, piers=(), context=(), beams=(), parapets=None, parapet_h=PARAPET_H):
+def deck(chunks, origin, piers=(), context=(), beams=(), parapets=None, parapet_h=PARAPET_H,
+         low_parapet_decks=()):
     """The bridge decks of a tile as one colliding mesh: per "deck" chunk a slab of opaque concrete
     (DECK_SIDE) whose top is at the chunk's fixed heights (the road surface, drawn DECK_SKIN above it
     by build()), with sides and underside DECK_DEPTH below; the piers, and the truss beams (p, q, width, height:
     bridgetypes.truss_members) in painted steel (TRUSS_STEEL). (positions, tris, uvs, materials, tri
     material index) or None. Pure."""
+    low_parapet_decks = set(low_parapet_decks or ())
     dch = [c for c in chunks if c.get("deck")]
     rb = [(r, c) for r, c in zip(ribbons(dch), dch) if r[5] is not None]
     if not rb and not piers and not beams:
@@ -441,7 +443,8 @@ def deck(chunks, origin, piers=(), context=(), beams=(), parapets=None, parapet_
             zz = parapet["z"]
             Eo = np.c_[parapet["edge"], zz] - origin
             Ei = np.c_[parapet["inner"], zz] - origin
-            To, Ti = Eo + [0, 0, parapet_h], Ei + [0, 0, parapet_h]
+            height = BRIDGE_CURB_H if BRIDGE_RAILS and n in low_parapet_decks else parapet_h
+            To, Ti = Eo + [0, 0, height], Ei + [0, 0, height]
             # `out` is an XY unit normal; face winding needs a 3-D direction.
             o = np.asarray(parapet["out"], np.float64)
             if o.ndim == 2 and o.shape[1] == 2:

@@ -168,6 +168,24 @@ class FollowTest(unittest.TestCase):
         flat = Q[:, 0] < 7.9
         self.assertGreater(Q[flat, 2].max(), 0.25, "the slope before it followed")
 
+
+
+class BridgeCurbSelectionTest(unittest.TestCase):
+    def test_low_curb_is_limited_to_decks_with_mapped_support(self):
+        chunks = [
+            {"m": "road_asphalt_2lane", "w": 8.0, "tl": 11.0, "p": 20,
+             "deck": True, "fixed": True, "fid": "supported",
+             "n": [[0.0, 0.0, 20.0], [50.0, 0.0, 20.0]]},
+            {"m": "road_asphalt_2lane", "w": 8.0, "tl": 11.0, "p": 30,
+             "deck": True, "fixed": True, "fid": "unsupported",
+             "n": [[100.0, 0.0, 30.0], [150.0, 0.0, 30.0]]},
+        ]
+        P, T, UV, mats, M = roadmesh.deck(chunks, (0.0, 0.0, 0.0), low_parapet_decks={0})
+        low = P[(P[:, 0] >= 0.0) & (P[:, 0] <= 50.0)]
+        high = P[(P[:, 0] >= 100.0) & (P[:, 0] <= 150.0)]
+        self.assertAlmostEqual(float(low[:, 2].max() - 20.0), roadmesh.BRIDGE_CURB_H, places=6)
+        self.assertAlmostEqual(float(high[:, 2].max() - 30.0), roadmesh.PARAPET_H, places=6)
+
 if __name__ == "__main__":
     unittest.main()
 

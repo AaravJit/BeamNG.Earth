@@ -399,22 +399,25 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
     parapets = roadmeshmod.parapet_runs(chunks, ctx)
     import guardrails as guardrailsmod
     infra_fn = lambda key: _s.md.cell(key, layers=("infrastructure",), kind="demand").layers.get("infrastructure")
+    low_parapet_decks = set()
     try:
         guardrail_decks = [{"n": np.column_stack((xy, z)), "w": spec.width}
                            for _fid, spec, xy, z, _lon in bridges.parts(
                                cells, (box[0]-10, box[1]-10, box[2]+10, box[3]+10))]
         guardrail_rows = guardrailsmod.forest_rows(frame, infra_fn, box, elev,
                                                    decks=guardrail_decks, parapets=parapets,
-                                                       bridge_rails=roadmeshmod.BRIDGE_RAILS)
+                                                       bridge_rails=roadmeshmod.BRIDGE_RAILS,
+                                                   supported_decks_out=low_parapet_decks)
     except Exception as ex:
         log.warning("mapped guardrails: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
         # A failed mapped-data pass cannot establish that a bridge needs rails.
+        low_parapet_decks.clear()
         guardrail_rows = []
     mesh = roadmeshmod.build(frame, chunks, elev, (x0, y0, 0.0), lift, clip=box, follow=True, q=q, drawn=drawn)
     mesh = _with_plazas(mesh, frame, tx, ty, elev, (x0, y0, 0.0), getattr(_s, "surface", None))
     dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0), bridges.piers_in(roadsmod.tile_bbox(tx, ty)), ctx,
                               bridges.beams_in(roadsmod.tile_bbox(tx, ty)), parapets=parapets,
-                              parapet_h=roadmeshmod.BRIDGE_CURB_H if roadmeshmod.BRIDGE_RAILS else roadmeshmod.PARAPET_H)
+                              low_parapet_decks=low_parapet_decks)
     tmesh = roadmeshmod.tunnel(chunks, (x0, y0, 0.0), rwalls)
     bld = None
     if buildings:
