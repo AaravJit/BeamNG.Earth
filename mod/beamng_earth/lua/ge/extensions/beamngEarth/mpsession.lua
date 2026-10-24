@@ -531,11 +531,13 @@ local PRISTINE_VE = [[local n = 0 for _, b in pairs(v.data.beams) do if obj:beam
 -- it stood in the owner's world when sent: a car driving on was pulled back there for a frame and broke apart; a
 -- repair re-applying a 30 s old state broke 49 beams of a car whose owner had none, 2026-10-24). Broken beams, rest
 -- lengths (the dents) and node masses, as applyNodes sets them. (Vehicle Lua; d: the decoded state)
+-- (BeamNG 0.40 renamed beamstate.beamDeformed to onBeamDeformed: the old name stopped this half-way, 2026-10-24)
 local APPLY_VE = [[local function applyDamage(d) if type(d) ~= 'table' then return end ]]
+  .. [[local deformed = beamstate.onBeamDeformed or beamstate.beamDeformed ]]
   .. [[for cid, n in pairs(d.nodes or {}) do if type(n) == 'table' and #n > 1 then obj:setNodeMass(tonumber(cid) - 1, n[2]) end end ]]
   .. [[for cid, b in pairs(d.beams or {}) do cid = tonumber(cid) - 1 if b[2] == true then ]]
   .. [[if not obj:beamIsBroken(cid) then obj:breakBeam(cid) beamstate.beamBroken(cid, 1) end ]]
-  .. [[else obj:setBeamLength(cid, b[1]) if b[3] > 0 then beamstate.beamDeformed(cid, b[3]) end end end end ]]
+  .. [[else obj:setBeamLength(cid, b[1]) if b[3] > 0 and deformed then deformed(cid, b[3]) end end end end ]]
 local REPAIR_VE = APPLY_VE .. [[local raw, apply = mime.unb64('%s'), %s local ok, d = pcall(jsonDecode, raw) local extra = 0 ]]
   .. [[if ok and type(d) == 'table' and type(d.beams) == 'table' then for cid, b in pairs(d.beams) do ]]
   .. [[if b[2] ~= true and obj:beamIsBroken(tonumber(cid) - 1) then extra = extra + 1 end end end ]]

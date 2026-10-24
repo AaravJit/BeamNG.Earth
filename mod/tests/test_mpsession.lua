@@ -241,6 +241,20 @@ do
   T.check(other.cmds[#other.cmds]:find('applyDamage(d)', 1, true) ~= nil, 'after the reset: the owner\'s state applied')
   T.check(other.cmds[#other.cmds]:find('setNodePosition', 1, true) == nil, 'without its node positions')
   T.check(loadstring(other.cmds[1]) ~= nil and loadstring(other.cmds[#other.cmds]) ~= nil, 'the vehicle Lua compiles')
+  -- run it as the vehicle Lua of BeamNG 0.40 (beamstate.onBeamDeformed; no beamDeformed): every beam applied
+  do
+    local broke, lens, deformedN = {}, {}, 0
+    local env = { type = type, pairs = pairs, tonumber = tonumber, pcall = pcall,
+      jsonDecode = function() return { nodes = { { { 0, 0, 0 } } }, beams = { { 1.5, false, 0.2 }, { 1, true, 0 }, { 2, false, 0 } } } end,
+      mime = { unb64 = function(x) return x end },
+      obj = { setNodeMass = function() end, beamIsBroken = function(_, cid) return broke[cid] == true end,
+        breakBeam = function(_, cid) broke[cid] = true end, setBeamLength = function(_, cid, l) lens[cid] = l end },
+      beamstate = { beamBroken = function() end, onBeamDeformed = function() deformedN = deformedN + 1 end } }
+    local fn = assert(loadstring(other.cmds[#other.cmds]))
+    setfenv(fn, env)
+    fn()
+    T.check(broke[1] and lens[0] == 1.5 and lens[2] == 2 and deformedN == 1, 'BeamNG 0.40: broken, lengths and dents applied')
+  end
   MPVehicleGE = oldMP
   nodesGE, MPHelpers = nil, nil
 end
