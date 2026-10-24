@@ -120,8 +120,10 @@ def candidates(data_dir, env=None, home=None):
     if not IS_WIN:
         out += [os.path.join(home, "BeamMP-Launcher", "bin", EXE), os.path.join(home, EXE),
                 os.path.join(home, ".local", "bin", EXE)]
+        # (BeamMP-Launcher or BeamMP-Launcher-<version> only: a folder renamed aside, BeamMP-Launcher.bak-..., was
+        # picked up, 2026-10-24)
         out += sorted(p for p in (os.path.join(home, d, "bin", EXE) for d in _listdir(home)
-                                  if d.startswith("BeamMP-Launcher")) if p not in out)
+                                  if re.fullmatch(r"BeamMP-Launcher(-[0-9][0-9.]*)?", d)) if p not in out)
     on_path = shutil.which(EXE)
     if on_path:
         out.append(on_path)
@@ -244,6 +246,24 @@ def game_user_path(user_dir):
     return d
 
 
+def child_env(env=None, frozen=None):
+    """The environment for programs started from here (BeamMP's launcher, podman): without the packaged app's own
+    library path. In the AppImage, BeamMP's launcher found the app's older libstdc++ before the system's and refused to
+    start ("GLIBCXX_3.4.32 missing" on a system that has it, 2026-10-24). PyInstaller keeps the original path in
+    LD_LIBRARY_PATH_ORIG."""
+    env = dict(os.environ if env is None else env)
+    frozen = getattr(sys, "frozen", False) if frozen is None else frozen
+    orig = env.pop("LD_LIBRARY_PATH_ORIG", None)
+    if frozen:
+        if orig is not None:
+            env["LD_LIBRARY_PATH"] = orig
+        else:
+            env.pop("LD_LIBRARY_PATH", None)
+    for k in ("APPDIR", "APPIMAGE", "ARGV0", "OWD"):        # (the AppImage runtime's own)
+        env.pop(k, None)
+    return env
+
+
 def container_tool(which=None):
     """podman, else docker (a path), or None: what build_linux builds in."""
     which = which or shutil.which
@@ -298,7 +318,7 @@ def build_linux(data_dir, user_agent, say=print, run=None, tool=None):
         cmd = [tool, "run", "--rm", "-v", f"{src}:/src:ro,Z", "-v", f"{out}:/out:Z", BUILD_IMAGE, "bash", "-c",
                BUILD_SCRIPT]
         try:
-            r = run(cmd, capture_output=True, text=True, timeout=1800)
+            r = run(cmd, capture_output=True, text=True, timeout=1800, env=child_env())
         except (OSError, subprocess.SubprocessError) as e:
             say(f"BeamMP: the build did not run ({e})")
             return None
@@ -323,7 +343,7 @@ def system_too_old(exe, run=None):
         return None
     run = run or subprocess.run
     try:
-        r = run([exe, "--help"], capture_output=True, text=True, timeout=10)
+        r = run([exe, "--help"], capture_output=True, text=True, timeout=10, env=child_env())
     except (OSError, subprocess.SubprocessError):
         return None                     # (it started: a slow --help is not the loader's refusal)
     err = (r.stderr or "") + (r.stdout or "")
@@ -345,7 +365,7 @@ def start(exe, user_dir, log_path):
         kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
     else:
         kw["start_new_session"] = True
-        kw["env"] = dict(os.environ, TERM=os.environ.get("TERM") or "xterm")
+        kw["env"] = dict(child_env(), TERM=os.environ.get("TERM") or "xterm")
     return subprocess.Popen(args, **kw)
 
 

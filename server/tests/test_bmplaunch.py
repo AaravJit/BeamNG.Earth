@@ -144,6 +144,28 @@ class LinuxBuild(unittest.TestCase):
         self.assertIsNone(bmplaunch.system_too_old("x", run=lambda *a, **k: R()))
 
 
+class RenamedAside(unittest.TestCase):
+    def test_backup_folders_ignored(self):
+        if bmplaunch.IS_WIN:
+            return
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as data:
+            for d in ("BeamMP-Launcher.bak-165632", "BeamMP-Launcher-2.8.1", "BeamMP-Launcher-old"):
+                os.makedirs(os.path.join(home, d, "bin"))
+            c = bmplaunch.candidates(data, env={}, home=home)
+            self.assertIn(os.path.join(home, "BeamMP-Launcher-2.8.1", "bin", bmplaunch.EXE), c)
+            self.assertFalse([p for p in c if ".bak" in p or "-old" in p], c)
+
+
+class ChildEnv(unittest.TestCase):
+    def test_app_library_path_left_out(self):
+        env = {"LD_LIBRARY_PATH": "/tmp/_MEI123", "LD_LIBRARY_PATH_ORIG": "/opt/lib", "APPDIR": "/tmp/.mount", "HOME": "/h"}
+        self.assertEqual(bmplaunch.child_env(env, frozen=True), {"LD_LIBRARY_PATH": "/opt/lib", "HOME": "/h"})
+        env = {"LD_LIBRARY_PATH": "/tmp/_MEI123", "APPIMAGE": "/x.AppImage"}
+        self.assertEqual(bmplaunch.child_env(env, frozen=True), {})
+        self.assertEqual(bmplaunch.child_env({"LD_LIBRARY_PATH": "/mine"}, frozen=False), {"LD_LIBRARY_PATH": "/mine"},
+                         "not packaged: the player's own path kept")
+
+
 class OnLaunch(unittest.TestCase):
     """The mod's setting "Start BeamMP with BeamNG.Earth" (beammpOnLaunch in settings/beamngEarth.json)."""
     def test_setting(self):
