@@ -122,6 +122,8 @@ MOD_TO_SERVER = {
     "peers": {"me": F(str), "members": F(list)},
     # roads (roads.py; additive): the mod removed its roads (switched off and on again): send them again
     "roads_reset": {},
+    # gas stations (gasstations.py; additive): the settings page's switch, sent after every hello and on change
+    "gas_stations": {"on": F(bool)},
     "map_tiles": {"tiles": F(list)},       # the world map's basemap tiles as files (settings.mapTiles)
     "geocode": {"id": F(int), "q": F(str), "lat": F(NUM, OPT), "lon": F(NUM, OPT)},   # the map's search box
     "route": {"id": F(int), "lat0": F(NUM), "lon0": F(NUM), "lat1": F(NUM), "lon1": F(NUM),

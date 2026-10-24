@@ -921,6 +921,76 @@ class TileTest(unittest.TestCase):
         self.assertIn(("--gas-stations", "on"), start.RECOMMENDED)
 
 
+class _Writer:
+    def __init__(self):
+        import json
+        self.json, self.msgs = json, []
+
+    def write(self, data):
+        self.msgs.append(self.json.loads(data[4:].decode()))
+
+    def is_closing(self):
+        return False
+
+    def get_extra_info(self, name):
+        return ("127.0.0.1", 0)
+
+
+class SwitchTest(unittest.TestCase):
+    """The settings page's "Gas stations" switch (the user, 2026-10-23: "build that switch!"; off saves their cost on a
+    small machine): the mod's gas_stations message turns the server's stations and pads off and on again."""
+
+    def server(self, **kw):
+        import os
+        import tempfile
+        import types
+        import earthd
+        import surface as sf
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        sur = sf.Surface(None)
+        self.addCleanup(sur.close)
+        s = earthd.Server(tmp.name, os.path.join(tmp.name, "cache"), imagery=None, cells=64, block=512, surface=sur,
+                          mapdata=types.SimpleNamespace(), **kw)
+        self.addCleanup(s.hm_pool.shutdown)
+        self.addCleanup(s.tile_pool.shutdown)
+        return s, sur
+
+    def run_msgs(self, s, msgs):
+        import asyncio
+        import earthd
+
+        async def go():
+            c = earthd.Connection(s, None, _Writer())
+            seen = [c.roads]
+            for m in msgs:
+                c.dispatch(m)
+                seen.append(c.roads)
+            return seen
+        return asyncio.run(go())
+
+    def test_off_and_on(self):
+        s, sur = self.server(gas_stations=True)
+        ring = (np.array([40.0, 40.0, 40.001]), np.array([-80.0, -79.999, -80.0]))
+        sur.add_fuel_pads([("a", [ring])])
+        seen = self.run_msgs(s, [{"type": "gas_stations", "on": False}])
+        self.assertFalse(s.gas_stations)
+        self.assertFalse(sur.gas_pads)
+        self.assertIsNot(seen[1], seen[0], "the road tiles sent again (canopies back, no pumps)")
+        seen = self.run_msgs(s, [{"type": "gas_stations", "on": True}, {"type": "gas_stations", "on": True}])
+        self.assertTrue(s.gas_stations)
+        self.assertTrue(sur.gas_pads)
+        self.assertEqual(sur.fuel_pads(np.array([40.0]), np.array([-80.0])), [], "the old pads dropped with the switch")
+        self.assertIsNot(seen[1], seen[0])
+        self.assertIs(seen[2], seen[1], "no change, nothing sent again")
+
+    def test_never_on_without_the_flag(self):
+        s, sur = self.server()
+        self.run_msgs(s, [{"type": "gas_stations", "on": True}])
+        self.assertFalse(s.gas_stations)
+        self.assertFalse(sur.gas_pads)
+
+
 REAL = __import__("os").environ.get("BNGE_GAS_REAL") == "1"
 
 

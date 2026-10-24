@@ -16,6 +16,7 @@ M.CLEAR_S = 0.5            -- the POI list gathered again at most this often (s)
 M.ENERGY = { 'gasoline', 'diesel' }
 M.now = os.clock
 M.onCollide = nil          -- called once per spawned station (core: the collision rebuild, batched with the roads')
+M.enabled = true           -- the settings page's "Gas stations" switch (setEnabled)
 
 local stations = {}        -- id -> { rec, keys = { [tile key] = true }, objs = { { id, pos, q } }, pumps, made }
 local queue = {}           -- station ids to spawn
@@ -106,7 +107,7 @@ end
 
 -- A road tile's stations (server roads_tile `fuel`).
 function M.onRows(aid, key, recs)
-  if type(recs) ~= 'table' then return end
+  if type(recs) ~= 'table' or not M.enabled then return end
   for _, r in ipairs(recs) do
     if type(r) == 'table' and r.id then
       local st = stations[r.id]
@@ -184,7 +185,7 @@ end
 -- level's own (freeroam/gasStations.lua onGetRawPoiListForLevel): in career, or with the game's freeroam gas stations
 -- setting on (toggling it gathers the list again: settings.lua, showMissionMarkersToggled).
 function M.pois(levelIdentifier, elements)
-  if not freeroam_gasStations then return end
+  if not freeroam_gasStations or not M.enabled then return end
   local career = career_career and career_career.isActive()
   if not career and not (settings and settings.getValue('enableGasStationsInFreeroam')) then return end
   for id, st in pairs(stations) do
@@ -214,7 +215,7 @@ end
 local warm = {}            -- shape -> the prewarm TSStatic's id
 
 function M.prewarm(shapes)
-  if type(shapes) ~= 'table' or not scenetree.MissionGroup then return end
+  if type(shapes) ~= 'table' or not M.enabled or not scenetree.MissionGroup then return end
   for _, shape in ipairs(shapes) do
     local id = warm[shape]
     if type(shape) == 'string' and not (id and scenetree.findObjectById(id)) then
@@ -233,6 +234,20 @@ function M.prewarm(shapes)
       if not ok then log('W', 'beamngEarth', 'gas stations: prewarm ' .. shape .. ': ' .. tostring(err)) end
     end
   end
+end
+
+-- The settings page's switch (the user, 2026-10-23: "build that switch!"; off saves their cost on a small machine):
+-- off, every station goes (its refuel prompt with it) and records are ignored until it is on again; core tells the
+-- server (gas_stations), which then lays none out and sends the road tiles again.
+function M.setEnabled(on)
+  on = on and true or false
+  if on == M.enabled then return false end
+  M.enabled = on
+  if not on then
+    M.reset()
+    poisDirty = true           -- (the stock POI list gathered again: without ours)
+  end
+  return true
 end
 
 function M.count()

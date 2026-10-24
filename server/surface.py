@@ -875,6 +875,11 @@ class Surface:
                 while len(self._fuel_pads) > FUEL_PAD_STATIONS:
                     self._fuel_pads.pop(next(iter(self._fuel_pads)))
 
+    def clear_fuel_pads(self):
+        """Drop every kept pad (the server's gas stations switched off; a block's job brings its own)."""
+        with self._lock:
+            self._fuel_pads.clear()
+
     def fuel_pad_items(self, lat, lon):
         """[(station id, rings)] of the kept pads within the points' bounding box; [] when gas_pads is off."""
         if not self.gas_pads or not self._fuel_pads:

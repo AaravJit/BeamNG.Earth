@@ -694,6 +694,8 @@ local function onMessage(msg)
     cacheInfo = nil
     local settings = rawget(_G, 'beamngEarth_settings')
     if settings and settings.cacheCapGb then net.send({ type = 'cache', capGb = settings.cacheCapGb() }) end
+    -- the gas stations switch, after every hello (a new server starts with them on)
+    net.send({ type = 'gas_stations', on = gasstations.enabled })
     -- the on-screen credits: this session's own follow (the attribution line until then)
     credits.clear()
     -- M4: the terrain block size first (everything below may use the lattice / follow table); a
@@ -2160,6 +2162,11 @@ function M._governor() return gov end
 -- The Roads setting: off removes them; on again asks the server to send the tiles once more.
 function M.setRoadsEnabled(on)
   if roads.setEnabled(on) then net.send({ type = 'roads_reset' }) end
+end
+-- the settings page's "Gas stations" switch: ours dropped or kept, and the server told (it lays them out or not and
+-- sends the road tiles again)
+function M.setGasStationsEnabled(on)
+  if gasstations.setEnabled(on) then net.send({ type = 'gas_stations', on = gasstations.enabled }) end
 end
 
 M.onUpdate = onUpdate

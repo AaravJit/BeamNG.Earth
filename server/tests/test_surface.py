@@ -340,6 +340,8 @@ class ServerSurfaceTest(unittest.TestCase):
         try:                            # (the server's pads for the block, taken in: build / base_photo fuel_pads)
             blockworker._take_pads([("a", [FuelPadTest.ring(None, LAT, LON)])])
             self.assertEqual(len(st.surface.fuel_pads(np.array([LAT]), np.array([LON]))), 1)
+            blockworker._take_pads([])          # (the server's switch off: nothing handed over, nothing painted)
+            self.assertEqual(st.surface.fuel_pads(np.array([LAT]), np.array([LON])), [])
         finally:
             blockworker._s = old
         st.surface.close()

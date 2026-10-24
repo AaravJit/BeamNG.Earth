@@ -718,7 +718,9 @@ class Server:
         self.sidewalks = sidewalks  # raised sidewalk meshes with the road tiles (sidewalks.py)
         self.buildings = buildings  # building meshes with the road tiles (buildings.py)
         # gas stations with refuelling with the road tiles (gasstations.py; the user, 2026-10-23)
-        self.gas_stations = bool(gas_stations) and mapdata is not None
+        # (the settings page's switch turns them off and on again: set_gas_stations; never on without the flag)
+        self.gas_allowed = bool(gas_stations) and mapdata is not None
+        self.gas_stations = self.gas_allowed
         if self.gas_stations and surface is not None and hasattr(surface, "gas_pads"):
             surface.gas_pads = True     # their forecourts painted asphalt (surface.Surface.fuel_pads)
         self.traffic = bool(traffic) and mapdata is not None   # the AI road graph around the player (navgraph.py)
@@ -1212,6 +1214,20 @@ class Server:
                                          None, None, items)
         return roadsmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, chunks, walks if self.sidewalks else None,
                                    mesh, dmesh, bld, props, wires, park, tunnel_mesh=tmesh, fuel=fuel)
+
+    def set_gas_stations(self, on):
+        """The settings page's "Gas stations" switch (the mod's gas_stations; the user, 2026-10-23: off saves their
+        cost on a small machine): stations laid out, pads painted and the region's shapes named only while on, never
+        on without --gas-stations on. Returns whether it changed (the road tiles are then sent again)."""
+        on = bool(on) and self.gas_allowed
+        if on == self.gas_stations:
+            return False
+        self.gas_stations = on
+        if self.surface is not None and hasattr(self.surface, "gas_pads"):
+            self.surface.gas_pads = on
+            self.surface.clear_fuel_pads()
+        log.info("gas stations %s (settings)", "on" if on else "off")
+        return True
 
     def keep_fuel_pads(self, pads):
         """A road tile's gas station pads kept for the ground's painters (surface.Surface.add_fuel_pads)."""
@@ -3004,6 +3020,10 @@ class Connection:
         elif kind == "roads_reset":             # the mod dropped its roads (settings): send them all again
             self.roads.close()
             self.roads = roadsmod.Tracker()
+        elif kind == "gas_stations":            # the settings page's switch: the road tiles again, with or without
+            if self.s.set_gas_stations(msg.get("on")):
+                self.roads.close()
+                self.roads = roadsmod.Tracker()
         else:
             log.debug("ignoring message type %r", kind)
 

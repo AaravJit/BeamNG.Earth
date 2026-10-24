@@ -218,9 +218,11 @@ def ground(frame, la, lo, z):
 
 
 def _take_pads(fuel_pads):
-    """The server's gas station pads for this job's area (earthd.Server.block_fuel_pads) into this process's Surface."""
-    if fuel_pads and getattr(_s, "surface", None) is not None:
-        _s.surface.add_fuel_pads(fuel_pads)
+    """The server's gas station pads for this job's area (earthd.Server.block_fuel_pads) as this process's Surface's:
+    only these (none when the server's gas stations are switched off)."""
+    if getattr(_s, "surface", None) is not None and hasattr(_s.surface, "clear_fuel_pads"):
+        _s.surface.clear_fuel_pads()
+        _s.surface.add_fuel_pads(fuel_pads or ())
 
 
 def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None, fuel_pads=None):
