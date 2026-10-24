@@ -366,11 +366,10 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
         guardrail_decks = [{"n": np.column_stack((xy, z)), "w": spec.width}
                            for _fid, spec, xy, z, _lon in bridges.parts(
                                cells, (box[0]-10, box[1]-10, box[2]+10, box[3]+10))]
-        guardrail_mesh = guardrailsmod.mesh(frame, infra_fn, box, elev, (box[0], box[1], 0.0),
-                                             decks=guardrail_decks)
+        guardrail_rows = guardrailsmod.forest_rows(frame, infra_fn, box, elev, decks=guardrail_decks)
     except Exception as ex:
         log.warning("mapped guardrails: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
-        guardrail_mesh = None
+        guardrail_rows = []
     cell_fn = lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads")   # noqa: E731
 
     def drawn(la, lo):          # the block's ground: raised over the low arches as the terrain is (_make_heightmap)
@@ -406,7 +405,7 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
                                      lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)), None, None,
                                      items)
     return roadsmod.write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks if sidewalks else None, mesh, dmesh,
-                               bld, props, wires, park, tunnel_mesh=tmesh, guardrail_mesh=guardrail_mesh)
+                               bld, props, wires, park, tunnel_mesh=tmesh, guardrail_rows=guardrail_rows)
 
 
 def _with_plazas(mesh, frame, tx, ty, elev, origin, surface):
