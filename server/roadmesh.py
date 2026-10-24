@@ -440,7 +440,10 @@ def deck(chunks, origin, piers=(), context=(), beams=(), parapets=None):
             Eo = np.c_[parapet["edge"], zz] - origin
             Ei = np.c_[parapet["inner"], zz] - origin
             To, Ti = Eo + [0, 0, PARAPET_H], Ei + [0, 0, PARAPET_H]
-            o = parapet["out"]
+            # `out` is an XY unit normal; face winding needs a 3-D direction.
+            o = np.asarray(parapet["out"], np.float64)
+            if o.ndim == 2 and o.shape[1] == 2:
+                o = np.column_stack((o, np.zeros(len(o), np.float64)))
             vv = parapet["v"]
             quads(Eo, To, 0.0, 0.1, vv, vv, side, o)          # outside face
             quads(Ei, Ti, 0.0, 0.1, vv, vv, side, -o)         # road face
