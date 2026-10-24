@@ -78,9 +78,20 @@ MOD_SETTINGS = os.path.join("settings", "beamngEarth.json")
 ON_LAUNCH = "beammpOnLaunch"
 
 
+def _mod_settings_path(user_dir):
+    """The mod's settings file: the game writes its file names in lower case on Linux (settings/beamngearth.json), so
+    any case is taken; none yet: MOD_SETTINGS."""
+    d = os.path.join(user_dir, os.path.dirname(MOD_SETTINGS))
+    want = os.path.basename(MOD_SETTINGS).lower()
+    for name in _listdir(d):
+        if name.lower() == want:
+            return os.path.join(d, name)
+    return os.path.join(user_dir, MOD_SETTINGS)
+
+
 def _mod_settings(user_dir):
     try:
-        with open(os.path.join(user_dir, MOD_SETTINGS), encoding="utf-8") as f:
+        with open(_mod_settings_path(user_dir), encoding="utf-8") as f:
             d = json.load(f)
             return d if isinstance(d, dict) else {}
     except (OSError, ValueError):
@@ -99,7 +110,7 @@ def on_launch(user_dir, data_dir=None):
 def set_on_launch(user_dir, value):
     d = _mod_settings(user_dir)
     d[ON_LAUNCH] = bool(value)
-    path = os.path.join(user_dir, MOD_SETTINGS)
+    path = _mod_settings_path(user_dir)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(d, f, indent=2)

@@ -183,6 +183,17 @@ class OnLaunch(unittest.TestCase):
             self.assertEqual(d, {"clouds": False, "beammpOnLaunch": False}, "the mod's other settings kept")
             self.assertFalse(bmplaunch.on_launch(user, data))
 
+    def test_lower_case_file(self):
+        """Linux: the game writes settings/beamngearth.json in lower case."""
+        with tempfile.TemporaryDirectory() as user:
+            os.makedirs(os.path.join(user, "settings"))
+            with open(os.path.join(user, "settings", "beamngearth.json"), "w") as f:
+                json.dump({"beammpOnLaunch": False, "skyMode": "real"}, f)
+            self.assertFalse(bmplaunch.on_launch(user))
+            bmplaunch.set_on_launch(user, True)
+            self.assertEqual(os.listdir(os.path.join(user, "settings")), ["beamngearth.json"], "the same file written")
+            self.assertTrue(bmplaunch.on_launch(user))
+
 
 class Finding(unittest.TestCase):
     def test_env_first_and_declined(self):
