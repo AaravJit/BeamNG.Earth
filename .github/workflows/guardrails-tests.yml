@@ -36,7 +36,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install test dependency
-        run: python -m pip install --disable-pip-version-check numpy
+        run: python -m pip install --disable-pip-version-check numpy pillow
       - name: Compile changed Python modules
         run: python -m py_compile server/guardrails.py server/roadmesh.py server/roads.py server/blockworker.py server/earthd.py
       - name: Run guardrail tests
