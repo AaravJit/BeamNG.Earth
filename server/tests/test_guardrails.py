@@ -206,7 +206,8 @@ class GuardrailMeshTest(unittest.TestCase):
         y = float(np.mean(outer["line"][:, 1]))
         elev = lambda lat, lon: np.full(np.shape(lat), 20.0, np.float64)
 
-        mapped_outer = self.features("guard_rail", xy=[[10.0, y], [90.0, y]])
+        mapped_outer = self.features("guard_rail", tags={"two_sided": "yes"},
+                                      xy=[[10.0, y], [90.0, y]])
         rows = guardrails.forest_rows(self.frame, lambda _key: mapped_outer,
                                       (0.0, -20.0, 100.0, 20.0), elev, parapets=parapets)
         self.assertEqual(rows, [], "do not place metal on top of the generated concrete parapet")
@@ -220,7 +221,8 @@ class GuardrailMeshTest(unittest.TestCase):
         # between them must still remain when it is close, but not on top of, those parapets.
         second_deck = {**deck, "fid": "bridge2", "n": [[0.0, 10.0, 20.0], [100.0, 10.0, 20.0]]}
         paired_parapets = roadmesh.parapet_runs([deck, second_deck])
-        centre_gap = self.features("guard_rail", xy=[[10.0, 5.0], [90.0, 5.0]])
+        centre_gap = self.features("guard_rail", tags={"two_sided": "yes"},
+                                    xy=[[10.0, 5.0], [90.0, 5.0]])
         rows = guardrails.forest_rows(self.frame, lambda _key: centre_gap,
                                       (0.0, -20.0, 100.0, 20.0), elev, parapets=paired_parapets)
         self.assertTrue(rows, "the central divider must survive near, but distinct from, both parapets")
