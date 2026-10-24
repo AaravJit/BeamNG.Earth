@@ -394,8 +394,9 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
         park = parkingmod.tile_lot_spots(frame, tx, ty, _s.md, elev, items, park)
         buildingsmod.brick_walks(walks, items, lat, lon)
 
-    # These are the exact concrete parapet runs the bridge mesh will render; use the same geometry
-    # to avoid stacking OSM metal guardrails over them without suppressing central separators.
+    # Share the bridge mesh's exact parapet geometry with the tile builder.
+    # The temporary five-metre deck buffer below suppresses all mapped rails near bridges,
+    # including central dividers; parapet matching remains as a fallback for incomplete profiles.
     parapets = roadmeshmod.parapet_runs(chunks, ctx)
     import guardrails as guardrailsmod
     infra_fn = lambda key: _s.md.cell(key, layers=("infrastructure",), kind="demand").layers.get("infrastructure")
