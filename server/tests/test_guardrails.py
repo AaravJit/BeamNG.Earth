@@ -214,6 +214,17 @@ class GuardrailMeshTest(unittest.TestCase):
                                       decks=decks, parapets=parapets)
         self.assertEqual(rows, [], "do not place metal on top of the generated concrete parapet")
 
+        # Real mapped roadside rails may sit a little outside the concrete wall's centre line.
+        # They should still disappear on the outside edge, while the central gap stays protected.
+        outer_offset = self.features(
+            "guard_rail", tags={"two_sided": "yes", "bridge": "yes"},
+            xy=[[10.0, y + 1.25], [90.0, y + 1.25]])
+        offset_rows = guardrails.forest_rows(
+            self.frame, lambda _key: outer_offset, (0.0, -20.0, 100.0, 20.0),
+            upper_elev, decks=decks, parapets=parapets)
+        self.assertEqual(offset_rows, [],
+                         "mapped metal slightly offset from an outer concrete wall should also disappear")
+
         # Lower-level lines share XY with the bridge, but must keep their own elevation. Test both
         # an untagged barrier (infer from the terrain/deck height difference) and explicit layer=-1.
         lower_elev = lambda lat, lon: np.full(np.shape(lat), 12.0, np.float64)
