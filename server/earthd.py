@@ -1183,8 +1183,9 @@ class Server:
             park = parkingmod.tile_lot_spots(anchor.frame, tx, ty, self.mapdata, elev, items, park)
             buildingsmod.brick_walks(walks, items, anchor.lat, anchor.lon)
 
-        # Share the exact visible bridge-parapet geometry with mapped-rail filtering; central rails
-        # remain unless they actually coincide with one of these generated concrete edges.
+        # Share the bridge mesh's exact parapet geometry with the tile builder.
+        # The temporary five-metre deck buffer below suppresses all mapped rails near bridges,
+        # including central dividers; parapet matching remains as a fallback for incomplete profiles.
         parapets = roadmeshmod.parapet_runs(chunks, ctx)
         import guardrails as guardrailsmod
         infra_fn = lambda key: self.mapdata.cell(key, layers=("infrastructure",), kind="demand").layers.get("infrastructure")
