@@ -591,10 +591,11 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=(), bridge_rail
     each 3 m module follow the surface's pitch rather than looking like stairs on a grade.
     Groups: rail, start/end caps, then their reverse-facing equivalents for two_sided=yes.
 
-    Near bridges (decks: [{"n": (k, 3) XYZ, "w": road width}]): rails on a deck's edge are dropped (the bridge builds
-    its own, bridge_rows(parapets), included here with bridge_rails=True), centre rails and medians stay at deck
-    height, rails hanging far under a deck are dropped, and rails arriving at a deck end are joined to the bridge's
-    rail (position and height) over JOIN_LENGTH_M.
+    Near bridges (decks: [{"n": (k, 3) XYZ, "w": road width}]): mapped edge rails are replaced by generated
+    bridge rails only when mapped guardrails support that deck (on an edge or approach). Unambiguously mapped
+    bridge-level centre rails and medians stay at deck height; an untagged rail whose terrain level disagrees with
+    a single deck stays at ground level, preventing an underpass rail from being lifted onto the bridge. Rails
+    hanging far under a deck are dropped, and aligned approach rails join the bridge over JOIN_LENGTH_M.
     """
     # Bridge rails must be supported by mapped guardrail evidence on the corresponding deck edge;
     # never infer that every bridge needs railings just because a bridge mesh exists.
