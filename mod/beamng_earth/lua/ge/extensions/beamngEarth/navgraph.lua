@@ -467,7 +467,9 @@ end
 -- The player teleported: the traffic cars go inactive (no physics: their old positions have no ground) and come
 -- back on the new place's graph once it is in.
 local heldActive = nil
+local teleportPending = false
 function M.onTeleport()
+  teleportPending = true
   respawnAll = true
   -- Invalidate the old graph even when a teleport keeps the same anchorId. The server builds
   -- graphs asynchronously, so an old graph could otherwise drive the respawn guard during the
@@ -484,6 +486,17 @@ function M.onTeleport()
   end
 end
 
+-- Called by core.lua only after the destination terrain and anchor have committed. Messages received while
+-- teleportPending are intentionally not acted on; discard them so an old in-flight build cannot revive traffic.
+function M.onTeleportCommitted(aid)
+  if not teleportPending then return end
+  teleportPending = false
+  graph, applied, dirty, foreign = nil, nil, false, false
+  pendingSignals = nil
+  stillSince, seenAt, cuts = {}, {}, {}
+  lastApply, lastGuard = -math.huge, -math.huge
+end
+
 -- Every frame: a new graph, a moved block or a foreign reset applies the graph again; the traffic guard.
 -- Pure: how far the centre of ground box b {x0, y0, x1, y1} is from that of box a (0 when either is missing).
 function M.boxMoved(a, b)
@@ -494,7 +507,7 @@ function M.boxMoved(a, b)
 end
 
 function M.update(aid, b)
-  if not M.enabled or not graph then return end
+  if not M.enabled or not graph or teleportPending then return end
   -- A teleport/rebase changes the coordinate frame before the replacement graph arrives.
   -- Never run the old graph's guard against the new frame: it can forceTeleport traffic using stale nodes.
   if graph.anchor ~= aid then
