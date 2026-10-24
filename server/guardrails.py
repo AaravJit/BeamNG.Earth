@@ -592,10 +592,10 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=(), bridge_rail
     Groups: rail, start/end caps, then their reverse-facing equivalents for two_sided=yes.
 
     Near bridges (decks: [{"n": (k, 3) XYZ, "w": road width}]): mapped edge rails are replaced by generated
-    bridge rails only when mapped guardrails support that deck (on an edge or approach). Unambiguously mapped
-    bridge-level centre rails and medians stay at deck height; an untagged rail whose terrain level disagrees with
-    a single deck stays at ground level, preventing an underpass rail from being lifted onto the bridge. Rails
-    hanging far under a deck are dropped, and aligned approach rails join the bridge over JOIN_LENGTH_M.
+    bridge rails only when mapped guardrails support that deck (on an edge or approach). Centre rails and medians
+    aligned with the bridge deck stay at deck height. Explicit lower-level/tunnel tags keep underpass rails at
+    ground level, and perpendicular crossings are not treated as bridge rails. Rails hanging far under a deck
+    are dropped, and aligned approach rails join the bridge over JOIN_LENGTH_M.
     """
     # Bridge rails must be supported by mapped guardrail evidence on the corresponding deck edge;
     # never infer that every bridge needs railings just because a bridge mesh exists.
@@ -813,22 +813,12 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=(), bridge_rail
                 continue
         elif mode in ("deck", "median"):
             dz = deck_z[j]
-            # An untagged centre rail on a single deck is ambiguous when the terrain is much lower:
-            # it may belong to a road passing underneath. Keep it on the ground unless OSM identifies
-            # the bridge level or the sampled terrain agrees with the deck. Explicit bridge tags still win.
-            ground = ground_z[j]
-            untagged_lower_level = (
-                pl["hint"] is None and
-                np.any(np.isfinite(dz) & np.isfinite(ground) &
-                       (np.abs(dz - ground) > DECK_AUTO_SNAP_TOLERANCE_M))
-            )
-            if untagged_lower_level:
-                z, za, zb = map(float, ground)
-                mode = "ground"
-            else:
-                z, za, zb = (float(dz[0]) if np.isfinite(dz[0]) else z,
-                             float(dz[1]) if np.isfinite(dz[1]) else za,
-                             float(dz[2]) if np.isfinite(dz[2]) else zb)
+            # Direction and deck position already classified this as a centre/median rail.
+            # Do not override that classification with terrain height: the terrain under a bridge
+            # can be many metres below the actual rail. Explicit lower-level tags bypass this mode.
+            z, za, zb = (float(dz[0]) if np.isfinite(dz[0]) else z,
+                         float(dz[1]) if np.isfinite(dz[1]) else za,
+                         float(dz[2]) if np.isfinite(dz[2]) else zb)
         elif mode == "join":
             gz = ground_z[j]
             at = pl["axis_at"]
