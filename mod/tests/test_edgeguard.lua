@@ -96,10 +96,27 @@ for f = 1, 60 do
   if not simTimeAuthority.paused then veh.pos = veh.pos + vec3(veh.vel.x / 60, 0, 0) end
 end
 T.check(not simTimeAuthority.paused and not g0.pausedByUs, 'resumed by the player: driving inwards, no pause')
+-- a car at rest reading a velocity it does not have (a BeamMP spawn read 2346 mph): never held, frame after frame
+do
+  simTimeAuthority.pause(false)
+  local g = edgeguard.new()
+  local v3 = newVeh(0, -9, GROUND_Z + 0.5, 1048, 0)
+  local holds = 0
+  for f = 1, 120 do
+    edgeguard.update(g, v3, BOX, 50 + f / 60)
+    if simTimeAuthority.paused then holds = holds + 1 end
+  end
+  T.check(holds == 0 and not g.pausedByUs, 'a phantom speed at rest: never held')
+  local vx = edgeguard.plausible({ lastX = 0, lastY = 0, lastT = 0 }, 1 / 60, 100 / 60, 0, 100, 0)
+  T.check(math.abs(vx - 100) < 1e-6, 'plausible: a real 100 m/s kept')
+  vx = edgeguard.plausible({}, 1, 0, 0, 1048, 0)
+  T.check(math.abs(vx - edgeguard.SPEED_SLACK) < 1e-6, 'plausible: no sample: SPEED_SLACK at most')
+end
 -- the block follows while paused: the car well inside the new box resumes by itself
 do
   local g = edgeguard.new()
   local v2 = newVeh(BOX[3] - edgeguard.STOP_M - 5, 0, GROUND_Z + 0.5, 30, 0)
+  g.lastX, g.lastY, g.lastT = v2.pos.x - 0.5, 0, 1 - 1 / 60      -- (the frame before: it drove here at 30 m/s)
   edgeguard.update(g, v2, BOX, 1)
   T.check(simTimeAuthority.paused and g.pausedByUs, 'heading off the edge: paused')
   local moved = { BOX[1] + 512, BOX[2], BOX[3] + 512, BOX[4] }
