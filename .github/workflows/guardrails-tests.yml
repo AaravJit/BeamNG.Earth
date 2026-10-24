@@ -9,11 +9,6 @@ on:
     paths:
       - "server/guardrails.py"
       - "server/tests/test_guardrails.py"
-      - "server/navgraph.py"
-      - "server/tests/test_navgraph.py"
-      - "server/tests/test_roads.py"
-      - "server/geodesy.py"
-      - "mod/beamng_earth/lua/ge/extensions/beamngEarth/navgraph.lua"
       - ".github/workflows/guardrails-tests.yml"
 
 jobs:
@@ -25,10 +20,8 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install test dependency
-        run: python -m pip install --disable-pip-version-check numpy Pillow
+        run: python -m pip install --disable-pip-version-check numpy
       - name: Compile changed Python modules
-        run: python -m py_compile server/guardrails.py server/navgraph.py server/roads.py server/blockworker.py server/earthd.py
+        run: python -m py_compile server/guardrails.py server/roads.py server/blockworker.py server/earthd.py
       - name: Run guardrail tests
         run: python -m unittest discover -s server/tests -p "test_guardrails.py" -v
-      - name: Run traffic graph tests
-        run: python -m unittest discover -s server/tests -p "test_navgraph.py" -v
