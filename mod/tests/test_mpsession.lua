@@ -166,7 +166,23 @@ ms.sendDamage(36.5, -118.1, 0.5)
 T.check(#cmds == 0, 'damage: a player came near, our car undamaged: nothing to send')
 map.objects[20].damage = 900
 for _ = 1, 6 do ms.sendDamage(36.5, -118.1, 0.5) end
-T.check(#cmds == 1 and cmds[1]:find('nodesVE.getNodes', 1, true), 'damage: sent once after it changed and settled: ' .. #cmds)
+T.check(#cmds == 1 and cmds[1]:find('nodesGE.sendNodes', 1, true) and cmds[1]:find('getBeamDeformation', 1, true),
+  'damage: sent once after it changed and settled (the broken and bent beams, on BeamMP\'s path): ' .. #cmds)
+do  -- run it as vehicle Lua: only the broken and bent beams go out
+  local got, gl = nil, nil
+  local env = { pairs = pairs, tostring = tostring, math = math,
+    v = { data = { beams = { { cid = 0 }, { cid = 1 }, { cid = 2 } } } },
+    obj = { beamIsBroken = function(_, c) return c == 0 end, getBeamDeformation = function(_, c) return c == 1 and 0.25 or 0 end,
+      getBeamRestLength = function() return 1.23456 end, getID = function() return 20 end,
+      queueGameEngineLua = function(_, c) gl = c end },
+    jsonEncode = function(t) got = t return 'J' end }
+  local fn = assert(loadstring(cmds[1]))
+  setfenv(fn, env)
+  fn()
+  T.check(got and got.beams['1'] and got.beams['1'][2] == true and got.beams['2'] and got.beams['2'][3] == 0.25
+    and got.beams['3'] == nil and next(got.nodes) == nil and got.beams['1'][1] == 1.235, 'the broken and bent beams only, rounded')
+  T.check(gl == "nodesGE.sendNodes('J', 20)", 'sent on BeamMP\'s full-damage path')
+end
 ms.sendDamage(36.5, -118.1, 0.5)
 T.check(#cmds == 1, 'damage: not again while nothing changes')
 handlers.bngeAnchors('f')
@@ -239,10 +255,13 @@ do
   other.pos = vec3(150, 0, 0)          -- 50 m from the camera (the player at x = 100 here)
   ms.update(ms.HIDE_S, anchor, { x = 100, y = 0, z = 0 })
   T.check(#other.cmds == 0, 'near our camera: the copy keeps what our game worked out')
+  other.pos = vec3(100 + ms.SYNC_RANGE_M + 10, 0, 0)
+  ms.update(ms.HIDE_S, anchor, { x = 100, y = 0, z = 0 })
+  T.check(#other.cmds == 0, 'out of range: only kept')
   other.pos = vec3(100 + ms.SYNC_FAR_M + 10, 0, 0)
   ms.update(ms.HIDE_S, anchor, { x = 100, y = 0, z = 0 })
-  T.check(#other.cmds == 1 and other.cmds[1]:find('requestReset(RESET_PHYSICS)', 1, true) and other.cmds[1]:find("B64(", 1, true)
-    and other.cmds[1]:find("'), true ", 1, true), 'far from our camera: checked in its vehicle Lua, put on (reset if beams broke here only)')
+  T.check(#other.cmds == 1 and other.cmds[1]:find('requestReset(RESET_PHYSICS)', 1, true)
+    and other.cmds[1]:find('"{\\"beams\\":{}}", true ', 1, true), 'far from our camera: checked in its vehicle Lua, put on (reset if beams broke here only)')
   ms.update(ms.HIDE_S, anchor, { x = 100, y = 0, z = 0 })
   T.check(#other.cmds == 1, 'put on once')
   ms.afterRepairReset(21, 5)
@@ -283,6 +302,19 @@ do
     ms.update(0.01, anchor, { x = 100, y = 0, z = 0 })
     T.check(#other.cmds == n + ms.MORPH_STEPS, 'no more steps')
   end
+  -- the same state is not put on again when the copy's damage moves afterwards (loose parts torn off by the dents);
+  -- a new one is
+  map = { objects = { [21] = { damage = 1000 } } }
+  local function settle() for _ = 1, 40 do ms.update(ms.HIDE_S, anchor, { x = 100, y = 0, z = 0 }) end end
+  settle()
+  local n = #other.cmds
+  map.objects[21].damage = 3000
+  settle()
+  T.check(#other.cmds == n, 'the same state not put on twice')
+  nodesGE.handle('n:2-0:{"beams":{"1":1}}')
+  settle()
+  T.check(#other.cmds == n + 1 and other.cmds[#other.cmds]:find('requestReset', 1, true), 'a new state is')
+  map = nil
   MPVehicleGE = oldMP
   nodesGE, MPHelpers = nil, nil
 end

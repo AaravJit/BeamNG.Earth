@@ -8,9 +8,10 @@
 --     the wrong place;
 --   - bngeGoTo { lat, lon }: on joining, a teleport to where the others are.
 -- Damage: BeamMP sends parts that break off (break groups) but not dents; its own full-damage message (nodesVE.getNodes:
--- every node and beam, applied on the other players' copies by its nodesGE) is never sent. This sends it for our own
--- cars when another player comes within DAMAGE_NEAR_M (they see the car as it is) and DAMAGE_SETTLE_S after our car's
--- damage changed by DAMAGE_STEP while one is near.
+-- every node and beam, applied on the other players' copies by its nodesGE) is never sent. This sends our own cars'
+-- damage on BeamMP's full-damage path (nodesGE.sendNodes), as only the beams broken or bent (DAMAGE_VE: tens of KB for
+-- a wreck instead of ~200 KB), when another player comes within DAMAGE_NEAR_M (they see the car as it is) and
+-- DAMAGE_SETTLE_S after our car's damage changed by DAMAGE_STEP while one is near.
 -- Shared generation (the user, 2026-10-22: "3 players in Utah and 1 in Italy ... the Utah players split generation
 -- between each other"): players near each other converge onto one anchor (pickAnchor: within ADOPT_M, the one most of
 -- them use; a teleport next to them lands on it, core.teleportTo / adoptAnchor; otherwise a smooth rebaseTo), and
@@ -513,17 +514,20 @@ end
 -- REPAIR_FRAMES frames later.
 M.REPAIR_FRAMES = 3
 local nodesWrapped = nil   -- the nodesGE table wrapped (BeamMP reloading it makes a new one)
-local pendingNodes = {}     -- game vehicle id -> { b64, frames } (the owner's state, applied after the reset)
+local pendingNodes = {}     -- game vehicle id -> { raw, frames } (the owner's state, applied after the reset)
 -- Copies checked again after damage of their own (2026-10-24, three players: a copy took 24 broken beams after its
 -- owner's full damage had come, the two cars still pushing into each other; the owner's damage barely moved, so it sent
 -- nothing more and the copy stayed broken). A copy whose damage figure moved DAMAGE_STEP from where it had settled,
 -- for COPY_SETTLE_S, is stale again: checked against the owner's last state once far. No state yet: the owner's car had
 -- less than DAMAGE_STEP damage while we were near, so beams broken here mean a reset to new.
 M.COPY_SETTLE_S = 4
-M.SYNC_FAR_M = 150          -- a copy takes its owner's damage only this far from our camera (m)
-local lastNodes = {}        -- game vehicle id -> its owner's last full damage (b64)
+M.SYNC_FAR_M = 150          -- a copy takes its owner's damage only this far from our camera (m) ...
+M.SYNC_RANGE_M = 1000       -- ... and this near: once, as it comes in range (the user, 2026-10-24: "we really need to
+                            -- only update the damage once the car is in range"); a farther copy only keeps the state
+local lastNodes = {}        -- game vehicle id -> its owner's last full damage (its JSON as it came)
 local stale = {}            -- game vehicle id -> true: may differ from its owner (a new state, or damage of its own)
 local morphs = {}           -- game vehicle id -> steps done: a copy's dents growing in (APPLY_VE's bngeMorph)
+local applied = {}          -- game vehicle id -> the owner's state last put on it: put on once
 local copyBase = {}         -- game vehicle id -> the copy's damage figure once settled (nil: to be taken)
 local copySince = {}        -- game vehicle id -> seconds it has differed from copyBase
 local copyQuiet = {}        -- game vehicle id -> seconds before copyBase is taken (after a state, a check, a reset)
@@ -552,9 +556,10 @@ local APPLY_VE = [[local function applyDamage(d) if type(d) ~= 'table' then retu
   .. [[if f >= 1 and b[3] > 0 and deformed then deformed(c, b[3]) end end end ]]
   .. [[if f >= 1 then bngeDmg = nil end end ]]
 M.APPLY_VE = APPLY_VE        -- (tests)
-local REPAIR_VE = APPLY_VE .. [[local raw, apply = mime.unb64('%s'), %s local ok, d = pcall(jsonDecode, raw) local extra = 0 ]]
-  .. [[if ok and type(d) == 'table' and type(d.beams) == 'table' then for cid, b in pairs(d.beams) do ]]
-  .. [[if b[2] ~= true and obj:beamIsBroken(tonumber(cid) - 1) then extra = extra + 1 end end end ]]
+local REPAIR_VE = APPLY_VE .. [[local raw, apply = %s, %s local ok, d = pcall(jsonDecode, raw) local extra = 0 ]]
+  .. [[if ok and type(d) == 'table' and type(d.beams) == 'table' then for _, b in pairs(v.data.beams) do ]]
+  .. [[if obj:beamIsBroken(b.cid) then local s = d.beams[tostring(b.cid + 1)] or d.beams[b.cid + 1] ]]
+  .. [[if not (type(s) == 'table' and s[2] == true) then extra = extra + 1 end end end end ]]
   .. [[if extra > 0 then obj:requestReset(RESET_PHYSICS) ]]
   .. [[obj:queueGameEngineLua("local m = package.loaded['beamngEarth/mpsession'] if m then m.afterRepairReset(%d, " .. extra .. ") end") ]]
   .. [[elseif apply and ok then applyDamage(d) end]]
@@ -567,13 +572,13 @@ function M.wrapNodes()
   ng.handle = function(rawData)
     local code, sid, data = string.match(rawData or '', '^(%a)%:(%d+%-%d+)%:(.*)')
     if code ~= 'n' then return orig(rawData) end
-    local mp, h = rawget(_G, 'MPVehicleGE'), rawget(_G, 'MPHelpers')
+    local mp = rawget(_G, 'MPVehicleGE')
     local v = mp and mp.getVehicles and mp.getVehicles()[sid]
-    if not v or v.isLocal or not h or not h.b64encode then return orig(rawData) end
+    if not v or v.isLocal then return orig(rawData) end
     local gid = mp.getGameVehicleID(sid) or -1
     local veh = vehicle(gid)
     if not veh then return orig(rawData) end
-    lastNodes[gid], stale[gid] = h.b64encode(data), true   -- (put on once the car is far from our camera: checkCopies)
+    lastNodes[gid], stale[gid] = data, true   -- (put on once it is in range: checkCopies; nothing done with it till then)
   end
   nodesWrapped = ng
   return true
@@ -612,17 +617,20 @@ local function checkCopies(owners, dt, cam)
     elseif not copyBase[gid] then
       copyBase[gid], copySince[gid] = dmg, 0
     else
-      if dmg < M.DAMAGE_STEP and copyBase[gid] >= M.DAMAGE_STEP then lastNodes[gid] = nil end   -- (its owner reset it)
+      if dmg < M.DAMAGE_STEP and copyBase[gid] >= M.DAMAGE_STEP then lastNodes[gid], applied[gid] = nil, nil end   -- (reset)
       local due
       due, copySince[gid] = M.copyDue(dmg, copyBase[gid], copySince[gid], dt)
-      if due then stale[gid], copyBase[gid] = true, nil end
+      -- (its damage moved after the owner's state went on: checked again once far, but not against the same state: the
+      -- dents growing in tear a loose part or two off, and a Windows test copy was repaired 7 times in 90 s for it)
+      if due then stale[gid], copyBase[gid] = applied[gid] == nil or applied[gid] ~= lastNodes[gid], nil end
     end
     local veh = stale[gid] and cam and not deactivated[gid] and vehicle(gid)
     local q = veh and veh:getPosition()
-    if q and (q.x - cam.x) ^ 2 + (q.y - cam.y) ^ 2 + (q.z - cam.z) ^ 2 >= M.SYNC_FAR_M ^ 2 then
+    local d2 = q and (q.x - cam.x) ^ 2 + (q.y - cam.y) ^ 2 + (q.z - cam.z) ^ 2
+    if d2 and d2 >= M.SYNC_FAR_M ^ 2 and d2 <= M.SYNC_RANGE_M ^ 2 then
       if lastNodes[gid] then
-        pendingNodes[gid] = { b64 = lastNodes[gid] }
-        veh:queueLuaCommand(string.format(REPAIR_VE, lastNodes[gid], 'true', gid))
+        pendingNodes[gid], applied[gid] = { raw = lastNodes[gid] }, lastNodes[gid]
+        veh:queueLuaCommand(string.format(REPAIR_VE, string.format('%q', lastNodes[gid]), 'true', gid))
       else
         pendingNodes[gid] = nil
         veh:queueLuaCommand(string.format(PRISTINE_VE, gid))
@@ -631,7 +639,7 @@ local function checkCopies(owners, dt, cam)
     end
   end
   for gid in pairs(lastNodes) do
-    if not owners[gid] then lastNodes[gid], copyBase[gid], copySince[gid], copyQuiet[gid] = nil, nil, nil, nil end
+    if not owners[gid] then lastNodes[gid], copyBase[gid], copySince[gid], copyQuiet[gid], applied[gid] = nil, nil, nil, nil, nil end
   end
   for gid in pairs(stale) do if not owners[gid] then stale[gid] = nil end end
 end
@@ -661,7 +669,7 @@ local function applyPendingNodes()
         pendingNodes[gid] = nil
         local veh = vehicle(gid)
         if veh then
-          veh:queueLuaCommand(APPLY_VE .. "local ok, d = pcall(jsonDecode, mime.unb64('" .. p.b64 .. "')) if ok then applyDamage(d) end")
+          veh:queueLuaCommand(APPLY_VE .. 'local ok, d = pcall(jsonDecode, ' .. string.format('%q', p.raw) .. ') if ok then applyDamage(d) end')
         end
       end
     end
@@ -908,8 +916,17 @@ function M.groundFoci()
   return out
 end
 
--- Our own cars' full damage to the players near (see the top), with BeamMP's own nodesVE.getNodes. (lat, lon): our
--- place.
+-- Our own car's damage as BeamMP's full-damage message (nodesGE.sendNodes, as its nodesVE.getNodes sends it) with only
+-- the beams broken or bent: { nodes = {}, beams = { ["cid+1"] = { rest length, broken, deformation } } }. (BeamMP's
+-- getNodes also lists every node's position and every beam: ~200 KB for a pickup, decoded on every other player's
+-- game; it also called a global Round that BeamNG 0.40's vehicle Lua lacks, so it was never sent.) A copy without
+-- our mod applies the same message with BeamMP's applyNodes: the listed beams only. (Vehicle Lua)
+local DAMAGE_VE = [[local s = { nodes = {}, beams = {} } for _, b in pairs(v.data.beams) do local c = b.cid ]]
+  .. [[local br, df = obj:beamIsBroken(c), obj:getBeamDeformation(c) if br or df > 0.001 then ]]
+  .. [[s.beams[tostring(c + 1)] = { math.floor(obj:getBeamRestLength(c) * 1000 + 0.5) / 1000, br, math.floor(df * 1000 + 0.5) / 1000 } end end ]]
+  .. [[obj:queueGameEngineLua("nodesGE.sendNodes('" .. jsonEncode(s) .. "', " .. obj:getID() .. ")")]]
+
+-- Our own cars' damage to the players near (see the top). (lat, lon): our place.
 function M.sendDamage(lat, lon, dt)
   local now, newcomer, any = {}, false, false
   local mine = myPid()
@@ -936,10 +953,7 @@ function M.sendDamage(lat, lon, dt)
       send, damageSince[gid] = M.damageDue(newcomer, dmg, sentDamage[gid], damageSince[gid], dt)
       local obj = send and vehicle(gid)
       if obj then
-        -- (BeamMP's getNodes calls a global Round that BeamNG 0.40's vehicle Lua no longer has: "attempt to call global
-        -- 'Round' (a nil value)", so no full damage was ever sent; given here when missing, BeamMP's file unchanged)
-        obj:queueLuaCommand('if not Round then Round = function(x, n) local m = 10 ^ (n or 0) return math.floor(x * m + 0.5) / m end end '
-          .. 'if nodesVE and nodesVE.getNodes then nodesVE.getNodes() end')
+        obj:queueLuaCommand(DAMAGE_VE)
         sentDamage[gid] = dmg or 0
       end
     end
@@ -957,7 +971,7 @@ function M.reset()
     if veh then veh:queueLuaCommand('obj:setGravity(' .. gravityNow() .. ')') end
   end
   floating = {}
-  pendingNodes, lastNodes, copyBase, copySince, copyQuiet, stale, morphs = {}, {}, {}, {}, {}, {}, {}
+  pendingNodes, lastNodes, copyBase, copySince, copyQuiet, stale, morphs, applied = {}, {}, {}, {}, {}, {}, {}, {}
   deactivated, anchors, poseIn, hideIn, joined, wentTo, camPlaced, lastPlayers = {}, {}, 0, 0, false, false, false, -1
   waitGround = {}
   members, sentDamage, damageSince, restoredAt, restores = {}, {}, {}, {}, {}
