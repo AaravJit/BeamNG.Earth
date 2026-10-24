@@ -179,14 +179,30 @@ class GuardrailForestTest(unittest.TestCase):
             with self.subTest(y=line_y):
                 self.assertEqual(self.rows_for([[10.0, line_y], [90.0, line_y]], 20.0, decks, parapets), [])
 
-    def test_centre_rail_on_the_deck_stays_at_deck_height(self):
+    def test_explicit_bridge_centre_rail_stays_at_deck_height(self):
         decks, parapets = self.deck_fixture()
-        for tags in (None, {"two_sided": "yes"}, {"bridge": "yes"}):
+        for tags in ({"bridge": "yes"}, {"bridge": "yes", "two_sided": "yes"}):
             with self.subTest(tags=tags):
                 rows = self.rows_for([[10.0, 0.0], [90.0, 0.0]], 12.0, decks, parapets, tags=tags)
-                self.assertTrue(rows, "a mapped centre rail on a bridge must be drawn")
+                self.assertTrue(rows, "an explicitly mapped bridge-level rail must be drawn")
                 for row in rows:
                     self.assertAlmostEqual(row[3], 20.0, delta=0.05)
+
+    def test_untagged_parallel_rail_on_lower_road_is_not_lifted_onto_deck(self):
+        decks, parapets = self.deck_fixture()
+        rows = self.rows_for([[10.0, 0.0], [90.0, 0.0]], 12.0, decks, parapets)
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertAlmostEqual(row[3], 12.0, delta=0.05)
+
+    def test_guardrail_crossing_under_bridge_is_not_lifted_onto_deck(self):
+        decks, parapets = self.deck_fixture()
+        # This lower road crosses the bridge at right angles. A point-only deck lookup used
+        # to mistake the module at the crossing for a centre rail on the bridge.
+        rows = self.rows_for([[50.0, -15.0], [50.0, 15.0]], 12.0, decks, parapets)
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertAlmostEqual(row[3], 12.0, delta=0.05)
 
     def test_median_between_two_decks_stays_at_deck_height(self):
         decks = [{"n": [[0.0, -6.0, 20.0], [100.0, -6.0, 20.0]], "w": 8.0},
@@ -279,13 +295,33 @@ class GuardrailForestTest(unittest.TestCase):
         self.assertEqual(len(guardrails._drop_doubles(moved, built)), len(moved))
         self.assertEqual(guardrails._drop_doubles([list(r) for r in built], built), [])
 
-    def test_bridge_rails_come_with_forest_rows_even_without_mapped_data(self):
+    def test_bridge_rails_are_not_generated_without_mapped_data(self):
         decks, parapets = self.deck_fixture()
         rows = guardrails.forest_rows(self.frame, None, self.BOX, lambda *_: 0.0,
                                       decks=decks, parapets=parapets, bridge_rails=True)
-        self.assertEqual(rows, guardrails._self_doubles(guardrails.bridge_rows(parapets)))
+        self.assertEqual(rows, [])
         self.assertEqual(guardrails.forest_rows(self.frame, None, self.BOX, lambda *_: 0.0,
                                                 decks=decks, parapets=parapets), [])
+
+    def test_bridge_rails_are_generated_only_on_a_mapped_edge(self):
+        decks, parapets = self.deck_fixture()
+        rows = self.rows_for([[10.0, 4.5], [90.0, 4.5]], 20.0, decks, parapets,
+                             bridge_rails=True)
+        self.assertTrue(rows, "a mapped edge guardrail supports generation for that parapet")
+        self.assertTrue(all(row[2] > 0.0 for row in rows),
+                        "the un-mapped opposite edge must not receive generated guardrails")
+        expected_y = 4.0 + roadmesh.PARAPET_W / 2.0
+        for row in rows:
+            self.assertAlmostEqual(row[2], expected_y, delta=0.15)
+
+    def test_rails_elsewhere_near_a_bridge_do_not_trigger_bridge_generation(self):
+        decks, parapets = self.deck_fixture()
+        rows = self.rows_for([[10.0, 15.0], [90.0, 15.0]], 12.0, decks, parapets,
+                             bridge_rails=True)
+        self.assertTrue(rows, "the mapped roadside rail should still be kept")
+        self.assertTrue(all(abs(abs(row[2]) - (4.0 + roadmesh.PARAPET_W / 2.0)) > 0.5
+                            for row in rows),
+                        "a distant rail must not cause either bridge edge to be generated")
 
     def test_edge_offset_matches_the_parapet_strip_centre(self):
         self.assertAlmostEqual(guardrails.BRIDGE_EDGE_OFFSET_M, roadmesh.PARAPET_W / 2)
