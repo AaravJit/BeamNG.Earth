@@ -192,8 +192,8 @@ class GuardrailMeshTest(unittest.TestCase):
         np.testing.assert_allclose(back[14:17], one[14:17], atol=1e-4)
         self.assertAlmostEqual(abs(one[2] - back[2]), guardrails.TWO_SIDED_SPACING_M, places=3)
         self.assertAlmostEqual(0.5 * (one[2] + back[2]), 50.0, places=2)
-        self.assertGreater((one[2] - 50.0) * one[13], 0.0)
-        self.assertGreater((back[2] - 50.0) * back[13], 0.0)
+        self.assertLess((one[2] - 50.0) * one[13], 0.0)
+        self.assertLess((back[2] - 50.0) * back[13], 0.0)
 
     def test_guardrails_pitch_to_the_ground_grade(self):
         feats = self.features("guard_rail", xy=[[10.0, 50.0], [90.0, 50.0]])
