@@ -254,9 +254,10 @@ do
   nodesGE.handle('g:2-0:{"x":1}')
   nodesGE.handle('n:1-0:{"own":1}')
   T.check(#passed == 2 and #other.cmds == 0, 'break groups and our own cars: as BeamMP does')
+  core_camera = { getPosition = function() return vec3(100, 0, 0) end }     -- (our camera at the player)
+  other.pos = vec3(150, 0, 0)          -- 50 m from the camera: we see its crash
   nodesGE.handle('n:2-0:{"beams":{}}')
   T.check(#passed == 2 and #other.cmds == 0, 'another player\'s full damage: kept, nothing put on yet')
-  other.pos = vec3(150, 0, 0)          -- 50 m from the camera (the player at x = 100 here)
   ms.update(ms.HIDE_S, anchor, { x = 100, y = 0, z = 0 })
   T.check(#other.cmds == 0, 'near our camera: the copy keeps what our game worked out')
   other.pos = vec3(100 + ms.SYNC_RANGE_M + 10, 0, 0)
@@ -318,6 +319,14 @@ do
   nodesGE.handle('n:2-0:{"beams":{"1":1}}')
   settle()
   T.check(#other.cmds == n + 1 and other.cmds[#other.cmds]:find('requestReset', 1, true), 'a new state is')
+  -- damage that came while the car was away goes on near us too (it teleported up to us: we never saw that crash)
+  other.pos = vec3(100 + ms.SYNC_RANGE_M + 500, 0, 0)
+  nodesGE.handle('n:2-0:{"beams":{"2":1}}')
+  n = #other.cmds
+  other.pos = vec3(130, 0, 0)
+  ms.update(ms.HIDE_S, anchor, { x = 100, y = 0, z = 0 })
+  T.check(#other.cmds == n + 1, 'a state that came while it was away: put on near us too')
+  core_camera = nil
   map = nil
   MPVehicleGE = oldMP
   nodesGE, MPHelpers = nil, nil

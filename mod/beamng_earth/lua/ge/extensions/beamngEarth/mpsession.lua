@@ -532,6 +532,7 @@ local lastNodes = {}        -- game vehicle id -> its owner's last full damage (
 local stale = {}            -- game vehicle id -> true: may differ from its owner (a new state, or damage of its own)
 local morphs = {}           -- game vehicle id -> steps done: a copy's dents growing in (APPLY_VE's bngeMorph)
 local applied = {}          -- game vehicle id -> the owner's state last put on it: put on once
+local witnessed = {}        -- game vehicle id -> true: its stale damage came while it was near our camera (we saw it)
 local copyBase = {}         -- game vehicle id -> the copy's damage figure once settled (nil: to be taken)
 local copySince = {}        -- game vehicle id -> seconds it has differed from copyBase
 local copyQuiet = {}        -- game vehicle id -> seconds before copyBase is taken (after a state, a check, a reset)
@@ -568,6 +569,18 @@ local REPAIR_VE = APPLY_VE .. [[local raw, apply = %s, %s local ok, d = pcall(js
   .. [[obj:queueGameEngineLua("local m = package.loaded['beamngEarth/mpsession'] if m then m.afterRepairReset(%d, " .. extra .. ") end") ]]
   .. [[elseif apply and ok then applyDamage(d) end]]
 
+local function camPos()
+  local cam = rawget(_G, 'core_camera')
+  return cam and cam.getPosition and cam.getPosition() or nil
+end
+
+-- Is game vehicle gid within m of our camera (cam: its position; false when either is unknown)?
+local function within(gid, m, cam)
+  local veh = cam and vehicle(gid)
+  local q = veh and veh:getPosition()
+  return q ~= nil and (q.x - cam.x) ^ 2 + (q.y - cam.y) ^ 2 + (q.z - cam.z) ^ 2 < m ^ 2
+end
+
 function M.wrapNodes()
   local ng = rawget(_G, 'nodesGE')
   if not ng or type(ng.handle) ~= 'function' then return false end
@@ -583,6 +596,7 @@ function M.wrapNodes()
     local veh = vehicle(gid)
     if not veh then return orig(rawData) end
     lastNodes[gid], stale[gid] = data, true   -- (put on once it is in range: checkCopies; nothing done with it till then)
+    witnessed[gid] = within(gid, M.SYNC_FAR_M, camPos()) or nil
   end
   nodesWrapped = ng
   return true
@@ -626,12 +640,17 @@ local function checkCopies(owners, dt, cam)
       due, copySince[gid] = M.copyDue(dmg, copyBase[gid], copySince[gid], dt)
       -- (its damage moved after the owner's state went on: checked again once far, but not against the same state: the
       -- dents growing in tear a loose part or two off, and a Windows test copy was repaired 7 times in 90 s for it)
-      if due then stale[gid], copyBase[gid] = applied[gid] == nil or applied[gid] ~= lastNodes[gid], nil end
+      if due then
+        stale[gid], copyBase[gid] = applied[gid] == nil or applied[gid] ~= lastNodes[gid], nil
+        witnessed[gid] = within(gid, M.SYNC_FAR_M, cam) or nil
+      end
     end
     local veh = stale[gid] and cam and not deactivated[gid] and vehicle(gid)
     local q = veh and veh:getPosition()
     local d2 = q and (q.x - cam.x) ^ 2 + (q.y - cam.y) ^ 2 + (q.z - cam.z) ^ 2
-    if d2 and d2 >= M.SYNC_FAR_M ^ 2 and d2 <= M.SYNC_RANGE_M ^ 2 then
+    -- (nearer than SYNC_FAR_M too when the damage came while it was away: a car teleported up to us, or one that
+    -- jumped from out of range to near within a check, was never seen crashing here)
+    if d2 and d2 <= M.SYNC_RANGE_M ^ 2 and (d2 >= M.SYNC_FAR_M ^ 2 or not witnessed[gid]) then
       if lastNodes[gid] then
         pendingNodes[gid], applied[gid] = { raw = lastNodes[gid] }, lastNodes[gid]
         veh:queueLuaCommand(string.format(REPAIR_VE, string.format('%q', lastNodes[gid]), 'true', gid))
@@ -639,13 +658,13 @@ local function checkCopies(owners, dt, cam)
         pendingNodes[gid] = nil
         veh:queueLuaCommand(string.format(PRISTINE_VE, gid))
       end
-      stale[gid], copyBase[gid], copyQuiet[gid] = nil, nil, M.COPY_SETTLE_S
+      stale[gid], witnessed[gid], copyBase[gid], copyQuiet[gid] = nil, nil, nil, M.COPY_SETTLE_S
     end
   end
   for gid in pairs(lastNodes) do
     if not owners[gid] then lastNodes[gid], copyBase[gid], copySince[gid], copyQuiet[gid], applied[gid] = nil, nil, nil, nil, nil end
   end
-  for gid in pairs(stale) do if not owners[gid] then stale[gid] = nil end end
+  for gid in pairs(stale) do if not owners[gid] then stale[gid], witnessed[gid] = nil, nil end end
 end
 
 -- (the copy's vehicle Lua) gid's broken beams are on: its dents grow in from the next frame
@@ -982,7 +1001,7 @@ function M.reset()
     if veh then veh:queueLuaCommand('obj:setGravity(' .. gravityNow() .. ')') end
   end
   floating = {}
-  pendingNodes, lastNodes, copyBase, copySince, copyQuiet, stale, morphs, applied = {}, {}, {}, {}, {}, {}, {}, {}
+  pendingNodes, lastNodes, copyBase, copySince, copyQuiet, stale, morphs, applied, witnessed = {}, {}, {}, {}, {}, {}, {}, {}, {}
   deactivated, anchors, poseIn, hideIn, joined, wentTo, camPlaced, lastPlayers = {}, {}, 0, 0, false, false, false, -1
   waitGround = {}
   members, sentDamage, damageSince, restoredAt, restores = {}, {}, {}, {}, {}
