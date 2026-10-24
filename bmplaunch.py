@@ -3,8 +3,11 @@ launcher", the official BeamMP, unmodified). The official BeamMP launcher is fou
 BeamMP's GitHub releases and checked against the .sha256 published with it, then started with --no-launch before the
 game: it installs or updates BeamMP's mod in the game's mods/multiplayer and waits for the game, which connects to it
 by itself (port 4444). It is stopped when the game closes. BeamMP's code (AGPL-3.0) runs as BeamMP ships it; nothing of
-it is changed or kept in this project. Linux: BeamMP publishes no Linux build; one built from its source is used when
-found (BEAMMP_LAUNCHER, ~/BeamMP-Launcher, a BeamMP-Launcher on the PATH).
+it is changed or kept in this project. Linux: BeamMP publishes no Linux release, but builds one on every change to its
+master branch (GitHub Actions, cmake-linux.yml); BeamNG.Earth's release workflow attaches the newest successful one to
+each BeamNG.Earth release (BeamMP-Launcher-linux, its .sha256, and BeamMP's source commit), and it comes from there.
+One built from source is used when found (BEAMMP_LAUNCHER, ~/BeamMP-Launcher, a BeamMP-Launcher on the PATH).
+Whether BeamMP starts with BeamNG.Earth is the mod's setting beammpOnLaunch (the settings page; on_launch below).
 """
 import hashlib
 import json
@@ -20,6 +23,8 @@ IS_WIN = os.name == "nt"
 CORE_PORT = 4444                # the BeamMP launcher's port for the game (its Launcher.cfg default)
 READY_S = 120                   # its mod update (a few MB) and start, at most this long
 RELEASES = "https://api.github.com/repos/BeamMP/BeamMP-Launcher/releases/latest"
+OUR_RELEASES = "https://api.github.com/repos/TecnaGamer/BeamNG.Earth/releases/latest"   # (Linux: BeamMP's build)
+LINUX_ASSET = "BeamMP-Launcher-linux"
 EXE = "BeamMP-Launcher.exe" if IS_WIN else "BeamMP-Launcher"
 SETTINGS = "beammp.json"        # in the app's data folder: {"declined": true} once the player said no
 
@@ -43,6 +48,40 @@ def save_settings(data_dir, **kw):
 
 def declined(data_dir):
     return bool(_settings(data_dir).get("declined"))
+
+
+# The mod's settings file in the game's user folder (settings.lua M.FILE): beammpOnLaunch, the settings page's "Start
+# BeamMP with BeamNG.Earth" (default on). "No, and don't ask again" at the install question turns it off; turning it on
+# again in the game asks again at the next start.
+MOD_SETTINGS = os.path.join("settings", "beamngEarth.json")
+ON_LAUNCH = "beammpOnLaunch"
+
+
+def _mod_settings(user_dir):
+    try:
+        with open(os.path.join(user_dir, MOD_SETTINGS), encoding="utf-8") as f:
+            d = json.load(f)
+            return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def on_launch(user_dir, data_dir=None):
+    """Start BeamMP with the game? The mod's setting; an older app's "never ask" (beammp.json declined) counts as off
+    until the setting is written."""
+    v = _mod_settings(user_dir).get(ON_LAUNCH)
+    if isinstance(v, bool):
+        return v
+    return not (data_dir and declined(data_dir))
+
+
+def set_on_launch(user_dir, value):
+    d = _mod_settings(user_dir)
+    d[ON_LAUNCH] = bool(value)
+    path = os.path.join(user_dir, MOD_SETTINGS)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(d, f, indent=2)
 
 
 def candidates(data_dir, env=None, home=None):
@@ -127,10 +166,10 @@ def _get(url, user_agent, timeout=60):
         return r.read()
 
 
-def pick_assets(release):
-    """(exe url, sha256 url, version) from a GitHub release's JSON, or None."""
+def pick_assets(release, name="BeamMP-Launcher.exe"):
+    """(file url, sha256 url, version) of asset name (and name.sha256) in a GitHub release's JSON, or None."""
     urls = {a.get("name"): a.get("browser_download_url") for a in (release or {}).get("assets") or []}
-    exe, sha = urls.get("BeamMP-Launcher.exe"), urls.get("BeamMP-Launcher.exe.sha256")
+    exe, sha = urls.get(name), urls.get(name + ".sha256")
     if not exe or not sha:
         return None
     return exe, sha, str(release.get("tag_name") or "")
@@ -145,14 +184,16 @@ def parse_sha256(text):
     return None
 
 
-def download(data_dir, user_agent, say=print):
-    """Windows: the latest official BeamMP launcher into <data>/beammp, checked against its published SHA-256.
-    Returns its path, or None (no network, a bad checksum: nothing is kept)."""
+def download(data_dir, user_agent, say=print, win=None):
+    """The BeamMP launcher into <data>/beammp, checked against its published SHA-256: on Windows BeamMP's latest
+    release, on Linux BeamMP's master build attached to BeamNG.Earth's latest release. Returns its path, or None (no
+    network, none published yet, a bad checksum: nothing is kept)."""
+    win = IS_WIN if win is None else win
     try:
-        release = json.loads(_get(RELEASES, user_agent, 30).decode("utf-8"))
-        picked = pick_assets(release)
+        release = json.loads(_get(RELEASES if win else OUR_RELEASES, user_agent, 30).decode("utf-8"))
+        picked = pick_assets(release, "BeamMP-Launcher.exe" if win else LINUX_ASSET)
         if not picked:
-            say("BeamMP: no launcher download in its latest release")
+            say("BeamMP: no launcher download in " + ("its" if win else "BeamNG.Earth's") + " latest release")
             return None
         exe_url, sha_url, version = picked
         want = parse_sha256(_get(sha_url, user_agent, 30).decode("utf-8", "replace"))
@@ -171,7 +212,9 @@ def download(data_dir, user_agent, say=print):
     with open(tmp, "wb") as f:
         f.write(blob)
     os.replace(tmp, dest)
-    say(f"BeamMP: launcher {version} installed ({len(blob) // 1048576} MB, checksum verified)")
+    if not win:
+        os.chmod(dest, 0o755)
+    say(f"BeamMP: launcher {version} installed ({max(1, len(blob) // 1048576)} MB, checksum verified)")
     return dest
 
 
@@ -182,6 +225,21 @@ def game_user_path(user_dir):
     if base == "current" or base[:1].isdigit():
         return os.path.dirname(d)
     return d
+
+
+def system_too_old(exe, run=None):
+    """Linux: why this system can't run the launcher (BeamMP's build needs glibc 2.38 and GCC 13's libstdc++, Ubuntu
+    24.04 or newer, SteamOS 3.6 or newer), or None. Asks the system's loader, by starting it with --help."""
+    if IS_WIN:
+        return None
+    run = run or subprocess.run
+    try:
+        r = run([exe, "--help"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None                     # (it started: a slow --help is not the loader's refusal)
+    err = (r.stderr or "") + (r.stdout or "")
+    m = re.search(r"version `(GLIBC(?:XX)?_[0-9.]+)' not found", err)
+    return f"this system's libraries are too old for it ({m.group(1)} missing)" if m else None
 
 
 def start(exe, user_dir, log_path):

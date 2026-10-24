@@ -895,6 +895,36 @@ def main():
         sys.exit(1)
 
 
+def beammp_install(user_dir, dd, ask=None):
+    """BeamMP isn't installed: the player is asked (the user, 2026-10-24: "Yes/No/No and dont ask again", on both
+    systems). Yes: the official launcher downloaded (bmplaunch.download). No: not this time. Don't ask again: the
+    setting "Start BeamMP with BeamNG.Earth" turned off (turning it on again in the game asks again). Returns the
+    launcher's path, or None."""
+    import bmplaunch
+    ask = ask or input
+    say("BeamMP (multiplayer: play on BeamNG.Earth servers with other players) is not installed.")
+    try:
+        answer = ask("  Install the official BeamMP launcher now (a few MB from GitHub)? [Y]es / [N]o / [D]on't ask "
+                     "again: ")
+    except (EOFError, OSError):
+        return None                         # (no console to ask in: asked next time)
+    answer = (answer or "").strip().lower()
+    if answer in ("d", "don't", "dont", "never"):
+        bmplaunch.set_on_launch(user_dir, False)
+        say("  Not installed, and not asked again. To use multiplayer later, turn on \"Start BeamMP with BeamNG.Earth\"")
+        say("  in the game: Pause menu, Mods, BeamNG.Earth.")
+        return None
+    if answer in ("n", "no"):
+        say("  Not installed this time.")
+        return None
+    import install
+    exe = bmplaunch.download(dd, f"BeamNG.Earth/{install.version()}", say=lambda m: say("  " + m))
+    if exe and IS_WIN:          # (BeamMP's own installer sets the firewall up; started from here Windows asks once)
+        say("  Windows Firewall may ask whether the BeamMP launcher may use the network: allow it, or multiplayer "
+            "cannot connect.")
+    return exe
+
+
 def beammp_up(user_dir, build, args):
     """BeamMP for multiplayer (bmplaunch.py): the official BeamMP launcher started before the game (it updates BeamMP's
     mod in the game, which then connects to it). Returns its process (stopped with the server), or None."""
@@ -908,29 +938,19 @@ def beammp_up(user_dir, build, args):
         row("Multiplayer", "BeamMP is already running")
         return None
     dd = data_dir()
+    if not bmplaunch.on_launch(user_dir, dd):
+        row("Multiplayer", "BeamMP not started (turned off: BeamNG.Earth settings, \"Start BeamMP with BeamNG.Earth\")")
+        return None
     exe = bmplaunch.find(dd)
-    if not exe and IS_WIN and not bmplaunch.declined(dd):
-        say("BeamMP (multiplayer: join BeamNG.Earth servers with other players) is not installed.")
-        try:
-            answer = input("  Install the official BeamMP launcher now (about 7 MB from BeamMP's GitHub)? [Y/n] ")
-        except (EOFError, OSError):
-            answer = None                   # (no console to ask in: asked next time)
-        if answer is not None and answer.strip().lower() in ("n", "no"):
-            bmplaunch.save_settings(dd, declined=True)
-            say("  Not installed; it is not asked again (delete " + os.path.join(dd, bmplaunch.SETTINGS) +
-                " to be asked).")
-        elif answer is not None:
-            import install
-            exe = bmplaunch.download(dd, f"BeamNG.Earth/{install.version()}", say=lambda m: say("  " + m))
-            if exe:     # (BeamMP's own installer sets the firewall up; started from here Windows asks once)
-                say("  Windows Firewall may ask whether the BeamMP launcher may use the network: allow it, or "
-                    "multiplayer cannot connect.")
     if not exe:
-        if not IS_WIN:
-            row("Multiplayer", "BeamMP not found (BeamMP has no Linux download: build it from "
-                "github.com/BeamMP/BeamMP-Launcher, or set BEAMMP_LAUNCHER to it)")
-        else:
-            row("Multiplayer", "BeamMP not installed")
+        exe = beammp_install(user_dir, dd)
+    if exe and not IS_WIN:
+        too_old = bmplaunch.system_too_old(exe)
+        if too_old:
+            row("Multiplayer", f"BeamMP cannot start: {too_old}")
+            return None
+    if not exe:
+        row("Multiplayer", "BeamMP not installed")
         return None
     log_path = os.path.join(dd, "logs", "beammp-launcher.log")
     proc = bmplaunch.start(exe, user_dir, log_path)
