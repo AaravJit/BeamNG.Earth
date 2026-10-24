@@ -29,8 +29,7 @@ M.MATERIAL_FILES = { '/levels/west_coast_usa/art/road/main.materials.json',
   '/levels/italy/art/shapes/buildings/main.materials.json',        -- italy_cobblestone (paving stones)
   '/levels/driver_training/art/road/main.materials.json',          -- m_metal_grid_drain (storm drains)
   '/levels/gridmap_v2/art/shapes/grid/main.materials.json',        -- m_gm_concrete_plain (concrete streets)
-  '/levels/beamng_earth/art/shapes/beamngEarth/buildings.materials.json', -- buildings (server/buildings.py)
-  '/art/shapes/objects/main.materials.json' } -- stock object materials used by generated meshes
+  '/levels/beamng_earth/art/shapes/beamngEarth/buildings.materials.json' } -- buildings (server/buildings.py)
 M.FADE = '450 150'          -- distanceFade: start, range (m)
 M.enabled = true
 -- be:reloadCollision() at most this often: every rebuild is a ~20 ms physics frame (2026-10-13, the
@@ -97,8 +96,6 @@ local anchorId = nil
 local far = {}              -- far buildings (server buildings.far_tile): key "a:tx_ty" -> { anchor, id, shape, pos, hidden }
 local farQ = {}             -- keys of far tiles to make
 local lastError = nil
--- Guardrail lifecycle counters: diagnose render-only mesh queue drops in the field.
-local guardrailDiag = { queued = 0, started = 0, made = 0, failed = 0, droppedTile = 0, droppedRebase = 0, stale = 0 }
 local sinceChange = stopwatch.new()  -- ms since a tile arrived / went or a road was made / deleted
 local sinceReload = stopwatch.new()
 local collisionDirty = false
@@ -250,20 +247,13 @@ local function dropTile(key)
   if t.deck then deleteQ[#deleteQ + 1] = t.deck end
   for _, w in ipairs({ 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'walkcol', 'tunnel' }) do if t[w] then deleteQ[#deleteQ + 1] = t[w] end end
   if t.wire then deleteQ[#deleteQ + 1] = t.wire end
-  if t.guardrail then deleteQ[#deleteQ + 1] = t.guardrail end
   -- and its meshes not made yet (from KyzoFox's 1.5.4, PR #64): a tile sent again under the same key left its old
   -- walkQ / held / createQ entries, which were then made for the new tile from pooled shape paths that had just been
   -- reported gone and refilled with another tile's shape: that tile's buildings drawn here at its ground height (houses
   -- floating in the sky near Cleburne, AL, 2026-10-19)
   local function purge(list)
     local keep = {}
-    for _, q in ipairs(list) do
-      if q.key ~= key then
-        keep[#keep + 1] = q
-      elseif q.what == 'guardrail' then
-        guardrailDiag.droppedTile = guardrailDiag.droppedTile + 1
-      end
-    end
+    for _, q in ipairs(list) do if q.key ~= key then keep[#keep + 1] = q end end
     return keep
   end
   parked, walkQ, held, createQ = purge(parked), purge(walkQ), purge(held), purge(createQ)
@@ -418,7 +408,7 @@ function M.onTile(msg, currentAnchor)
   end
   -- pooled shape files: the server's slot paths instead of the tile's own files
   local slots = {}
-  for _, what in ipairs({ 'road', 'deck', 'walk', 'walkcol', 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'wire', 'tunnel', 'guardrail' }) do
+  for _, what in ipairs({ 'road', 'deck', 'walk', 'walkcol', 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'wire', 'tunnel' }) do
     local sl = msgSlot(msg, what)
     if sl then
       if type(data[what]) == 'table' and type(data[what].pos) == 'table' then
@@ -451,10 +441,6 @@ function M.onTile(msg, currentAnchor)
   if type(data.park) == 'table' and data.park[1] then      -- curbside parking spots (parking.lua)
     require('beamngEarth/parking').onRows(msg.anchorId, key, data.park)
     tiles[key].park = true
-  end
-  if type(data.guardrail) == 'table' and data.guardrail.shape and type(data.guardrail.pos) == 'table' then
-    walkQ[#walkQ + 1] = { key = key, walk = data.guardrail, what = 'guardrail', tile = tiles[key], renderOnly = true }
-    guardrailDiag.queued = guardrailDiag.queued + 1
   end
   if type(data.wire) == 'table' and data.wire.shape and type(data.wire.pos) == 'table' then    -- pole wires
     walkQ[#walkQ + 1] = { key = key, walk = data.wire, what = 'wire', tile = tiles[key] }
@@ -558,7 +544,7 @@ M.GHOST_FAR_M = 960         -- ... and once farther from the player than this (t
 M.GHOST_FAR_WAIT_S = 2      -- ... from this long after the rebase on
 local ghostSince = nil      -- stopwatch since the last rebase that left ghosts
 
-local WHATS = { 'walk', 'road', 'deck', 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'walkcol', 'wire', 'guardrail', 'tunnel' }
+local WHATS = { 'walk', 'road', 'deck', 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'walkcol', 'wire', 'tunnel' }
 
 function M.transform(xf, geodesy)
   local bx, by, bz, bw = xf:beamngQuat()
@@ -593,13 +579,7 @@ function M.transform(xf, geodesy)
   end
   local function keepNew(list)
     local keep = {}
-    for _, q in ipairs(list) do
-      if tiles[q.key] and not tiles[q.key].ghost then
-        keep[#keep + 1] = q
-      elseif q.what == 'guardrail' then
-        guardrailDiag.droppedRebase = guardrailDiag.droppedRebase + 1
-      end
-    end
+    for _, q in ipairs(list) do if tiles[q.key] and not tiles[q.key].ghost then keep[#keep + 1] = q end end
     return keep
   end
   walkQ, createQ, parked = keepNew(walkQ), keepNew(createQ), keepNew(parked)
@@ -735,10 +715,7 @@ function M.update(gov, currentAnchor, player, view)
     if forced then forced, sinceUrgent, M.urgentWalks = nil, 0, (M.urgentWalks or 0) + 1 end
     local t = tiles[q.key]
     if t and q.tile and q.tile ~= t then t = nil end
-    if q.what == 'guardrail' then
-      guardrailDiag.started = guardrailDiag.started + 1
-      if not t then guardrailDiag.stale = guardrailDiag.stale + 1 end
-    end   -- (an entry of an earlier tile under this key: not made)
+    -- (an entry of an earlier tile under this key: not made)
     -- (only a colliding mesh waits: a render-only one (q.renderOnly: the drawn sidewalks and buildings beside their lean
     -- collision meshes) cannot catch the car, and holding it hid a whole tile's sidewalks while the car stood in their
     -- box: a roundabout's island band was never drawn, 2026-10-17 Harbor Point)
@@ -749,14 +726,10 @@ function M.update(gov, currentAnchor, player, view)
     if t then
       local t0 = now()
       loadMaterials()
-      local isRoad = q.what == 'road' or q.what == 'wire' or q.what == 'guardrail' or q.renderOnly   -- render-only meshes
+      local isRoad = q.what == 'road' or q.what == 'wire' or q.renderOnly   -- render-only meshes
       -- the buildings' and sidewalks' lean meshes are a collision detail (server cdae collision_only): never drawn
       local ok, id = pcall(createWalk, q.walk, (q.what == 'bldcol' or q.what == 'walkcol') and 'Collision Mesh' or not isRoad)
       if ok then slotMade(id, q.walk.shape) end
-      if q.what == 'guardrail' then
-        if ok then guardrailDiag.made = guardrailDiag.made + 1
-        else guardrailDiag.failed = guardrailDiag.failed + 1 end
-      end
       if ok then
         if not isRoad then t.cq = t.cq or {}; t.cq[q.what] = q end
         if isRoad then t[q.what] = id else
@@ -1111,28 +1084,21 @@ function M.ahead(x, y, hx, hy, dist)
 end
 
 function M.status()
-  local nt, no, nw, nr, nd, nb, ng, ngForest, ngRows = 0, 0, 0, 0, 0, 0, 0, 0, 0
+  local nt, no, nw, nr, nd, nb, ngForest, ngRows = 0, 0, 0, 0, 0, 0, 0, 0
   for _, t in pairs(tiles) do
     nt = nt + 1; no = no + #t.objs
     if t.walk then nw = nw + 1 end
     if t.road then nr = nr + 1 end
-    if t.deck then nd = (nd or 0) + 1 end
+    if t.deck then nd = nd + 1 end
     if t.bld then nb = nb + 1 end
-    if t.guardrail then ng = ng + 1 end
     if t.guardrails then ngForest = ngForest + 1; ngRows = ngRows + (t.guardrailRows or 0) end
   end
   local nf = 0
   for _, f in pairs(far) do if f.id and not f.hidden then nf = nf + 1 end end
-  local guardrailQueued = 0
-  for _, q in ipairs(walkQ) do if q.what == 'guardrail' then guardrailQueued = guardrailQueued + 1 end end
   return { enabled = M.enabled, tiles = nt, roads = no, queued = #createQ, deleting = #deleteQ, anchor = anchorId,
-    walks = nw, roadMeshes = nr, decks = nd, buildings = nb, guardrails = ng, guardrailForestTiles = ngForest,
-    guardrailForestRows = ngRows, farBuildings = nf, walksQueued = #walkQ,
-    guardrailsQueued = guardrailQueued, guardrailDiag = { queued = guardrailDiag.queued, started = guardrailDiag.started,
-      made = guardrailDiag.made, failed = guardrailDiag.failed, droppedTile = guardrailDiag.droppedTile,
-      droppedRebase = guardrailDiag.droppedRebase, stale = guardrailDiag.stale },
-    solidAround = M.solidAround or 0, urgentWalks = M.urgentWalks or 0,
-    quietS = sinceChange() / 1000, error = lastError, units = unitStats, unitLog = unitLog }
+    walks = nw, roadMeshes = nr, decks = nd, buildings = nb, guardrailForestTiles = ngForest,
+    guardrailForestRows = ngRows, farBuildings = nf, walksQueued = #walkQ, solidAround = M.solidAround or 0,
+    urgentWalks = M.urgentWalks or 0, quietS = sinceChange() / 1000, error = lastError, units = unitStats, unitLog = unitLog }
 end
 
 local okSweep, swept = pcall(M.sweep)
