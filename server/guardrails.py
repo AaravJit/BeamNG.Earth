@@ -598,6 +598,10 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=()):
                     # is not mistaken for the bridge's own guardrail.
                     source_a, source_b = a, b
                     parapet_xy_match = _overlaps_bridge_parapet(source_a, source_b, parapet_segments)
+                    if not parapet_xy_match:
+                        parapet_xy_match = _overlaps_bridge_parapet(
+                            source_a, source_b, parapet_segments,
+                            distance_limit=OUTER_PARAPET_DUPLICATE_M, outer_only=True)
                     if two_sided:
                         # The model's visible side is opposite its back axis. Keep the backs
                         # toward the centre gap and the visible faces outward on both sides.
