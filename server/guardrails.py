@@ -450,6 +450,10 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=()):
                         candidates.append((5, last_b, last_a, last_b, last_rank, True))
 
                 for group, p, a, b, rank, reverse in candidates:
+                    # Match the original mapped line before offsets for two-sided models. Otherwise
+                    # a central separator near the inner parapets could be shifted onto the match band.
+                    if _overlaps_bridge_parapet(a, b, parapet_segments):
+                        continue
                     if two_sided:
                         # The model's visible side is opposite its back axis. Keep the backs
                         # toward the centre gap and the visible faces outward on both sides.
@@ -460,10 +464,6 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=()):
                             side = 1.0 if reverse else -1.0
                             offset = normal * (0.5 * TWO_SIDED_SPACING_M * side)
                             p, a, b = p + offset, a + offset, b + offset
-                    # Only suppress a mapped rail that follows a generated bridge parapet for
-                    # most of the module's length. Central separators and crossing lines remain.
-                    if _overlaps_bridge_parapet(a, b, parapet_segments):
-                        continue
                     placements.append((group, p, a, b, rank, reverse))
 
     if not placements:
