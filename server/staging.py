@@ -70,7 +70,7 @@ def tmp_for(path):
     return os.path.join(d, f"{os.getpid()}_{threading.get_ident()}_{next(_serial)}_{os.path.basename(path)}.tmp")
 
 
-WARM_READ = os.name == "nt" and os.environ.get("BNGE_WARM_READ", "1") != "0"
+WARM_READ = os.environ.get("BNGE_WARM_READ", "1" if os.name == "nt" else "0") != "0"   # (=1 elsewhere: tests)
 WARM_CHUNK = 1 << 20
 
 
