@@ -585,8 +585,6 @@ def _self_doubles(rows, dist=0.9, dot=0.8, dz=1.5):
 def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=(), bridge_rails=False,
                 supported_decks_out=None):
     """Return Forest-item rows for the stock Italy guardrail model.
-    if supported_decks_out is not None:
-        supported_decks_out.clear()
 
     Row layout matches trees.lua:
       [group, x, y, z, yaw, unused, height, rank, forwardXYZ, backXYZ, upXYZ]
@@ -601,6 +599,8 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=(), bridge_rail
     are dropped, and aligned approach rails join the bridge over JOIN_LENGTH_M.
     When supplied, supported_decks_out receives the indices of decks supported by mapped rails.
     """
+    if supported_decks_out is not None:
+        supported_decks_out.clear()
     # Bridge rails must be supported by mapped guardrail evidence on the corresponding deck edge;
     # never infer that every bridge needs railings just because a bridge mesh exists.
     rails = []

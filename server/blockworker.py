@@ -406,7 +406,7 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
                                cells, (box[0]-10, box[1]-10, box[2]+10, box[3]+10))]
         guardrail_rows = guardrailsmod.forest_rows(frame, infra_fn, box, elev,
                                                    decks=guardrail_decks, parapets=parapets,
-                                                       bridge_rails=roadmeshmod.BRIDGE_RAILS,
+                                                   bridge_rails=roadmeshmod.BRIDGE_RAILS,
                                                    supported_decks_out=low_parapet_decks)
     except Exception as ex:
         log.warning("mapped guardrails: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
