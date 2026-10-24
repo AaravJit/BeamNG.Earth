@@ -748,7 +748,15 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=(), bridge_rail
     # Build rails only for parapet runs supported by at least two mapped modules (about 5.8 m
     # of mapped guardrail). This filters out incidental crossings and bridges with no mapped rail data.
     if bridge_rails:
-        supported = [run for run, hits in zip(parapets, support_hits) if len(hits) >= 2]
+        # A mapped rail on either edge or its approach supports the whole deck: roads commonly
+        # have two physical sides even when OSM only mapped one of them. Do not enable unrelated decks.
+        supported_decks = {
+            run.get("deck", i)
+            for i, (run, hits) in enumerate(zip(parapets, support_hits))
+            if len(hits) >= 2
+        }
+        supported = [run for i, run in enumerate(parapets)
+                     if run.get("deck", i) in supported_decks]
         rails = _self_doubles(bridge_rows(supported)) if supported else []
 
     if not placements:
@@ -810,7 +818,7 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=(), bridge_rail
             # the bridge level or the sampled terrain agrees with the deck. Explicit bridge tags still win.
             ground = ground_z[j]
             untagged_lower_level = (
-                mode == "deck" and pl["hint"] is None and
+                pl["hint"] is None and
                 np.any(np.isfinite(dz) & np.isfinite(ground) &
                        (np.abs(dz - ground) > DECK_AUTO_SNAP_TOLERANCE_M))
             )
