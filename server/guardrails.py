@@ -332,9 +332,9 @@ def forest_rows(frame, infra_fn, exact, elev, decks=()):
                         placements.append((1, start, start_tangent))
                     if x0 <= end[0] < x1 and y0 <= end[1] < y1:
                         placements.append((2, end, end_tangent))
-                    count = int(math.ceil((total - MODULE_LENGTH_M) / MODULE_STEP_M)) + 1
-                    distances = np.linspace(MODULE_LENGTH_M / 2.0,
-                                            total - MODULE_LENGTH_M / 2.0, count)
+                    distances = np.arange(MODULE_LENGTH_M / 2.0,
+                                          total - MODULE_LENGTH_M / 2.0 + 1e-6,
+                                          MODULE_STEP_M)
                 for distance in distances:
                     p, tangent = _at(line, arc, float(distance))
                     if x0 <= p[0] < x1 and y0 <= p[1] < y1:
