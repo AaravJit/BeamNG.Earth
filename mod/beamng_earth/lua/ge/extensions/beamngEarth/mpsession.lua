@@ -513,12 +513,26 @@ end
 M.REPAIR_FRAMES = 3
 local nodesWrapped = nil   -- the nodesGE table wrapped (BeamMP reloading it makes a new one)
 local pendingNodes = {}     -- game vehicle id -> { b64, frames } (the owner's state, applied after the reset)
-local REPAIR_VE = [[local raw = mime.unb64('%s') local ok, d = pcall(jsonDecode, raw) local extra = 0 ]]
+-- Copies checked again after damage of their own (2026-10-24, three players: a copy took 24 broken beams after its
+-- owner's full damage had come, the two cars still pushing into each other; the owner's damage barely moved, so it sent
+-- nothing more and the copy stayed broken). A copy whose damage figure moved DAMAGE_STEP from where it had settled,
+-- with no full damage from its owner for COPY_SETTLE_S (longer than the owner's DAMAGE_SETTLE_S and the trip), is
+-- checked against the owner's last state as above, without applying it again when nothing broke here only. No state
+-- yet: the owner's car had less than DAMAGE_STEP damage while we were near, so beams broken here mean a reset to new.
+M.COPY_SETTLE_S = 4
+local lastNodes = {}        -- game vehicle id -> its owner's last full damage (b64)
+local copyBase = {}         -- game vehicle id -> the copy's damage figure once settled (nil: to be taken)
+local copySince = {}        -- game vehicle id -> seconds it has differed from copyBase
+local copyQuiet = {}        -- game vehicle id -> seconds before copyBase is taken (after a state, a check, a reset)
+local PRISTINE_VE = [[local n = 0 for _, b in pairs(v.data.beams) do if obj:beamIsBroken(b.cid) then n = n + 1 end end ]]
+  .. [[if n > 0 then obj:requestReset(RESET_PHYSICS) ]]
+  .. [[obj:queueGameEngineLua("local m = package.loaded['beamngEarth/mpsession'] if m then m.afterRepairReset(%d, " .. n .. ") end") end]]
+local REPAIR_VE = [[local raw, apply = mime.unb64('%s'), %s local ok, d = pcall(jsonDecode, raw) local extra = 0 ]]
   .. [[if ok and type(d) == 'table' and type(d.beams) == 'table' then for cid, b in pairs(d.beams) do ]]
   .. [[if b[2] ~= true and obj:beamIsBroken(tonumber(cid) - 1) then extra = extra + 1 end end end ]]
   .. [[if extra > 0 then obj:requestReset(RESET_PHYSICS) ]]
   .. [[obj:queueGameEngineLua("local m = package.loaded['beamngEarth/mpsession'] if m then m.afterRepairReset(%d, " .. extra .. ") end") ]]
-  .. [[elseif nodesVE then nodesVE.applyNodes(raw) end]]
+  .. [[elseif apply and nodesVE then nodesVE.applyNodes(raw) end]]
 
 function M.wrapNodes()
   local ng = rawget(_G, 'nodesGE')
@@ -535,8 +549,9 @@ function M.wrapNodes()
     local veh = vehicle(gid)
     if not veh then return orig(rawData) end
     local b64 = h.b64encode(data)
-    pendingNodes[gid] = { b64 = b64 }
-    veh:queueLuaCommand(string.format(REPAIR_VE, b64, gid))
+    pendingNodes[gid], lastNodes[gid] = { b64 = b64 }, b64
+    copyBase[gid], copyQuiet[gid] = nil, M.COPY_SETTLE_S
+    veh:queueLuaCommand(string.format(REPAIR_VE, b64, 'true', gid))
   end
   nodesWrapped = ng
   return true
@@ -545,10 +560,52 @@ end
 -- (the copy's vehicle Lua) gid was reset for a repair: its owner's state goes on REPAIR_FRAMES frames later
 function M.afterRepairReset(gid, extra)
   local p = pendingNodes[tonumber(gid)]
-  if not p then return end
-  p.frames = M.REPAIR_FRAMES
+  if p then p.frames = M.REPAIR_FRAMES end
   log('I', 'beamngEarth', string.format('BeamMP: car %s repaired (%s beams broken here only): its owner\'s damage again',
     tostring(gid), tostring(extra)))
+end
+
+-- Pure: is a copy's own damage due a check? damage now, base: where it settled, since: seconds it has differed.
+-- -> due, since (updated)
+function M.copyDue(damage, base, since, dt)
+  if not damage or not base or math.abs(damage - base) < M.DAMAGE_STEP then return false, 0 end
+  since = (since or 0) + dt
+  return since >= M.COPY_SETTLE_S, since
+end
+
+-- (every HIDE_S) owners: the other players' cars here
+local function checkCopies(owners, dt)
+  local objs = rawget(_G, 'map') and map.objects or {}
+  for gid in pairs(owners) do
+    local o = objs[gid]
+    local dmg = o and tonumber(o.damage)
+    local p = pendingNodes[gid]
+    if not dmg or deactivated[gid] or (p and p.frames) then
+      copyBase[gid] = nil
+    elseif (copyQuiet[gid] or 0) > 0 then
+      copyQuiet[gid] = copyQuiet[gid] - dt
+    elseif not copyBase[gid] then
+      copyBase[gid], copySince[gid] = dmg, 0
+    else
+      if dmg < M.DAMAGE_STEP and copyBase[gid] >= M.DAMAGE_STEP then lastNodes[gid] = nil end   -- (its owner reset it)
+      local due
+      due, copySince[gid] = M.copyDue(dmg, copyBase[gid], copySince[gid], dt)
+      local veh = due and vehicle(gid)
+      if veh then
+        if lastNodes[gid] then
+          pendingNodes[gid] = { b64 = lastNodes[gid] }
+          veh:queueLuaCommand(string.format(REPAIR_VE, lastNodes[gid], 'false', gid))
+        else
+          pendingNodes[gid] = nil
+          veh:queueLuaCommand(string.format(PRISTINE_VE, gid))
+        end
+        copyBase[gid], copyQuiet[gid] = nil, M.COPY_SETTLE_S
+      end
+    end
+  end
+  for gid in pairs(lastNodes) do
+    if not owners[gid] then lastNodes[gid], copyBase[gid], copySince[gid], copyQuiet[gid] = nil, nil, nil, nil end
+  end
 end
 
 local function applyPendingNodes()
@@ -717,6 +774,7 @@ function M.update(dt, anchor, player)
     if mpanchor.isFar(sid) then hide[gid] = true end     -- (not placed: beyond our world)
   end
   M.sendDamage(lat, lon, M.HIDE_S)
+  checkCopies(owners, M.HIDE_S)
   M.restoreDeleted(lat, lon)
   for gid in pairs(hide) do
     if not deactivated[gid] then
@@ -836,7 +894,7 @@ function M.reset()
     if veh then veh:queueLuaCommand('obj:setGravity(' .. gravityNow() .. ')') end
   end
   floating = {}
-  pendingNodes = {}
+  pendingNodes, lastNodes, copyBase, copySince, copyQuiet = {}, {}, {}, {}, {}
   deactivated, anchors, poseIn, hideIn, joined, wentTo, camPlaced, lastPlayers = {}, {}, 0, 0, false, false, false, -1
   waitGround = {}
   members, sentDamage, damageSince, restoredAt, restores = {}, {}, {}, {}, {}

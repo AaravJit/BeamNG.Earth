@@ -235,11 +235,24 @@ do
   nodesGE.handle('n:2-0:{"beams":{}}')
   T.check(#passed == 2 and other.cmds[1]:find('requestReset(RESET_PHYSICS)', 1, true) and other.cmds[1]:find("B64(", 1, true),
     'another player\'s full damage: checked in its vehicle Lua (reset if beams broke here only)')
+  T.check(other.cmds[1]:find("'), true ", 1, true) ~= nil, 'a fresh state is applied when nothing broke here only')
   ms.afterRepairReset(21, 5)
   for _ = 1, ms.REPAIR_FRAMES do ms.update(0.01, anchor, { x = 100, y = 0, z = 0 }) end
   T.check(other.cmds[#other.cmds]:find('nodesVE.applyNodes', 1, true) ~= nil, 'after the reset: the owner\'s state applied')
   MPVehicleGE = oldMP
   nodesGE, MPHelpers = nil, nil
+end
+
+-- a copy's own damage checked again: once it moved DAMAGE_STEP from where it settled, for COPY_SETTLE_S
+T.check(ms.copyDue(30, 0, 0, 0.5) == false, 'copy check: a small change is not due')
+T.check(ms.copyDue(500, nil, 0, 0.5) == false, 'copy check: no settled figure yet')
+do
+  local due, since = ms.copyDue(500, 0, 0, 0.5)
+  T.check(due == false and since == 0.5, 'copy check: a big change starts the wait')
+  due = ms.copyDue(500, 0, ms.COPY_SETTLE_S, 0.5)
+  T.check(due == true, 'copy check: due after COPY_SETTLE_S')
+  local _, back = ms.copyDue(510, 500, 3, 0.5)
+  T.check(back == 0, 'copy check: back near its figure: the wait starts over')
 end
 
 T.done('test_mpsession')
