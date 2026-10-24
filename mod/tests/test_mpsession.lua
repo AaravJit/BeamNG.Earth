@@ -249,28 +249,39 @@ do
   for _ = 1, ms.REPAIR_FRAMES do ms.update(0.01, anchor, { x = 100, y = 0, z = 0 }) end
   T.check(other.cmds[#other.cmds]:find('applyDamage(d)', 1, true) ~= nil, 'after the reset: the owner\'s state applied')
   T.check(loadstring(other.cmds[1]) ~= nil and loadstring(other.cmds[#other.cmds]) ~= nil, 'the vehicle Lua compiles')
-  -- run it as the vehicle Lua of BeamNG 0.40 (beamstate.onBeamDeformed; no beamDeformed): every beam applied, the
-  -- nodes carried from the owner's frame (car along +x) onto the copy's (turned to +y, 50 m on)
+  -- run it as the vehicle Lua of BeamNG 0.40 (beamstate.onBeamDeformed; no beamDeformed): the broken beams at once,
+  -- the dents grown in by the morph steps, which M.update sends MORPH_STEPS frames in a row
   do
-    local broke, lens, deformedN, set = {}, {}, 0, {}
-    local pos = { [0] = vec3(50, 0, 0), [1] = vec3(50, -2, 0), [2] = vec3(49, 0, 0) }  -- ref, back, left now
-    local env = { type = type, pairs = pairs, tonumber = tonumber, tostring = tostring, pcall = pcall, vec3 = vec3,
-      jsonDecode = function() return { nodes = { { { x = 0, y = 0, z = 0 } }, { { x = -2, y = 0, z = 0 } },
-        { { x = 0, y = 1, z = 0 } }, { { x = 3, y = 0, z = 0 } } },
+    local broke, lens, deformedN, morphFrom = {}, { [0] = 1, [1] = 1, [2] = 2 }, 0, nil
+    local env = { type = type, pairs = pairs, tonumber = tonumber, tostring = tostring, pcall = pcall,
+      jsonDecode = function() return { nodes = { { { x = 0, y = 0, z = 0 } } },
         beams = { { 1.5, false, 0.2 }, { 1, true, 0 }, { 2, false, 0 } } } end,
       mime = { unb64 = function(x) return x end },
-      v = { data = { refNodes = { [0] = { ref = 0, back = 1, left = 2 } } } },
       obj = { setNodeMass = function() end, beamIsBroken = function(_, cid) return broke[cid] == true end,
         breakBeam = function(_, cid) broke[cid] = true end, setBeamLength = function(_, cid, l) lens[cid] = l end,
-        getNodePosition = function(_, cid) return pos[cid] end, setNodePosition = function(_, cid, p) set[cid] = p end },
+        getBeamRestLength = function(_, cid) return lens[cid] end, getID = function() return 21 end,
+        queueGameEngineLua = function(_, c) morphFrom = c end,
+        setNodePosition = function() error('no node positions') end },
       beamstate = { beamBroken = function() end, onBeamDeformed = function() deformedN = deformedN + 1 end } }
     local fn = assert(loadstring(other.cmds[#other.cmds]))
     setfenv(fn, env)
     fn()
-    T.check(broke[1] and lens[0] == 1.5 and lens[2] == 2 and deformedN == 1, 'BeamNG 0.40: broken, lengths and dents applied')
-    local p3 = set[3]
-    T.check(p3 and math.abs(p3.x - 50) < 1e-9 and math.abs(p3.y - 3) < 1e-9 and math.abs(p3.z) < 1e-9,
-      'a node 3 m ahead of the owner\'s ref node is put 3 m ahead of the copy\'s, in the copy\'s heading')
+    T.check(broke[1] and lens[0] == 1 and deformedN == 0, 'the broken beams at once, the dents not yet')
+    T.check(morphFrom and morphFrom:find('startMorph(21)', 1, true), 'the morph started (GE told)')
+    local n = #other.cmds
+    ms.startMorph(21)
+    for _ = 1, ms.MORPH_STEPS do ms.update(0.01, anchor, { x = 100, y = 0, z = 0 }) end
+    T.check(#other.cmds == n + ms.MORPH_STEPS and other.cmds[#other.cmds]:find('bngeMorph(1.0000)', 1, true),
+      'a morph step each frame, the last at 1')
+    for k = n + 1, #other.cmds do
+      local step = assert(loadstring(other.cmds[k]))
+      setfenv(step, env)
+      step()
+      if k == n + ms.MORPH_STEPS / 2 then T.near(lens[0], 1.25, 1e-3, 'half way: half the dent') end
+    end
+    T.check(lens[0] == 1.5 and lens[2] == 2 and deformedN == 1 and env.bngeDmg == nil, 'BeamNG 0.40: the dents on at the end')
+    ms.update(0.01, anchor, { x = 100, y = 0, z = 0 })
+    T.check(#other.cmds == n + ms.MORPH_STEPS, 'no more steps')
   end
   MPVehicleGE = oldMP
   nodesGE, MPHelpers = nil, nil

@@ -523,35 +523,35 @@ M.COPY_SETTLE_S = 4
 M.SYNC_FAR_M = 150          -- a copy takes its owner's damage only this far from our camera (m)
 local lastNodes = {}        -- game vehicle id -> its owner's last full damage (b64)
 local stale = {}            -- game vehicle id -> true: may differ from its owner (a new state, or damage of its own)
+local morphs = {}           -- game vehicle id -> steps done: a copy's dents growing in (APPLY_VE's bngeMorph)
 local copyBase = {}         -- game vehicle id -> the copy's damage figure once settled (nil: to be taken)
 local copySince = {}        -- game vehicle id -> seconds it has differed from copyBase
 local copyQuiet = {}        -- game vehicle id -> seconds before copyBase is taken (after a state, a check, a reset)
 local PRISTINE_VE = [[local n = 0 for _, b in pairs(v.data.beams) do if obj:beamIsBroken(b.cid) then n = n + 1 end end ]]
   .. [[if n > 0 then obj:requestReset(RESET_PHYSICS) ]]
   .. [[obj:queueGameEngineLua("local m = package.loaded['beamngEarth/mpsession'] if m then m.afterRepairReset(%d, " .. n .. ") end") end]]
--- The owner's damage put on a copy (vehicle Lua; d: the decoded state). BeamMP's nodesVE.applyNodes sets every node
--- where it stood relative to the car when sent, in the world's axes: a copy that had turned since was twisted and
--- broke apart (49 beams on copies of a car with none, 2026-10-24); without the positions at all, the owner's bent beam
--- lengths pulled on an unbent body and snapped beams too (112 on copies of a car with 44). The positions are carried
--- onto the copy as it stands now: the owner's reference nodes (ref, back, left) give its frame then, the copy's give
--- its frame now. Then broken beams, rest lengths and dents (BeamNG 0.40 renamed beamstate.beamDeformed to
--- onBeamDeformed) and node masses, as applyNodes.
+-- The owner's damage put on a copy (vehicle Lua; d: the decoded state): its broken beams and node masses at once,
+-- its dents (beam rest lengths) grown in over MORPH_STEPS frames (bngeMorph, stepped by M.update). Measured on a
+-- test bench (a pickup wrecked by a 30 m drop, 156-225 broken beams, its state put on a fresh one, 2026-10-24): the
+-- broken beams alone came out exact; BeamMP's nodesVE.applyNodes way (every node set where it stood, then the rest
+-- lengths) broke 84-97 more (loose parts torn off, and on a car that had turned since, twisted apart: 49 beams on
+-- copies of a car with none, an instability); the rest lengths in one step 159 more; grown in over 60 steps 39 more
+-- (the user chose this: "Breaks + morphed dents"). BeamNG 0.40 renamed beamstate.beamDeformed to onBeamDeformed.
+M.MORPH_STEPS = 60
 local APPLY_VE = [[local function applyDamage(d) if type(d) ~= 'table' then return end ]]
-  .. [[local deformed = beamstate.onBeamDeformed or beamstate.beamDeformed local nodes = d.nodes or {} ]]
-  .. [[local function at(cid) local n = nodes[cid + 1] or nodes[tostring(cid + 1)] ]]
-  .. [[if type(n) == 'table' and type(n[1]) == 'table' then return vec3(n[1]) end end ]]
-  .. [[local function frame(r, b, l) local f = (r - b):normalized() local u = f:cross(l - r):normalized() return f, u:cross(f), u end ]]
-  .. [[local rn = v and v.data and v.data.refNodes and v.data.refNodes[0] ]]
-  .. [[if rn and at(rn.ref) and at(rn.back) and at(rn.left) then ]]
-  .. [[local sr = at(rn.ref) local sf, sl, su = frame(sr, at(rn.back), at(rn.left)) ]]
-  .. [[local cr = vec3(obj:getNodePosition(rn.ref)) ]]
-  .. [[local cf, cl, cu = frame(cr, vec3(obj:getNodePosition(rn.back)), vec3(obj:getNodePosition(rn.left))) ]]
-  .. [[for cid, n in pairs(nodes) do if type(n) == 'table' and type(n[1]) == 'table' then local q = vec3(n[1]) - sr ]]
-  .. [[obj:setNodePosition(tonumber(cid) - 1, (cr + cf * q:dot(sf) + cl * q:dot(sl) + cu * q:dot(su)):toFloat3()) end end end ]]
-  .. [[for cid, n in pairs(nodes) do if type(n) == 'table' and #n > 1 then obj:setNodeMass(tonumber(cid) - 1, n[2]) end end ]]
-  .. [[for cid, b in pairs(d.beams or {}) do cid = tonumber(cid) - 1 if b[2] == true then ]]
-  .. [[if not obj:beamIsBroken(cid) then obj:breakBeam(cid) beamstate.beamBroken(cid, 1) end ]]
-  .. [[else obj:setBeamLength(cid, b[1]) if b[3] > 0 and deformed then deformed(cid, b[3]) end end end end ]]
+  .. [[for cid, n in pairs(d.nodes or {}) do if type(n) == 'table' and #n > 1 then obj:setNodeMass(tonumber(cid) - 1, n[2]) end end ]]
+  .. [[local l0 = {} for cid, b in pairs(d.beams or {}) do local c = tonumber(cid) - 1 ]]
+  .. [[if b[2] == true then if not obj:beamIsBroken(c) then obj:breakBeam(c) beamstate.beamBroken(c, 1) end ]]
+  .. [[elseif not obj:beamIsBroken(c) then l0[c] = obj:getBeamRestLength(c) end end ]]
+  .. [[bngeDmg = { beams = d.beams or {}, l0 = l0 } ]]
+  .. [[obj:queueGameEngineLua("local m = package.loaded['beamngEarth/mpsession'] if m then m.startMorph(" .. obj:getID() .. ") end") end ]]
+  .. [[function bngeMorph(f) local s = bngeDmg if not s then return end ]]
+  .. [[local deformed = beamstate.onBeamDeformed or beamstate.beamDeformed ]]
+  .. [[for cid, b in pairs(s.beams) do local c = tonumber(cid) - 1 local l0 = s.l0[c] ]]
+  .. [[if l0 and not obj:beamIsBroken(c) then obj:setBeamLength(c, l0 + (b[1] - l0) * f) ]]
+  .. [[if f >= 1 and b[3] > 0 and deformed then deformed(c, b[3]) end end end ]]
+  .. [[if f >= 1 then bngeDmg = nil end end ]]
+M.APPLY_VE = APPLY_VE        -- (tests)
 local REPAIR_VE = APPLY_VE .. [[local raw, apply = mime.unb64('%s'), %s local ok, d = pcall(jsonDecode, raw) local extra = 0 ]]
   .. [[if ok and type(d) == 'table' and type(d.beams) == 'table' then for cid, b in pairs(d.beams) do ]]
   .. [[if b[2] ~= true and obj:beamIsBroken(tonumber(cid) - 1) then extra = extra + 1 end end end ]]
@@ -605,7 +605,7 @@ local function checkCopies(owners, dt, cam)
     local o = objs[gid]
     local dmg = o and tonumber(o.damage)
     local p = pendingNodes[gid]
-    if not dmg or deactivated[gid] or (p and p.frames) then
+    if not dmg or deactivated[gid] or (p and p.frames) or morphs[gid] then
       copyBase[gid] = nil
     elseif (copyQuiet[gid] or 0) > 0 then
       copyQuiet[gid] = copyQuiet[gid] - dt
@@ -634,6 +634,23 @@ local function checkCopies(owners, dt, cam)
     if not owners[gid] then lastNodes[gid], copyBase[gid], copySince[gid], copyQuiet[gid] = nil, nil, nil, nil end
   end
   for gid in pairs(stale) do if not owners[gid] then stale[gid] = nil end end
+end
+
+-- (the copy's vehicle Lua) gid's broken beams are on: its dents grow in from the next frame
+function M.startMorph(gid) morphs[tonumber(gid)] = 0 end
+
+local function stepMorphs()
+  for gid, k in pairs(morphs) do
+    k = k + 1
+    local veh = vehicle(gid)
+    if veh then veh:queueLuaCommand(string.format('if bngeMorph then bngeMorph(%.4f) end', k / M.MORPH_STEPS)) end
+    if not veh or k >= M.MORPH_STEPS then
+      morphs[gid] = nil
+      copyBase[gid], copyQuiet[gid] = nil, M.COPY_SETTLE_S     -- (its damage figure moved with the dents: settles anew)
+    else
+      morphs[gid] = k
+    end
+  end
 end
 
 local function applyPendingNodes()
@@ -707,6 +724,7 @@ function M.update(dt, anchor, player)
   mpanchor.install()            -- (a no-op once installed, and until BeamMP's positionGE has loaded)
   M.wrapNodes()
   applyPendingNodes()
+  stepMorphs()
   clock = clock + (dt or 0)
   statusIn = statusIn - (dt or 0)
   if statusIn <= 0 then
@@ -939,7 +957,7 @@ function M.reset()
     if veh then veh:queueLuaCommand('obj:setGravity(' .. gravityNow() .. ')') end
   end
   floating = {}
-  pendingNodes, lastNodes, copyBase, copySince, copyQuiet, stale = {}, {}, {}, {}, {}, {}
+  pendingNodes, lastNodes, copyBase, copySince, copyQuiet, stale, morphs = {}, {}, {}, {}, {}, {}, {}
   deactivated, anchors, poseIn, hideIn, joined, wentTo, camPlaced, lastPlayers = {}, {}, 0, 0, false, false, false, -1
   waitGround = {}
   members, sentDamage, damageSince, restoredAt, restores = {}, {}, {}, {}, {}
