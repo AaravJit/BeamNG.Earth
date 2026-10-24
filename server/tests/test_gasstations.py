@@ -416,8 +416,7 @@ class RegionTest(unittest.TestCase):
         return units
 
     def test_us_east_canopy_eca_units(self):
-        # a 36 x 8 m canopy: islands across it every 7 m (5), East Coast's units of three islands over them, the second
-        # one back to cover the last three (the middle island shared)
+        # a 36 x 8 m canopy: islands across it in threes for East Coast's units (6, ~5.8 m apart), two units over them
         roof = rect("roof", 0.0, 22.0, 36.0, 8.0, cls="roof")
         site = gs.layout(STATION, [SHOP, roof], ROAD, style="us_east")
         self.assertEqual(site.drop_ids, ("roof",))
@@ -429,10 +428,12 @@ class RegionTest(unittest.TestCase):
             ex, ey = np.array([np.cos(a), np.sin(a)]), np.array([-np.sin(a), np.cos(a)])
             c = np.array([u["x"], u["y"]]) + ex * (gs.ECA_ROOF_XY[0] * u["scale"][0]) + ey * (gs.ECA_ROOF_XY[1] * u["scale"][1])
             self.assertTrue(inside_box(roof, *c), (u, c))                      # its roof over the canopy
-        self.assertEqual(len(site.areas), 5)
-        xs = sorted(a["x"] for a in site.areas)
-        for x, want in zip(xs, (-14.0, -7.0, 0.0, 7.0, 14.0)):
-            self.assertAlmostEqual(x, want, delta=0.01)
+        self.assertEqual(len(site.areas), 6)
+        lanes = gs._outline_lanes(roof, 3, gs.ECA_ROOF_STEP, gs.ECA_MIN_GAP_M)
+        mids = sorted((o0 + o1) / 2 for o0, o1 in zip(lanes.offsets[:-1], lanes.offsets[1:]))
+        for x, want in zip(sorted(a["x"] for a in site.areas), mids):
+            self.assertAlmostEqual(x, want, delta=0.75)                       # (between the lanes)
+        self.on_islands(site)
         for a in site.areas:
             self.assertAlmostEqual(a["yaw"] % 180.0, 90.0, places=3)           # along the island, across the canopy
             self.assertTrue(inside_box(roof, a["x"], a["y"]), a)
@@ -443,10 +444,44 @@ class RegionTest(unittest.TestCase):
         units = self.eca(site)
         self.assertEqual(len(units), 3)
         self.assertEqual(len(site.areas), 9)
-        self.assertEqual(sorted({round(a["x"], 2) for a in site.areas}), [-10.5, -3.5, 3.5])
+        for x, want in zip(sorted({round(a["x"], 2) for a in site.areas}), (-10.5, -3.5, 3.5)):
+            self.assertAlmostEqual(x, want, delta=0.75)
+        self.on_islands(site)
         for a in site.areas:
             self.assertAlmostEqual(a["yaw"] % 180.0, 90.0, places=3)
             self.assertTrue(12.0 < a["y"] < 30.0, a)
+
+    def on_islands(self, site):
+        """Every refuel area at one of the units' own islands (its dispenser's place in the model, stretched)."""
+        units = self.eca(site)
+        for a in site.areas:
+            best = min(abs((a["x"] - u["x"]) - ix * u["scale"][0]) for u in units for ix in gs.ECA_ISLAND_X)
+            self.assertLess(best, 0.01, a)
+
+    def test_us_east_units_one_roof(self):
+        # the user's screenshot, 2026-10-23: a gap between the units' roofs ("can we do just one big canopy"; option 1:
+        # the East Coast units, joined up): six islands, two units, the first's roof ending where the second's begins
+        roof = rect("roof", 0.0, 22.0, 43.0, 8.0, cls="roof")
+        units = sorted(self.eca(gs.layout(STATION, [SHOP, roof], ROAD, style="us_east")), key=lambda u: u["x"])
+        self.assertEqual(len(units), 2)
+        right = units[0]["x"] + gs.ECA_ROOF_X[1] * units[0]["scale"][0]
+        left = units[1]["x"] + gs.ECA_ROOF_X[0] * units[1]["scale"][0]
+        self.assertAlmostEqual(right, left, delta=0.05)
+
+    def test_us_east_mapped_five_islands(self):
+        # six mapped lanes (a Sheetz near Pittsburgh): five islands, the second unit back over the first, its shared
+        # island the first's (one island, not two side by side), every island between its lanes
+        six = [lane(x, 12.0, x, 30.0) for x in (-21.0, -14.0, -7.0, 0.0, 7.0, 14.0)]
+        site = gs.layout(STATION, [SHOP], ROAD, service=six, style="us_east")
+        units = self.eca(site)
+        row = [u for u in units if abs(u["y"] - min(v["y"] for v in units)) < 0.01]
+        self.assertEqual(len(row), 2)
+        isl = sorted(u["x"] + ix * u["scale"][0] for u in row for ix in gs.ECA_ISLAND_X)
+        distinct = [x for k, x in enumerate(isl) if k == 0 or x - isl[k - 1] > 0.05]
+        self.assertEqual(len(distinct), 5, isl)
+        for x, want in zip(distinct, (-17.5, -10.5, -3.5, 3.5, 10.5)):
+            self.assertAlmostEqual(x, want, delta=0.75)
+        self.on_islands(site)
 
     def test_us_east_small_canopy_west_coast_islands(self):
         # final review I3: a canopy with room for two islands: East Coast's three-island unit would overhang it by 5 m;

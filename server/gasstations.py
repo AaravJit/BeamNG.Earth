@@ -595,15 +595,22 @@ ECA_ISLAND_Y = -6.865
 ECA_PUMP_Y = -7.46
 ECA_DEPTH = 6.6                 # the roof's depth (y): a row of units every this much along the islands
 ECA_ROOF_XY = (1.285, -6.74)    # the roof's centre
+ECA_ROOF_X = (-7.53, 10.1)      # its ends: three islands' worth of roof, ECA_ROOF_STEP an island
+ECA_ROOF_STEP = (ECA_ROOF_X[1] - ECA_ROOF_X[0]) / 3
 ECA_SCALE = (0.8, 1.25)
 ECA_LIFT_M = 0.05
+ECA_MIN_GAP_M = 5.5             # made-up islands no closer for East Coast's units (else West Coast's, _outline_lanes)
 
 
 def _eca_site(st, lanes, others, roads):
     """East Coast's units over lanes (mapped or made up under a canopy): an island between each two lanes, the units'
-    islands on them (stretched to the lanes' gap; the last unit back over the one before when the islands are not a
-    multiple of three), rows of units along the islands; a refuel area at each island's dispenser per row, where it is
-    clear of roads and buildings. None without an area."""
+    islands on them, stretched so three islands' worth of roof (ECA_ROOF_STEP an island) spans three of the lanes'
+    gaps: the units' roofs meet edge to edge, one roof (the user, 2026-10-23, on the gaps between them: "can we do just
+    one big canopy"; a unit's own islands are a little farther apart than its roof's share, so its outer islands are
+    up to ~0.7 m off the lanes' midpoints, still between them). Made-up lanes come in threes for them
+    (_outline_lanes); mapped ones that do not get the last unit back over the one before, every other unit ECA_LIFT_M
+    up (not in its plane). Rows of units along the islands; a refuel area at each island's dispenser per row, where
+    it is clear of roads and buildings. None without an area."""
     c, u = lanes.centre, lanes.u
     x = np.array([u[1], -u[0]])                 # the units' x: across the islands (their y along them, u)
     sign = 1.0 if float(x @ lanes.n) >= 0 else -1.0
@@ -615,33 +622,45 @@ def _eca_site(st, lanes, others, roads):
     if n_isl < 3:                               # (a unit would overhang: final review I3)
         return None
     gap = (mids[-1] - mids[0]) / (n_isl - 1) if n_isl > 1 else ECA_ISLAND_STEP
-    sx = float(np.clip(gap / ECA_ISLAND_STEP, *ECA_SCALE))
+    sx = round(float(np.clip(gap / ECA_ROOF_STEP, *ECA_SCALE)), 3)
     length = lanes.a1 - lanes.a0
     rows = max(1, int(round(length / ECA_DEPTH)))
-    sy = float(np.clip(length / rows / ECA_DEPTH, *ECA_SCALE))
+    sy = round(float(np.clip(length / rows / ECA_DEPTH, *ECA_SCALE)), 3)
     yaw = _yaw(x)
     props, areas, done = [], [], set()
     for row in range(rows):
         along = (lanes.a0 + lanes.a1) / 2 + (row - (rows - 1) / 2) * (length / rows)
+        prev = None                             # (x of its origin, its sx, its first island) of the row's unit before
         for j in range(max(1, int(math.ceil(n_isl / 3)))):
             first = max(0, min(3 * j, n_isl - 3))
-            at = mids[first] + (ECA_ISLAND_X[1] - ECA_ISLAND_X[0]) * sx   # the unit's middle island
-            o = c + x * (at - ECA_ISLAND_X[1] * sx) + u * (along - ECA_ISLAND_Y * sy)
+            if prev is not None and first != 3 * j:
+                # back over the one before: its first island on that unit's own (one island, not two side by side),
+                # its last as far off its lane as that unit's last is
+                pox, psx, pfirst = prev
+                p0 = pox + ECA_ISLAND_X[first - pfirst] * psx
+                usx = round(float(np.clip((mids[first + 2] - mids[first]) / (ECA_ISLAND_X[2] - ECA_ISLAND_X[0]),
+                                          *ECA_SCALE)), 3)
+                ox = p0 - ECA_ISLAND_X[0] * usx
+            else:
+                # its roof centred on its middle island's lanes (3 x ECA_ROOF_STEP x sx wide: the next unit's edge)
+                usx, ox = sx, mids[first + 1] - ECA_ROOF_XY[0] * sx
+            prev = (ox, usx, first)
+            o = c + x * ox + u * (along - ECA_ISLAND_Y * sy)
             made = False
             for i, ix in enumerate(ECA_ISLAND_X):
                 k = first + i
                 if k >= n_isl or (row, k) in done:
                     continue
                 done.add((row, k))
-                p = c + x * mids[k] + u * (along - (ECA_ISLAND_Y - ECA_PUMP_Y) * sy)    # (the lanes' midpoint)
+                p = o + x * (ix * usx) + u * (ECA_PUMP_Y * sy)                          # (its dispenser)
                 if _clear(_area_pts(float(p[0]), float(p[1]), _yaw(u)), others, roads):
                     areas.append(dict(x=float(p[0]), y=float(p[1]), dz=AREA_DZ, yaw=_yaw(u) % 360.0,
                                       half=list(AREA_HALF), icon=ICON_DZ))
                     made = True
-            if made:                            # (a unit back over the one before: its roof above, not in its plane)
-                props.append(dict(shape=ECA_UNIT, x=float(o[0]), y=float(o[1]), dz=ECA_LIFT_M if first != 3 * j else 0.0,
+            if made:                            # (every other unit's roof above its neighbours': not in their plane)
+                props.append(dict(shape=ECA_UNIT, x=float(o[0]), y=float(o[1]), dz=ECA_LIFT_M * (j % 2),
                                   yaw=yaw % 360.0,
-                                  scale=[round(sx, 3), round(sy, 3), 1.0], collide=True))
+                                  scale=[usx, sy, 1.0], collide=True))
     if not areas:
         return None
     return Site(st, props, areas, ())
@@ -804,13 +823,19 @@ ISLAND_GAP_M = 7.0              # islands under a mapped canopy without mapped l
                                 # another)
 
 
-def _outline_lanes(canopy):
+def _outline_lanes(canopy, multiple=1, step=ISLAND_GAP_M, min_gap=0.0):
     """Lanes made up for a mapped canopy without mapped ones: across its short side (its islands too), evenly along
-    its long side about ISLAND_GAP_M apart, inside its outline."""
+    its long side about ISLAND_GAP_M apart, inside its outline; with multiple > 1, the islands a multiple of it about
+    `step` apart where that leaves them at least min_gap apart (East Coast's units: three islands each, their roofs
+    meeting unstretched every ECA_ROOF_STEP, _eca_site), else as without."""
     c, ul, hl, hw = _obox(canopy.ring)
     u = np.array([-ul[1], ul[0]])               # the lanes (and islands) across the short side
     n = ul
     islands = max(1, int(round((2 * hl - 1.0) / ISLAND_GAP_M)))
+    if multiple > 1:
+        m = max(multiple, multiple * int(round((2 * hl - 1.0) / (multiple * step))))
+        if (2 * hl - 1.0) / m >= min_gap:
+            islands = m
     step = (2 * hl - 1.0) / islands
     offsets = tuple(-(hl - 0.5) + k * step for k in range(islands + 1))
     return Lanes(c, u, n, offsets, -hw, hw)
@@ -1046,7 +1071,9 @@ def _layout(st, blds, roads, service=(), style="default"):
     if lanes is not None:
         site = lane_site(lanes)
     if site is None and canopies:
-        parts = [x for x in (lane_site(_outline_lanes(c)) for c in canopies) if x is not None]
+        made_up = ((lambda c: _outline_lanes(c, 3, ECA_ROOF_STEP, ECA_MIN_GAP_M)) if style == "us_east"
+                   else _outline_lanes)
+        parts = [x for x in (lane_site(made_up(c)) for c in canopies) if x is not None]
         if parts:
             site = Site(st, [p for x in parts for p in x.props], [a for x in parts for a in x.areas], ())
     if site is not None:
