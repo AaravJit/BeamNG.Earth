@@ -1129,16 +1129,6 @@ class Server:
         rwalls = []
         ctx = []
         box = roadsmod.tile_bbox(tx, ty)
-        import guardrails as guardrailsmod
-        infra_fn = lambda key: self.mapdata.cell(key, layers=("infrastructure",), kind="demand").layers.get("infrastructure")
-        try:
-            guardrail_decks = [{"n": np.column_stack((xy, z)), "w": spec.width}
-                               for _fid, spec, xy, z, _lon in anchor.bridges.parts(
-                                   cells, (box[0]-10, box[1]-10, box[2]+10, box[3]+10))]
-            guardrail_rows = guardrailsmod.forest_rows(anchor.frame, infra_fn, box, elev, decks=guardrail_decks)
-        except Exception as ex:
-            log.warning("mapped guardrails: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
-            guardrail_rows = []
         cell_fn = lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads")  # noqa: E731
 
         def drawn(la, lo):      # the block's ground: raised over the low arches as the terrain is (_make_heightmap_here)
@@ -1164,6 +1154,21 @@ class Server:
             park = parkingmod.clear_of(park, props, drives)
             park = parkingmod.tile_lot_spots(anchor.frame, tx, ty, self.mapdata, elev, items, park)
             buildingsmod.brick_walks(walks, items, anchor.lat, anchor.lon)
+
+        # Share the exact visible bridge-parapet geometry with mapped-rail filtering; central rails
+        # remain unless they actually coincide with one of these generated concrete edges.
+        parapets = roadmeshmod.parapet_runs(chunks, ctx)
+        import guardrails as guardrailsmod
+        infra_fn = lambda key: self.mapdata.cell(key, layers=("infrastructure",), kind="demand").layers.get("infrastructure")
+        try:
+            guardrail_decks = [{"n": np.column_stack((xy, z)), "w": spec.width}
+                               for _fid, spec, xy, z, _lon in anchor.bridges.parts(
+                                   cells, (box[0]-10, box[1]-10, box[2]+10, box[3]+10))]
+            guardrail_rows = guardrailsmod.forest_rows(anchor.frame, infra_fn, box, elev,
+                                                       decks=guardrail_decks, parapets=parapets)
+        except Exception as ex:
+            log.warning("mapped guardrails: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
+            guardrail_rows = []
         mesh = roadmeshmod.build(anchor.frame, chunks, elev, (x0, y0, 0.0),
                                  DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0,
                                  clip=box, follow=True, q=self.anchor_q(anchor), drawn=drawn)
@@ -1171,7 +1176,8 @@ class Server:
         dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0),
                                  anchor.bridges.piers_in(roadsmod.tile_bbox(tx, ty)) if anchor.bridges is not None else (),
                                  ctx,
-                                 anchor.bridges.beams_in(roadsmod.tile_bbox(tx, ty)) if anchor.bridges is not None else ())
+                                 anchor.bridges.beams_in(roadsmod.tile_bbox(tx, ty)) if anchor.bridges is not None else (),
+                                 parapets=parapets)
         tmesh = roadmeshmod.tunnel(chunks, (x0, y0, 0.0), rwalls)
         bld = None
         if self.buildings:
