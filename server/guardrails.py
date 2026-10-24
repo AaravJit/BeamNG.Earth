@@ -89,6 +89,56 @@ def _deck_level_hint(feats, i):
     return None
 
 
+# TEMPORARY: suppress every mapped guardrail within 5 m of a bridge footprint.
+# The deck width is included so this buffer starts at the bridge edges, not its centreline.
+BRIDGE_GUARDRAIL_CLEARANCE_M = 5.0
+
+
+def _within_bridge_buffer(a, b, decks, clearance=BRIDGE_GUARDRAIL_CLEARANCE_M):
+    """Whether an XY guardrail segment lies within clearance of any bridge footprint."""
+    a, b = np.asarray(a, np.float64).reshape(2), np.asarray(b, np.float64).reshape(2)
+    r = b - a
+    r2 = float(np.dot(r, r))
+    for deck in decks or ():
+        line = np.asarray(deck.get("n", ()), np.float64)
+        if len(line) < 2 or line.ndim != 2 or line.shape[1] < 2:
+            continue
+        starts, ends = line[:-1, :2], line[1:, :2]
+        s = ends - starts
+        s2 = np.maximum(np.sum(s * s, axis=1), 1e-12)
+        radius = float(clearance) + max(0.0, float(deck.get("w", 0.0))) / 2.0
+
+        # Distances from the guardrail segment's endpoints to every bridge-profile segment.
+        for p in (a, b):
+            t = np.clip(np.sum((p - starts) * s, axis=1) / s2, 0.0, 1.0)
+            near = starts + t[:, None] * s
+            if np.any(np.sum((near - p) ** 2, axis=1) <= radius * radius):
+                return True
+
+        # Distances from the bridge-profile endpoints to the guardrail segment.
+        if r2 > 1e-12:
+            for p in (starts, ends):
+                t = np.clip(np.sum((p - a) * r, axis=1) / r2, 0.0, 1.0)
+                near = a + t[:, None] * r
+                if np.any(np.sum((near - p) ** 2, axis=1) <= radius * radius):
+                    return True
+
+            # A crossing can have no near endpoints, so explicitly test segment intersections.
+            qmp = starts - a
+            denom = r[0] * s[:, 1] - r[1] * s[:, 0]
+            nonparallel = np.abs(denom) > 1e-10
+            if nonparallel.any():
+                cross_q_s = qmp[:, 0] * s[:, 1] - qmp[:, 1] * s[:, 0]
+                cross_q_r = qmp[:, 0] * r[1] - qmp[:, 1] * r[0]
+                t = np.zeros_like(denom)
+                u = np.zeros_like(denom)
+                t[nonparallel] = cross_q_s[nonparallel] / denom[nonparallel]
+                u[nonparallel] = cross_q_r[nonparallel] / denom[nonparallel]
+                if np.any(nonparallel & (t >= 0.0) & (t <= 1.0) & (u >= 0.0) & (u <= 1.0)):
+                    return True
+    return False
+
+
 def _at(line, arc, distance):
     """Point and unit tangent at arc length distance along a 2D polyline."""
     k = min(max(int(np.searchsorted(arc, distance, side="right") - 1), 0), len(line) - 2)
@@ -304,13 +354,16 @@ def mesh(frame, infra_fn, exact, elev, origin=(0.0, 0.0, 0.0), decks=()):
                     p0, p1 = clipped
                     if float(np.hypot(*(p1 - p0))) < 0.05:
                         continue
+                    if _within_bridge_buffer(p0, p1, decks):
+                        continue
                     k = len(query_points)
                     query_points.extend((p0, p1))
                     query_deck_hints.extend((deck_hint, deck_hint))
                     rail_sections.append((k, k + 1, p0, p1, deck_hint))
                 for s in np.arange(0.0, total + 1e-6, POST_SPACING_M):
                     p, tangent = _at(line, arc, float(s))
-                    if x0 <= p[0] < x1 and y0 <= p[1] < y1:
+                    if (x0 <= p[0] < x1 and y0 <= p[1] < y1 and
+                            not _within_bridge_buffer(p, p, decks)):
                         k = len(query_points)
                         query_points.append(p)
                         query_deck_hints.append(deck_hint)
@@ -597,6 +650,10 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=()):
                     # Keep the source segment and check height later so a lower road beneath a bridge
                     # is not mistaken for the bridge's own guardrail.
                     source_a, source_b = a, b
+                    # Temporary blanket exclusion: remove all mapped rails (including centre dividers)
+                    # within 5 m of any bridge footprint while the bridge parapets are being reworked.
+                    if _within_bridge_buffer(source_a, source_b, decks):
+                        continue
                     parapet_xy_match = _overlaps_bridge_parapet(source_a, source_b, parapet_segments)
                     if not parapet_xy_match:
                         parapet_xy_match = _overlaps_bridge_parapet(
