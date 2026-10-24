@@ -217,4 +217,29 @@ T.check(la == 40.0 or la == 40.02, 'pickAnchor: skip leaves our own out')
 -- reset: every car back on
 ms.reset()
 T.check(stranger.active == 1 and next(ms.state().deactivated) == nil, 'reset: the cars back on')
+-- copies repaired: BeamMP's full-damage message for another player's car goes through a check in its vehicle Lua
+-- (beams broken here only: reset, then the owner's state REPAIR_FRAMES frames later); other packets as before
+do
+  local passed = {}
+  nodesGE = { handle = function(raw) passed[#passed + 1] = raw end }
+  MPHelpers = { b64encode = function(d) return 'B64(' .. d .. ')' end }
+  local vehs = { ['2-0'] = { isLocal = false }, ['1-0'] = { isLocal = true } }
+  local oldMP = MPVehicleGE
+  MPVehicleGE = { getVehicles = function() return vehs end, getGameVehicleID = function(sid) return sid == '2-0' and 21 or 20 end,
+    isOwn = oldMP.isOwn }
+  T.check(ms.wrapNodes() and ms.wrapNodes(), 'wrapped once')
+  other.cmds = {}
+  nodesGE.handle('g:2-0:{"x":1}')
+  nodesGE.handle('n:1-0:{"own":1}')
+  T.check(#passed == 2 and #other.cmds == 0, 'break groups and our own cars: as BeamMP does')
+  nodesGE.handle('n:2-0:{"beams":{}}')
+  T.check(#passed == 2 and other.cmds[1]:find('requestReset(RESET_PHYSICS)', 1, true) and other.cmds[1]:find("B64(", 1, true),
+    'another player\'s full damage: checked in its vehicle Lua (reset if beams broke here only)')
+  ms.afterRepairReset(21, 5)
+  for _ = 1, ms.REPAIR_FRAMES do ms.update(0.01, anchor, { x = 100, y = 0, z = 0 }) end
+  T.check(other.cmds[#other.cmds]:find('nodesVE.applyNodes', 1, true) ~= nil, 'after the reset: the owner\'s state applied')
+  MPVehicleGE = oldMP
+  nodesGE, MPHelpers = nil, nil
+end
+
 T.done('test_mpsession')

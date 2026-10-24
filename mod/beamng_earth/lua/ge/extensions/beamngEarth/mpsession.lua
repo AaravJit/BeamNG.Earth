@@ -503,6 +503,67 @@ function M.onPostJoin()
 end
 
 -- Is (x, y) m or more inside our terrain block (nil: no block known)?
+-- Copies repaired by the owner's full damage (the user, 2026-10-24: "do the fixes"). Two cars that hit each other are
+-- each worked out by every game on its own, so a copy breaks other beams than its owner's car: in a three-player test a
+-- car with 9 broken beams showed 72 and 30 on the others, and BeamMP's full-damage message (nodesVE.applyNodes) breaks
+-- and dents but never mends. BeamMP's nodesGE.handle is wrapped (as mpanchor wraps positionGE.handle; BeamMP's files
+-- are not changed): for another player's car, its vehicle Lua first counts the beams broken here but not in the
+-- owner's state; none: applied as BeamMP does; some: the car is reset (RESET_PHYSICS: BeamMP's positionVE puts it back
+-- on its next packet) and the owner's state applied REPAIR_FRAMES frames later.
+M.REPAIR_FRAMES = 3
+local nodesWrapped = nil   -- the nodesGE table wrapped (BeamMP reloading it makes a new one)
+local pendingNodes = {}     -- game vehicle id -> { b64, frames } (the owner's state, applied after the reset)
+local REPAIR_VE = [[local raw = mime.unb64('%s') local ok, d = pcall(jsonDecode, raw) local extra = 0 ]]
+  .. [[if ok and type(d) == 'table' and type(d.beams) == 'table' then for cid, b in pairs(d.beams) do ]]
+  .. [[if b[2] ~= true and obj:beamIsBroken(tonumber(cid) - 1) then extra = extra + 1 end end end ]]
+  .. [[if extra > 0 then obj:requestReset(RESET_PHYSICS) ]]
+  .. [[obj:queueGameEngineLua("local m = package.loaded['beamngEarth/mpsession'] if m then m.afterRepairReset(%d, " .. extra .. ") end") ]]
+  .. [[elseif nodesVE then nodesVE.applyNodes(raw) end]]
+
+function M.wrapNodes()
+  local ng = rawget(_G, 'nodesGE')
+  if not ng or type(ng.handle) ~= 'function' then return false end
+  if nodesWrapped == ng then return true end
+  local orig = ng.handle
+  ng.handle = function(rawData)
+    local code, sid, data = string.match(rawData or '', '^(%a)%:(%d+%-%d+)%:(.*)')
+    if code ~= 'n' then return orig(rawData) end
+    local mp, h = rawget(_G, 'MPVehicleGE'), rawget(_G, 'MPHelpers')
+    local v = mp and mp.getVehicles and mp.getVehicles()[sid]
+    if not v or v.isLocal or not h or not h.b64encode then return orig(rawData) end
+    local gid = mp.getGameVehicleID(sid) or -1
+    local veh = vehicle(gid)
+    if not veh then return orig(rawData) end
+    local b64 = h.b64encode(data)
+    pendingNodes[gid] = { b64 = b64 }
+    veh:queueLuaCommand(string.format(REPAIR_VE, b64, gid))
+  end
+  nodesWrapped = ng
+  return true
+end
+
+-- (the copy's vehicle Lua) gid was reset for a repair: its owner's state goes on REPAIR_FRAMES frames later
+function M.afterRepairReset(gid, extra)
+  local p = pendingNodes[tonumber(gid)]
+  if not p then return end
+  p.frames = M.REPAIR_FRAMES
+  log('I', 'beamngEarth', string.format('BeamMP: car %s repaired (%s beams broken here only): its owner\'s damage again',
+    tostring(gid), tostring(extra)))
+end
+
+local function applyPendingNodes()
+  for gid, p in pairs(pendingNodes) do
+    if p.frames then
+      p.frames = p.frames - 1
+      if p.frames <= 0 then
+        pendingNodes[gid] = nil
+        local veh = vehicle(gid)
+        if veh then veh:queueLuaCommand("if nodesVE then nodesVE.applyNodes(mime.unb64('" .. p.b64 .. "')) end") end
+      end
+    end
+  end
+end
+
 local function onBlock(x, y, m)
   local b = require('beamngEarth/terrainpatch').block()
   if not b then return nil end
@@ -557,6 +618,8 @@ function M.update(dt, anchor, player)
   end
   local mpanchor = require('beamngEarth/mpanchor')
   mpanchor.install()            -- (a no-op once installed, and until BeamMP's positionGE has loaded)
+  M.wrapNodes()
+  applyPendingNodes()
   clock = clock + (dt or 0)
   statusIn = statusIn - (dt or 0)
   if statusIn <= 0 then
@@ -770,6 +833,7 @@ function M.reset()
     if veh then veh:queueLuaCommand('obj:setGravity(' .. gravityNow() .. ')') end
   end
   floating = {}
+  pendingNodes = {}
   deactivated, anchors, poseIn, hideIn, joined, wentTo, camPlaced, lastPlayers = {}, {}, 0, 0, false, false, false, -1
   waitGround = {}
   members, sentDamage, damageSince, restoredAt, restores = {}, {}, {}, {}, {}
