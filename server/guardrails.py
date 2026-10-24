@@ -263,6 +263,9 @@ def mesh(frame, infra_fn, exact, elev, origin=(0.0, 0.0, 0.0), decks=()):
 MODULE_LENGTH_M = 3.0
 MODULE_STEP_M = 2.8
 MODULE_HEIGHT_M = 0.9
+# The standard and reverse-facing models sit beside one another, rather than on the same line.
+# This is the distance between their centre lines (0.25 m to either side of the mapped way).
+TWO_SIDED_SPACING_M = 0.5
 
 
 def _is_two_sided(feats, i):
@@ -380,6 +383,16 @@ def forest_rows(frame, infra_fn, exact, elev, decks=()):
                         candidates.append((5, last_b, last_a, last_b, last_rank, True))
 
                 for group, p, a, b, rank, reverse in candidates:
+                    if two_sided:
+                        # The standard model's traffic-facing side follows its back axis. Put that
+                        # face on the outside of the pair; the reversed model gets the opposite side.
+                        tangent = np.asarray(b, np.float64) - np.asarray(a, np.float64)
+                        tangent_len = float(np.hypot(tangent[0], tangent[1]))
+                        if tangent_len >= 1e-6:
+                            normal = np.array([-tangent[1], tangent[0]], np.float64) / tangent_len
+                            side = -1.0 if reverse else 1.0
+                            offset = normal * (0.5 * TWO_SIDED_SPACING_M * side)
+                            p, a, b = p + offset, a + offset, b + offset
                     placements.append((group, p, a, b, rank, reverse))
 
     if not placements:
