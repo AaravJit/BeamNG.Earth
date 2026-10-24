@@ -188,12 +188,13 @@ class GuardrailForestTest(unittest.TestCase):
                 for row in rows:
                     self.assertAlmostEqual(row[3], 20.0, delta=0.05)
 
-    def test_untagged_parallel_rail_on_lower_road_is_not_lifted_onto_deck(self):
+    def test_untagged_centre_rail_stays_at_deck_height(self):
         decks, parapets = self.deck_fixture()
         rows = self.rows_for([[10.0, 0.0], [90.0, 0.0]], 12.0, decks, parapets)
         self.assertTrue(rows)
         for row in rows:
-            self.assertAlmostEqual(row[3], 12.0, delta=0.05)
+            self.assertAlmostEqual(row[2], 0.0, delta=0.05)
+            self.assertAlmostEqual(row[3], 20.0, delta=0.05)
 
     def test_guardrail_crossing_under_bridge_is_not_lifted_onto_deck(self):
         decks, parapets = self.deck_fixture()
@@ -213,13 +214,14 @@ class GuardrailForestTest(unittest.TestCase):
         for row in rows:
             self.assertAlmostEqual(row[3], 20.0, delta=0.05)
 
-    def test_untagged_rail_between_decks_is_not_lifted_from_lower_level(self):
+    def test_untagged_median_stays_at_deck_height(self):
         decks = [{"n": [[0.0, -6.0, 20.0], [100.0, -6.0, 20.0]], "w": 8.0},
                  {"n": [[0.0, 6.0, 20.0], [100.0, 6.0, 20.0]], "w": 8.0}]
         rows = self.rows_for([[10.0, 0.0], [90.0, 0.0]], 12.0, decks)
         self.assertTrue(rows)
         for row in rows:
-            self.assertAlmostEqual(row[3], 12.0, delta=0.05)
+            self.assertAlmostEqual(row[2], 0.0, delta=0.05)
+            self.assertAlmostEqual(row[3], 20.0, delta=0.05)
 
     def test_rail_hanging_beside_the_deck_is_dropped_but_a_fill_rail_stays(self):
         decks, parapets = self.deck_fixture()
