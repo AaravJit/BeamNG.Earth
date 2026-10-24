@@ -1919,9 +1919,10 @@ class Server:
             px = self.tex_size(tile.level)
             self.imagery.prefetch(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px), px, soon=True)
 
-    def share_start(self):
-        """Compute sharing in a BeamMP group: our GroupHelper listening (started once). -> {port, code} (port None:
-        not sharing)."""
+    def share_start(self, port=None):
+        """Compute sharing in a BeamMP group: our GroupHelper listening (started once) on port (the BeamMP server's
+        setting, its plugin's SHARE_PORT; BNGE_SHARE_PORT on this machine wins; else peerwork.SHARE_PORT). -> {port,
+        code} (port None: not sharing)."""
         if not hasattr(self.far_pool, "set_group"):
             return {"port": None, "code": peerworkmod.code_id()}
         self.far_pool.sharing = True        # every tile built is kept from now on (a player arriving gets ours)
@@ -1929,7 +1930,7 @@ class Server:
             if self.group_helper is None:
                 self.group_helper = peerworkmod.GroupHelper(self.far_pool, self.anchor_id_for,
                                                             os.path.join(self.cache_dir, "peer-out"))
-                self.group_helper.start(int(os.environ.get("BNGE_SHARE_PORT", peerworkmod.SHARE_PORT)))
+                self.group_helper.start(share_port(port))
         return {"port": self.group_helper.port, "code": peerworkmod.code_id(), "weight": peerworkmod.share_weight()}
 
     def share_group(self, msg):
@@ -2930,7 +2931,7 @@ class Connection:
         elif kind == "prepare_anchor":
             self.spawn(self.prepare_anchor(msg))
         elif kind == "share":                   # a BeamMP session: serve our group (peerwork.GroupHelper)
-            self.send(dict(self.s.share_start(), type="share"))
+            self.send(dict(self.s.share_start(msg.get("port")), type="share"))
         elif kind == "peers":                   # the players on our anchor (the BeamMP plugin, through mpsession)
             self.s.share_group(msg)
         elif kind == "prepare_terrain":
@@ -4121,6 +4122,20 @@ async def main_async(args):
             map_srv.close()
         net.close()                 # today's request counters
         disk.close()                # the cache's last uses
+
+
+def share_port(asked=None, env=None):
+    """The port our BeamMP group service listens on: BNGE_SHARE_PORT on this machine, else the BeamMP server's (its
+    plugin's SHARE_PORT, through the mod's "share"), else peerwork.SHARE_PORT; an unusable one is skipped."""
+    env = os.environ.get("BNGE_SHARE_PORT") if env is None else env
+    for p in (env, asked):
+        try:
+            p = int(p)
+        except (TypeError, ValueError):
+            continue
+        if 1024 <= p <= 65535:
+            return p
+    return peerworkmod.SHARE_PORT
 
 
 def parse_cache_cap(text):

@@ -11,6 +11,13 @@ local ms = require('beamngEarth/mpsession')
 local hide = ms.toHide({ [10] = 1, [11] = 2, [12] = 3 }, function(pid) return pid == 1 or pid == 2 end)
 T.check(not hide[10] and not hide[11] and hide[12], 'toHide: an unknown anchor hidden, known ones not')
 
+-- pure: the share request carries the server's sharing port (bngeConfig) when it is a usable one
+T.check(ms.shareRequest({ sharePort = 50000 }).port == 50000, 'shareRequest: the server\'s port')
+T.check(ms.shareRequest(nil).port == nil and ms.shareRequest(nil).type == 'share', 'shareRequest: no settings')
+for _, bad in ipairs({ 80, 70000, 5.5, 'x' }) do
+  T.check(ms.shareRequest({ sharePort = bad }).port == nil, 'shareRequest: a bad port left out: ' .. tostring(bad))
+end
+
 -- BeamMP's client API, stubbed
 local handlers, sent = {}, {}
 function AddEventHandler(name, fn) handlers[name] = fn end

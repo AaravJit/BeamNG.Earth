@@ -203,15 +203,17 @@ players show on the world map (**M**) as green arrows; players far away (another
 
 **Sharing the work:** players near each other share one world origin and split the building of the distant
 landscape (each piece is built once and sent to the others; faster computers take more), while a player far from
-everyone builds their own. For that the other players must reach your computer on TCP port 47621: on the same network
-it just works; over the internet, forward that port in your router, or you simply build everything yourself. Another
-port: set the environment variable `BNGE_SHARE_PORT` before starting the app.
+everyone builds their own. For that the other players must reach your computer on a TCP port, 47621 unless the server
+picks another (the server tells your app which): on the same network it just works; over the internet, forward that
+port in your router, or you simply build everything yourself. A port of your own: set the environment variable
+`BNGE_SHARE_PORT` before starting the app.
 
 **Hosting a server:** download `BeamNG.Earth-BeamMP-Server-<version>.zip` from the
 [Releases](https://github.com/TecnaGamer/BeamNG.Earth/releases) page and follow the guide inside
 (`BeamNG.Earth-README.md`). In short: unzip it into a BeamMP server's folder, set
 `Map = "/levels/beamng_earth/info.json"` in `ServerConfig.toml`, forward the server's port (TCP and UDP) for players
-over the internet, and start it (its log shows `[BeamNG.Earth] plugin loaded`). The server needs no world data and
+over the internet, and start it (its log shows `[BeamNG.Earth] plugin loaded`). The players' sharing port (47621) is
+`G.SHARE_PORT` near the top of `Resources/Server/BeamNGEarth/main.lua`. The server needs no world data and
 little CPU. From the source, `python3 tools/package.py --beammp` builds the same zip.
 
 ## Data sources and attribution

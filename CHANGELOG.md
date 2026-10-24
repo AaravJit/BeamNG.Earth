@@ -49,6 +49,8 @@ Works with BeamNG.drive 0.40.3.
 - **Reduced the chance of a freeze when players join.** Every join sent the full damage state of every nearby car to
   everyone, undamaged ones too; now only damaged cars' state is sent.
 - **Another player's car you removed stays removed** (it came back at once with BeamMP's "Trying to respawn" notice).
+- **The server picks the sharing port.** The TCP port players reach each other on to share world building (47621)
+  is set at the top of the server plugin's `main.lua` (`G.SHARE_PORT`); every player who joins gets it.
 - **Shared world building stays consistent:** a helper building for another player builds the roads the same way that
   player's game does (from hashk014's PR #187).
 
