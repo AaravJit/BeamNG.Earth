@@ -118,7 +118,7 @@ MOD_TO_SERVER = {
     "perf_log": {"lines": F((list, dict))},
     # BeamMP shared generation (peerwork.py, mpsession.lua): our world server serves our group; the players on our
     # anchor ({id, host, port, code, weight} each)
-    "share": {},
+    "share": {"port": F(int, OPT)},       # (the BeamMP server's sharing port, its plugin's bngeConfig)
     "peers": {"me": F(str), "members": F(list)},
     # roads (roads.py; additive): the mod removed its roads (switched off and on again): send them again
     "roads_reset": {},

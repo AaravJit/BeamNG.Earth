@@ -821,6 +821,8 @@ def main():
     ap.add_argument("--no-game", action="store_true", help="only the server (start the game yourself)")
     ap.add_argument("--no-gcpatch", action="store_true", help="Linux: start the game without the grass patch")
     ap.add_argument("--keep-mod", action="store_true", help="leave the game's copy of the mod as it is")
+    ap.add_argument("--no-beammp", action="store_true",
+                    help="do not start BeamMP (multiplayer) with the game (bmplaunch.py)")
     ap.add_argument("--user-dir", help="BeamNG.drive user folder (default: found)")
     ap.add_argument("--proton", dest="build", action="store_const", const="proton",
                     help="Linux: the game is the Windows build under Proton")
@@ -864,6 +866,51 @@ def main():
         sys.exit(1)
 
 
+def beammp_up(user_dir, build, args):
+    """BeamMP for multiplayer (bmplaunch.py): the official BeamMP launcher started before the game (it updates BeamMP's
+    mod in the game, which then connects to it). Returns its process (stopped with the server), or None."""
+    import bmplaunch
+    if getattr(args, "no_beammp", False):
+        return None
+    if under_wine() or (not IS_WIN and build == "proton"):
+        row("Multiplayer", "BeamMP not started with the Windows build under Proton / Wine (start it yourself)")
+        return None
+    if bmplaunch.running():
+        row("Multiplayer", "BeamMP is already running")
+        return None
+    dd = data_dir()
+    exe = bmplaunch.find(dd)
+    if not exe and IS_WIN and not bmplaunch.declined(dd):
+        say("BeamMP (multiplayer: join BeamNG.Earth servers with other players) is not installed.")
+        try:
+            answer = input("  Install the official BeamMP launcher now (about 7 MB from BeamMP's GitHub)? [Y/n] ")
+        except (EOFError, OSError):
+            answer = None                   # (no console to ask in: asked next time)
+        if answer is not None and answer.strip().lower() in ("n", "no"):
+            bmplaunch.save_settings(dd, declined=True)
+            say("  Not installed; it is not asked again (delete " + os.path.join(dd, bmplaunch.SETTINGS) +
+                " to be asked).")
+        elif answer is not None:
+            import install
+            exe = bmplaunch.download(dd, f"BeamNG.Earth/{install.version()}", say=lambda m: say("  " + m))
+    if not exe:
+        if not IS_WIN:
+            row("Multiplayer", "BeamMP not found (BeamMP has no Linux download: build it from "
+                "github.com/BeamMP/BeamMP-Launcher, or set BEAMMP_LAUNCHER to it)")
+        else:
+            row("Multiplayer", "BeamMP not installed")
+        return None
+    log_path = os.path.join(dd, "logs", "beammp-launcher.log")
+    proc = bmplaunch.start(exe, user_dir, log_path)
+    row("Multiplayer", "starting BeamMP ...")
+    if not bmplaunch.wait_ready(proc):
+        bmplaunch.stop(proc)
+        row("Multiplayer", f"BeamMP did not start (its log: {log_path})")
+        return None
+    row("Multiplayer", "BeamMP ready: in the game, Multiplayer, then a server running BeamNG.Earth")
+    return proc
+
+
 def run(args):
     import install
     title(f"BeamNG.Earth {install.version()}")
@@ -899,7 +946,9 @@ def run(args):
     server = start_server(user_dir, extra, log_path)
     row("World server", "running")
     row("Server log", log_path)
+    beammp = None
     try:
+        beammp = None if args.no_game else beammp_up(user_dir, build, args)
         if args.no_game:
             say()
             say("Start BeamNG.drive and pick 'BeamNG.Earth' in Freeroam. Ctrl+C stops the server.")
@@ -924,6 +973,9 @@ def run(args):
         wait_for_game(proc)
         row("Game", "closed")
     finally:
+        if beammp is not None:
+            import bmplaunch
+            bmplaunch.stop(beammp)
         stop_server(server)
 
 

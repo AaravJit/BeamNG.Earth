@@ -405,11 +405,11 @@ local function onConfig(data)
   log('I', 'beamngEarth', 'BeamMP: the server\'s sharing port ' .. tostring(d.sharePort))
 end
 
--- Pure: the "share" request for our world server: the server's port when it is a usable one.
-function M.shareRequest(cfg)
+-- Pure: the port our world server shares on: the BeamMP server's (bngeConfig) when it is a usable one, else nil.
+function M.sharePort(cfg)
   local port = cfg and tonumber(cfg.sharePort)
   if port and (port ~= math.floor(port) or port < 1024 or port > 65535) then port = nil end
-  return { type = 'share', port = port }
+  return port
 end
 
 local function onPeers(data)
@@ -558,7 +558,7 @@ function M.update(dt, anchor, player)
   configWait = configWait + (dt or 0)
   if share == nil and M.SHARE_GEN and (config or configWait >= M.CONFIG_WAIT_S) then
     share = false               -- our world server's group service, asked once a session (its answer: onShare), on
-    require('beamngEarth/net').send(M.shareRequest(config))     -- the server's port
+    require('beamngEarth/net').send({ type = 'share', port = M.sharePort(config) })     -- the server's port
   end
   if not anchor then return end
   placeCamera(player)
