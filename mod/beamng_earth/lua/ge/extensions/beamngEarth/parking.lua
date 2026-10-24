@@ -14,7 +14,7 @@ local M = {}
 local stopwatch = require('beamngEarth/stopwatch')
 
 M.REBUILD_S = 2.0
-M.REBUILD_OFF_S = 20.0   -- ... with no parked cars on (update)
+M.REBUILD_OFF_S = 60.0   -- ... with no parked cars on (update; turning them on rebuilds first: hookSetup)
 -- spots this close to the player are in the sites: the stock system looks SEARCH 200 m round a point 200 m ahead of
 -- the player (gameplay/parking.lua searchRadius / searchPointDist), ~400 m out. 900 m until 2026-10-24: a rebuild
 -- (every few seconds while driving) took 24 ms on average and up to 94 ms with ~4,700 spots (I-10 Phoenix, PC)
@@ -232,6 +232,25 @@ local function guard(player)
   end
 end
 
+-- The stock gameplay_parking.setupVehicles (the radial menu's parked cars, our own start) rebuilds the sites first
+-- when they are stale, so with the parked cars off they need not be kept up (update). Wrapped once per module table
+-- (an extension reload makes a new one); the stock function runs unchanged.
+local lastPlayer = nil
+local function hookSetup()
+  local gp = rawget(_G, 'gameplay_parking')
+  if not gp or gp.__bngeEarthHooked or type(gp.setupVehicles) ~= 'function' then return end
+  local orig = gp.setupVehicles
+  gp.setupVehicles = function(...)
+    if M.enabled and lastPlayer and next(spots) and (dirty or not sites) then
+      lastBuild, dirty = os.clock(), false
+      local ok, err = pcall(rebuild, lastPlayer)
+      if not ok then log('W', 'beamngEarth', 'parking: ' .. tostring(err)) end
+    end
+    return orig(...)
+  end
+  gp.__bngeEarthHooked = true
+end
+
 -- blk: the block's ground box {x0, y0, x1, y1} (nil: no limit).
 -- A rebuild waits for a light frame (governor roomFor, as navgraph's applies), REBUILD_WAIT_FRAMES at most
 M.REBUILD_ROOM_MS = 4.0
@@ -254,9 +273,12 @@ function M.update(aid, player, blk, gov)
     local okG, errG = pcall(guard, player)
     if not okG then log('W', 'beamngEarth', 'parking guard: ' .. tostring(errG)) end
   end
+  if player then lastPlayer = player end
+  hookSetup()
   if not M.enabled or not player or not dirty or not next(spots) then return end
-  -- no parked cars (the player's choice, or removed): the sites only every REBUILD_OFF_S (the radial menu's parked
-  -- cars find spots in them when turned on; a rebuild cost 24 ms every few seconds while driving, used by nobody)
+  -- no parked cars (the player's choice, or removed): the sites only every REBUILD_OFF_S (a rebuild cost 24 ms every
+  -- few seconds while driving, used by nobody, up to 88 ms on a Steam Deck); turning them on (the radial menu: the
+  -- stock setupVehicles) rebuilds them first (hookSetup)
   local gpOn = gameplay_parking and gameplay_parking.getState and gameplay_parking.getState()
   local off = not gpOn and (started or not require('beamngEarth/navgraph').choice.parked)
   local t = os.clock()
@@ -309,6 +331,7 @@ function M.reset()
   hidden = {}
   box, lastGuard, heldActive = nil, -math.huge, nil
   started, scatterPending = false, false
+  lastPlayer = nil
 end
 
 return M
