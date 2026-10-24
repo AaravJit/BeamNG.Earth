@@ -687,6 +687,8 @@ class Server:
         self.hm_inflight = {}
         self.ter_serial = itertools.count()
         self.base_stale = set()         # blocks whose base photo lacks lazy imagery (NAIP) still to come
+        self.pads_rebuild = set()       # blocks built without gas station pads that lie on them (pads_stale)
+        self.pads_changed_at = 0.0      # (time.monotonic) the last new pad: Connection.pads_refresh waits a little
         self.fast = False               # the player faster than FAST_BASE_V (the latest pose): photos follow blocks
         self.base_pending = {}          # block -> the analysis regions its base photo was rendered without
         self.base_rev = itertools.count(1)
@@ -1242,22 +1244,21 @@ class Server:
         """The built blocks whose photo was painted without these pads [(id, rings)] (every built block: None)
         marked stale, so base_refresh renders it again and sends it (block_base): the ground under the car is built
         before its road tiles bring their stations' pads (a teleport to a station showed its forecourt bare: the
-        user, 2026-10-24, "No asphalt at the station"). Detail mode only (the block photo)."""
-        if self.near_visual != "detail":
-            return
+        user, 2026-10-24, "No asphalt at the station"); in detail mode (the block photo) only. The same blocks are
+        marked for building again (pads_rebuild: their surface layers, the asphalt and no grass, come with the block;
+        Connection.pads_refresh)."""
+        self.pads_changed_at = time.monotonic()
         h = self.layout.block * heightmap.SQUARE / 2
         for key in list(self.hm):
             anchor = self.anchors.get(key[0])
             if anchor is None:
                 continue
-            if items is None:
-                self.base_stale.add(key)
-                continue
             _, cx, cy = key
-            for _, rings in items:
-                if any(self._ring_meets(anchor, ring, cx - h, cy - h, cx + h, cy + h) for ring in rings):
+            if items is None or any(self._ring_meets(anchor, ring, cx - h, cy - h, cx + h, cy + h)
+                                    for _, rings in items for ring in rings):
+                self.pads_rebuild.add(key)
+                if self.near_visual == "detail":
                     self.base_stale.add(key)
-                    break
 
     @staticmethod
     def _ring_meets(anchor, ring, x0, y0, x1, y1):
@@ -2557,6 +2558,8 @@ class Server:
 # instead of 15-60 s on a fresh place) and replaced by the graded one when that is built (terrain_refresh)
 PROVISIONAL_FIRST = os.environ.get("BNGE_PROVISIONAL", "1") != "0"
 PROVISIONAL_KEEP_S = 60.0   # the provisional .ter is deleted this long after its replacement was sent
+PADS_REFRESH_MS = 5.0       # the block in use built again with its gas station pads only below this speed (m/s) ...
+PADS_SETTLE_S = 3.0         # ... and this long after the last new pad (Connection.pads_refresh)
 TELEPORT_PAUSE_M = 20000.0  # an anchor asked this far from the player is a teleport: the old place's work pauses
 TELEPORT_PAUSE_MAX_S = 120.0  # ... at most this long (the mod may never commit it)
 BOOST_MOVE_MS = 3.0         # the loading boost ends when the player moves faster than this (m/s) ...
@@ -2669,6 +2672,7 @@ class Connection:
         self.sea_checked = None                 # (anchor id, 512 m square, monotonic, complete) of the last plan
         self.sea_sent = None                    # (anchor id, tiles) of the last "sea" message
         self.base_busy = False                  # a base photo refresh is running (base_refresh)
+        self.pads_busy = False                  # a block is being built again with its new pads (pads_refresh)
         self.ground_sent = None                 # (anchor id, z, monotonic) of the last ground_ahead sent
         self.following = True                   # the mod moves its block (pose "follow"; false high up)
 
@@ -3442,6 +3446,7 @@ class Connection:
             self.s.warm_imagery(self.s.anchors[aid], *self.focus, *self.vel)
             self.s.download_ahead(self.s.anchors[aid], *self.focus, *self.vel)
             self.base_refresh(aid)
+            self.pads_refresh(aid)
         if self.s.mapdata is not None and aid == self.active:
             self.roads.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_roads_tile,
                                vel=self.vel, ground_busy=self.terrain_wait > 0, view=self.view_at,
@@ -3517,6 +3522,45 @@ class Connection:
                 s.base_stale.discard(key)
             finally:
                 self.base_busy = False
+        self.spawn(run())
+
+    def pads_refresh(self, aid, now=None):
+        """The block in use built again (terrain_refresh, as refine_first) when gas station pads came in after it was
+        built (Server.pads_rebuild: its surface layers then have the forecourt's asphalt, no grass on it; the user,
+        2026-10-24: "looks like we painted it but it is still dirt"). Only with the car slower than PADS_REFRESH_MS
+        (driving on, the next blocks are built with them) and PADS_SETTLE_S after the last new pad (a tile burst
+        brings several); one at a time."""
+        s = self.s
+        now = time.monotonic() if now is None else now
+        if (self.pads_busy or not s.pads_rebuild or math.hypot(*self.vel) > PADS_REFRESH_MS
+                or now - s.pads_changed_at < PADS_SETTLE_S):
+            return
+        key = next((k for k in list(s.hm_committed)[-1:] if k in s.pads_rebuild and k[0] == aid), None)
+        anchor = s.anchors.get(aid)
+        if key is None or anchor is None:
+            return
+        self.pads_busy = True
+        s.pads_rebuild.discard(key)
+
+        async def run():
+            old = s.hm.pop(key, None)
+            try:
+                info = await s.terrain(anchor, key[1], key[2])
+            except Exception:
+                log.exception("block %s again with its gas station pads (the old one stays)", key)
+                if old is not None:
+                    s.hm[key] = old
+                return
+            finally:
+                self.pads_busy = False
+            s.base_stale.discard(key)           # (its photo built with them too)
+            s.hm_sent.append(key)
+            log.info("block %s built again with its gas station pads", key)
+            self.send({"type": "terrain_refresh", "anchorId": key[0], **self.terrain_msg(key, info)})
+            old_ter = (old or {}).get("ter")
+            if old_ter and old_ter != info.get("ter"):
+                await asyncio.sleep(PROVISIONAL_KEEP_S)
+                s._remove(os.path.join(s.out_dir, old_ter))
         self.spawn(run())
 
     def ground_ahead(self, aid, x, y, vx, vy):

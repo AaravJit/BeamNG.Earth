@@ -1005,6 +1005,54 @@ class SwitchTest(unittest.TestCase):
         s.set_gas_stations(False)                                             # the switch: every block's photo again
         self.assertEqual(s.base_stale, {(a.id, 0.0, 0.0), (a.id, 5 * size, 0.0)})
 
+    def test_new_pads_rebuild_the_block_when_slow(self):
+        # the photo alone left the forecourt grass and dirt underneath (the user, 2026-10-24: "looks like we painted it
+        # but it is still dirt"): the surface layers come with the block, so the block the car is on is built again
+        # (terrain_refresh) once its pads settle, only when the car is slow (driving on, the next blocks have them)
+        import asyncio
+        import earthd
+        s, sur = self.server(gas_stations=True, near_visual="detail")
+        a = s.new_anchor(40.0, -80.0)
+        s.anchors[a.id] = a
+        key = (a.id, 0.0, 0.0)
+        s.hm[key] = {"ter": "old.ter"}
+        s.hm_committed.append(key)
+        built = []
+
+        async def terrain(anchor, cx, cy, *args, **kw):
+            built.append((cx, cy))
+            s.hm[(anchor.id, cx, cy)] = info = {"ter": "new.ter"}
+            return info
+        s.terrain = terrain
+        la, lo, _ = a.frame.enu_to_geodetic(np.array([-10.0, 10.0, 10.0, -10.0]), np.array([-5.0, -5.0, 5.0, 5.0]),
+                                            np.zeros(4))
+        s.keep_fuel_pads([("st", [(np.asarray(la), np.asarray(lo))])])
+        self.assertIn(key, s.pads_rebuild)
+        t = s.pads_changed_at
+
+        async def go():
+            w = _Writer()
+            c = earthd.Connection(s, None, w)
+            c.terrain_msg = lambda k, info: {"cx": k[1], "cy": k[2], "size": 512}
+            c.vel = (20.0, 0.0)
+            c.pads_refresh(a.id, now=t + 10.0)
+            await asyncio.sleep(0.05)
+            fast = list(built)
+            c.vel = (0.0, 0.0)
+            c.pads_refresh(a.id, now=t + 1.0)                     # (more road tiles may still bring pads)
+            await asyncio.sleep(0.05)
+            early = list(built)
+            c.pads_refresh(a.id, now=t + 10.0)
+            await asyncio.sleep(0.05)
+            c.pads_refresh(a.id, now=t + 20.0)                    # (once)
+            await asyncio.sleep(0.05)
+            return fast, early, list(built), w.msgs
+        fast, early, done, msgs = asyncio.run(go())
+        self.assertEqual((fast, early), ([], []))
+        self.assertEqual(done, [(0.0, 0.0)])
+        self.assertEqual([m["type"] for m in msgs if m["type"] == "terrain_refresh"], ["terrain_refresh"])
+        self.assertNotIn(key, s.pads_rebuild)
+
     def test_never_on_without_the_flag(self):
         s, sur = self.server()
         self.run_msgs(s, [{"type": "gas_stations", "on": True}])
