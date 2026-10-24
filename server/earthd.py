@@ -1197,10 +1197,8 @@ class Server:
                                                        bridge_rails=roadmeshmod.BRIDGE_RAILS)
         except Exception as ex:
             log.warning("mapped guardrails: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
-            try:
-                guardrail_rows = guardrailsmod.bridge_rows(parapets) if roadmeshmod.BRIDGE_RAILS else []
-            except Exception:
-                guardrail_rows = []
+            # A failed mapped-data pass cannot establish that a bridge needs rails.
+            guardrail_rows = []
         mesh = roadmeshmod.build(anchor.frame, chunks, elev, (x0, y0, 0.0),
                                  DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0,
                                  clip=box, follow=True, q=self.anchor_q(anchor), drawn=drawn)
