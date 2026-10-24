@@ -870,6 +870,11 @@ DRIVEWAY_MAPPED_M = 3.0     # a service road with a point this near the pad and 
 # as well"): another public road this near the pad, crossing the first at least this much (not a street behind it)
 DRIVEWAY_CORNER_M = 45.0    # (the Speedway's side street: 40 m from its pad)
 DRIVEWAY_CORNER_DEG = 45.0
+# no driveway made up at all where mapped service roads already give the forecourt access to a public road (the user,
+# 2026-10-23, at a Sheetz near Pittsburgh: "can we skip drawing drivewas if there is already a service road there for
+# access"): one this near the pad (alongside it: the margin's dirt between), joined to others within DRIVEWAY_JOIN_M
+DRIVEWAY_ACCESS_M = 8.0
+DRIVEWAY_JOIN_M = 2.0
 
 
 def _hull(pts):
@@ -971,6 +976,8 @@ def _driveways(pad, centre, others, roads, service):
     if not len(roads):
         return []
     edge = _dense(np.vstack([pad, pad[:1]]), 0.5)
+    if _mapped_access(pad, edge, roads, service):
+        return []
     gaps = [_seg_dist(edge, line[:-1], line[1:]) - h for line, h in roads]
     order = sorted(range(len(roads)), key=lambda k: float(gaps[k].min()))
     first = order[0]
@@ -995,6 +1002,32 @@ def _driveways(pad, centre, others, roads, service):
         if s is not None:
             out.append(s)
     return out
+
+
+def _mapped_access(pad, edge, roads, service):
+    """Whether mapped service roads join the pad (one within DRIVEWAY_ACCESS_M of it) to a public road (one within its
+    half width + DRIVEWAY_MAPPED_M), directly or through others they meet (within DRIVEWAY_JOIN_M)."""
+    lo, hi = pad.min(0) - 60.0, pad.max(0) + 60.0          # (a driveway's chain near the forecourt)
+    lines = [ln for ln in service if (ln.max(0) >= lo).all() and (ln.min(0) <= hi).all()]
+    if not lines:
+        return False
+    dense = [_dense(ln) for ln in lines]
+    at_pad = [bool(_inside(pad, q).any() or (_seg_dist(q, edge[:-1], edge[1:]) <= DRIVEWAY_ACCESS_M).any())
+              for q in dense]
+    at_road = [any((_seg_dist(q, r[:-1], r[1:]) <= h + DRIVEWAY_MAPPED_M).any() for r, h in roads) for q in dense]
+    group = list(range(len(lines)))
+
+    def root(i):
+        while group[i] != i:
+            group[i] = group[group[i]]
+            i = group[i]
+        return i
+    for i in range(len(lines)):
+        for j in range(i + 1, len(lines)):
+            if root(i) != root(j) and (_seg_dist(dense[i], lines[j][:-1], lines[j][1:]) <= DRIVEWAY_JOIN_M).any():
+                group[root(i)] = root(j)
+    pads = {root(i) for i in range(len(lines)) if at_pad[i]}
+    return any(root(i) in pads for i in range(len(lines)) if at_road[i])
 
 
 def _drive_to(pad, centre, edge, gap, road, others, service):

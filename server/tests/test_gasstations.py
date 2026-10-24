@@ -570,11 +570,29 @@ class PadTest(unittest.TestCase):
         site = gs.layout(STATION, [SHOP, self.ROOF], ROAD + [back])
         self.assertEqual(len(site.drives), 1)
 
-    def test_mapped_entrance_counts_per_road(self):
-        drive = [lane(0.0, 14.0, 0.0, 2.0)]        # mapped into the main road: the side street's still made up
+    def test_mapped_access_no_made_up_driveways(self):
+        # a Sheetz near Pittsburgh (the user, 2026-10-23: "can we skip drawing drivewas if there is already a service
+        # road there for access"): mapped into the main road, so none made up to the side street either
+        drive = [lane(0.0, 14.0, 0.0, 2.0)]
         site = gs.layout(STATION, [SHOP, self.ROOF], ROAD + [self.SIDE], service=drive)
+        self.assertEqual(site.drives, [])
+        self.assertFalse(in_pad(site, -30.0, 22.0))
+
+    def test_mapped_access_through_two_service_roads(self):
+        drive = [lane(0.0, 14.0, 25.0, 12.0), lane(25.0, 12.0, 30.0, 2.0)]     # off the forecourt, then to the road
+        site = gs.layout(STATION, [SHOP, self.ROOF], ROAD, service=drive)
+        self.assertEqual(site.drives, [])
+
+    def test_mapped_access_alongside_the_forecourt(self):
+        # a service road running past the forecourt's side, 7 m off the pad's edge, into the street
+        drive = [lane(28.0, 40.0, 28.0, 2.0)]
+        site = gs.layout(STATION, [SHOP, self.ROOF], ROAD, service=drive)
+        self.assertEqual(site.drives, [])
+
+    def test_service_road_elsewhere_still_a_driveway(self):
+        far = [lane(80.0, 40.0, 80.0, 2.0)]         # another lot's driveway
+        site = gs.layout(STATION, [SHOP, self.ROOF], ROAD, service=far)
         self.assertEqual(len(site.drives), 1)
-        self.assertTrue(in_pad(site, -30.0, 22.0))
 
     def test_drives_as_walk_cuts(self):
         site = gs.layout(STATION, [SHOP, self.ROOF], ROAD)
