@@ -278,9 +278,9 @@ def _is_two_sided(feats, i):
     return str(values.get("two_sided", "")).strip().lower() in ("yes", "true", "1")
 
 
-# Keep this tight: a central divider between adjacent bridge decks can be close to both inner parapets.
-# Tight matching is used for all parapets; a wider tolerance is safe only for a parapet
-# proven to be on the OUTSIDE of a bridge. This avoids deleting the centre divider between decks.
+# Fallback duplicate suppression when a bridge profile is incomplete.
+# The temporary deck buffer normally removes these nearby models first; if no usable deck
+# profile exists, tight inner-wall matching avoids deleting a central divider between decks.
 PARAPET_DUPLICATE_M = 0.7
 OUTER_PARAPET_DUPLICATE_M = 2.0
 PARAPET_LEVEL_TOLERANCE_M = 1.0
