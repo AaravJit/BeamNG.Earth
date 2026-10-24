@@ -852,6 +852,8 @@ def main():
     ap.add_argument("--keep-mod", action="store_true", help="leave the game's copy of the mod as it is")
     ap.add_argument("--no-beammp", action="store_true",
                     help="do not start BeamMP (multiplayer) with the game (bmplaunch.py)")
+    ap.add_argument("--beammp-launcher", metavar="PATH",
+                    help="the BeamMP launcher you already have (its file or folder; kept for the next starts)")
     ap.add_argument("--user-dir", help="BeamNG.drive user folder (default: found)")
     ap.add_argument("--proton", dest="build", action="store_const", const="proton",
                     help="Linux: the game is the Windows build under Proton")
@@ -906,10 +908,22 @@ def beammp_install(user_dir, dd, ask=None):
     question = ("  Install the official BeamMP launcher now (a few MB from GitHub)?" if IS_WIN else
                 "  Build BeamMP's launcher from its source now (a few minutes, once)?")
     try:
-        answer = ask(question + " [Y]es / [N]o / [D]on't ask again: ")
+        answer = ask(question + " [Y]es / [N]o / [D]on't ask again / [H]ave it already: ")
     except (EOFError, OSError):
         return None                         # (no console to ask in: asked next time)
     answer = (answer or "").strip().lower()
+    if answer in ("h", "have", "have it", "have it already"):
+        # (a player's own launcher in a folder of their own: they did not want a second one, Discord 2026-10-24)
+        try:
+            where = ask(f"  Where is it? The {bmplaunch.EXE} file or its folder: ")
+        except (EOFError, OSError):
+            return None
+        exe = bmplaunch.remember(dd, where)
+        if exe:
+            say(f"  Using {exe} (from now on; --beammp-launcher PATH changes it).")
+        else:
+            say(f"  No {bmplaunch.EXE} there: asked again next time (or start with --beammp-launcher PATH).")
+        return exe
     if answer in ("d", "don't", "dont", "never"):
         bmplaunch.set_on_launch(user_dir, False)
         say("  Not installed, and not asked again. To use multiplayer later, turn on \"Start BeamMP with BeamNG.Earth\"")
@@ -945,6 +959,11 @@ def beammp_up(user_dir, build, args):
     if not bmplaunch.on_launch(user_dir, dd):
         row("Multiplayer", "BeamMP not started (turned off: BeamNG.Earth settings, \"Start BeamMP with BeamNG.Earth\")")
         return None
+    if getattr(args, "beammp_launcher", None):
+        if bmplaunch.remember(dd, args.beammp_launcher):
+            say(f"  BeamMP launcher: {bmplaunch.remembered(dd)} (kept for the next starts)")
+        else:
+            say(f"  --beammp-launcher: no {bmplaunch.EXE} at {args.beammp_launcher}")
     exe = bmplaunch.find(dd)
     if exe and not IS_WIN and bmplaunch.rebuild_due(dd) and exe == os.path.join(dd, "beammp", bmplaunch.EXE):
         import install          # (the one built here was too old for BeamMP's mod: built again from BeamMP's source)

@@ -191,13 +191,15 @@ BeamNG.Earth runs on [BeamMP](https://beammp.com/) servers (in testing): drive t
 **Joining a server**
 1. Start the BeamNG.Earth app (the same version as the server's). It starts BeamMP with the game: the official BeamMP
    launcher, unchanged (BeamMP's code is AGPL-3.0, [github.com/BeamMP](https://github.com/BeamMP)). If BeamMP isn't
-   installed, the app asks once: **Yes / No / Don't ask again**.
+   installed, the app asks once: **Yes / No / Don't ask again / Have it already** (the last one asks where your
+   launcher is; `--beammp-launcher PATH` sets it too, and it is kept for the next starts).
    - **Windows:** Yes downloads BeamMP's official launcher from BeamMP's GitHub releases (checked against the checksum
      BeamMP publishes; Windows Firewall then asks once whether it may use the network: allow it).
    - **Linux and Steam Deck:** BeamMP publishes no Linux download, so Yes builds its launcher on your computer from
      BeamMP's source, the newest version that passed BeamMP's own tests, in an Ubuntu container (podman or docker:
      SteamOS has podman; about a minute on a Steam Deck). A launcher you built yourself is used when found
-     (`~/BeamMP-Launcher`, or set `BEAMMP_LAUNCHER`).
+     (a `BeamMP-Launcher` folder in your home folder or one folder down, e.g. `~/Games/BeamMP-Launcher`, or
+     `~/.local/share`; or answer "Have it already", or set `BEAMMP_LAUNCHER`).
    - The setting **Start BeamMP with BeamNG.Earth** (Pause menu > Mods > BeamNG.Earth, Multiplayer) turns this off or
      back on; `--no-beammp` starts the game without BeamMP once.
 2. In the game: main menu > More > BeamMP, log in (an account or a guest).
