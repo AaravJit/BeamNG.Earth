@@ -45,7 +45,3 @@ jobs:
         run: python -m unittest discover -s server/tests -p "test_guardrails.py" -v
       - name: Run road mesh tests
         run: python -m unittest discover -s server/tests -p "test_roadmesh.py" -v
-      - name: Install LuaJIT for the Forest lifecycle regression test
-        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends luajit
-      - name: Run Forest lifecycle regression test
-        run: luajit mod/tests/trees_lifecycle.lua

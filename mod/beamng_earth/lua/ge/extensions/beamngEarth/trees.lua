@@ -198,7 +198,6 @@ local MATERIALS = {
 
 local stopwatch = require('beamngEarth/stopwatch')
 local tiles = {}        -- key "a:tx_ty" -> { anchor, cx, cy, rows, made = { i -> item }, shown = rank }
-local retiredSerial = 0 -- unique keys for rows that must finish deleting before their replacement settles
 local foci = {}         -- other vehicles' collision foci { x, y, r, trees } (M.setFoci, collisionfoci.lua)
 local ghostSince = nil               -- since the last rebase that left ghost tiles (M.transform)
 local types = {}        -- "shape" / "shape#n" (not solid) -> TSForestItemData
@@ -381,48 +380,14 @@ function M.onTile(msg, currentAnchor)
   M.onRows(msg.anchorId, msg.key, data.items, data.groups)
 end
 
--- Compare the compact, scalar rows and group names before reusing existing Forest items.
--- A decoded tile normally has a new Lua table identity even when its contents are unchanged.
-local function sameRows(a, b)
-  if a == b then return true end
-  if type(a) ~= 'table' or type(b) ~= 'table' or #a ~= #b then return false end
-  for i, ar in ipairs(a) do
-    local br = b[i]
-    if type(ar) ~= 'table' or type(br) ~= 'table' then
-      if ar ~= br then return false end
-    else
-      if #ar ~= #br then return false end
-      for j, value in ipairs(ar) do if value ~= br[j] then return false end end
-    end
-  end
-  return true
-end
-
-local function sameGroups(a, b)
-  if a == b then return true end
-  if type(a) ~= 'table' or type(b) ~= 'table' or #a ~= #b then return false end
-  for i, group in ipairs(a) do if group ~= b[i] then return false end end
-  return true
-end
-
 -- Rows of a tile from elsewhere (a road tile's street furniture: roads.lua, key "p<tx>_<ty>").
 function M.onRows(anchorId, tileKey, rows, groups)
   local key = anchorId .. ':' .. tostring(tileKey)
   local old = tiles[key]
-  local rowGroups = type(groups) == 'table' and groups or nil
-  -- Never inherit made items from a retired or changed tile. Keep the old record under a private key until
-  -- update() has removed its Forest items within the existing per-frame budget; otherwise replacing tiles[key]
-  -- loses the only references to old items and can leave ghost rails/props in the world.
-  if old and (old.drop or not sameRows(old.rows, rows) or not sameGroups(old.groups, rowGroups)) then
-    old.drop = true
-    retiredSerial = retiredSerial + 1
-    tiles[key .. ':retired:' .. tostring(retiredSerial)] = old
-    old = nil
-  end
   local tx, ty = tostring(tileKey):match('(%-?%d+)_(%-?%d+)$')
-  local t = { anchor = anchorId, rows = rows, groups = rowGroups,
+  local t = { anchor = anchorId, rows = rows, groups = type(groups) == 'table' and groups or nil,
     made = old and old.made or {}, solid = old and old.solid or {}, near = old and old.near,
-    shapes = old and old.shapes or {}, scales = old and old.scales or {},
+    shapes = old and old.rows == rows and old.shapes or {}, scales = old and old.rows == rows and old.scales or {},
     madeShape = old and old.madeShape or {}, shown = old and old.shown or 0, forestId = old and old.forestId or nil,
     variant = M.tileVariant(key), cx = (tonumber(tx) or 0) * 256 + 128, cy = (tonumber(ty) or 0) * 256 + 128, drop = false }
   tiles[key] = t
