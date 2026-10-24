@@ -527,12 +527,21 @@ local copyQuiet = {}        -- game vehicle id -> seconds before copyBase is tak
 local PRISTINE_VE = [[local n = 0 for _, b in pairs(v.data.beams) do if obj:beamIsBroken(b.cid) then n = n + 1 end end ]]
   .. [[if n > 0 then obj:requestReset(RESET_PHYSICS) ]]
   .. [[obj:queueGameEngineLua("local m = package.loaded['beamngEarth/mpsession'] if m then m.afterRepairReset(%d, " .. n .. ") end") end]]
-local REPAIR_VE = [[local raw, apply = mime.unb64('%s'), %s local ok, d = pcall(jsonDecode, raw) local extra = 0 ]]
+-- The owner's damage put on a copy without its node positions (BeamMP's nodesVE.applyNodes also sets every node where
+-- it stood in the owner's world when sent: a car driving on was pulled back there for a frame and broke apart; a
+-- repair re-applying a 30 s old state broke 49 beams of a car whose owner had none, 2026-10-24). Broken beams, rest
+-- lengths (the dents) and node masses, as applyNodes sets them. (Vehicle Lua; d: the decoded state)
+local APPLY_VE = [[local function applyDamage(d) if type(d) ~= 'table' then return end ]]
+  .. [[for cid, n in pairs(d.nodes or {}) do if type(n) == 'table' and #n > 1 then obj:setNodeMass(tonumber(cid) - 1, n[2]) end end ]]
+  .. [[for cid, b in pairs(d.beams or {}) do cid = tonumber(cid) - 1 if b[2] == true then ]]
+  .. [[if not obj:beamIsBroken(cid) then obj:breakBeam(cid) beamstate.beamBroken(cid, 1) end ]]
+  .. [[else obj:setBeamLength(cid, b[1]) if b[3] > 0 then beamstate.beamDeformed(cid, b[3]) end end end end ]]
+local REPAIR_VE = APPLY_VE .. [[local raw, apply = mime.unb64('%s'), %s local ok, d = pcall(jsonDecode, raw) local extra = 0 ]]
   .. [[if ok and type(d) == 'table' and type(d.beams) == 'table' then for cid, b in pairs(d.beams) do ]]
   .. [[if b[2] ~= true and obj:beamIsBroken(tonumber(cid) - 1) then extra = extra + 1 end end end ]]
   .. [[if extra > 0 then obj:requestReset(RESET_PHYSICS) ]]
   .. [[obj:queueGameEngineLua("local m = package.loaded['beamngEarth/mpsession'] if m then m.afterRepairReset(%d, " .. extra .. ") end") ]]
-  .. [[elseif apply and nodesVE then nodesVE.applyNodes(raw) end]]
+  .. [[elseif apply and ok then applyDamage(d) end]]
 
 function M.wrapNodes()
   local ng = rawget(_G, 'nodesGE')
@@ -615,7 +624,9 @@ local function applyPendingNodes()
       if p.frames <= 0 then
         pendingNodes[gid] = nil
         local veh = vehicle(gid)
-        if veh then veh:queueLuaCommand("if nodesVE then nodesVE.applyNodes(mime.unb64('" .. p.b64 .. "')) end") end
+        if veh then
+          veh:queueLuaCommand(APPLY_VE .. "local ok, d = pcall(jsonDecode, mime.unb64('" .. p.b64 .. "')) if ok then applyDamage(d) end")
+        end
       end
     end
   end
@@ -732,7 +743,21 @@ function M.update(dt, anchor, player)
         if next(gov.slow) then perf.slow, gov.slow = gov.slow, {} end     -- (the slow frames since the last)
       end
     end
-    pcall(jsonWriteFile, M.STATUS_FILE, { t = os.time(), anchor = anchor and M.key(anchor.lat, anchor.lon) or nil,
+    -- (the terrain block where it stands and the far field's box for it: the two should agree)
+    local blk = nil
+    local tb = scenetree and scenetree.findObject and scenetree.findObject('bngEarthTerrain')
+    local ff = package.loaded['beamngEarth/farfield']
+    local cb = ff and ff.coverBlock and ff.coverBlock()
+    if tb or cb then
+      local tp = tb and tb:getPosition()
+      blk = { tx = tp and tp.x, ty = tp and tp.y, tz = tp and tp.z, cx0 = cb and cb.x0, cy0 = cb and cb.y0,
+        cx1 = cb and cb.x1, cy1 = cb and cb.y1, near = ff and ff.nearVisual and ff.nearVisual() }
+      local ok, fs = pcall(function() return ff and ff.stats() end)
+      if ok and type(fs) == 'table' then
+        blk.partial, blk.partialSink, blk.partialLevel, blk.over = fs.partial, fs.partialSink, fs.partialLevel, fs.overBlock
+      end
+    end
+    pcall(jsonWriteFile, M.STATUS_FILE, { t = os.time(), block = blk, anchor = anchor and M.key(anchor.lat, anchor.lon) or nil,
       perf = perf, switch = next(switchLog) and switchLog or nil, away = next(awayLog) and awayLog or nil,
       anchors = anchors, stats = stats, hidden = hidden, remote = remote, own = own, player = player and { x = player.x,
       y = player.y, z = player.z, camera = player.camera } or nil }, true)

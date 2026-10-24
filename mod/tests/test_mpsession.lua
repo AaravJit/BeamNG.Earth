@@ -238,7 +238,9 @@ do
   T.check(other.cmds[1]:find("'), true ", 1, true) ~= nil, 'a fresh state is applied when nothing broke here only')
   ms.afterRepairReset(21, 5)
   for _ = 1, ms.REPAIR_FRAMES do ms.update(0.01, anchor, { x = 100, y = 0, z = 0 }) end
-  T.check(other.cmds[#other.cmds]:find('nodesVE.applyNodes', 1, true) ~= nil, 'after the reset: the owner\'s state applied')
+  T.check(other.cmds[#other.cmds]:find('applyDamage(d)', 1, true) ~= nil, 'after the reset: the owner\'s state applied')
+  T.check(other.cmds[#other.cmds]:find('setNodePosition', 1, true) == nil, 'without its node positions')
+  T.check(loadstring(other.cmds[1]) ~= nil and loadstring(other.cmds[#other.cmds]) ~= nil, 'the vehicle Lua compiles')
   MPVehicleGE = oldMP
   nodesGE, MPHelpers = nil, nil
 end
