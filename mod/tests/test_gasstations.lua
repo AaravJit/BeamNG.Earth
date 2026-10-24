@@ -130,14 +130,22 @@ G.dropKey('1:9_9'); G.dropKey('2:9_9'); G.dropKey('2:9_8')
 T.check(collide == cbefore + 1, 'a collision rebuild after the delete')
 G.reset()
 
--- the shapes loaded once at session start (hidden, no collision), so the first station does not pay their first load
-G.prewarm()
+-- the region's shapes (the server's anchor_ready fuelShapes; only that region's, a Steam Deck's memory) loaded once,
+-- hidden and not colliding, so the first station does not pay their first load
+G.prewarm(nil)
+T.check(#S.liveOf('TSStatic') == 0, 'nothing named, nothing loaded (gas stations off)')
+G.prewarm({ '/x/a.dae', '/x/b.dae' })
 local warm = S.liveOf('TSStatic')
-T.check(#warm == #G.PREWARM and #warm >= 9, 'one hidden TSStatic per shape: ' .. #warm)
+T.check(#warm == 2, 'one hidden TSStatic per shape named: ' .. #warm)
 T.check(warm[1].hidden == true and warm[1].fields.collisionType == 'None', 'hidden, not colliding')
-G.prewarm()
-T.check(#S.liveOf('TSStatic') == #warm, 'once')
+G.prewarm({ '/x/a.dae', '/x/b.dae' })
+T.check(#S.liveOf('TSStatic') == 2, 'once (a rebase in the same region)')
+G.prewarm({ '/x/a.dae', '/x/c.dae' })
+T.check(#S.liveOf('TSStatic') == 3, 'another region: only its new shapes')
 G.reset()
-T.check(#S.liveOf('TSStatic') == #warm, 'kept over a reset (the level end deletes them with the level)')
+T.check(#S.liveOf('TSStatic') == 3, 'kept over a reset (the level end deletes them with the level)')
+for _, o in ipairs(S.liveOf('TSStatic')) do o:delete() end             -- (the level loaded again)
+G.prewarm({ '/x/a.dae' })
+T.check(#S.liveOf('TSStatic') == 1, 'made again after the level went')
 
 T.done('test_gasstations')

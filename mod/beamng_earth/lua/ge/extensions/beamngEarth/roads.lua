@@ -990,10 +990,6 @@ prewarmNow = function()
   if not ok then lastError = tostring(id); return end
   prewarmId, prewarmPath = id, path
   log('I', 'beamngEarth', string.format('roads: materials prewarmed in %.0f ms (%s)', t(), path))
-  local gt = stopwatch.new()
-  local okG, errG = pcall(require('beamngEarth/gasstations').prewarm)    -- the gas stations' shapes, likewise
-  if okG then log('I', 'beamngEarth', string.format('gas stations: shapes prewarmed in %.0f ms', gt()))
-  else log('W', 'beamngEarth', 'gas stations prewarm: ' .. tostring(errG)) end
 end
 
 function M.prewarm(path)

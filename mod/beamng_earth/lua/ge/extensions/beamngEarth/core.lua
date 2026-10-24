@@ -539,6 +539,13 @@ end
 
 local function commitAnchor(msg, purpose)
   if st.rebasing then finishRebase() end -- never mix two frame changes
+  -- the anchor's region's gas station shapes loaded now (in this heavy slot), not at its first station
+  if msg.fuelShapes then
+    local gt = stopwatch.new()
+    local ok, err = pcall(gasstations.prewarm, msg.fuelShapes)
+    if ok then log('D', 'beamngEarth', string.format('gas stations: shapes prewarmed in %.0f ms', gt()))
+    else log('W', 'beamngEarth', 'gas stations prewarm: ' .. tostring(err)) end
+  end
   if purpose == 'teleport' or not st.anchor then return commitTeleport(msg) end
   return commitRebase(msg, purpose)
 end

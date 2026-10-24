@@ -205,36 +205,33 @@ function M.reset()
   poisDirty, lastClear = false, -math.huge
 end
 
--- Every shape a station can use (server/gasstations.py KITS, BOLLARD), loaded once at session start as hidden
--- TSStatics kept for the session: a shape's first load stalls the frame (probe PP1: 625 ms for a prefab's first
--- West Coast shapes, docs/research/2026-10-11-engine-probes.md), which mid-drive at speed would be a hitch.
-local WCA = '/levels/west_coast_usa/art/shapes/buildings/'
-local ITA = '/levels/italy/art/shapes/buildings/italy_petrolstation_'   -- (Europe's stations; materials: roads.lua's)
-M.PREWARM = { WCA .. 's_fuel_structure_06.dae', WCA .. 's_fuel_structure_07.dae',     -- (roof slab, pillar)
-  ITA .. 'awningSt.DAE', ITA .. 'pump_b.DAE', ITA .. 'pump_c.DAE', ITA .. 'brandsign.DAE',
-  '/levels/east_coast_usa/art/shapes/buildings/eca_gastation_pumps.DAE',                  -- (US East's)
-  WCA .. 's_fuel_pump_2015.dae', WCA .. 's_fuel_pump_2000.dae',
-  WCA .. 's_fuel_pump_2015_trilobite.dae', WCA .. 's_fuel_pump_2015_apex.dae', WCA .. 's_fuel_pump_2000_nodeoline.dae',
-  WCA .. 's_fuel_pump_2000_tyranos.dae', '/art/shapes/objects/bollard_yellow.dae' }
-local warm = {}            -- the prewarm TSStatics' ids (gone with the level: made again)
+-- The shapes of the anchor's region's stations (the server's anchor_ready fuelShapes: gasstations.style_shapes; only
+-- that region's, with a Steam Deck's memory in mind, the user 2026-10-23), loaded as hidden TSStatics kept for the
+-- session: a shape's first load stalls the frame (probe PP1: 625 ms for a prefab's first West Coast shapes,
+-- docs/research/2026-10-11-engine-probes.md), which mid-drive at speed would be a hitch. Each shape once; another
+-- region's new ones added at its first anchor (a teleport's loading, or a rebase over the region's border); made
+-- again after the level is loaded again. Nothing named (gas stations off): nothing loaded.
+local warm = {}            -- shape -> the prewarm TSStatic's id
 
-function M.prewarm()
-  if warm[1] and scenetree.findObjectById(warm[1]) then return end
-  warm = {}
-  for _, shape in ipairs(M.PREWARM) do
-    local ok, err = pcall(function()
-      local o = createObject('TSStatic')
-      o:setField('shapeName', 0, shape)
-      o:setField('collisionType', 0, 'None')
-      o:setField('decalType', 0, 'None')
-      o.canSave = false
-      o:setPosition(vec3(0, 0, -5000))
-      o:registerObject('')
-      o:setHidden(true)
-      scenetree.MissionGroup:addObject(o)
-      warm[#warm + 1] = o:getID()
-    end)
-    if not ok then log('W', 'beamngEarth', 'gas stations: prewarm ' .. shape .. ': ' .. tostring(err)) end
+function M.prewarm(shapes)
+  if type(shapes) ~= 'table' or not scenetree.MissionGroup then return end
+  for _, shape in ipairs(shapes) do
+    local id = warm[shape]
+    if type(shape) == 'string' and not (id and scenetree.findObjectById(id)) then
+      local ok, err = pcall(function()
+        local o = createObject('TSStatic')
+        o:setField('shapeName', 0, shape)
+        o:setField('collisionType', 0, 'None')
+        o:setField('decalType', 0, 'None')
+        o.canSave = false
+        o:setPosition(vec3(0, 0, -5000))
+        o:registerObject('')
+        o:setHidden(true)
+        scenetree.MissionGroup:addObject(o)
+        warm[shape] = o:getID()
+      end)
+      if not ok then log('W', 'beamngEarth', 'gas stations: prewarm ' .. shape .. ': ' .. tostring(err)) end
+    end
   end
 end
 

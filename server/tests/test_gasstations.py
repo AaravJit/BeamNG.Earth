@@ -504,6 +504,22 @@ class RegionTest(unittest.TestCase):
         site = gs.layout(STATION, [SHOP], ROAD, style="us_east")
         self.assertTrue(any(p["shape"].endswith("s_fuel_pump_2015.dae") for p in site.props))
 
+    def test_style_shapes(self):
+        # the shapes the mod preloads for the anchor's region (earthd anchor_ready fuelShapes): only that region's (a
+        # Steam Deck's memory: the user, 2026-10-23), and every shape that region's layouts can use
+        names = {k: {x.rsplit("/", 1)[-1] for x in gs.style_shapes(k)} for k in ("default", "europe", "us_east")}
+        self.assertFalse([n for n in names["default"] if n.startswith(("italy_", "eca_"))], names["default"])
+        self.assertFalse([n for n in names["europe"] if n.startswith(("s_fuel_", "eca_"))], names["europe"])
+        self.assertIn("eca_gastation_pumps.DAE", names["us_east"])
+        self.assertTrue(names["default"] <= names["us_east"], "East Coast's fall back to West Coast's islands")
+        for style, roof in (("default", self.ROOF_EAST), ("europe", self.ROOF_EAST), ("us_east", self.ROOF_EAST),
+                            ("us_east", rect("small", 0.0, 22.0, 14.0, 8.0, cls="roof"))):
+            for site in (gs.layout(STATION, [SHOP, roof], ROAD, style=style), gs.layout(STATION, [SHOP], ROAD, style=style)):
+                used = {p["shape"] for p in site.props}
+                self.assertTrue(used <= set(gs.style_shapes(style)), (style, used - set(gs.style_shapes(style))))
+
+    ROOF_EAST = rect("roof", 0.0, 22.0, 36.0, 8.0, cls="roof")
+
     def test_tile_sites_by_region(self):
         md = station_md()
         orig = gs.style_of
