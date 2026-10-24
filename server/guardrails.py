@@ -282,7 +282,8 @@ def _is_two_sided(feats, i):
     return str(values.get("two_sided", "")).strip().lower() in ("yes", "true", "1")
 
 
-PARAPET_DUPLICATE_M = 1.5
+# Keep this tight: a central divider between adjacent bridge decks can be close to both inner parapets.
+PARAPET_DUPLICATE_M = 0.7
 PARAPET_PARALLEL_DOT = 0.75
 PARAPET_MATCH_SHARE = 0.75
 PARAPET_MATCH_SAMPLES = 7
