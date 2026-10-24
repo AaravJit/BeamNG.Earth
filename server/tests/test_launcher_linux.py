@@ -277,3 +277,9 @@ class ModsOffAfterUpdateTest(unittest.TestCase):
             launcher.watch_game_log(d, time.time())
             time.sleep(3)
         self.assertEqual(got, [])
+
+
+class GfxArgTest(unittest.TestCase):
+    def test_dx12_is_d3d12(self):
+        """The game knows -gfx dx11 / vk but not dx12 ("no valid rendering device"): DirectX 12 is d3d12."""
+        self.assertEqual(launcher.GFX_ARG, {"dx11": "dx11", "dx12": "d3d12", "vk": "vk"})

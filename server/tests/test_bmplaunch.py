@@ -78,6 +78,28 @@ class Finding(unittest.TestCase):
             bmplaunch.save_settings(d, declined=True)
             self.assertTrue(bmplaunch.declined(d))
 
+    def test_newest_found_unless_named(self):
+        with tempfile.TemporaryDirectory() as d:
+            old_ = os.path.join(d, "BeamMP-Launcher", "bin", bmplaunch.EXE)
+            new_ = os.path.join(d, "BeamMP-Launcher-2.8.1", "bin", bmplaunch.EXE)
+            for p, t in ((old_, 1_000_000), (new_, 2_000_000)):
+                os.makedirs(os.path.dirname(p))
+                Path(p).write_bytes(b"x")
+                os.chmod(p, 0o755)
+                os.utime(p, (t, t))
+            with mock.patch("os.path.expanduser", return_value=d), mock.patch.object(bmplaunch.shutil, "which",
+                                                                                     return_value=None):
+                if os.name != "nt":
+                    self.assertEqual(bmplaunch.find(os.path.join(d, "data"), env={}), new_, "the newest build")
+                    self.assertEqual(bmplaunch.find(os.path.join(d, "data"), env={"BEAMMP_LAUNCHER": old_}), old_,
+                                     "the one named in BEAMMP_LAUNCHER")
+
+    def test_log_reading(self):
+        log = "[INFO] BeamMP Launcher v2.7.0\n" + "[ERROR] (Core) Invalid lua communication\n" * 3
+        self.assertEqual(bmplaunch.log_version(log), "2.7.0")
+        self.assertTrue(bmplaunch.log_too_old(log))
+        self.assertFalse(bmplaunch.log_too_old("[INFO] Game Connected!"))
+
     def test_running(self):
         s = socket.socket()
         s.bind(("127.0.0.1", 0))

@@ -481,9 +481,15 @@ def windows_game_dir():
     return None
 
 
+# --gfx -> the game's -gfx value. The game knows "dx11" and "vk" but not "dx12" (2026-10-24, a Windows 10 / RTX 3060
+# test PC: "-gfx dx12" listed no adapter at all, "There is no valid rendering device available."): DirectX 12 is
+# "d3d12" (its log then: "NVIDIA GeForce RTX 3060 (D3D12)").
+GFX_ARG = {"dx11": "dx11", "dx12": "d3d12", "vk": "vk"}
+
+
 def start_game(use_gcpatch, build="native", gfx="", user_dir=None):
     """Start the game; returns a Popen when this process started it directly, else None (through Steam)."""
-    win_args = ["-gfx", gfx] if gfx else []
+    win_args = ["-gfx", GFX_ARG.get(gfx, gfx)] if gfx else []
     extra = os.environ.get("BNGE_GAME_ARGS", "").split()     # (tests: e.g. "-bngetest car,damage")
     win_args += extra
     if IS_WIN:
@@ -907,7 +913,22 @@ def beammp_up(user_dir, build, args):
         bmplaunch.stop(proc)
         row("Multiplayer", f"BeamMP did not start (its log: {log_path})")
         return None
-    row("Multiplayer", "BeamMP ready: in the game, Multiplayer, then a server running BeamNG.Earth")
+    version = bmplaunch.log_version(bmplaunch.read_log(log_path))
+    row("Multiplayer", f"BeamMP{' v' + version if version else ''} ready: in the game, Multiplayer, then a server "
+        "running BeamNG.Earth")
+
+    def watch():                            # (a launcher too old for BeamMP's current mod: said once, plainly)
+        for _ in range(60):
+            time.sleep(5)
+            if proc.poll() is not None:
+                return
+            if bmplaunch.log_too_old(bmplaunch.read_log(log_path)):
+                problem(f"BeamMP's launcher{' v' + version if version else ''} ({exe}) cannot talk to BeamMP's mod in "
+                        "the game (\"Invalid lua communication\" in its log): it is older than the mod it downloaded.",
+                        "Update BeamMP's launcher (on Linux: build the latest from github.com/BeamMP/BeamMP-Launcher)."
+                        " Multiplayer will not work until then; single player is not affected.")
+                return
+    threading.Thread(target=watch, daemon=True, name="beammp-watch").start()
     return proc
 
 

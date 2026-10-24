@@ -9,6 +9,7 @@ found (BEAMMP_LAUNCHER, ~/BeamMP-Launcher, a BeamMP-Launcher on the PATH).
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -74,11 +75,40 @@ def _listdir(d):
         return []
 
 
-def find(data_dir):
-    for p in candidates(data_dir):
-        if os.path.isfile(p) and (IS_WIN or os.access(p, os.X_OK)):
-            return p
-    return None
+def find(data_dir, env=None):
+    """The launcher to start: BEAMMP_LAUNCHER when set, else the newest one found (by file time: an old build next to a
+    new one cannot talk to BeamMP's current mod, which every launcher downloads; a v2.7.0 left in ~/BeamMP-Launcher was
+    picked over a v2.8.1 build, 2026-10-24, and the game reconnected every 2 s: "Invalid lua communication")."""
+    env = os.environ if env is None else env
+    found = [p for p in candidates(data_dir, env=env) if os.path.isfile(p) and (IS_WIN or os.access(p, os.X_OK))]
+    if not found:
+        return None
+    if env.get("BEAMMP_LAUNCHER") and found[0] == env["BEAMMP_LAUNCHER"]:
+        return found[0]
+    return max(found, key=lambda p: os.path.getmtime(p))
+
+
+VERSION_RE = re.compile(r"BeamMP Launcher v([0-9][0-9.]*)")
+TOO_OLD = "Invalid lua communication"     # its log, again and again: the launcher cannot talk to BeamMP's mod
+
+
+def read_log(log_path):
+    try:
+        with open(log_path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def log_version(text):
+    """The launcher's version from its log ("BeamMP Launcher v2.8.1"), or None."""
+    m = VERSION_RE.search(text or "")
+    return m.group(1) if m else None
+
+
+def log_too_old(text, at_least=3):
+    """Its log says it cannot talk to the game's BeamMP mod (a launcher older than the mod it downloaded)."""
+    return (text or "").count(TOO_OLD) >= at_least
 
 
 def running(port=CORE_PORT):
