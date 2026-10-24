@@ -334,6 +334,40 @@ def _overlaps_bridge_parapet(a, b, segments, level=None, distance_limit=PARAPET_
     return float(matches.any(axis=1).mean()) >= PARAPET_MATCH_SHARE
 
 
+def _overlaps_bridge_approach(a, b, run):
+    """Whether a mapped rail continues along a deck-edge line just beyond a real run end.
+
+    Approach rails are evidence for the adjoining bridge edge too; they are not finite-overlap
+    matches because their modules begin outside the parapet run. Direction and lateral distance
+    checks avoid treating a crossing road's rail as a bridge approach.
+    """
+    line = np.asarray(run.get("line", ()), np.float64).reshape(-1, 2)
+    a, b = np.asarray(a, np.float64), np.asarray(b, np.float64)
+    d = b - a
+    length = float(np.hypot(d[0], d[1]))
+    if len(line) < 2 or length < 1e-6:
+        return False
+    tangent = d / length
+    samples = a[None, :] + np.linspace(0.1, 0.9, PARAPET_MATCH_SAMPLES)[:, None] * d[None, :]
+    for at, inside in ((0, 1), (-1, -2)):
+        edge = line[at]
+        outward = edge - line[inside]
+        edge_length = float(np.hypot(outward[0], outward[1]))
+        if edge_length < 1e-6:
+            continue
+        outward /= edge_length
+        if abs(float(np.dot(tangent, outward))) < PARAPET_PARALLEL_DOT:
+            continue
+        delta = samples - edge
+        along = delta @ outward
+        lateral = np.abs(delta[:, 0] * outward[1] - delta[:, 1] * outward[0])
+        near = ((along >= -SPAN_TOL_M) & (along <= JOIN_LENGTH_M) &
+                (lateral <= JOIN_LATERAL_M))
+        if float(near.mean()) >= PARAPET_MATCH_SHARE:
+            return True
+    return False
+
+
 # --- Rails around a bridge -------------------------------------------------------------------------------
 # A mapped rail near a deck is one of: a centre rail (on the deck, inside its edges: kept, at deck height), an
 # edge rail (duplicate of the rail the bridge builds on its own edge: dropped), a median between two decks (kept,
@@ -656,9 +690,12 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=(), bridge_rail
                                 continue
                             supports = _overlaps_bridge_parapet(a, b, run_segments)
                             if not supports:
+                                if not supports:
                                 supports = _overlaps_bridge_parapet(
                                     a, b, run_segments,
                                     distance_limit=OUTER_PARAPET_DUPLICATE_M, outer_only=True)
+                            if not supports:
+                                supports = _overlaps_bridge_approach(a, b, parapets[run_no])
                             if supports:
                                 support_hits[run_no].add((fid, part_no, k))
                     if x0 <= p[0] < x1 and y0 <= p[1] < y1:
