@@ -263,6 +263,7 @@ local function dropTile(key)
   end
   parked, walkQ, held, createQ = purge(parked), purge(walkQ), purge(held), purge(createQ)
   if t.props then require('beamngEarth/trees').dropKey((key:gsub(':', ':p', 1))) end
+  if t.guardrails then require('beamngEarth/trees').dropKey((key:gsub(':', ':g', 1))) end
   if t.park then require('beamngEarth/parking').dropKey(key) end
   tiles[key] = nil
 end
@@ -435,6 +436,12 @@ function M.onTile(msg, currentAnchor)
   if type(data.props) == 'table' and type(data.props.items) == 'table' then   -- street lights, poles (trees.lua)
     require('beamngEarth/trees').onRows(msg.anchorId, 'p' .. tostring(msg.key), data.props.items, data.props.groups)
     tiles[key].props = true
+  end
+  if type(data.guardrails) == 'table' and type(data.guardrails.items) == 'table' and #data.guardrails.items > 0 then
+    require('beamngEarth/trees').onRows(msg.anchorId, 'g' .. tostring(msg.key),
+      data.guardrails.items, data.guardrails.groups)
+    tiles[key].guardrails = true
+    tiles[key].guardrailRows = #data.guardrails.items
   end
   if type(data.park) == 'table' and data.park[1] then      -- curbside parking spots (parking.lua)
     require('beamngEarth/parking').onRows(msg.anchorId, key, data.park)
@@ -1093,7 +1100,7 @@ function M.ahead(x, y, hx, hy, dist)
 end
 
 function M.status()
-  local nt, no, nw, nr, nd, nb, ng = 0, 0, 0, 0, 0, 0, 0
+  local nt, no, nw, nr, nd, nb, ng, ngForest, ngRows = 0, 0, 0, 0, 0, 0, 0, 0, 0
   for _, t in pairs(tiles) do
     nt = nt + 1; no = no + #t.objs
     if t.walk then nw = nw + 1 end
@@ -1101,13 +1108,15 @@ function M.status()
     if t.deck then nd = (nd or 0) + 1 end
     if t.bld then nb = nb + 1 end
     if t.guardrail then ng = ng + 1 end
+    if t.guardrails then ngForest = ngForest + 1; ngRows = ngRows + (t.guardrailRows or 0) end
   end
   local nf = 0
   for _, f in pairs(far) do if f.id and not f.hidden then nf = nf + 1 end end
   local guardrailQueued = 0
   for _, q in ipairs(walkQ) do if q.what == 'guardrail' then guardrailQueued = guardrailQueued + 1 end end
   return { enabled = M.enabled, tiles = nt, roads = no, queued = #createQ, deleting = #deleteQ, anchor = anchorId,
-    walks = nw, roadMeshes = nr, decks = nd, buildings = nb, guardrails = ng, farBuildings = nf, walksQueued = #walkQ,
+    walks = nw, roadMeshes = nr, decks = nd, buildings = nb, guardrails = ng, guardrailForestTiles = ngForest,
+    guardrailForestRows = ngRows, farBuildings = nf, walksQueued = #walkQ,
     guardrailsQueued = guardrailQueued, guardrailDiag = { queued = guardrailDiag.queued, started = guardrailDiag.started,
       made = guardrailDiag.made, failed = guardrailDiag.failed, droppedTile = guardrailDiag.droppedTile,
       droppedRebase = guardrailDiag.droppedRebase, stale = guardrailDiag.stale },
