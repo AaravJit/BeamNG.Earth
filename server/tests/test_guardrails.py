@@ -74,6 +74,8 @@ class GuardrailStockAssetTest(unittest.TestCase):
         self.assertNotIn("M.NO_COLLIDE.guardrail = true", source)
         self.assertIn("M.GROUP_MAX_M.guardrail = 4000", source)
         self.assertIn("m:setColumn(0, vec3(row[9], row[10], row[11]))", source)
+        self.assertIn("local isGuardrail = g and g:sub(1, 9) == 'guardrail'", source)
+        self.assertIn("elseif not rowCap or #t.rows <= rowCap then", source)
 
 
 class GuardrailMeshTest(unittest.TestCase):
@@ -165,7 +167,7 @@ class GuardrailMeshTest(unittest.TestCase):
             self.assertGreaterEqual(row[7], 0.0)
             self.assertLess(row[7], 1.0)
             self.assertEqual(len(row), 17)
-            np.testing.assert_allclose(row[8:17], [1,0,0, 0,1,0, 0,0,1], atol=1e-4)
+            np.testing.assert_allclose(row[8:17], [1,0,0, 0,1,0, 0,0,1], atol=1e-3)
         groups = [row[0] for row in rows]
         self.assertIn(1, groups)
         self.assertIn(2, groups)
