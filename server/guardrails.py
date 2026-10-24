@@ -691,7 +691,6 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=(), bridge_rail
                                 continue
                             supports = _overlaps_bridge_parapet(a, b, run_segments)
                             if not supports:
-                                if not supports:
                                 supports = _overlaps_bridge_parapet(
                                     a, b, run_segments,
                                     distance_limit=OUTER_PARAPET_DUPLICATE_M, outer_only=True)
