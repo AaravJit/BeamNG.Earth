@@ -100,7 +100,6 @@ def _at(line, arc, distance):
 DECK_AUTO_SNAP_TOLERANCE_M = 1.5  # Untagged rails snap to a deck only when terrain agrees.
 
 
-DECK_AUTO_SNAP_TOLERANCE_M = 1.5  # Untagged rails snap to a deck only when terrain agrees.
 
 DECK_WIDE_REACH_M = 12.0     # m: the nearest deck's height is also looked up this far out (between two decks)
 
