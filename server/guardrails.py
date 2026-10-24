@@ -82,108 +82,6 @@ def _deck_level_hint(feats, i):
     return None
 
 
-# TEMPORARY: suppress every mapped guardrail within 5 m of a bridge footprint.
-# The deck width is included so this buffer starts at the bridge edges, not its centreline.
-BRIDGE_GUARDRAIL_CLEARANCE_M = 5.0
-
-
-def _bridge_buffer_segments(decks, clearance=BRIDGE_GUARDRAIL_CLEARANCE_M):
-    """Flatten bridge deck profiles once, reusing their segment buffers for every rail module."""
-    starts, ends, directions, lengths2, radii = [], [], [], [], []
-    for deck in decks or ():
-        line = np.asarray(deck.get("n", ()), np.float64)
-        if len(line) < 2 or line.ndim != 2 or line.shape[1] < 2:
-            continue
-        a, b = line[:-1, :2], line[1:, :2]
-        d = b - a
-        l2 = np.sum(d * d, axis=1)
-        keep = l2 > 1e-12
-        if not keep.any():
-            continue
-        width = float(deck.get("w", 0.0))
-        if not np.isfinite(width):
-            width = 0.0
-        radius = max(0.0, float(clearance)) + max(0.0, width) / 2.0
-        starts.append(a[keep])
-        ends.append(b[keep])
-        directions.append(d[keep])
-        lengths2.append(l2[keep])
-        radii.append(np.full(int(keep.sum()), radius, np.float64))
-    if not starts:
-        return None
-
-    a, b = np.concatenate(starts), np.concatenate(ends)
-    radius = np.concatenate(radii)
-    return {
-        "a": a,
-        "b": b,
-        "d": np.concatenate(directions),
-        "l2": np.concatenate(lengths2),
-        "radius": radius,
-        "lo": np.minimum(a, b) - radius[:, None],
-        "hi": np.maximum(a, b) + radius[:, None],
-    }
-
-
-def _within_bridge_buffer(a, b, decks, clearance=BRIDGE_GUARDRAIL_CLEARANCE_M):
-    """Whether an XY guardrail segment lies within clearance of any bridge footprint.
-
-    The caller can pass pre-flattened segments, which avoids rebuilding the same arrays
-    hundreds of times while a tile's modules are generated.
-    """
-    if isinstance(decks, dict) and {"a", "b", "d", "l2", "radius", "lo", "hi"} <= decks.keys():
-        segments = decks
-    else:
-        segments = _bridge_buffer_segments(decks, clearance)
-    if segments is None:
-        return False
-
-    a, b = np.asarray(a, np.float64).reshape(2), np.asarray(b, np.float64).reshape(2)
-    r = b - a
-    r2 = float(np.dot(r, r))
-    qlo, qhi = np.minimum(a, b), np.maximum(a, b)
-    box = ((segments["hi"][:, 0] >= qlo[0]) & (segments["lo"][:, 0] <= qhi[0]) &
-           (segments["hi"][:, 1] >= qlo[1]) & (segments["lo"][:, 1] <= qhi[1]))
-    if not box.any():
-        return False
-
-    starts, ends = segments["a"][box], segments["b"][box]
-    d, l2, radius = segments["d"][box], segments["l2"][box], segments["radius"][box]
-    radius2 = radius * radius
-
-    # Guardrail endpoints to bridge segments.
-    for p in (a, b):
-        t = np.clip(np.sum((p - starts) * d, axis=1) / l2, 0.0, 1.0)
-        near = starts + t[:, None] * d
-        if np.any(np.sum((near - p) ** 2, axis=1) <= radius2):
-            return True
-
-    if r2 <= 1e-12:
-        return False
-
-    # Bridge endpoints to the guardrail segment.
-    for p in (starts, ends):
-        t = np.clip(np.sum((p - a) * r, axis=1) / r2, 0.0, 1.0)
-        near = a + t[:, None] * r
-        if np.any(np.sum((near - p) ** 2, axis=1) <= radius2):
-            return True
-
-    # Handle crossings where both segment endpoints are outside the buffer.
-    qmp = starts - a
-    denom = r[0] * d[:, 1] - r[1] * d[:, 0]
-    nonparallel = np.abs(denom) > 1e-10
-    if nonparallel.any():
-        cross_q_d = qmp[:, 0] * d[:, 1] - qmp[:, 1] * d[:, 0]
-        cross_q_r = qmp[:, 0] * r[1] - qmp[:, 1] * r[0]
-        t = np.zeros_like(denom)
-        u = np.zeros_like(denom)
-        t[nonparallel] = cross_q_d[nonparallel] / denom[nonparallel]
-        u[nonparallel] = cross_q_r[nonparallel] / denom[nonparallel]
-        if np.any(nonparallel & (t >= 0.0) & (t <= 1.0) & (u >= 0.0) & (u <= 1.0)):
-            return True
-    return False
-
-
 
 def _at(line, arc, distance):
     """Point and unit tangent at arc length distance along a 2D polyline."""
@@ -318,9 +216,9 @@ def _parapet_segments(parapets, decks=()):
     """Flatten generated bridge-parapet centre lines and identify inner versus outer walls.
 
     The parapet's outward normal points away from its own deck. If another parallel, same-level
-    bridge deck lies in that direction, this is an inner parapet facing the central divider; only
-    the tighter duplicate tolerance may match it. Outer parapets may replace mapped roadside rails
-    that were mapped a little farther from the wall than its centre line.
+    bridge deck lies in that direction, this is an inner parapet facing the central divider. Such
+    inner parapets are ignored when suppressing mapped rails; only outer concrete parapets replace
+    nearby mapped roadside rails.
     """
     starts, ends, z_starts, z_ends, outer_segments = [], [], [], [], []
     for parapet in parapets or ():
@@ -423,7 +321,6 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=()):
     """
     if infra_fn is None:
         return []
-    bridge_buffer = _bridge_buffer_segments(decks)
     parapet_segments = _parapet_segments(parapets, decks)
     x0, y0, x1, y1 = map(float, exact)
     corners_x = np.array([x0, x0, x1, x1], np.float64)
@@ -521,15 +418,11 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=()):
                     # Keep the source segment and check height later so a lower road beneath a bridge
                     # is not mistaken for the bridge's own guardrail.
                     source_a, source_b = a, b
-                    # Temporary blanket exclusion: remove all mapped rails (including centre dividers)
-                    # within 5 m of any bridge footprint while the bridge parapets are being reworked.
-                    if _within_bridge_buffer(source_a, source_b, bridge_buffer):
-                        continue
-                    parapet_xy_match = _overlaps_bridge_parapet(source_a, source_b, parapet_segments)
-                    if not parapet_xy_match:
-                        parapet_xy_match = _overlaps_bridge_parapet(
-                            source_a, source_b, parapet_segments,
-                            distance_limit=OUTER_PARAPET_DUPLICATE_M, outer_only=True)
+                    # Suppress only rails that duplicate an outer concrete parapet.
+                    # Inner/central mapped dividers must remain on the bridge.
+                    parapet_xy_match = _overlaps_bridge_parapet(
+                        source_a, source_b, parapet_segments,
+                        distance_limit=OUTER_PARAPET_DUPLICATE_M, outer_only=True)
                     if two_sided:
                         # The model's visible side is opposite its back axis. Keep the backs
                         # toward the centre gap and the visible faces outward on both sides.
@@ -557,10 +450,9 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=()):
     for i, (group, p, a, b, rank, reverse, parapet_xy_match,
             source_a, source_b, _deck_hint_value) in enumerate(placements):
         z, za, zb = (float(heights[3 * i]), float(heights[3 * i + 1]), float(heights[3 * i + 2]))
-        if parapet_xy_match and (
-                _overlaps_bridge_parapet(source_a, source_b, parapet_segments, level=z) or
-                _overlaps_bridge_parapet(source_a, source_b, parapet_segments, level=z,
-                                         distance_limit=OUTER_PARAPET_DUPLICATE_M, outer_only=True)):
+        if parapet_xy_match and _overlaps_bridge_parapet(
+                source_a, source_b, parapet_segments, level=z,
+                distance_limit=OUTER_PARAPET_DUPLICATE_M, outer_only=True):
             continue
         forward = np.array([float(b[0] - a[0]), float(b[1] - a[1]), zb - za], np.float64)
         length = float(np.linalg.norm(forward))
