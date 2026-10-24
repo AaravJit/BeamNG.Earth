@@ -10,6 +10,7 @@ import geodesy
 import guardrails
 import mapgeom
 import roads
+import roadmesh
 
 
 class FakeFeatures:
@@ -194,6 +195,26 @@ class GuardrailMeshTest(unittest.TestCase):
         self.assertAlmostEqual(0.5 * (one[2] + back[2]), 50.0, places=2)
         self.assertLess((one[2] - 50.0) * one[12], 0.0)
         self.assertLess((back[2] - 50.0) * back[12], 0.0)
+
+    def test_outer_mapped_rail_is_suppressed_but_centre_separator_stays(self):
+        deck = {"m": "road_asphalt_2lane", "w": 8.0, "tl": 11.0, "p": 20,
+                "deck": True, "fixed": True, "fid": "bridge",
+                "n": [[0.0, 0.0, 20.0], [100.0, 0.0, 20.0]]}
+        parapets = roadmesh.parapet_runs([deck])
+        self.assertEqual(len(parapets), 2)
+        outer = max(parapets, key=lambda item: float(np.mean(item["line"][:, 1])))
+        y = float(np.mean(outer["line"][:, 1]))
+        elev = lambda lat, lon: np.full(np.shape(lat), 20.0, np.float64)
+
+        mapped_outer = self.features("guard_rail", xy=[[10.0, y], [90.0, y]])
+        rows = guardrails.forest_rows(self.frame, lambda _key: mapped_outer,
+                                      (0.0, -20.0, 100.0, 20.0), elev, parapets=parapets)
+        self.assertEqual(rows, [], "do not place metal on top of the generated concrete parapet")
+
+        centre = self.features("guard_rail", xy=[[10.0, 0.0], [90.0, 0.0]])
+        rows = guardrails.forest_rows(self.frame, lambda _key: centre,
+                                      (0.0, -20.0, 100.0, 20.0), elev, parapets=parapets)
+        self.assertTrue(rows, "a central separator is not coincident with either outer parapet")
 
     def test_guardrails_pitch_to_the_ground_grade(self):
         feats = self.features("guard_rail", xy=[[10.0, 50.0], [90.0, 50.0]])
