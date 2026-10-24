@@ -358,6 +358,8 @@ GIRDER_EVERY = 3.0      # m between girders across the deck
 PARAPET_W = 0.45        # m: the slab reaches this far past the road's edge, a parapet on it ...
 PARAPET_H = 0.9         # ... this high over the road
 PARAPET_COVER_DZ = 2.0  # m: another deck's surface within this height at an edge point: no parapet there
+BRIDGE_RAILS = True     # the deck's edges carry stock guardrail modules (guardrails.bridge_rows) over a low concrete
+BRIDGE_CURB_H = 0.3     # m curb, instead of the PARAPET_H concrete wall (False: the wall, and no deck rails)
 PARAPET_MIN_M = 8.0     # m: a parapet run shorter than this is left out (stubs stood in the Queensboro Bridge's lanes
                         # where its two directions' decks meet and the cover test missed a few points, 2026-10-17)
 FOOTING_M = 2.0         # m a pier reaches into the ground
@@ -368,7 +370,7 @@ PIER_BENT_W = 16.0      # a deck wider than this stands on columns (a bent) rath
 PIER_COLUMN = 1.6       # m square columns of a bent
 
 
-def deck(chunks, origin, piers=(), context=(), beams=(), parapets=None):
+def deck(chunks, origin, piers=(), context=(), beams=(), parapets=None, parapet_h=PARAPET_H):
     """The bridge decks of a tile as one colliding mesh: per "deck" chunk a slab of opaque concrete
     (DECK_SIDE) whose top is at the chunk's fixed heights (the road surface, drawn DECK_SKIN above it
     by build()), with sides and underside DECK_DEPTH below; the piers, and the truss beams (p, q, width, height:
@@ -439,7 +441,7 @@ def deck(chunks, origin, piers=(), context=(), beams=(), parapets=None):
             zz = parapet["z"]
             Eo = np.c_[parapet["edge"], zz] - origin
             Ei = np.c_[parapet["inner"], zz] - origin
-            To, Ti = Eo + [0, 0, PARAPET_H], Ei + [0, 0, PARAPET_H]
+            To, Ti = Eo + [0, 0, parapet_h], Ei + [0, 0, parapet_h]
             # `out` is an XY unit normal; face winding needs a 3-D direction.
             o = np.asarray(parapet["out"], np.float64)
             if o.ndim == 2 and o.shape[1] == 2:

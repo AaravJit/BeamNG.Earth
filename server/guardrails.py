@@ -82,107 +82,63 @@ def _deck_level_hint(feats, i):
     return None
 
 
-# TEMPORARY: suppress every mapped guardrail within 5 m of a bridge footprint.
-# The deck width is included so this buffer starts at the bridge edges, not its centreline.
-BRIDGE_GUARDRAIL_CLEARANCE_M = 5.0
+# Mapped rails lying on a bridge deck are dropped: bridge_rows() builds the deck's own rails from its geometry,
+# so a mapped rail there would only double them (and z-fight with them). The margin is small on purpose: rails on
+# the approaches, beside the bridge and (when tagged layer<0 / tunnel) under it must stay.
+BRIDGE_SIDE_CLEARANCE_M = 1.5   # m beyond the deck's road edge (its 0.45 m parapet strip is part of that)
+BRIDGE_END_CLEARANCE_M = 0.5    # m past a deck's end, along the road (flat ends: no round cap of half the width)
 
 
-def _bridge_buffer_segments(decks, clearance=BRIDGE_GUARDRAIL_CLEARANCE_M):
-    """Flatten bridge deck profiles once, reusing their segment buffers for every rail module."""
-    starts, ends, directions, lengths2, radii = [], [], [], [], []
+def _bridge_footprint_segments(decks):
+    """Deck centre-line segments with their lateral reach, flattened once and reused for every rail module."""
+    starts, units, lengths, halves = [], [], [], []
     for deck in decks or ():
         line = np.asarray(deck.get("n", ()), np.float64)
-        if len(line) < 2 or line.ndim != 2 or line.shape[1] < 2:
+        if line.ndim != 2 or len(line) < 2 or line.shape[1] < 2:
             continue
         a, b = line[:-1, :2], line[1:, :2]
         d = b - a
-        l2 = np.sum(d * d, axis=1)
-        keep = l2 > 1e-12
+        length = np.hypot(d[:, 0], d[:, 1])
+        keep = length > 1e-6
         if not keep.any():
             continue
         width = float(deck.get("w", 0.0))
         if not np.isfinite(width):
             width = 0.0
-        radius = max(0.0, float(clearance)) + max(0.0, width) / 2.0
         starts.append(a[keep])
-        ends.append(b[keep])
-        directions.append(d[keep])
-        lengths2.append(l2[keep])
-        radii.append(np.full(int(keep.sum()), radius, np.float64))
+        units.append(d[keep] / length[keep, None])
+        lengths.append(length[keep])
+        halves.append(np.full(int(keep.sum()), max(0.0, width) / 2.0 + BRIDGE_SIDE_CLEARANCE_M, np.float64))
     if not starts:
         return None
-
-    a, b = np.concatenate(starts), np.concatenate(ends)
-    radius = np.concatenate(radii)
-    return {
-        "a": a,
-        "b": b,
-        "d": np.concatenate(directions),
-        "l2": np.concatenate(lengths2),
-        "radius": radius,
-        "lo": np.minimum(a, b) - radius[:, None],
-        "hi": np.maximum(a, b) + radius[:, None],
-    }
+    a, unit = np.concatenate(starts), np.concatenate(units)
+    length, half = np.concatenate(lengths), np.concatenate(halves)
+    b = a + unit * length[:, None]
+    reach = half + BRIDGE_END_CLEARANCE_M + 1e-6
+    return {"a": a, "unit": unit, "len": length, "half": half,
+            "lo": np.minimum(a, b) - reach[:, None], "hi": np.maximum(a, b) + reach[:, None]}
 
 
-def _within_bridge_buffer(a, b, decks, clearance=BRIDGE_GUARDRAIL_CLEARANCE_M):
-    """Whether an XY guardrail segment lies within clearance of any bridge footprint.
+def _on_bridge(a, b, segments):
+    """Whether the middle of a rail module (XY segment a-b) lies on a bridge deck's footprint.
 
-    The caller can pass pre-flattened segments, which avoids rebuilding the same arrays
-    hundreds of times while a tile's modules are generated.
+    The middle, not any touch: a module that only overlaps the deck's end by up to half its length is kept,
+    so the approach rail meets the bridge's own rail instead of leaving a gap.
     """
-    if isinstance(decks, dict) and {"a", "b", "d", "l2", "radius", "lo", "hi"} <= decks.keys():
-        segments = decks
-    else:
-        segments = _bridge_buffer_segments(decks, clearance)
     if segments is None:
         return False
-
-    a, b = np.asarray(a, np.float64).reshape(2), np.asarray(b, np.float64).reshape(2)
-    r = b - a
-    r2 = float(np.dot(r, r))
-    qlo, qhi = np.minimum(a, b), np.maximum(a, b)
-    box = ((segments["hi"][:, 0] >= qlo[0]) & (segments["lo"][:, 0] <= qhi[0]) &
-           (segments["hi"][:, 1] >= qlo[1]) & (segments["lo"][:, 1] <= qhi[1]))
+    mid = (np.asarray(a, np.float64).reshape(2) + np.asarray(b, np.float64).reshape(2)) * 0.5
+    box = ((segments["hi"][:, 0] >= mid[0]) & (segments["lo"][:, 0] <= mid[0]) &
+           (segments["hi"][:, 1] >= mid[1]) & (segments["lo"][:, 1] <= mid[1]))
     if not box.any():
         return False
-
-    starts, ends = segments["a"][box], segments["b"][box]
-    d, l2, radius = segments["d"][box], segments["l2"][box], segments["radius"][box]
-    radius2 = radius * radius
-
-    # Guardrail endpoints to bridge segments.
-    for p in (a, b):
-        t = np.clip(np.sum((p - starts) * d, axis=1) / l2, 0.0, 1.0)
-        near = starts + t[:, None] * d
-        if np.any(np.sum((near - p) ** 2, axis=1) <= radius2):
-            return True
-
-    if r2 <= 1e-12:
-        return False
-
-    # Bridge endpoints to the guardrail segment.
-    for p in (starts, ends):
-        t = np.clip(np.sum((p - a) * r, axis=1) / r2, 0.0, 1.0)
-        near = a + t[:, None] * r
-        if np.any(np.sum((near - p) ** 2, axis=1) <= radius2):
-            return True
-
-    # Handle crossings where both segment endpoints are outside the buffer.
-    qmp = starts - a
-    denom = r[0] * d[:, 1] - r[1] * d[:, 0]
-    nonparallel = np.abs(denom) > 1e-10
-    if nonparallel.any():
-        cross_q_d = qmp[:, 0] * d[:, 1] - qmp[:, 1] * d[:, 0]
-        cross_q_r = qmp[:, 0] * r[1] - qmp[:, 1] * r[0]
-        t = np.zeros_like(denom)
-        u = np.zeros_like(denom)
-        t[nonparallel] = cross_q_d[nonparallel] / denom[nonparallel]
-        u[nonparallel] = cross_q_r[nonparallel] / denom[nonparallel]
-        if np.any(nonparallel & (t >= 0.0) & (t <= 1.0) & (u >= 0.0) & (u <= 1.0)):
-            return True
-    return False
-
+    v = mid - segments["a"][box]
+    unit = segments["unit"][box]
+    along = np.sum(v * unit, axis=1)
+    lateral = np.abs(v[:, 0] * unit[:, 1] - v[:, 1] * unit[:, 0])
+    return bool(np.any((along >= -BRIDGE_END_CLEARANCE_M) &
+                       (along <= segments["len"][box] + BRIDGE_END_CLEARANCE_M) &
+                       (lateral <= segments["half"][box])))
 
 
 def _at(line, arc, distance):
@@ -279,7 +235,7 @@ def _is_two_sided(feats, i):
 
 
 # Fallback duplicate suppression when a bridge profile is incomplete.
-# The temporary deck buffer normally removes these nearby models first; if no usable deck
+# The deck footprint test normally removes these models first; if no usable deck
 # profile exists, tight inner-wall matching avoids deleting a central divider between decks.
 PARAPET_DUPLICATE_M = 0.7
 OUTER_PARAPET_DUPLICATE_M = 2.0
@@ -423,7 +379,7 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=()):
     """
     if infra_fn is None:
         return []
-    bridge_buffer = _bridge_buffer_segments(decks)
+    bridge_footprint = _bridge_footprint_segments(decks)
     parapet_segments = _parapet_segments(parapets, decks)
     x0, y0, x1, y1 = map(float, exact)
     corners_x = np.array([x0, x0, x1, x1], np.float64)
@@ -521,9 +477,9 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=()):
                     # Keep the source segment and check height later so a lower road beneath a bridge
                     # is not mistaken for the bridge's own guardrail.
                     source_a, source_b = a, b
-                    # Temporary blanket exclusion: remove all mapped rails (including centre dividers)
-                    # within 5 m of any bridge footprint while the bridge parapets are being reworked.
-                    if _within_bridge_buffer(source_a, source_b, bridge_buffer):
+                    # A mapped rail on a bridge deck is replaced by bridge_rows(). A rail explicitly tagged
+                    # as lower level (layer<0, tunnel) is a road under the bridge: it stays.
+                    if deck_hint is not False and _on_bridge(source_a, source_b, bridge_footprint):
                         continue
                     parapet_xy_match = _overlaps_bridge_parapet(source_a, source_b, parapet_segments)
                     if not parapet_xy_match:
@@ -586,4 +542,80 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=()):
                      float(forward[0]), float(forward[1]), float(forward[2]),
                      float(back[0]), float(back[1]), float(back[2]),
                      float(up[0]), float(up[1]), float(up[2])])
+    return rows
+
+
+def bridge_rows(parapets):
+    """Forest rows (same layout as forest_rows) for the rails a bridge builds along its own deck edges.
+
+    `parapets` are roadmesh.parapet_runs(): per free deck edge the strip centre line ("line"), the deck's
+    heights ("z") and the unit normal pointing away from the deck ("out"). Heights come from the deck itself,
+    so nothing is guessed from terrain or matched against mapped data (the cause of the doubled and missing
+    rails before). The rail's visible face is opposite its back axis, i.e. on the right of its travel
+    direction, so each run is walked with its outside on the left and the face looks onto the road.
+
+    Modules are spread over the whole run (step at most MODULE_STEP_M) so they reach both ends of the run;
+    runs are clipped at the tile box, so neighbouring tiles meet without a gap. No end caps: the rail goes
+    on into the approach's mapped rail.
+    """
+    rows = []
+    for run in parapets or ():
+        if not isinstance(run, dict):
+            continue
+        line = np.asarray(run.get("line", ()), np.float64).reshape(-1, 2)
+        z = np.asarray(run.get("z", ()), np.float64).reshape(-1)
+        out = np.asarray(run.get("out", ()), np.float64).reshape(-1, 2)
+        if len(line) < 2 or len(z) != len(line) or len(out) != len(line) or not np.isfinite(z).all():
+            continue
+        keep = np.r_[True, np.hypot(*np.diff(line, axis=0).T) > 1e-4]
+        line, z, out = line[keep], z[keep], out[keep]
+        if len(line) < 2:
+            continue
+        tang = np.diff(line, axis=0)
+        left = np.column_stack((-tang[:, 1], tang[:, 0]))
+        if float(np.sum(left * (out[:-1] + out[1:]) * 0.5)) < 0.0:
+            line, z, out = line[::-1], z[::-1], out[::-1]
+        arc = np.r_[0.0, np.cumsum(np.hypot(*np.diff(line, axis=0).T))]
+        total = float(arc[-1])
+        if total < 1.0:
+            continue
+        if total <= MODULE_LENGTH_M:
+            count, step = 1, 0.0
+            length = total
+        else:
+            count = int(math.ceil((total - MODULE_LENGTH_M) / MODULE_STEP_M)) + 1
+            step = (total - MODULE_LENGTH_M) / (count - 1) if count > 1 else 0.0
+            length = MODULE_LENGTH_M
+        for k in range(count):
+            sa = k * step
+            sb = sa + length
+            a, _ = _at(line, arc, sa)
+            b, _ = _at(line, arc, sb)
+            if float(np.hypot(*(b - a))) < 0.05:
+                continue
+            za, zb = float(np.interp(sa, arc, z)), float(np.interp(sb, arc, z))
+            p = 0.5 * (a + b)
+            zp = float(np.interp(0.5 * (sa + sb), arc, z))
+            key = f"bridge:{p[0]:.1f}:{p[1]:.1f}"
+            rank = int.from_bytes(hashlib.blake2b(key.encode("utf-8"), digest_size=4).digest(), "big") / 4294967296.0
+            forward = np.array([float(b[0] - a[0]), float(b[1] - a[1]), zb - za], np.float64)
+            norm = float(np.linalg.norm(forward))
+            if norm < 1e-6:
+                continue
+            forward /= norm
+            up = np.array([0.0, 0.0, 1.0], np.float64) - forward[2] * forward
+            up_len = float(np.linalg.norm(up))
+            if up_len < 1e-6:
+                continue
+            up /= up_len
+            back = np.cross(up, forward)
+            back_len = float(np.linalg.norm(back))
+            if back_len < 1e-6:
+                continue
+            back /= back_len
+            yaw = math.degrees(math.atan2(float(forward[1]), float(forward[0])))
+            rows.append([0, float(p[0]), float(p[1]), zp, yaw, 0.0, MODULE_HEIGHT_M, rank,
+                         float(forward[0]), float(forward[1]), float(forward[2]),
+                         float(back[0]), float(back[1]), float(back[2]),
+                         float(up[0]), float(up[1]), float(up[2])])
     return rows

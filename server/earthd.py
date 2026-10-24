@@ -1184,8 +1184,7 @@ class Server:
             buildingsmod.brick_walks(walks, items, anchor.lat, anchor.lon)
 
         # Share the bridge mesh's exact parapet geometry with the tile builder.
-        # The temporary five-metre deck buffer below suppresses all mapped rails near bridges,
-        # including central dividers; parapet matching remains as a fallback for incomplete profiles.
+        # Mapped rails on a deck are replaced by guardrails.bridge_rows(); the parapet runs also feed the fallback matching.
         parapets = roadmeshmod.parapet_runs(chunks, ctx)
         import guardrails as guardrailsmod
         infra_fn = lambda key: self.mapdata.cell(key, layers=("infrastructure",), kind="demand").layers.get("infrastructure")
@@ -1198,6 +1197,11 @@ class Server:
         except Exception as ex:
             log.warning("mapped guardrails: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
             guardrail_rows = []
+        if roadmeshmod.BRIDGE_RAILS:     # the bridge's own rails, from its deck edges
+            try:
+                guardrail_rows = guardrail_rows + guardrailsmod.bridge_rows(parapets)
+            except Exception as ex:
+                log.warning("bridge guardrails: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
         mesh = roadmeshmod.build(anchor.frame, chunks, elev, (x0, y0, 0.0),
                                  DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0,
                                  clip=box, follow=True, q=self.anchor_q(anchor), drawn=drawn)
@@ -1206,7 +1210,8 @@ class Server:
                                  anchor.bridges.piers_in(roadsmod.tile_bbox(tx, ty)) if anchor.bridges is not None else (),
                                  ctx,
                                  anchor.bridges.beams_in(roadsmod.tile_bbox(tx, ty)) if anchor.bridges is not None else (),
-                                 parapets=parapets)
+                                 parapets=parapets,
+                                 parapet_h=roadmeshmod.BRIDGE_CURB_H if roadmeshmod.BRIDGE_RAILS else roadmeshmod.PARAPET_H)
         tmesh = roadmeshmod.tunnel(chunks, (x0, y0, 0.0), rwalls)
         bld = None
         if self.buildings:

@@ -395,8 +395,7 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
         buildingsmod.brick_walks(walks, items, lat, lon)
 
     # Share the bridge mesh's exact parapet geometry with the tile builder.
-    # The temporary five-metre deck buffer below suppresses all mapped rails near bridges,
-    # including central dividers; parapet matching remains as a fallback for incomplete profiles.
+    # Mapped rails on a deck are replaced by guardrails.bridge_rows(); the parapet runs also feed the fallback matching.
     parapets = roadmeshmod.parapet_runs(chunks, ctx)
     import guardrails as guardrailsmod
     infra_fn = lambda key: _s.md.cell(key, layers=("infrastructure",), kind="demand").layers.get("infrastructure")
@@ -409,10 +408,16 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
     except Exception as ex:
         log.warning("mapped guardrails: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
         guardrail_rows = []
+    if roadmeshmod.BRIDGE_RAILS:     # the bridge's own rails, from its deck edges
+        try:
+            guardrail_rows = guardrail_rows + guardrailsmod.bridge_rows(parapets)
+        except Exception as ex:
+            log.warning("bridge guardrails: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
     mesh = roadmeshmod.build(frame, chunks, elev, (x0, y0, 0.0), lift, clip=box, follow=True, q=q, drawn=drawn)
     mesh = _with_plazas(mesh, frame, tx, ty, elev, (x0, y0, 0.0), getattr(_s, "surface", None))
     dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0), bridges.piers_in(roadsmod.tile_bbox(tx, ty)), ctx,
-                              bridges.beams_in(roadsmod.tile_bbox(tx, ty)), parapets=parapets)
+                              bridges.beams_in(roadsmod.tile_bbox(tx, ty)), parapets=parapets,
+                              parapet_h=roadmeshmod.BRIDGE_CURB_H if roadmeshmod.BRIDGE_RAILS else roadmeshmod.PARAPET_H)
     tmesh = roadmeshmod.tunnel(chunks, (x0, y0, 0.0), rwalls)
     bld = None
     if buildings:
