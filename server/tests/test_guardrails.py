@@ -71,6 +71,9 @@ class GuardrailStockAssetTest(unittest.TestCase):
         self.assertIn("/art/shapes/objects/italy_guardrails_basic", source)
         self.assertIn("/art/shapes/objects/italy_guardrails_basic_end_cw", source)
         self.assertIn("/art/shapes/objects/italy_guardrails_basic_end_ccw", source)
+        self.assertNotIn("M.NO_COLLIDE.guardrail = true", source)
+        self.assertIn("M.GROUP_MAX_M.guardrail = 4000", source)
+        self.assertIn("m:setColumn(0, vec3(row[9], row[10], row[11]))", source)
 
 
 class GuardrailMeshTest(unittest.TestCase):
@@ -129,6 +132,13 @@ class GuardrailMeshTest(unittest.TestCase):
         self.assertGreaterEqual(float(right[0][:, 0].min()), -guardrails.POST_WIDTH_M / 2 - 1e-4)
         self.assertLessEqual(float(right[0][:, 0].min()), 0.0)
 
+    def test_two_sided_osm_tag(self):
+        feats = self.features("guard_rail", tags={"two_sided": "yes"})
+        self.assertTrue(guardrails._is_two_sided(feats, 0))
+        for value in ("no", "false", ""):
+            one = self.features("guard_rail", tags={"two_sided": value})
+            self.assertFalse(guardrails._is_two_sided(one, 0))
+
     def test_stock_guardrail_rows_are_exported_in_road_tile_json(self):
         rows = [[0, 300.0, 600.0, 12.0, 0.0, 0.0, 0.9, 0.0]]
         with __import__("tempfile").TemporaryDirectory() as tmp:
@@ -138,10 +148,11 @@ class GuardrailMeshTest(unittest.TestCase):
         self.assertEqual(count, 0)
         self.assertEqual(path, "vfs/roads_7_1_2.json")
         self.assertEqual(data["guardrails"], {"items": rows,
-                                               "groups": ["guardrail", "guardrail_start", "guardrail_end"]})
+                                               "groups": ["guardrail", "guardrail_start", "guardrail_end",
+                                                          "guardrail_back", "guardrail_back_start", "guardrail_back_end"]})
         self.assertNotIn("guardrail", roads.shape_files(7, 1, 2))
 
-    def test_stock_guardrail_rows_have_ground_height_and_heading(self):
+    def test_stock_guardrail_rows_follow_ground_and_have_full_orientation(self):
         feats = self.features("guard_rail", xy=[[10.0, 50.0], [90.0, 50.0]])
         rows = guardrails.forest_rows(self.frame, lambda _key: feats, (0.0, 0.0, 100.0, 100.0),
                                       lambda lat, lon: np.full(np.shape(lat), 12.0, np.float64))
@@ -151,14 +162,42 @@ class GuardrailMeshTest(unittest.TestCase):
             self.assertAlmostEqual(row[3], 12.0, delta=0.05)
             self.assertAlmostEqual(row[4], 0.0, delta=0.1)
             self.assertEqual(row[6], guardrails.MODULE_HEIGHT_M)
-            self.assertEqual(row[7], 0.0)
+            self.assertGreaterEqual(row[7], 0.0)
+            self.assertLess(row[7], 1.0)
+            self.assertEqual(len(row), 17)
+            np.testing.assert_allclose(row[8:17], [1,0,0, 0,1,0, 0,0,1], atol=1e-4)
         groups = [row[0] for row in rows]
-        self.assertIn(1, groups)  # start cap
-        self.assertIn(2, groups)  # end cap
+        self.assertIn(1, groups)
+        self.assertIn(2, groups)
         centres = [row[1] for row in rows if row[0] == 0]
         self.assertGreaterEqual(len(centres), 2)
         for a, b in zip(centres, centres[1:]):
             self.assertAlmostEqual(b - a, guardrails.MODULE_STEP_M, places=4)
+
+    def test_two_sided_guardrails_create_reversed_instances(self):
+        feats = self.features("guard_rail", tags={"two_sided": "yes"},
+                              xy=[[10.0, 50.0], [90.0, 50.0]])
+        rows = guardrails.forest_rows(self.frame, lambda _key: feats, (0.0, 0.0, 100.0, 100.0),
+                                      lambda lat, lon: np.full(np.shape(lat), 12.0, np.float64))
+        groups = [row[0] for row in rows]
+        self.assertEqual(groups.count(0), groups.count(3))
+        self.assertEqual(groups.count(1), groups.count(4))
+        self.assertEqual(groups.count(2), groups.count(5))
+        one = next(row for row in rows if row[0] == 0)
+        back = next(row for row in rows if row[0] == 3)
+        np.testing.assert_allclose(back[8:14], [-v for v in one[8:14]], atol=1e-4)
+        np.testing.assert_allclose(back[14:17], one[14:17], atol=1e-4)
+
+    def test_guardrails_pitch_to_the_ground_grade(self):
+        feats = self.features("guard_rail", xy=[[10.0, 50.0], [90.0, 50.0]])
+        # A stable east-west grade; longitude is nearly proportional to east distance here.
+        elev = lambda lat, lon: 12.0 + (np.asarray(lon) + 76.5934) * 8600.0
+        rows = guardrails.forest_rows(self.frame, lambda _key: feats, (0.0, 0.0, 100.0, 100.0), elev)
+        segment = next(row for row in rows if row[0] == 0)
+        self.assertGreater(segment[10], 0.0)
+        self.assertLess(segment[10], 0.5)
+
+
 
     def test_unrelated_barrier_produces_no_mesh(self):
         feats = self.features("fence", {"barrier": "fence"})
