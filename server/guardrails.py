@@ -4,6 +4,7 @@ Only guard rails already present in the map data are rendered. The mesh uses the
 game's shared `guardrail` material and is render-only; it does not add collision
 objects to every road tile.
 """
+import hashlib
 import json
 import logging
 import math
@@ -257,18 +258,35 @@ def mesh(frame, infra_fn, exact, elev, origin=(0.0, 0.0, 0.0), decks=()):
     return (np.asarray(vertices, np.float32), np.asarray(triangles, np.int32), np.asarray(uvs, np.float32))
 
 
-# Stock Italy guardrail modules are 3 m long and overlap by 0.2 m at the standard 2.8 m spacing.
-# They are placed as Forest items by the client so the game can instance the same authored shape cheaply.
+# Stock Italy guardrail modules are 3 m long and overlap by 0.2 m at 2.8 m spacing.
+# They are Forest items: the engine batches repeated shapes and caches their collision mesh.
 MODULE_LENGTH_M = 3.0
 MODULE_STEP_M = 2.8
 MODULE_HEIGHT_M = 0.9
 
 
-def forest_rows(frame, infra_fn, exact, elev, decks=()):
-    """Return client Forest-item rows using BeamNG's authored Italy guardrail mesh.
+def _is_two_sided(feats, i):
+    """OSM's two_sided=yes means the guardrail has a traffic-facing rail on both sides."""
+    tags = feats.attrs.get("tags")
+    if tags is None:
+        return False
+    try:
+        values = json.loads(str(tags[i]))
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(values, dict):
+        return False
+    return str(values.get("two_sided", "")).strip().lower() in ("yes", "true", "1")
 
-    Row layout matches trees.lua: [group, x, y, z, yaw_degrees, unused, height, rank].
-    A module is centred on each sample and assigned to exactly one road tile by its centre.
+
+def forest_rows(frame, infra_fn, exact, elev, decks=()):
+    """Return Forest-item rows for the stock Italy guardrail model.
+
+    Row layout matches trees.lua:
+      [group, x, y, z, yaw, unused, height, rank, forwardXYZ, backXYZ, upXYZ]
+    The three basis vectors are stored consecutively and installed as MatrixF columns. This lets
+    each 3 m module follow the surface's pitch rather than looking like stairs on a grade.
+    Groups: rail, start/end caps, then their reverse-facing equivalents for two_sided=yes.
     """
     if infra_fn is None:
         return []
@@ -303,7 +321,8 @@ def forest_rows(frame, infra_fn, exact, elev, decks=()):
                     b[3] < y0 - BBOX_PAD_M or b[1] > y1 + BBOX_PAD_M):
                 continue
             seen.add(fid)
-            for part in feats.parts(i):
+            two_sided = _is_two_sided(feats, i)
+            for part_no, part in enumerate(feats.parts(i)):
                 if not part:
                     continue
                 lonlat = np.asarray(part[0], np.float64)
@@ -315,38 +334,87 @@ def forest_rows(frame, infra_fn, exact, elev, decks=()):
                 line = line[np.r_[True, seglen > 1e-4]]
                 if len(line) < 2:
                     continue
-                seglen = np.hypot(*np.diff(line, axis=0).T)
-                arc = np.r_[0.0, np.cumsum(seglen)]
+                arc = np.r_[0.0, np.cumsum(np.hypot(*np.diff(line, axis=0).T))]
                 total = float(arc[-1])
                 if total < 1.0:
                     continue
 
-                # Short runs get one section. Longer runs get capped ends plus evenly spaced 3 m
-                # modules, overlapping slightly so no gaps appear on curved or tiled geometry.
-                if total <= MODULE_LENGTH_M + MODULE_STEP_M / 2.0:
-                    distances = (total / 2.0,)
-                else:
-                    start, start_tangent = _at(line, arc, 0.0)
-                    end, end_tangent = _at(line, arc, total)
-                    if x0 <= start[0] < x1 and y0 <= start[1] < y1:
-                        placements.append((1, start, start_tangent))
-                    if x0 <= end[0] < x1 and y0 <= end[1] < y1:
-                        placements.append((2, end, end_tangent))
-                    distances = np.arange(MODULE_LENGTH_M / 2.0,
-                                          total - MODULE_LENGTH_M / 2.0 + 1e-6,
-                                          MODULE_STEP_M)
-                for distance in distances:
-                    p, tangent = _at(line, arc, float(distance))
+                # Fit all modules inside the mapped line. Neighbouring 3 m shapes overlap by 0.2 m;
+                # the unused margins are shared between the two ends, avoiding gaps at either cap.
+                count = max(1, int(math.floor((total - MODULE_LENGTH_M) / MODULE_STEP_M)) + 1)
+                covered = MODULE_LENGTH_M + (count - 1) * MODULE_STEP_M
+                start = 0.5 * (total - covered)
+
+                spans = []
+                for k in range(count):
+                    sa = start + k * MODULE_STEP_M
+                    sb = sa + MODULE_LENGTH_M
+                    a, _ = _at(line, arc, float(sa))
+                    b, _ = _at(line, arc, float(sb))
+                    if float(np.hypot(*(b - a))) < 0.05:
+                        continue
+                    p = 0.5 * (a + b)
+                    rank_bytes = hashlib.blake2b(f"{fid}:{part_no}:{k}".encode("utf-8"), digest_size=4).digest()
+                    rank = int.from_bytes(rank_bytes, "big") / 4294967296.0
+                    spans.append((k, a, b, p, rank))
+
+                if not spans:
+                    continue
+                _, first_a, first_b, _, first_rank = spans[0]
+                _, last_a, last_b, _, last_rank = spans[-1]
+                candidates = []
+                for k, a, b, p, rank in spans:
                     if x0 <= p[0] < x1 and y0 <= p[1] < y1:
-                        placements.append((0, p, tangent))
+                        candidates.append((0, p, a, b, rank, False))
+                        if two_sided:
+                            candidates.append((3, p, a, b, rank, True))
+                # Caps extend outwards from the ends. Reverse-facing cap types are swapped so they
+                # also flare outwards rather than into the run.
+                if x0 <= first_a[0] < x1 and y0 <= first_a[1] < y1:
+                    candidates.append((1, first_a, first_a, first_b, first_rank, False))
+                    if two_sided:
+                        candidates.append((4, first_a, first_a, first_b, first_rank, True))
+                if x0 <= last_b[0] < x1 and y0 <= last_b[1] < y1:
+                    candidates.append((2, last_b, last_a, last_b, last_rank, False))
+                    if two_sided:
+                        candidates.append((5, last_b, last_a, last_b, last_rank, True))
+
+                for group, p, a, b, rank, reverse in candidates:
+                    placements.append((group, p, a, b, rank, reverse))
 
     if not placements:
         return []
-    points = np.asarray([p for _, p, _ in placements], np.float64)
-    heights = _surface_z(frame, points, elev, decks)
+
+    # One batched terrain/deck query for all module origins and their grade endpoints.
+    sample_points = []
+    for _, p, a, b, _, _ in placements:
+        sample_points.extend((p, a, b))
+    heights = _surface_z(frame, np.asarray(sample_points, np.float64), elev, decks)
     rows = []
-    for (group, p, tangent), z in zip(placements, heights):
-        yaw = math.degrees(math.atan2(float(tangent[1]), float(tangent[0])))
-        rows.append([group, float(p[0]), float(p[1]), float(z), float(yaw), 0.0,
-                     MODULE_HEIGHT_M, 0.0])
+    for i, (group, p, a, b, rank, reverse) in enumerate(placements):
+        z, za, zb = (float(heights[3 * i]), float(heights[3 * i + 1]), float(heights[3 * i + 2]))
+        forward = np.array([float(b[0] - a[0]), float(b[1] - a[1]), zb - za], np.float64)
+        length = float(np.linalg.norm(forward))
+        if length < 1e-6:
+            continue
+        forward /= length
+        up = np.array([0.0, 0.0, 1.0], np.float64) - forward[2] * forward
+        up_len = float(np.linalg.norm(up))
+        if up_len < 1e-6:
+            up = np.array([0.0, 1.0, 0.0], np.float64)
+        else:
+            up /= up_len
+        back = np.cross(up, forward)
+        back_len = float(np.linalg.norm(back))
+        if back_len < 1e-6:
+            continue
+        back /= back_len
+        if reverse:
+            forward, back = -forward, -back
+        yaw = math.degrees(math.atan2(float(forward[1]), float(forward[0])))
+        rows.append([group, float(p[0]), float(p[1]), z, yaw, 0.0,
+                     MODULE_HEIGHT_M, rank,
+                     float(forward[0]), float(forward[1]), float(forward[2]),
+                     float(back[0]), float(back[1]), float(back[2]),
+                     float(up[0]), float(up[1]), float(up[2])])
     return rows
