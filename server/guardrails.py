@@ -195,6 +195,9 @@ def _at(line, arc, distance):
     return line[k] + t * d, d / length
 
 
+DECK_AUTO_SNAP_TOLERANCE_M = 1.5  # Untagged rails snap to a deck only when terrain agrees.
+
+
 def _surface_z(frame, points, elev, decks, deck_preference=None):
     """Sample terrain first; snap to a deck only when tags identify its level or heights agree.
 
