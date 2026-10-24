@@ -191,9 +191,12 @@ BeamNG.Earth runs on [BeamMP](https://beammp.com/) servers (in testing): drive t
 1. Install BeamMP (its launcher) and the BeamNG.Earth app (see Install and play above), the same version as the
    server's. Every player needs the BeamNG.Earth app running: each builds the world on their own computer.
 2. Get an IP: join the [Discord server](https://discord.gg/tgf) for the address of a BeamMP.Earth server.
-3. Start the BeamNG.Earth app and the BeamMP launcher, in either order: the app starts the game, or, if the BeamMP
-   launcher started it already, just the world server (on Linux the game then runs without the grass patch).
-4. In the game: Multiplayer > Direct Connect with the server's IP and port.
+3. Start the **BeamMP launcher first** and wait until the game has fully started (the main menu).
+4. **Then** start the BeamNG.Earth app: it sees the running game and starts just the world server (on Linux the game
+   then runs without the grass patch). If the mod was just installed, updated or turned back on (joining a BeamMP
+   server turns other mods off), the app has the game reload its Lua so it loads the mod without a restart (Linux
+   native game and Windows; not the Windows build under Proton).
+5. In the game: Multiplayer, then join a server running the BeamMP.Earth plugin (Direct Connect with its IP and port).
 
 You are sent to where the others are. Cars show in the right place, with their dents, in everyone's world; other
 players show on the world map (**M**) as green arrows; players far away (another country) are hidden until you meet.
