@@ -521,6 +521,32 @@ class PadTest(unittest.TestCase):
         for a in site.areas:
             self.assertTrue(in_pad(site, a["x"], a["y"]), a)
 
+    SIDE = (np.array([(-40.0, -300.0), (-40.0, 300.0)]), 4.0)        # a side street 15 m west of the pad
+
+    def test_corner_lot_two_driveways(self):
+        # the Speedway (2026-10-23, the user's screenshot): an entrance on the side street too, as in real life
+        site = gs.layout(STATION, [SHOP, self.ROOF], ROAD + [self.SIDE])
+        self.assertEqual(len(site.drives), 2)
+        self.assertTrue(in_pad(site, -30.0, 22.0), "the driveway to the side street")
+        self.assertTrue(in_pad(site, 0.0, 7.0), "and the one to the main road")
+
+    def test_back_street_no_second_driveway(self):
+        back = (np.array([(-300.0, 75.0), (300.0, 75.0)]), 4.0)        # parallel to the main road, behind the shop
+        site = gs.layout(STATION, [SHOP, self.ROOF], ROAD + [back])
+        self.assertEqual(len(site.drives), 1)
+
+    def test_mapped_entrance_counts_per_road(self):
+        drive = [lane(0.0, 14.0, 0.0, 2.0)]        # mapped into the main road: the side street's still made up
+        site = gs.layout(STATION, [SHOP, self.ROOF], ROAD + [self.SIDE], service=drive)
+        self.assertEqual(len(site.drives), 1)
+        self.assertTrue(in_pad(site, -30.0, 22.0))
+
+    def test_drives_as_walk_cuts(self):
+        site = gs.layout(STATION, [SHOP, self.ROOF], ROAD)
+        (line, half), = site.drives
+        self.assertAlmostEqual(half, gs.DRIVEWAY_W_M / 2)
+        self.assertLess(abs(float(line[-1][1]) - (5.0 - gs.PAD_BLD_GAP_M)), 0.6, "to the road's edge")
+
     def test_driveway_blocked_by_a_building_left_out(self):
         wall = rect("wall", 0.0, 7.0, 60.0, 3.0, cls="retail")          # a building between the forecourt and the road
         site = gs.layout(STATION, [SHOP, self.ROOF, wall], ROAD)
@@ -703,6 +729,17 @@ class TileTest(unittest.TestCase):
         self.assertEqual(recs1, [])
         self.assertIn("b-roof", skip1)
         json.dumps(recs)                                        # plain JSON
+
+    def test_tile_sites_walk_cuts(self):
+        md = station_md()
+        cuts = []
+        gs.tile_sites(FRAME, 0, 0, md, flat, cuts=cuts)
+        self.assertEqual(len(cuts), 1, "the made-up driveway to x = 320")
+        line, half = cuts[0]
+        self.assertGreater(float(line[-1][0]), 300.0)
+        cuts = []
+        gs.tile_sites(FRAME, 1, 0, md, flat, cuts=cuts)
+        self.assertEqual(len(cuts), 1, "a neighbour tile's station's driveway cuts this tile's sidewalks too")
 
     def test_mapped_lanes_reach_the_record(self):
         md = station_md()

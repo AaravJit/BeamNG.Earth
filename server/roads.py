@@ -3591,7 +3591,7 @@ def drains(run, side, caps, walk_w=None):
 
 def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=None, widths=None, props=None,
                lines=None, wires=None, town=None, park=None, left_hand=False, structures=(), mph=True, tunnels=None,
-               walls=None, deck_context=None, ground=None, terrain_paint=True):
+               walls=None, deck_context=None, ground=None, terrain_paint=True, walk_cuts=()):
     """The chunks of one tile. cells: the mapgeom.Features of the "roads" layer of every cell touching
     the tile; elev(lat, lon) -> metres (the DEM); urban_fn: as road_specs. Features in several cells are
     taken once (by id). The carriageways, then each road's sidewalks / gutters / markings (extras), cut
@@ -3600,7 +3600,8 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
     sidewalk mesh (sidewalks.py) and storm drains among the chunks; None: sidewalks as decals.
     bridges: a BridgeProfiles (deck heights of whole chains, shared by every tile); None: from the
     chains among these cells. ground(x, y) -> z: the terrain block's drawn ground in the frame, the sidewalks' heights
-    (drape_walks); None: elev's. Pure given its inputs (sorted by feature id)."""
+    (drape_walks); None: elev's. walk_cuts: [(centreline (k, 2), half width)] where no sidewalk runs (a gas station's
+    made-up driveway: gasstations.tile_sites cuts). Pure given its inputs (sorted by feature id)."""
     x0, y0, x1, y1 = tile_bbox(tx, ty)
     box = (x0 - OVERLAP, y0 - OVERLAP, x1 + OVERLAP, y1 + OVERLAP)
     near = (x0 - NEAR_M, y0 - NEAR_M, x1 + NEAR_M, y1 + NEAR_M)
@@ -3736,7 +3737,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
             continue
         blockers = [(p2[:, :2], s2.width / 2 + CUT_MARGIN) for f2, s2, p2, _ in roads if f2 != fid]
         walk_blockers = [(p2[:, :2], s2.width / 2 if (fid, f2) in cornered else sidewalk_stop(spec, fid, s2, f2))
-                         for f2, s2, p2, _ in roads if f2 != fid]
+                         for f2, s2, p2, _ in roads if f2 != fid] + list(walk_cuts)
         # a median's band stops at the other carriageways' curbs only (their sidewalk is on their far side: it cut
         # one carriageway's half of Boston Street's median away)
         curb_blockers = [(p2[:, :2], s2.width / 2) for f2, s2, p2, _ in roads if f2 != fid]
@@ -3773,7 +3774,8 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                         if len(c) >= 2:
                             chunks.append(_chunk(look, w, c))
     if walks is not None:
-        runs_near = join_walk_ends(runs_near, [(p2[:, :2], s2.width / 2) for _, s2, p2, _ in roads])
+        runs_near = join_walk_ends(runs_near, [(p2[:, :2], s2.width / 2) for _, s2, p2, _ in roads]
+                                   + list(walk_cuts))       # (a cut's gap stays open: a driveway crosses it)
         drain_runs = []                         # (walks entry, side, real ends, width): drains once on the ground
         for rn in runs_near:
             fid, side, w, run0 = rn["fid"], rn["side"], rn["w"], rn["pts"]

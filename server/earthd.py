@@ -1149,9 +1149,9 @@ class Server:
                     elev)
                 anchor.tunnels.wet = self.sea.depth if self.sea is not None else None
                 self._tunnel_ground(anchor, g)
-        fuel, skip = [], frozenset()
+        fuel, skip, drives = [], frozenset(), []
         if self.gas_stations:       # pumps and refuel areas; their canopy outlines left out of the buildings
-            fuel, skip = gasstationsmod.tile_sites(anchor.frame, tx, ty, self.mapdata, elev)
+            fuel, skip = gasstationsmod.tile_sites(anchor.frame, tx, ty, self.mapdata, elev, cuts=drives)
         props = [] if self.buildings else None
         lines = [] if self.buildings else None
         wires = [] if self.buildings else None
@@ -1172,6 +1172,7 @@ class Server:
             return roadsmod.block_arch_raise(anchor.tunnels, cell_fn, anchor.frame, la, lo, elev(la, lo),
                                              (box[0] - 8, box[1] - 8, box[2] + 8, box[3] + 8))
         chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, elev, urban, walks=walks, deck_context=ctx, bridges=anchor.bridges,
+                                     walk_cuts=drives,   # (the stations' made-up driveways: no sidewalk across them)
                                      widths=self.road_widths, props=props, lines=lines, wires=wires, town=town, park=park,
                                      left_hand=self.left_hand(anchor), mph=self.mph(anchor),
                                      structures=buildingsmod.centres(items, tx, ty) if items else (),

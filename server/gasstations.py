@@ -411,6 +411,7 @@ class Site:
     drop_ids: tuple     # buildings left out of the mesh (the canopy outline)
     shop_id: str = ""   # one station per shop (unmerged pins of one station: tile_sites)
     pad: list = field(default_factory=list)    # (k, 2) polygons of the forecourt's asphalt (forecourt_pad)
+    drives: list = field(default_factory=list)  # (centreline (2, 2), half width) of its made-up driveways
 
 
 def _yaw(u):
@@ -828,7 +829,7 @@ def layout(st, blds, roads, service=(), style="default"):
     """The station's forecourt (_layout) with its asphalt (forecourt_pad), or None."""
     site = _layout(st, blds, roads, service, style)
     if site is not None:
-        site.pad = forecourt_pad(site, blds, roads, service)
+        site.pad, site.drives = forecourt_pad(site, blds, roads, service)
     return site
 
 
@@ -840,6 +841,10 @@ PAD_SHOP_LINK_M = 10.0      # the shop's front this close: the asphalt reaches i
 DRIVEWAY_W_M = 8.0          # a driveway made up where none is mapped ...
 DRIVEWAY_MAX_M = 40.0       # ... to a road at most this far from the pad
 DRIVEWAY_MAPPED_M = 3.0     # a service road with a point this near the pad and one this near a road's edge: mapped
+# a corner lot's second entrance (the user, 2026-10-23, at the Speedway: "there is an entrance where you added tho IRL
+# as well"): another public road this near the pad, crossing the first at least this much (not a street behind it)
+DRIVEWAY_CORNER_M = 25.0
+DRIVEWAY_CORNER_DEG = 45.0
 
 
 def _hull(pts):
@@ -876,10 +881,10 @@ def _inside(poly, pts):
 
 
 def forecourt_pad(site, blds, roads, service=()):
-    """The forecourt's asphalt as polygons (k, 2) in the site's frame: the box around its refuel areas, props and
-    canopies with PAD_MARGIN_M on each side (less where a neighbour's wall or a road's edge is nearer), reaching to the
-    shop's front when that is within PAD_SHOP_LINK_M, and a DRIVEWAY_W_M strip to the nearest public road unless a
-    mapped service road already joins the two or a building stands between them."""
+    """(the forecourt's asphalt as polygons (k, 2) in the site's frame, its made-up driveways as (centreline, half
+    width)): the box around its refuel areas, props and canopies with PAD_MARGIN_M on each side (less where a
+    neighbour's wall or a road's edge is nearer), reaching to the shop's front when that is within PAD_SHOP_LINK_M,
+    and a DRIVEWAY_W_M strip to the nearest public road, and to a crossing one on a corner lot (_driveways)."""
     canopies = [b for b in blds if b.id in site.drop_ids]
     shop = next((b for b in blds if b.id == site.shop_id), None)
     pts = [_area_pts(a["x"], a["y"], a["yaw"]) for a in site.areas]
@@ -887,7 +892,7 @@ def forecourt_pad(site, blds, roads, service=()):
     pts += [c.ring for c in canopies]
     hull = _hull(np.vstack(pts))
     if len(hull) < 3:
-        return []
+        return [], []
     c, u, hl, hw = _obox(hull)
     v = np.array([-u[1], u[0]])
     others = [b for b in blds if b is not shop and b not in canopies]
@@ -915,38 +920,75 @@ def forecourt_pad(site, blds, roads, service=()):
     pad = box
     if shop is not None and _gap(shop.ring, np.vstack([box, box[:1]])) <= PAD_SHOP_LINK_M:
         pad = _hull(np.vstack([box, shop.ring]))
-    out = [pad]
-    strip = _driveway(pad, c, others, roads, service)
-    if strip is not None:
+    out, drives = [pad], []
+    for strip, line in _driveways(pad, c, others, roads, service):
         out.append(strip)
+        drives.append((line, DRIVEWAY_W_M / 2))
+    return out, drives
+
+
+def _dir_at(line, p):
+    """The unit direction of a polyline's segment nearest p."""
+    k = int(np.argmin(_seg_dist(np.asarray(p, np.float64)[None], line[:-1], line[1:]) if len(line) > 2 else [0]))
+    if len(line) > 2:
+        d = [float(_seg_dist(np.asarray(p, np.float64)[None], line[i:i + 1], line[i + 1:i + 2])[0])
+             for i in range(len(line) - 1)]
+        k = int(np.argmin(d))
+    t = line[k + 1] - line[k]
+    return t / max(float(np.hypot(*t)), 1e-9)
+
+
+def _driveways(pad, centre, others, roads, service):
+    """[(strip (4, 2), centreline (2, 2))]: a DRIVEWAY_W_M strip from the pad to the nearest public road's edge, and
+    to another road within DRIVEWAY_CORNER_M that crosses it by DRIVEWAY_CORNER_DEG (a corner lot); none to a road the
+    pad reaches already, one farther than DRIVEWAY_MAX_M, one a mapped service road joins it to (painted as a road
+    already), or across a building."""
+    if not len(roads):
+        return []
+    edge = _dense(np.vstack([pad, pad[:1]]), 0.5)
+    gaps = [_seg_dist(edge, line[:-1], line[1:]) - h for line, h in roads]
+    order = sorted(range(len(roads)), key=lambda k: float(gaps[k].min()))
+    first = order[0]
+    if float(gaps[first].min()) > DRIVEWAY_MAX_M:
+        return []
+    p0 = edge[int(np.argmin(gaps[first]))]
+    u0 = _dir_at(roads[first][0], p0)
+    want = [first]
+    for k in order[1:]:
+        if float(gaps[k].min()) > DRIVEWAY_CORNER_M:
+            break
+        uk = _dir_at(roads[k][0], edge[int(np.argmin(gaps[k]))])
+        crossing = math.degrees(math.acos(min(1.0, abs(float(u0 @ uk)))))
+        if crossing >= DRIVEWAY_CORNER_DEG and all(
+                math.degrees(math.acos(min(1.0, abs(float(_dir_at(roads[j][0], edge[int(np.argmin(gaps[j]))]) @ uk)))))
+                >= DRIVEWAY_CORNER_DEG for j in want):
+            want.append(k)
+            break                               # (one more: the corner)
+    out = []
+    for k in want:
+        s = _drive_to(pad, centre, edge, gaps[k], roads[k], others, service)
+        if s is not None:
+            out.append(s)
     return out
 
 
-def _driveway(pad, centre, others, roads, service):
-    """A DRIVEWAY_W_M strip from the pad to the nearest public road's edge, or None: the pad reaches the road, the road
-    is farther than DRIVEWAY_MAX_M, a mapped service road joins them, or a building is in the way."""
-    if not len(roads):
-        return None
-    edge = _dense(np.vstack([pad, pad[:1]]), 0.5)
-    best = None
-    for line, h in roads:
-        d = _seg_dist(edge, line[:-1], line[1:]) - h
-        best = d if best is None else np.minimum(best, d)
-    dmin = float(best.min())
-    if dmin <= PAD_BLD_GAP_M or dmin > DRIVEWAY_MAX_M:
+def _drive_to(pad, centre, edge, gap, road, others, service):
+    """The strip and centreline from the pad to one road, or None (see _driveways)."""
+    line_r, h = road
+    dmin = float(gap.min())
+    if dmin <= PAD_BLD_GAP_M:
         return None
     for line in service:                        # (the mapped driveway: painted as a road already)
         q = _dense(line)
         near_pad = _inside(pad, q).any() or (_seg_dist(q, edge[:-1], edge[1:]) <= DRIVEWAY_MAPPED_M).any()
-        near_road = any((_seg_dist(q, r[:-1], r[1:]) <= h + DRIVEWAY_MAPPED_M).any() for r, h in roads)
-        if near_pad and near_road:
+        if near_pad and (_seg_dist(q, line_r[:-1], line_r[1:]) <= h + DRIVEWAY_MAPPED_M).any():
             return None
-    cand = np.flatnonzero(best <= dmin + 0.5)
+    cand = np.flatnonzero(gap <= dmin + 0.5)
     p = edge[cand[int(np.argmin(np.hypot(*(edge[cand] - centre).T)))]]
-    q, _, k = _nearest_on(roads, p)
+    q, _, _ = _nearest_on([road], p)
     dirn = (q - p) / max(float(np.hypot(*(q - p))), 1e-9)
     side = np.array([-dirn[1], dirn[0]]) * (DRIVEWAY_W_M / 2)
-    a, b = p - dirn * 1.0, p + dirn * (float(np.hypot(*(q - p))) - roads[k][1] + PAD_BLD_GAP_M)
+    a, b = p - dirn * 1.0, p + dirn * (float(np.hypot(*(q - p))) - h + PAD_BLD_GAP_M)
     strip = np.array([a - side, b - side, b + side, a + side])
     probe = _dense(np.vstack([strip, strip[:1]]), 0.5)
     core = a + (b - a) * np.linspace(0, 1, 9)[:, None]
@@ -956,7 +998,7 @@ def _driveway(pad, centre, others, roads, service):
             continue
         if _inside(strip, _dense(bld.ring)).any() or _hits(bld.ring, np.vstack([probe, core])):
             return None
-    return strip
+    return strip, np.array([p, b])
 
 
 def _hits(ring, pts):
@@ -1133,11 +1175,13 @@ def _record(site, frame, elev):
                       for k, a in enumerate(site.areas)]}
 
 
-def tile_sites(frame, tx, ty, md, elev):
+def tile_sites(frame, tx, ty, md, elev, cuts=None):
     """(records of the stations whose position lies in road tile (tx, ty), ids of the canopy outlines to leave out of
     its buildings): every station within REACH_M of the tile is laid out, so a canopy whose centroid (buildings.py's
     owner rule) is in this tile is dropped here even when its station is the neighbour's. md: mapdata.MapData;
-    elev(lat, lon) the physics ground. Without places data (offline, no file): no stations."""
+    elev(lat, lon) the physics ground. cuts: a list that gets every laid-out station's made-up driveways
+    (Site.drives: roads.build_tile walk_cuts, the sidewalks they cross cut; a neighbour tile's station's too). Without
+    places data (offline, no file): no stations."""
     import roads
     x0, y0, x1, y1 = roads.tile_bbox(tx, ty)
     try:
@@ -1167,6 +1211,8 @@ def tile_sites(frame, tx, ty, md, elev):
     recs, skip = [], set()
     for site in _one_per_shop(sites):
         skip.update(site.drop_ids)
+        if cuts is not None:
+            cuts.extend(site.drives)
         st = site.station
         if x0 <= st.x < x1 and y0 <= st.y < y1:
             recs.append(_record(site, frame, elev))

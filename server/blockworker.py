@@ -361,10 +361,10 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
     tunnels = tunnel_profiles(aid, frame, elev, g)
     walks = []
     urban = _s.surface.urban if _s.surface is not None else None
-    fuel, skip = [], frozenset()
+    fuel, skip, drives = [], frozenset(), []
     if gas_stations:                    # pumps and refuel areas; their canopy outlines left out of the buildings
         import gasstations
-        fuel, skip = gasstations.tile_sites(frame, tx, ty, _s.md, elev)
+        fuel, skip = gasstations.tile_sites(frame, tx, ty, _s.md, elev, cuts=drives)
     props = [] if buildings else None
     lines = [] if buildings else None
     wires = [] if buildings else None
@@ -385,6 +385,7 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
         return roadsmod.block_arch_raise(tunnels, cell_fn, frame, la, lo, elev(la, lo),
                                          (box[0] - 8, box[1] - 8, box[2] + 8, box[3] + 8))
     chunks = roadsmod.build_tile(frame, tx, ty, cells, elev, urban, walks=walks, deck_context=ctx, bridges=bridges, widths=_s.widths,
+                                 walk_cuts=drives,       # (the stations' made-up driveways: no sidewalk across them)
                                  props=props, lines=lines, wires=wires, town=town, park=park,
                                  left_hand=left_hand, mph=mph, structures=buildingsmod.centres(items, tx, ty) if items else (),
                                  tunnels=tunnels, walls=rwalls,
