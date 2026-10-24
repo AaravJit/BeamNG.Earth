@@ -1085,25 +1085,24 @@ class Server:
 
     def build_terrain_patch(self, aid, key, box):
         """terrainpatch.py: the collision patch of the ground under a collision island off the terrain block (the
-        mod's terrainpatch.lua), written to the session folder. (vfs path, (cx, cy), triangles) or None if the anchor
-        is gone. Worker threads."""
+        mod's terrainpatch.lua), written to the session folder in pieces. ([(vfs path, (cx, cy))], triangles) or None
+        if the anchor is gone. Worker threads."""
         anchor = self.anchors.get(aid)
         if anchor is None:
             return None
         box = terrainpatchmod.snap_box(*box)
-        name = f"patch_{aid}_{key}.cdae"
-        path = os.path.join(self.out_dir, name)
+        path = os.path.join(self.out_dir, f"patch_{aid}")      # (+ _<cell>.cdae a piece: shared by patches)
         if self.road_pool is not None:
-            _, centre, n = self.road_pool.submit(blockworker.terrain_patch, aid, anchor.lat, anchor.lon,
-                                                 anchor.zooms[0], box, path).result()
+            parts, n = self.road_pool.submit(blockworker.terrain_patch, aid, anchor.lat, anchor.lon,
+                                             anchor.zooms[0], box, path).result()
         else:
             zoom, g = anchor.zooms[0], self.grader_for(anchor)
 
             def elev(la, lo):
                 z = self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom))
                 return g.apply(la, lo, z, gradingmod.ROAD_LIFT) if g is not None else z
-            _, centre, n = terrainpatchmod.build(anchor.frame, elev, box, path)
-        return f"{self.vfs_dir}/{name}", centre, n
+            parts, n = terrainpatchmod.build(anchor.frame, elev, box, path)
+        return [(f"{self.vfs_dir}/{os.path.basename(p)}", c) for p, c in parts], n
 
     def build_roads_tile(self, aid, tx, ty):
         """roads.py: one road tile of anchor aid, written to the session folder. Returns (vfs path,
@@ -2995,8 +2994,9 @@ class Connection:
             self.send({"type": "terrain_patch", "anchorId": aid, "key": key, "error": f"{type(e).__name__}: {e}"[:200]})
             return
         if res is not None:
-            vfs, (cx, cy), n = res
-            self.send({"type": "terrain_patch", "anchorId": aid, "key": key, "path": vfs, "x": cx, "y": cy, "tris": n})
+            parts, n = res
+            self.send({"type": "terrain_patch", "anchorId": aid, "key": key, "tris": n,
+                       "parts": [{"path": p, "x": c[0], "y": c[1]} for p, c in parts]})
 
     def on_cache(self, msg):
         """The settings page: capGb sets the cap (0 = unlimited), clear: true empties the cache (but this

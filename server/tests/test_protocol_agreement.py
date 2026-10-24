@@ -228,7 +228,7 @@ SERVER_TO_MOD = {
                  "serial": F(int)},
     # the download cache's usage (cache.py; additive, with a Cache only): after hello and every mod 'cache'
     # ... its answer: the patch's shape and centre, or an error (the mod asks again later)
-    "terrain_patch": {"anchorId": F(int), "key": F(str), "path": F(str, OPT), "x": F(NUM, OPT), "y": F(NUM, OPT),
+    "terrain_patch": {"anchorId": F(int), "key": F(str), "parts": F(list, OPT),     # [{path, x, y}]: small meshes
                       "tris": F(int, OPT), "error": F(str, OPT)},
     "cache": {"v": F(int), "usedBytes": F(int), "capBytes": F(int), "files": F(int), "ready": F(bool),
               "managed": F(bool), "clearedBytes": F(int, OPT)},
@@ -871,7 +871,8 @@ class ServerMessagesTest(test_server.ServerHarness):
         # the ground's collision patch under another vehicle's island off the block (terrainpatch.lua / .py)
         c.send({"type": "terrain_patch", "anchorId": aid, "key": "t1", "x0": 900, "y0": -100, "x1": 1100, "y1": 100})
         patch = until(lambda m: m["type"] == "terrain_patch")
-        self.assertTrue(patch.get("path") and os.path.exists(self.fs(patch["path"])) and patch["tris"] > 0, patch)
+        self.assertTrue(patch.get("parts") and patch["tris"] > 0, patch)
+        self.assertTrue(all(os.path.exists(self.fs(p["path"])) for p in patch["parts"]), patch)
         c.send({"type": "prepare_anchor", "requestId": 4, "lat": 123.0, "lon": 0})
         until(lambda m: m["type"] == "anchor_error")
         # a second anchor 2 km east (a rebase): the previous anchor's tiles get far_removes
