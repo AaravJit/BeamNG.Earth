@@ -321,26 +321,32 @@ def forest_rows(frame, infra_fn, exact, elev, decks=()):
                 if total < 1.0:
                     continue
 
-                # Keep one mesh for short runs; longer runs use evenly spaced modules no farther
-                # than 2.8 m apart, aligned to the same full feature in every neighbouring tile.
+                # Short runs get one section. Longer runs get capped ends plus evenly spaced 3 m
+                # modules, overlapping slightly so no gaps appear on curved or tiled geometry.
                 if total <= MODULE_LENGTH_M + MODULE_STEP_M / 2.0:
                     distances = (total / 2.0,)
                 else:
+                    start, start_tangent = _at(line, arc, 0.0)
+                    end, end_tangent = _at(line, arc, total)
+                    if x0 <= start[0] < x1 and y0 <= start[1] < y1:
+                        placements.append((1, start, start_tangent))
+                    if x0 <= end[0] < x1 and y0 <= end[1] < y1:
+                        placements.append((2, end, end_tangent))
                     count = int(math.ceil((total - MODULE_LENGTH_M) / MODULE_STEP_M)) + 1
                     distances = np.linspace(MODULE_LENGTH_M / 2.0,
                                             total - MODULE_LENGTH_M / 2.0, count)
                 for distance in distances:
                     p, tangent = _at(line, arc, float(distance))
                     if x0 <= p[0] < x1 and y0 <= p[1] < y1:
-                        placements.append((p, tangent))
+                        placements.append((0, p, tangent))
 
     if not placements:
         return []
-    points = np.asarray([p for p, _ in placements], np.float64)
+    points = np.asarray([p for _, p, _ in placements], np.float64)
     heights = _surface_z(frame, points, elev, decks)
     rows = []
-    for (p, tangent), z in zip(placements, heights):
+    for (group, p, tangent), z in zip(placements, heights):
         yaw = math.degrees(math.atan2(float(tangent[1]), float(tangent[0])))
-        rows.append([0, float(p[0]), float(p[1]), float(z), float(yaw), 0.0,
+        rows.append([group, float(p[0]), float(p[1]), float(z), float(yaw), 0.0,
                      MODULE_HEIGHT_M, 0.0])
     return rows
