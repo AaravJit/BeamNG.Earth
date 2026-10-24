@@ -292,6 +292,16 @@ function M.routeSlice(e, s0, s1, step)
   return out
 end
 
+-- Pure: the planner's path counted to the destination, not to its own end: every point's distToTarget (and the
+-- planner's distance) plus the planned route's rest past the path (the minimap's and the navigation app's distance is
+-- path[1].distToTarget: a 300-mile route showed "2.7 km", the arrows' reach, Discord 2026-10-24). The planner's own
+-- updates keep it (they only drop passed points and move the first); a re-plan of its own starts from 0 again.
+function M.addRest(rp, rest)
+  if not rp or type(rp.path) ~= 'table' or not rest or rest <= 0 then return end
+  for _, wp in ipairs(rp.path) do wp.distToTarget = (wp.distToTarget or 0) + rest end
+  rp.distance = (rp.distance or 0) + rest
+end
+
 -- The planner's path (core_groundMarkers.routePlanner.path, {pos, distToTarget, wp, fixed}) goes on along the
 -- route from s0: no node of it fixed (a fixed node behind the car would make the planner re-plan back to it).
 local function appendTail(gm, e, s0, z0)
@@ -310,6 +320,8 @@ local function appendTail(gm, e, s0, z0)
     rp.path[#rp.path + 1] = { pos = vec3(x, y, z) }
   end
   rp:calcDistance()
+  local total = e.cum[#e.x]
+  M.addRest(rp, total - math.min(s0 + M.TAIL_M, total))
 end
 
 -- Pure: the graph node ids of a planner path ({wp = id | nil}...): its graph stretch, ids in order, repeats dropped.

@@ -140,4 +140,12 @@ do -- the route request carries the car's heading (a nil global here once broke 
   G.clear()
   beamngEarth_core, getPlayerVehicle = savedCore, savedGet
 end
+do -- the minimap's distance counts the whole planned route, not only the arrows' reach
+  local rp = { path = { { distToTarget = 2700 }, { distToTarget = 1000 }, { distToTarget = 0 } }, distance = 2700 }
+  G.addRest(rp, 480000)
+  T.check(rp.path[1].distToTarget == 482700 and rp.path[3].distToTarget == 480000 and rp.distance == 482700,
+    'the rest of the route added to every point')
+  G.addRest(rp, 0)
+  T.check(rp.path[1].distToTarget == 482700, 'nothing left past the path: unchanged')
+end
 T.done('test_gps')
