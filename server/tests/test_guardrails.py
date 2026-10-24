@@ -152,6 +152,13 @@ class GuardrailMeshTest(unittest.TestCase):
             self.assertAlmostEqual(row[4], 0.0, delta=0.1)
             self.assertEqual(row[6], guardrails.MODULE_HEIGHT_M)
             self.assertEqual(row[7], 0.0)
+        groups = [row[0] for row in rows]
+        self.assertIn(1, groups)  # start cap
+        self.assertIn(2, groups)  # end cap
+        centres = [row[1] for row in rows if row[0] == 0]
+        self.assertGreaterEqual(len(centres), 2)
+        for a, b in zip(centres, centres[1:]):
+            self.assertAlmostEqual(b - a, guardrails.MODULE_STEP_M, places=4)
 
     def test_unrelated_barrier_produces_no_mesh(self):
         feats = self.features("fence", {"barrier": "fence"})
