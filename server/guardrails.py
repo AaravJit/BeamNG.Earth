@@ -255,3 +255,92 @@ def mesh(frame, infra_fn, exact, elev, origin=(0.0, 0.0, 0.0), decks=()):
     if not triangles:
         return None
     return (np.asarray(vertices, np.float32), np.asarray(triangles, np.int32), np.asarray(uvs, np.float32))
+
+
+# Stock Italy guardrail modules are 3 m long and overlap by 0.2 m at the standard 2.8 m spacing.
+# They are placed as Forest items by the client so the game can instance the same authored shape cheaply.
+MODULE_LENGTH_M = 3.0
+MODULE_STEP_M = 2.8
+MODULE_HEIGHT_M = 0.9
+
+
+def forest_rows(frame, infra_fn, exact, elev, decks=()):
+    """Return client Forest-item rows using BeamNG's authored Italy guardrail mesh.
+
+    Row layout matches trees.lua: [group, x, y, z, yaw_degrees, unused, height, rank].
+    A module is centred on each sample and assigned to exactly one road tile by its centre.
+    """
+    if infra_fn is None:
+        return []
+    x0, y0, x1, y1 = map(float, exact)
+    corners_x = np.array([x0, x0, x1, x1], np.float64)
+    corners_y = np.array([y0, y1, y0, y1], np.float64)
+    la, lo, _ = frame.enu_to_geodetic(corners_x, corners_y, np.zeros(4, np.float64))
+    try:
+        keys = mapcells.cells_for_points(la, lo, pad_lat=0.00005, pad_lon=0.00005, max_cells=64)
+    except (ValueError, OverflowError):
+        return []
+
+    seen = set()
+    placements = []
+    for key in keys:
+        try:
+            feats = infra_fn(key)
+        except Exception as ex:
+            log.debug("guardrails: infrastructure cell %s unavailable: %s", key, ex)
+            continue
+        if feats is None or not len(feats):
+            continue
+        if feats.attrs.get("class") is None and feats.attrs.get("tags") is None:
+            continue
+        boxes = feats.boxes(frame)
+        for i in range(len(feats)):
+            fid = str(feats.ids[i])
+            if fid in seen or int(feats.kind[i]) != mapgeom.LINE or not _is_guardrail(feats, i):
+                continue
+            b = boxes[i]
+            if (b[2] < x0 - BBOX_PAD_M or b[0] > x1 + BBOX_PAD_M or
+                    b[3] < y0 - BBOX_PAD_M or b[1] > y1 + BBOX_PAD_M):
+                continue
+            seen.add(fid)
+            for part in feats.parts(i):
+                if not part:
+                    continue
+                lonlat = np.asarray(part[0], np.float64)
+                if len(lonlat) < 2:
+                    continue
+                e, n = mapgeom.enu_xy(feats, frame, lonlat)
+                line = np.column_stack((e, n))
+                seglen = np.hypot(*np.diff(line, axis=0).T)
+                line = line[np.r_[True, seglen > 1e-4]]
+                if len(line) < 2:
+                    continue
+                seglen = np.hypot(*np.diff(line, axis=0).T)
+                arc = np.r_[0.0, np.cumsum(seglen)]
+                total = float(arc[-1])
+                if total < 1.0:
+                    continue
+
+                # Keep one mesh for short runs; longer runs use evenly spaced modules no farther
+                # than 2.8 m apart, aligned to the same full feature in every neighbouring tile.
+                if total <= MODULE_LENGTH_M + MODULE_STEP_M / 2.0:
+                    distances = (total / 2.0,)
+                else:
+                    count = int(math.ceil((total - MODULE_LENGTH_M) / MODULE_STEP_M)) + 1
+                    distances = np.linspace(MODULE_LENGTH_M / 2.0,
+                                            total - MODULE_LENGTH_M / 2.0, count)
+                for distance in distances:
+                    p, tangent = _at(line, arc, float(distance))
+                    if x0 <= p[0] < x1 and y0 <= p[1] < y1:
+                        placements.append((p, tangent))
+
+    if not placements:
+        return []
+    points = np.asarray([p for p, _ in placements], np.float64)
+    heights = _surface_z(frame, points, elev, decks)
+    rows = []
+    for (p, tangent), z in zip(placements, heights):
+        yaw = math.degrees(math.atan2(float(tangent[1]), float(tangent[0])))
+        rows.append([0, float(p[0]), float(p[1]), float(z), float(yaw), 0.0,
+                     MODULE_HEIGHT_M, 0.0])
+    return rows
