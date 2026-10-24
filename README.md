@@ -201,8 +201,8 @@ BeamNG.Earth runs on [BeamMP](https://beammp.com/) servers (in testing): drive t
 You are sent to where the others are. Cars show in the right place, with their dents, in everyone's world; other
 players show on the world map (**M**) as green arrows; players far away (another country) are hidden until you meet.
 
-**Sharing the work:** players near each other share one world origin and split the building of the distant
-landscape (each piece is built once and sent to the others; faster computers take more), while a player far from
+**Sharing the work** (turned off for now: each player builds their own world)**:** players near each other share one
+world origin and split the building of the distant landscape (each piece is built once and sent to the others; faster computers take more), while a player far from
 everyone builds their own. For that the other players must reach your computer on a TCP port, 47621 unless the server
 picks another (the server tells your app which): on the same network it just works; over the internet, forward that
 port in your router, or you simply build everything yourself. A port of your own: set the environment variable

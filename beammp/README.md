@@ -40,7 +40,8 @@ data and little CPU: the world is built on each player's computer.
   the world can't load without it.
 - A player who joins is sent to where the others are, and each player's car shows in the right place in everyone's
   world, with its dents. Other players show on the world map (M) as arrows.
-- Players near each other share one world origin and split the work of building the world: each piece of the distant
+- (Turned off for now: each player builds their own world, and the setting below does nothing yet.) Players near
+  each other share one world origin and split the work of building the world: each piece of the distant
   landscape is built once and sent to the others. For that, the other players must reach each player's computer on
   **TCP port 47621** (on one network it just works; over the internet, each player forwards it, or else simply builds
   everything themselves). To use another port on your server, edit the line `G.SHARE_PORT = 47621` near the top of

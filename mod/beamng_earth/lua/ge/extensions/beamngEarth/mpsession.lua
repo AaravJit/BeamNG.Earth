@@ -22,6 +22,11 @@
 local M = {}
 
 M.PROTO = 2                 -- as the plugin's G.PROTO
+-- Shared generation (below) on? Off for now (the user, 2026-10-23: "disable the shared gen. think is causing problems"):
+-- no group service (no "share", so no port in our poses and no bngePeers for us), no converging onto the others'
+-- anchor, no landing on it after a teleport. Each player builds their own world; the cars still show in the right
+-- place (mpanchor converts positions between anchors).
+M.SHARE_GEN = false
 M.POSE_S = 2
 M.HIDE_S = 0.5
 M.GOTO_OFFSET_M = 12        -- a joining player lands this far from the one it goes to (not on top of it)
@@ -381,7 +386,7 @@ end
 
 -- core.teleportTo: the anchor of other players near (lat, lon) to teleport onto (aLat, aLon), nil if none.
 function M.adoptAnchor(lat, lon)
-  if not next(anchors) then return nil end         -- (outside a session: empty)
+  if not M.SHARE_GEN or not next(anchors) then return nil end         -- (outside a session: empty)
   return M.pickAnchor(anchors, lat, lon, myPid())
 end
 
@@ -408,6 +413,7 @@ function M.shareRequest(cfg)
 end
 
 local function onPeers(data)
+  if not M.SHARE_GEN then return end
   local ok, d = pcall(jsonDecode, data)
   if not ok or type(d) ~= 'table' or type(d.members) ~= 'table' then return end
   stats.peers = #d.members
@@ -419,6 +425,7 @@ end
 -- rebase (core.rebaseTo). Every player applies the same rule, so a group ends on one anchor; a car ahead that
 -- rebased takes the ones following onto its new anchor.
 local function converge(dt, anchor, lat, lon)
+  if not M.SHARE_GEN then return end
   local k = M.key(anchor.lat, anchor.lon)
   if k ~= lastAnchorKey then lastAnchorKey, anchorSince = k, 0 end
   anchorSince = anchorSince + (dt or 0)
@@ -549,7 +556,7 @@ function M.update(dt, anchor, player)
       y = player.y, z = player.z, camera = player.camera } or nil }, true)
   end
   configWait = configWait + (dt or 0)
-  if share == nil and (config or configWait >= M.CONFIG_WAIT_S) then
+  if share == nil and M.SHARE_GEN and (config or configWait >= M.CONFIG_WAIT_S) then
     share = false               -- our world server's group service, asked once a session (its answer: onShare), on
     require('beamngEarth/net').send(M.shareRequest(config))     -- the server's port
   end
