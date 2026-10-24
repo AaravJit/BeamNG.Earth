@@ -984,6 +984,27 @@ class SwitchTest(unittest.TestCase):
         self.assertIsNot(seen[1], seen[0])
         self.assertIs(seen[2], seen[1], "no change, nothing sent again")
 
+    def test_new_pads_refresh_the_block_photo(self):
+        # the ground under the car is built before its road tiles (and their pads) arrive: a teleport to a station
+        # showed its forecourt bare (the user, 2026-10-24: "No asphalt at the station"); a new station's pad marks the
+        # blocks it lies on stale, and base_refresh renders their photo again with it
+        s, sur = self.server(gas_stations=True, near_visual="detail")
+        a = s.new_anchor(40.0, -80.0)
+        s.anchors[a.id] = a                 # (a connection's anchor: registered as prepare_anchor does)
+        size = s.layout.block * 2.0
+        s.hm[(a.id, 0.0, 0.0)] = {}
+        s.hm[(a.id, 5 * size, 0.0)] = {}                                   # a block far away
+        la, lo, _ = a.frame.enu_to_geodetic(np.array([-10.0, 10.0, 10.0, -10.0]), np.array([-5.0, -5.0, 5.0, 5.0]),
+                                            np.zeros(4))
+        pads = [("st", [(np.asarray(la), np.asarray(lo))])]
+        s.keep_fuel_pads(pads)
+        self.assertEqual(s.base_stale, {(a.id, 0.0, 0.0)})
+        s.base_stale.clear()
+        s.keep_fuel_pads(pads)                                                # (a re-sent tile: the same station)
+        self.assertEqual(s.base_stale, set())
+        s.set_gas_stations(False)                                             # the switch: every block's photo again
+        self.assertEqual(s.base_stale, {(a.id, 0.0, 0.0), (a.id, 5 * size, 0.0)})
+
     def test_never_on_without_the_flag(self):
         s, sur = self.server()
         self.run_msgs(s, [{"type": "gas_stations", "on": True}])

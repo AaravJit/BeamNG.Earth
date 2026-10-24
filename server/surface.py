@@ -862,7 +862,8 @@ class Surface:
         (gasstations.tile_sites pads), handed over by earthd (and to a block's process with its job). No other process
         lays the stations out again for them: that read every cell's buildings and places into the terrain blocks'
         processes too (~60 MB a city cell, out of a Steam Deck's map data budget; the user, 2026-10-23: "this is meant
-        to run on steam decks too")."""
+        to run on steam decks too"). Returns the stations new to it [(id, rings)] (their ground to paint again)."""
+        new = []
         with self._lock:
             for sid, rings in items:
                 rings = [(np.asarray(la, np.float64), np.asarray(lo, np.float64)) for la, lo in rings]
@@ -870,10 +871,12 @@ class Surface:
                     continue
                 box = (min(float(la.min()) for la, _ in rings), min(float(lo.min()) for _, lo in rings),
                        max(float(la.max()) for la, _ in rings), max(float(lo.max()) for _, lo in rings))
-                self._fuel_pads.pop(sid, None)
+                if self._fuel_pads.pop(sid, None) is None:
+                    new.append((sid, rings))
                 self._fuel_pads[sid] = (rings, box)
                 while len(self._fuel_pads) > FUEL_PAD_STATIONS:
                     self._fuel_pads.pop(next(iter(self._fuel_pads)))
+        return new
 
     def clear_fuel_pads(self):
         """Drop every kept pad (the server's gas stations switched off; a block's job brings its own)."""

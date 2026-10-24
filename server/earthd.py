@@ -1226,13 +1226,45 @@ class Server:
         if self.surface is not None and hasattr(self.surface, "gas_pads"):
             self.surface.gas_pads = on
             self.surface.clear_fuel_pads()
+        self.pads_stale()               # (the blocks' photos again: with or without their forecourts)
         log.info("gas stations %s (settings)", "on" if on else "off")
         return True
 
     def keep_fuel_pads(self, pads):
-        """A road tile's gas station pads kept for the ground's painters (surface.Surface.add_fuel_pads)."""
+        """A road tile's gas station pads kept for the ground's painters (surface.Surface.add_fuel_pads); the blocks
+        a new station's pad lies on get their photo rendered again (pads_stale)."""
         if pads and self.surface is not None and hasattr(self.surface, "add_fuel_pads"):
-            self.surface.add_fuel_pads(pads)
+            new = self.surface.add_fuel_pads(pads)
+            if new:
+                self.pads_stale(new)
+
+    def pads_stale(self, items=None):
+        """The built blocks whose photo was painted without these pads [(id, rings)] (every built block: None)
+        marked stale, so base_refresh renders it again and sends it (block_base): the ground under the car is built
+        before its road tiles bring their stations' pads (a teleport to a station showed its forecourt bare: the
+        user, 2026-10-24, "No asphalt at the station"). Detail mode only (the block photo)."""
+        if self.near_visual != "detail":
+            return
+        h = self.layout.block * heightmap.SQUARE / 2
+        for key in list(self.hm):
+            anchor = self.anchors.get(key[0])
+            if anchor is None:
+                continue
+            if items is None:
+                self.base_stale.add(key)
+                continue
+            _, cx, cy = key
+            for _, rings in items:
+                if any(self._ring_meets(anchor, ring, cx - h, cy - h, cx + h, cy + h) for ring in rings):
+                    self.base_stale.add(key)
+                    break
+
+    @staticmethod
+    def _ring_meets(anchor, ring, x0, y0, x1, y1):
+        la, lo = ring
+        e, n, _ = anchor.frame.geodetic_to_enu(np.asarray(la), np.asarray(lo), np.zeros(len(la)))
+        e, n = np.asarray(e), np.asarray(n)
+        return bool(e.max() >= x0 and e.min() <= x1 and n.max() >= y0 and n.min() <= y1)
 
     def block_fuel_pads(self, anchor, cx, cy, size):
         """The kept gas station pads around a block (its square and a margin) for its process's job: [(id, rings)]."""
