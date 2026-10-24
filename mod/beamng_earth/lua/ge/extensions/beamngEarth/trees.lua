@@ -419,7 +419,15 @@ function M.onRows(anchorId, tileKey, rows, groups)
     tiles[key .. ':retired:' .. tostring(retiredSerial)] = old
     old = nil
   end
-  local tx, ty = tostring(tileKey):match('(%-?%d+)_(%-?%d+)
+  local tx, ty = tostring(tileKey):match('(%-?%d+)_(%-?%d+)$')
+  local t = { anchor = anchorId, rows = rows, groups = rowGroups,
+    made = old and old.made or {}, solid = old and old.solid or {}, near = old and old.near,
+    shapes = old and old.shapes or {}, scales = old and old.scales or {},
+    madeShape = old and old.madeShape or {}, shown = old and old.shown or 0, forestId = old and old.forestId or nil,
+    variant = M.tileVariant(key), cx = (tonumber(tx) or 0) * 256 + 128, cy = (tonumber(ty) or 0) * 256 + 128, drop = false }
+  tiles[key] = t
+end
+
 -- The tile "anchorId:key" goes (roads.lua's furniture).
 function M.dropKey(key)
   local t = tiles[key]
