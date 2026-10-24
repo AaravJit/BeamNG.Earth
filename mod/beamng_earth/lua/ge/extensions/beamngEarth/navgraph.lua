@@ -586,6 +586,7 @@ function M.reset()
   heads = {}            -- (the level took them with it)
   graph, applied, dirty, lastApply, persistent, ours, foreign = nil, nil, false, -math.huge, nil, false, false
   started, respawnAll, lastGuard, heldActive = false, false, -math.huge, nil
+  teleportPending = false
   pendingSignals = nil
   stillSince = {}
   seenAt = {}
