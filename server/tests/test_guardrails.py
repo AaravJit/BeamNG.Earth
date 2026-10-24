@@ -148,7 +148,7 @@ class GuardrailForestTest(unittest.TestCase):
         self.assertLess((one[2] - 50.0) * one[12], 0.0)
         self.assertLess((back[2] - 50.0) * back[12], 0.0)
 
-    def test_centre_guardrail_remains_on_bridge_and_outer_edge_rails_are_removed(self):
+    def test_guardrails_are_absent_on_bridge_but_approaches_and_underpass_survive(self):
         deck = {"m": "road_asphalt_2lane", "w": 8.0, "tl": 11.0, "p": 20,
                 "deck": True, "fixed": True, "fid": "bridge",
                 "n": [[0.0, 0.0, 20.0], [100.0, 0.0, 20.0]]}
@@ -158,41 +158,36 @@ class GuardrailForestTest(unittest.TestCase):
         outer = max(parapets, key=lambda item: float(np.mean(item["line"][:, 1])))
         y = float(np.mean(outer["line"][:, 1]))
         upper_elev = lambda lat, lon: np.full(np.shape(lat), 20.0, np.float64)
-        exact = (0.0, -20.0, 100.0, 20.0)
+        exact = (0.0, -20.0, 160.0, 20.0)
 
-        # A central two-sided divider must stay on the bridge; the old 5 m XY filter
-        # incorrectly removed it together with the roadside rails.
-        centre = self.features("guard_rail", tags={"two_sided": "yes", "bridge": "yes"},
-                               xy=[[10.0, 0.0], [90.0, 0.0]])
-        centre_rows = guardrails.forest_rows(
-            self.frame, lambda _key: centre, exact, upper_elev,
-            decks=decks, parapets=parapets)
-        self.assertTrue(centre_rows, "the mapped centre divider must render on the bridge")
-        self.assertTrue(any(row[0] == 0 for row in centre_rows))
-        self.assertTrue(any(row[0] == 3 for row in centre_rows))
-        for row in centre_rows:
-            self.assertAlmostEqual(row[3], 20.0, delta=0.05)
-
-        # Rails on/near the outer parapets are redundant with the concrete walls and are hidden.
-        for line_y in (y, 5.0):
+        # No mapped guardrails on the bridge itself, including the central divider and its
+        # two_sided instances. The concrete bridge parapets remain a part of the bridge mesh.
+        for line_y in (0.0, y, 5.0):
             with self.subTest(line_y=line_y):
-                edge = self.features(
+                bridge_rail = self.features(
                     "guard_rail", tags={"two_sided": "yes", "bridge": "yes"},
                     xy=[[10.0, line_y], [90.0, line_y]])
-                edge_rows = guardrails.forest_rows(
-                    self.frame, lambda _key: edge, exact, upper_elev,
+                rows = guardrails.forest_rows(
+                    self.frame, lambda _key: bridge_rail, exact, upper_elev,
                     decks=decks, parapets=parapets)
-                self.assertEqual(edge_rows, [],
-                                 "outer mapped rails should be replaced by the concrete parapet")
+                self.assertEqual(rows, [], "mapped guardrails on the bridge should be omitted")
 
-        # Do not delete a lower road's mapped rail just because it overlaps an upper parapet in XY.
+        # Guardrails on the road approach, outside the deck, must still render.
+        approach = self.features("guard_rail", xy=[[105.0, 0.0], [155.0, 0.0]])
+        approach_rows = guardrails.forest_rows(
+            self.frame, lambda _key: approach, exact, upper_elev,
+            decks=decks, parapets=parapets)
+        self.assertTrue(approach_rows, "the old 5 m filter must not create a long gap on approaches")
+
+        # A lower road directly underneath the deck has the same XY but a different height;
+        # it must keep its own mapped rails.
         lower_elev = lambda lat, lon: np.full(np.shape(lat), 12.0, np.float64)
         underpass = self.features("guard_rail", tags={"two_sided": "yes", "layer": "-1"},
-                                  xy=[[10.0, y], [90.0, y]])
+                                  xy=[[10.0, 0.0], [90.0, 0.0]])
         lower_rows = guardrails.forest_rows(
             self.frame, lambda _key: underpass, exact, lower_elev,
             decks=decks, parapets=parapets)
-        self.assertTrue(lower_rows, "the lower road's rail must survive the XY overlap")
+        self.assertTrue(lower_rows, "the lower road's rail must survive an XY overlap")
         for row in lower_rows:
             self.assertAlmostEqual(row[3], 12.0, delta=0.1)
 
