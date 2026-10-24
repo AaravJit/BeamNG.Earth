@@ -1,37 +1,20 @@
 -- BeamNG.Earth servers for BeamMP's server browser (the user, 2026-10-24: "show a list of all the .earth servers ...
--- make it so players without .earth cant see .earth server in the server list"). BeamNG.Earth servers are Private in
--- BeamMP (off BeamMP's public list); their plugin announces them to our list service (native/serverlist), and this
--- fetches that list for the "BeamNG.Earth" tab the UI adds to BeamMP's page (ui/ui-vue/mods/beamngEarth/index.js).
--- Plain HTTP with luasocket at settimeout(0), stepped in onUpdate: nothing here blocks a frame. The UI polls state().
+-- make it so players without .earth cant see .earth server in the server list"). A public BeamNG.Earth server keeps
+-- itself off BeamMP's public list and announces itself to our list service (native/serverlist, earth.tgforever.net)
+-- instead; the UI's "BeamNG.Earth" tab in BeamMP's page (ui/ui-vue/mods/beamngEarth/earthServers.js) shows that list.
+-- The game's Lua may only open connections to local addresses ("connect restricted"), so our world server fetches it
+-- (earthd server_list) and this asks for it and keeps the answer. The UI polls state().
 local M = {}
 
-M.LIST_URL = 'http://earth.tgforever.net/servers'   -- (the list service, native/serverlist, behind Caddy on the
-                                                    -- mini PC; plain HTTP: the game's luasocket has no TLS)
-M.TIMEOUT_S = 6
+M.TIMEOUT_S = 12
 
-local req = nil             -- { sock, phase = 'connect' | 'send' | 'recv', buf, t, host, port, path }
+local net = require('beamngEarth/net')
+local waiting = nil         -- seconds since the request, while one is out
 local result = { state = 'idle', servers = {}, error = nil, at = nil }
 
--- Pure: host, port, path of an http:// URL (nil: not one).
-function M.parseUrl(url)
-  local host, port, path = tostring(url or ''):match('^http://([^/:]+):?(%d*)(/?.*)$')
-  if not host then return nil end
-  return host, tonumber(port) or 80, path ~= '' and path or '/'
-end
-
--- Pure: the body of an HTTP/1.0 response if its status is 200 (nil, why otherwise).
-function M.parseResponse(raw)
-  local head, body = tostring(raw or ''):match('^(.-)\r\n\r\n(.*)$')
-  if not head then return nil, 'no response' end
-  local code = tonumber(head:match('^HTTP/%d%.%d (%d+)'))
-  if code ~= 200 then return nil, 'HTTP ' .. tostring(code) end
-  return body
-end
-
--- Pure: the list from the service's JSON (decode: a JSON decoder), each entry checked and its fields made safe.
-function M.toServers(body, decode)
-  local ok, list = pcall(decode, body)
-  if not ok or type(list) ~= 'table' then return nil, 'bad list' end
+-- Pure: the list as the service sent it, each entry checked and its fields made safe for the page.
+function M.toServers(list)
+  if type(list) ~= 'table' then return nil end
   local out = {}
   for _, s in ipairs(list) do
     if type(s) == 'table' and type(s.ip) == 'string' and tonumber(s.port) then
@@ -44,62 +27,38 @@ function M.toServers(body, decode)
 end
 
 local function finish(servers, err)
-  if req and req.sock then pcall(req.sock.close, req.sock) end
-  req = nil
+  waiting = nil
   if servers then result.servers = servers end
   result.state, result.error, result.at = err and 'error' or 'done', err, os.time()
 end
 
--- Start fetching the list (a fetch already running carries on).
+-- Ask for the list (one already asked for carries on).
 function M.refresh()
-  if req then return true end
-  local host, port, path = M.parseUrl(M.LIST_URL)
-  if not host then finish(nil, 'no list address') return false end
-  local ok, socket = pcall(require, 'socket')
-  if not ok then finish(nil, 'no luasocket') return false end
-  local sock = socket.tcp()
-  sock:settimeout(0)
-  req = { sock = sock, phase = 'connect', buf = {}, t = 0, host = host, port = port, path = path }
-  result.state, result.error = 'loading', nil
+  if waiting then return true end
+  if not net.isConnected() then
+    finish(nil, "BeamNG.Earth's world server is not running (start the BeamNG.Earth app)")
+    return false
+  end
+  net.send({ type = 'server_list' })
+  waiting, result.state, result.error = 0, 'loading', nil
   return true
 end
 
+-- The world server's 'server_list' answer (core.lua's message dispatch).
+function M.onList(msg)
+  if type(msg) ~= 'table' then return end
+  if msg.error then finish(nil, tostring(msg.error)) return end
+  local servers = M.toServers(msg.servers)
+  finish(servers or {}, servers == nil and 'bad list' or nil)
+end
+
 function M.onUpdate(dtReal)
-  if not req then return end
-  req.t = req.t + (dtReal or 0)
-  if req.t > M.TIMEOUT_S then finish(nil, 'the server list did not answer') return end
-  local s = req.sock
-  if req.phase == 'connect' then
-    local ok, err = s:connect(req.host, req.port)
-    if ok or err == 'already connected' then
-      req.phase = 'send'
-    elseif err ~= 'timeout' and err ~= 'Operation already in progress' then
-      finish(nil, 'cannot reach the server list (' .. tostring(err) .. ')')
-      return
-    end
-  end
-  if req.phase == 'send' then
-    local ok = s:send(string.format('GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: BeamNG.Earth\r\n\r\n', req.path, req.host))
-    if ok then req.phase = 'recv' end
-  end
-  if req.phase == 'recv' then
-    local data, err, part = s:receive('*a')
-    local chunk = data or part
-    if chunk and #chunk > 0 then req.buf[#req.buf + 1] = chunk end
-    if data or err == 'closed' then
-      local body, why = M.parseResponse(table.concat(req.buf))
-      if not body then finish(nil, why) return end
-      local servers, bad = M.toServers(body, jsonDecode)
-      finish(servers, bad)
-    elseif err ~= 'timeout' then
-      finish(nil, tostring(err))
-    end
-  end
+  if not waiting then return end
+  waiting = waiting + (dtReal or 0)
+  if waiting > M.TIMEOUT_S then finish(nil, 'the server list did not answer') end
 end
 
 -- For the UI: { state = 'idle' | 'loading' | 'done' | 'error', servers, error, at }.
 function M.state() return result end
-
-M.onExtensionLoaded = function() end
 
 return M

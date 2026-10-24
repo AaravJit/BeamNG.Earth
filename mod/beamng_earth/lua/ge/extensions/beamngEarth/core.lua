@@ -812,6 +812,10 @@ local function onMessage(msg)
     -- real gravity at the player (server gravity.py): applied by beamngEarth_weather's setGravity path
     local w = rawget(_G, 'beamngEarth_weather')
     if w and w.onGravity then w.onGravity(msg) end
+  elseif t == 'server_list' then
+    -- the BeamNG.Earth servers for the tab in BeamMP's server browser (serverlist.lua)
+    local sl = rawget(_G, 'beamngEarth_serverlist')
+    if sl and sl.onList then sl.onList(msg) end
   elseif t == 'block_base' then
     -- detail mode: a block's base photo rendered again with its NAIP tiles (server base_refresh): the block
     -- in use takes it now, a ready one not committed yet takes it at its commit

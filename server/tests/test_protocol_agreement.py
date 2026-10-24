@@ -127,6 +127,7 @@ MOD_TO_SERVER = {
     "route": {"id": F(int), "lat0": F(NUM), "lon0": F(NUM), "lat1": F(NUM), "lon1": F(NUM),
               "bearing": F(NUM, OPT)},   # the GPS (routing.py); bearing: the car's heading, the route starts that way
     "where": {"id": F(int), "lat": F(NUM), "lon": F(NUM), "online": F(bool)},   # the status bar (geocode.py)
+    "server_list": {},                  # the BeamNG.Earth servers for the tab in BeamMP's browser (serverlist.lua)
     # the update notice's button: the server opens the releases page (updates.open_page; additive)
     "open_page": {"url": F(str)},
     "update_now": {},                   # the update notice's "Update now" (selfupdate.py)
@@ -142,6 +143,7 @@ TERRAIN = {"cx": F(NUM), "cy": F(NUM), "heightmap": F(str), "size": F(int), "squ
            "base": F(str, OPT), "baseSize": F(NUM, OPT),           # --near-visual detail: the block's photo
            "ter": F(str, OPT)}                                     # the block as a .ter (swapped in, no import)
 SERVER_TO_MOD = {
+    "server_list": {"servers": F(list, OPT), "error": F(str, OPT)},   # earthd.server_list (the list service)
     "geocode_result": {"id": F(int), "results": F(list), "error": F(str, OPT)},   # geocode.py (Photon)
     "route_result": {"id": F(int), "points": F(list), "dist": F(NUM), "dur": F(NUM), "error": F(str, OPT)},  # OSRM
     "update": {"current": F(str), "latest": F(str), "url": F(str)},   # a newer version on GitHub (updates.py)
@@ -250,7 +252,8 @@ EXERCISED_ELSEWHERE = {"far_retex", "roads_tile", "roads_drop",   # roads: needs
                        "navgraph",                                   # --traffic on: needs map data
                        "map_tiles_ready",                            # only when the world map asks (map_tiles)
                        "update",                                     # only when GitHub has a newer version (online)
-                       "geocode_result", "route_result"}             # only when the map / GPS asks                            # only when the world map asks (map_tiles)
+                       "geocode_result", "route_result",
+                       "server_list"}                                # only when the BeamMP tab asks (online)             # only when the map / GPS asks                            # only when the world map asks (map_tiles)
 # events the mod's net.lua makes up itself (not on the wire)
 MOD_INTERNAL = {"_connected": set(), "_disconnected": {"error"}}
 
@@ -297,7 +300,7 @@ def mod_sends():
     mpsession.lua (require('beamngEarth/net').send), and every send({...}) in terrainpatch.lua (core hands it
     net.send)."""
     out = {}
-    for names, pattern in ((("core.lua", "places.lua", "mpsession.lua"), r"net(?:'\))?\.send\(\{"),
+    for names, pattern in ((("core.lua", "places.lua", "mpsession.lua", "serverlist.lua"), r"net(?:'\))?\.send\(\{"),
                            (("terrainpatch.lua",), r"\bsend\(\{")):
         text = "\n".join((LUA / n).read_text(encoding="utf-8") for n in names)
         for m in re.finditer(pattern, text):

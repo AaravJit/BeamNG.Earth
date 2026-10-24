@@ -62,6 +62,7 @@ import asyncio  # noqa: E402
 import contextlib  # noqa: E402
 import glob  # noqa: E402
 import itertools  # noqa: E402
+import json  # noqa: E402
 import logging  # noqa: E402
 import math  # noqa: E402
 import re  # noqa: E402
@@ -130,6 +131,8 @@ import protocol  # noqa: E402
 import weather as weathermod  # noqa: E402
 
 PROTOCOL = 4
+# The BeamNG.Earth server list (native/serverlist behind Caddy on the project's mini PC): server_list()
+SERVER_LIST_URL = "https://earth.tgforever.net/servers"
 # Tile/heightmap content format (hello.format) is the layout's: 3 = v1.3.1 (2 m lattice, fixed Q,
 # 32-cell tiles), 4 = 64-cell tiles down to L-1 (farfield.CONTENT_FORMAT). A mod's hello.format is
 # the newest format it reads (it reads every older one from 3: core.lua FORMATS), so a mod older
@@ -2640,6 +2643,20 @@ class Connection:
                  (" (" + out["error"] + ")") if "error" in out else "")
         self.send(out)
 
+    async def server_list(self):
+        """The BeamNG.Earth server list (native/serverlist, SERVER_LIST_URL) for the mod's tab in BeamMP's server browser
+        (serverlist.lua): fetched here, as the game's Lua may only open connections to local addresses ("connect
+        restricted"). A 'server_list' message with the servers, or with an error."""
+        def get():
+            return json.loads(self.s.net.get(SERVER_LIST_URL, kind="demand").body.decode("utf-8", "replace"))
+        try:
+            servers = await asyncio.get_running_loop().run_in_executor(self.s.ui_pool, get)
+        except Exception as e:          # offline, the list down: said in the tab
+            log.info("server list: %s: %s", type(e).__name__, e)
+            self.send({"type": "server_list", "error": "the server list did not answer"})
+            return
+        self.send({"type": "server_list", "servers": servers if isinstance(servers, list) else []})
+
     async def check_update(self):
         """The update check after a hello: an 'update' message when GitHub has a newer version (updates.py); offline or
         up to date: nothing."""
@@ -2929,6 +2946,8 @@ class Connection:
                          ",".join(map(str, sorted(self.s.game_cpus))))
         elif kind == "prepare_anchor":
             self.spawn(self.prepare_anchor(msg))
+        elif kind == "server_list":             # the BeamNG.Earth servers for the tab in BeamMP's browser
+            self.spawn(self.server_list())
         elif kind == "share":                   # a BeamMP session: serve our group (peerwork.GroupHelper)
             self.send(dict(self.s.share_start(msg.get("port")), type="share"))
         elif kind == "peers":                   # the players on our anchor (the BeamMP plugin, through mpsession)
