@@ -600,7 +600,23 @@ function M.update(anchorId, player, view)
         local r = row[8] or 0
         local g = (t.groups or GROUPS)[(row[1] or 0) + 1]
         local cap = g and M.GROUP_MAX_M[g]
-        if cap and o[2] > cap then r = 2 end     -- this group is not shown this far out
+        local isGuardrail = g and g:sub(1, 9) == 'guardrail'
+        if isGuardrail then
+          -- Keep ordinary guardrail runs continuous while there is room for the tile's rows.
+          -- Only use per-row ranks when the tile cap is actually exceeded; otherwise the generic
+          -- distance thinning would leave visible gaps between neighbouring 3 m rail sections.
+          local rowCap
+          for _, limit in ipairs(M.TILE_CAP) do
+            if o[2] <= limit[1] then rowCap = limit[2]; break end
+          end
+          if cap and o[2] > cap then
+            r = 2
+          elseif not rowCap or #t.rows <= rowCap then
+            r = 0
+          end
+        elseif cap and o[2] > cap then
+          r = 2                 -- this group is not shown this far out
+        end
         -- a group this mod has no shapes for (a newer server's): left out, not drawn as a tree
         if g and not M.CATALOG[g] then
           r = 2
