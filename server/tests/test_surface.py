@@ -318,13 +318,16 @@ class ServerSurfaceTest(unittest.TestCase):
 
     def test_gas_stations_paint_pads(self):
         # --gas-stations on: the ground's painters get the forecourts (Surface.gas_pads); off: they do not
-        sur = sf.Surface(FuelPadTest.MD())
+        import types
+        sur = sf.Surface(None)
         self.addCleanup(sur.close)
-        self.make(surface=sur, mapdata=FuelPadTest.MD(), gas_stations=True)
+        s = self.make(surface=sur, mapdata=types.SimpleNamespace(), gas_stations=True)
         self.assertTrue(sur.gas_pads)
-        off = sf.Surface(FuelPadTest.MD())
+        s.keep_fuel_pads([("a", [FuelPadTest.ring(None, LAT, LON)])])      # (a road tile's, earthd.build_roads_tile)
+        self.assertEqual(len(s.block_fuel_pads(s.new_anchor(LAT, LON), 0.0, 0.0, 512.0)), 1, "handed to a block")
+        off = sf.Surface(None)
         self.addCleanup(off.close)
-        self.make(surface=off, mapdata=FuelPadTest.MD())
+        self.make(surface=off, mapdata=types.SimpleNamespace())
         self.assertFalse(off.gas_pads)
 
     def test_block_worker_paints_pads(self):
@@ -333,6 +336,12 @@ class ServerSurfaceTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         st = blockworker._State(tmp.name, True, False, False, False, True, gas_stations=True)
         self.assertTrue(st.surface.gas_pads)
+        old, blockworker._s = getattr(blockworker, "_s", None), st
+        try:                            # (the server's pads for the block, taken in: build / base_photo fuel_pads)
+            blockworker._take_pads([("a", [FuelPadTest.ring(None, LAT, LON)])])
+            self.assertEqual(len(st.surface.fuel_pads(np.array([LAT]), np.array([LON]))), 1)
+        finally:
+            blockworker._s = old
         st.surface.close()
         st = blockworker._State(tmp.name, True, False, False, False, True)
         self.assertFalse(st.surface.gas_pads)
@@ -459,76 +468,36 @@ class PhotoRoadsTest(unittest.TestCase):
 
 class FuelPadTest(unittest.TestCase):
     """Gas station forecourts painted asphalt (the user, 2026-10-23: "some stations spawn on dirt because we do not
-    paint ashpat there"): Surface.fuel_pads (gasstations.pads_in, once per map cell) and the three painters."""
+    paint ashpat there"): Surface's store of the road tiles' pads (gasstations.tile_sites pads) and the three painters."""
 
-    class MD:
-        """The gas station fixture (test_gasstations.station_md) in every cell; has() False for the layers in missing."""
-
-        def __init__(self, missing=()):
-            import test_gasstations as tg
-            self.all = tg.station_md().all
-            self.missing, self.cells, self.prefetched = set(missing), 0, []
-
-        def has(self, key, layer):
-            return layer not in self.missing
-
-        def cell(self, key, layers, kind="demand"):
-            import types
-            self.cells += 1
-            return types.SimpleNamespace(layers={n: self.all.get(n) for n in layers})
-
-        def prefetch(self, key, layers):
-            self.prefetched.append(layers)
-            return True
-
-    def station_ll(self):
-        import test_gasstations as tg
-        la, lo, _ = tg.FRAME.enu_to_geodetic(275.0, 100.0, 0.0)       # the fixture's canopy
-        return float(la), float(lo)
+    def ring(self, lat, lon, d=1e-4):
+        return np.array([lat - d, lat - d, lat + d, lat + d]), np.array([lon - d, lon + d, lon + d, lon - d])
 
     def test_off_by_default(self):
-        sur = sf.Surface(self.MD())
-        la, lo = self.station_ll()
-        self.assertEqual(sur.fuel_pads(np.array([la]), np.array([lo])), [])
+        sur = sf.Surface(None)
+        self.addCleanup(sur.close)
+        sur.add_fuel_pads([("a", [self.ring(40.0, -80.0)])])
+        self.assertEqual(sur.fuel_pads(np.array([40.0]), np.array([-80.0])), [])
 
-    def drain(self, sur):
-        sur._pad_pool.submit(lambda: None).result()             # (one thread: what was queued before is done)
-
-    def test_pads_in_the_background_once_per_cell(self):
-        # a miss never waits (a terrain block is not held up): the cell is worked out in the background, then kept
-        md = self.MD()
-        sur = sf.Surface(md)
+    def test_store_by_area(self):
+        # the road tiles hand their pads over (earthd); the painters ask for those around them, no map data read
+        sur = sf.Surface(None)
         self.addCleanup(sur.close)
         sur.gas_pads = True
-        la, lo = self.station_ll()
-        self.assertEqual(sur.fuel_pads(np.array([la]), np.array([lo])), [])
-        self.drain(sur)
-        got = sur.fuel_pads(np.array([la]), np.array([lo]))
-        self.assertTrue(got)
-        n = md.cells
-        self.assertEqual(len(sur.fuel_pads(np.array([la]), np.array([lo]))), len(got))
-        self.assertEqual(md.cells, n, "the cell's pads kept")
+        sur.add_fuel_pads([("a", [self.ring(40.0, -80.0)]), ("b", [self.ring(41.0, -80.0)])])
+        sur.add_fuel_pads([("a", [self.ring(40.0, -80.0)])])            # (again from a re-sent tile: once)
+        near = sur.fuel_pads(np.array([39.999, 40.001]), np.array([-80.001, -79.999]))
+        self.assertEqual(len(near), 1)
+        self.assertEqual(len(sur.fuel_pad_items(np.array([39.0, 42.0]), np.array([-81.0, -79.0]))), 2)
+        self.assertEqual(sur.fuel_pads(np.array([10.0]), np.array([10.0])), [])
 
-    def test_prefetch_works_pads_out_ahead(self):
-        md = self.MD()
-        sur = sf.Surface(md)
+    def test_store_bounded(self):
+        sur = sf.Surface(None)
         self.addCleanup(sur.close)
         sur.gas_pads = True
-        la, lo = self.station_ll()
-        sur.prefetch(la, lo)
-        self.drain(sur)
-        self.assertTrue(sur.fuel_pads(np.array([la]), np.array([lo])), "ready at the first ask")
-
-    def test_missing_layer_queued_no_pads(self):
-        md = self.MD(missing=("places",))
-        sur = sf.Surface(md)
-        sur.gas_pads = True
-        la, lo = self.station_ll()
-        self.assertEqual(sur.fuel_pads(np.array([la]), np.array([lo])), [])
-        self.drain(sur)
-        self.assertEqual(sur.fuel_pads(np.array([la]), np.array([lo])), [])
-        sur.pool.shutdown(wait=True)
-        self.assertIn(("places",), md.prefetched)
+        sur.add_fuel_pads([(str(k), [self.ring(40.0 + k * 1e-3, -80.0)]) for k in range(sf.FUEL_PAD_STATIONS + 10)])
+        self.assertEqual(len(sur.fuel_pad_items(np.array([0.0, 90.0]), np.array([-180.0, 180.0]))),
+                         sf.FUEL_PAD_STATIONS)
 
     def grid(self):
         lat0, lon0 = 40.0, -76.0

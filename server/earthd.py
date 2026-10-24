@@ -1124,7 +1124,8 @@ class Server:
                 self.buildings, self.left_hand(anchor), self.mph(anchor), self.anchor_q(anchor),
                 self.gas_stations).result()
             log.debug("road tile %d_%d: %.2f s (queue + build)", tx, ty, time.perf_counter() - t0)
-            return res
+            self.keep_fuel_pads(res[2])
+            return res[:2]
         cells = [self.mapdata.cell(k, layers=("roads",), kind="demand").layers.get("roads")
                  for k in roadsmod.cells_of_tile(anchor.frame, tx, ty)]
         zoom = anchor.zooms[0]
@@ -1149,9 +1150,11 @@ class Server:
                     elev)
                 anchor.tunnels.wet = self.sea.depth if self.sea is not None else None
                 self._tunnel_ground(anchor, g)
-        fuel, skip, drives = [], frozenset(), []
+        fuel, skip, fuel_cuts, fuel_pads = [], frozenset(), [], []
         if self.gas_stations:       # pumps and refuel areas; their canopy outlines left out of the buildings
-            fuel, skip = gasstationsmod.tile_sites(anchor.frame, tx, ty, self.mapdata, elev, cuts=drives)
+            fuel, skip = gasstationsmod.tile_sites(anchor.frame, tx, ty, self.mapdata, elev, cuts=fuel_cuts,
+                                                   pads=fuel_pads)
+            self.keep_fuel_pads(fuel_pads)
         props = [] if self.buildings else None
         lines = [] if self.buildings else None
         wires = [] if self.buildings else None
@@ -1172,7 +1175,7 @@ class Server:
             return roadsmod.block_arch_raise(anchor.tunnels, cell_fn, anchor.frame, la, lo, elev(la, lo),
                                              (box[0] - 8, box[1] - 8, box[2] + 8, box[3] + 8))
         chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, elev, urban, walks=walks, deck_context=ctx, bridges=anchor.bridges,
-                                     walk_cuts=drives,   # (the stations' made-up driveways: no sidewalk across them)
+                                     walk_cuts=fuel_cuts,    # (the stations' made-up driveways: no sidewalk across them)
                                      widths=self.road_widths, props=props, lines=lines, wires=wires, town=town, park=park,
                                      left_hand=self.left_hand(anchor), mph=self.mph(anchor),
                                      structures=buildingsmod.centres(items, tx, ty) if items else (),
@@ -1209,6 +1212,19 @@ class Server:
                                          None, None, items)
         return roadsmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, chunks, walks if self.sidewalks else None,
                                    mesh, dmesh, bld, props, wires, park, tunnel_mesh=tmesh, fuel=fuel)
+
+    def keep_fuel_pads(self, pads):
+        """A road tile's gas station pads kept for the ground's painters (surface.Surface.add_fuel_pads)."""
+        if pads and self.surface is not None and hasattr(self.surface, "add_fuel_pads"):
+            self.surface.add_fuel_pads(pads)
+
+    def block_fuel_pads(self, anchor, cx, cy, size):
+        """The kept gas station pads around a block (its square and a margin) for its process's job: [(id, rings)]."""
+        if self.surface is None or not getattr(self.surface, "gas_pads", False):
+            return []
+        h = size / 2 + 64.0
+        la, lo, _ = anchor.frame.enu_to_geodetic(np.array([cx - h, cx + h]), np.array([cy - h, cy + h]), np.zeros(2))
+        return self.surface.fuel_pad_items(np.asarray(la), np.asarray(lo))
 
     def ground_z_at(self, anchor, e, n):
         """The ground's height (the frame's up) at (e, n) of anchor's frame, from the elevation data (not graded: the
@@ -1366,7 +1382,8 @@ class Server:
             info = pool.submit(
                 blockworker.build, anchor.id, anchor.lat, anchor.lon, anchor.hm_zoom, q, cx, cy,
                 self.layout.block, self.out_dir, self.hm_name((anchor.id, cx, cy)),
-                self.ter_name((anchor.id, cx, cy))).result()
+                self.ter_name((anchor.id, cx, cy)),
+                fuel_pads=self.block_fuel_pads(anchor, cx, cy, self.layout.block)).result()
             return self._finish_heightmap(anchor, cx, cy, info, t0, base)
         urgent = getattr(self.dem, "urgent", None)     # (test DEMs have no lane)
         with urgent() if urgent is not None else contextlib.nullcontext():     # the player waits for it (teleport,
@@ -1564,7 +1581,8 @@ class Server:
             got = pool.submit(blockworker.base_photo, anchor.lat, anchor.lon, cx - size / 2, cy - size / 2, size,
                               BASE_PX, tex, bool(self.buildings and self.mapdata is not None), anchor.zooms[0],
                               os.path.join(self.out_dir, name),
-                              (self.user_dir, f"{self.vfs_dir}/{name}", BASE_AO_VFS, BASE_AO)).result()
+                              (self.user_dir, f"{self.vfs_dir}/{name}", BASE_AO_VFS, BASE_AO),
+                              fuel_pads=self.block_fuel_pads(anchor, cx, cy, size)).result()
         except Exception as e:
             log.info("base photo %s in the block process: %s", key, e)
             return None

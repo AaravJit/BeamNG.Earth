@@ -515,11 +515,9 @@ def paint_lots(idx, lat, lon, feats_list):
     return _paint(idx, lat, lon, feats_list, _parking, ASPHALT)
 
 
-# Gas station forecourts (gasstations.forecourt_pad: Surface.fuel_pads), asphalt in the ground models, the photo
-# (the paved roads' colour, under the roads) and the near tiles' asphalt mask
-FUEL_PAD_LAYERS = ("places", "buildings", "roads")
-FUEL_PAD_CELLS = 256
-FUEL_PAD_PREFETCH_M = 1500.0    # the pads of the cells this far around the player worked out ahead (Surface.prefetch)
+# Gas station forecourts (gasstations.forecourt_pad: Surface.fuel_pads, from the road tiles), asphalt in the ground
+# models, the photo (the paved roads' colour, under the roads) and the near tiles' asphalt mask
+FUEL_PAD_STATIONS = 4096        # stations' pads kept (a few small rings each)
 
 
 def paint_pads(idx, lat, lon, pads):
@@ -765,14 +763,10 @@ class Surface:
         self._pending_layers = set()    # (key, layers) queued
         self._last = None           # (lat, lon) of the last prefetch
         self.gas_pads = False       # gas station forecourts painted asphalt (earthd --gas-stations on: fuel_pads)
-        self._fuel_pads = {}        # cell key -> [(lat (k,), lon (k,))] (fuel_pads), the last FUEL_PAD_CELLS
-        self._pads_pending = set()  # cell keys whose pads are being worked out
-        # (a city cell's took 0.1-0.4 s, half of it reading its map data: never inside a terrain block's build)
-        self._pad_pool = ThreadPoolExecutor(1, thread_name_prefix="surface-pads")
+        self._fuel_pads = {}        # station id -> (rings [(lat (k,), lon (k,))], bbox), the last FUEL_PAD_STATIONS
 
     def close(self):
         self.pool.shutdown(wait=False)
-        self._pad_pool.shutdown(wait=False)
 
     def _cached(self, key):
         """The cell's land-cover Raster from the cache, None if absent (a fetch is queued) or no
@@ -823,11 +817,6 @@ class Surface:
                 self._queue(key)
             if not self.md.has(key, "roads"):
                 self._queue(key, ("roads",))
-        if self.gas_pads:               # the forecourts around worked out ahead (fuel_pads never waits for them)
-            plat = FUEL_PAD_PREFETCH_M / 111320.0
-            plon = FUEL_PAD_PREFETCH_M / (111320.0 * max(0.05, math.cos(math.radians(lat))))
-            for key in mapcells.cells_for_bbox(lat - plat, lon - plon, lat + plat, lon + plon):
-                self._queue_pads(key)
 
     def ready(self, lat, lon, radius_m=1000.0, timeout_s=3.0):
         """Fetch the land cover within radius_m now, and the squares and lots (land_use, infrastructure:
@@ -868,73 +857,37 @@ class Surface:
                 complete = False
         return out, complete
 
-    def fuel_pads(self, lat, lon):
-        """[(lat (k,), lon (k,))] of the gas station forecourt pads (gasstations.pads_in) in the cells around the
-        points, each cell's worked out once (its places, buildings and roads and the cells around it cached); [] when
-        gas_pads is off. Never waits: a missing layer is fetched in the background and the cell tried again later."""
-        if not self.gas_pads:
-            return []
-        out = []
-        for key in mapcells.cells_for_points(np.asarray(lat, np.float64), np.asarray(lon, np.float64)):
-            got = self._fuel_pads.get(key)
-            if got is None:
-                self._queue_pads(key)
-                continue
-            out.extend(got)
-        return out
-
-    def _queue_pads(self, key):
-        """Work a cell's pads out in the background (_cell_fuel_pads), once at a time."""
+    def add_fuel_pads(self, items):
+        """Keep gas station forecourt pads [(station id, [(lat (k,), lon (k,))])]: the road tiles' own
+        (gasstations.tile_sites pads), handed over by earthd (and to a block's process with its job). No other process
+        lays the stations out again for them: that read every cell's buildings and places into the terrain blocks'
+        processes too (~60 MB a city cell, out of a Steam Deck's map data budget; the user, 2026-10-23: "this is meant
+        to run on steam decks too")."""
         with self._lock:
-            if key in self._fuel_pads or key in self._pads_pending:
-                return
-            self._pads_pending.add(key)
+            for sid, rings in items:
+                rings = [(np.asarray(la, np.float64), np.asarray(lo, np.float64)) for la, lo in rings]
+                if not rings:
+                    continue
+                box = (min(float(la.min()) for la, _ in rings), min(float(lo.min()) for _, lo in rings),
+                       max(float(la.max()) for la, _ in rings), max(float(lo.max()) for _, lo in rings))
+                self._fuel_pads.pop(sid, None)
+                self._fuel_pads[sid] = (rings, box)
+                while len(self._fuel_pads) > FUEL_PAD_STATIONS:
+                    self._fuel_pads.pop(next(iter(self._fuel_pads)))
 
-        def run():
-            try:
-                got = self._cell_fuel_pads(key)
-                if got is not None:
-                    with self._lock:
-                        while len(self._fuel_pads) >= FUEL_PAD_CELLS:
-                            self._fuel_pads.pop(next(iter(self._fuel_pads)))
-                        self._fuel_pads[key] = got
-            except Exception as e:      # the cell without pads, tried again at the next ask
-                log.debug("surface: gas station pads of %s: %s: %s", key, type(e).__name__, e)
-            finally:
-                with self._lock:
-                    self._pads_pending.discard(key)
-        try:
-            self._pad_pool.submit(run)
-        except RuntimeError:            # (closed)
-            with self._lock:
-                self._pads_pending.discard(key)
+    def fuel_pad_items(self, lat, lon):
+        """[(station id, rings)] of the kept pads within the points' bounding box; [] when gas_pads is off."""
+        if not self.gas_pads or not self._fuel_pads:
+            return []
+        lat, lon = np.asarray(lat, np.float64), np.asarray(lon, np.float64)
+        la0, la1, lo0, lo1 = float(lat.min()), float(lat.max()), float(lon.min()), float(lon.max())
+        with self._lock:
+            return [(sid, rings) for sid, (rings, (a0, b0, a1, b1)) in self._fuel_pads.items()
+                    if a1 >= la0 and a0 <= la1 and b1 >= lo0 and b0 <= lo1]
 
-    def _cell_fuel_pads(self, key):
-        """The pads of the stations whose pin lies in cell key, or None (a layer not cached yet: queued)."""
-        import gasstations
-        import geodesy
-        lon0, lat0, lon1, lat1 = key.bounds()
-        m = 2 * gasstations.REACH_M + gasstations.MERGE_M     # (the stations around, their shops and canopies)
-        dlat = m / 111320.0
-        dlon = m / (111320.0 * max(0.05, math.cos(math.radians(lat0))))
-        keys = mapcells.cells_for_bbox(lat0 - dlat, lon0 - dlon, lat1 + dlat, lon1 + dlon)
-        missing = False
-        for k in keys:
-            for layer in FUEL_PAD_LAYERS:
-                if not self.md.has(k, layer):
-                    self._queue(k, (layer,))
-                    missing = True
-        if missing:
-            return None
-        try:
-            got = {n: [self.md.cell(k, layers=(n,), kind="background").layers.get(n) for k in keys]
-                   for n in FUEL_PAD_LAYERS}
-        except Exception as e:      # an unreadable cache file: like a missing one
-            log.debug("surface: gas station pads of %s: %s: %s", key, type(e).__name__, e)
-            return None
-        frame = geodesy.EnuFrame(*key.center())
-        return gasstations.pads_in(frame, got["places"], got["buildings"], got["roads"],
-                                   lambda la, lo: lat0 <= la < lat1 and lon0 <= lo < lon1)
+    def fuel_pads(self, lat, lon):
+        """[(lat (k,), lon (k,))] of the kept pads within the points' bounding box (the painters'; never waits)."""
+        return [r for _, rings in self.fuel_pad_items(lat, lon) for r in rings]
 
     def lots(self, lat, lon):
         """The "infrastructure" and "land_use" Features of the cells around the points that are cached

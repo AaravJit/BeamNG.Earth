@@ -661,12 +661,12 @@ lays out the stations within reach of it, so a canopy outline is left out by whi
 The forecourt is painted asphalt (`forecourt_pad`): the box around the station's refuel areas, props and canopies
 with 6 m to drive round them (less where a neighbour's wall or a road's edge is nearer), reaching the shop's front
 when it is within 10 m, and an 8 m driveway to the nearest public road unless a mapped service road already joins
-them or a building stands between. `surface.Surface.fuel_pads` works each map cell's pads out once
-(`gasstations.pads_in`, from the cached places, buildings and roads of the cell and the cells around), in the
-background (0.1-0.4 s a city cell; around the player ahead of time with `prefetch`, never inside a block's build),
-and the ground's three painters use them: the ground models (`paint_pads`, asphalt), the photo (`photo_pads`, the
-paved roads' colour, under the roads) and the near tiles' asphalt mask (`road_mask`). Only with `--gas-stations on`
-(`Surface.gas_pads`, set by `Server` and `blockworker.init`).
+them or a building stands between (none at all where mapped service roads already give the forecourt access). The
+road tiles hand their stations' pads out (`tile_sites` `pads`); the server keeps them (`surface.Surface.add_fuel_pads`)
+and gives a block's process those around it with its job, so no other process reads buildings or places for them (a
+Steam Deck's memory), and the ground's three painters use them: the ground models (`paint_pads`, asphalt), the
+photo (`photo_pads`, the paved roads' colour, under the roads) and the near tiles' asphalt mask (`road_mask`). Only
+with `--gas-stations on` (`Surface.gas_pads`, set by `Server` and `blockworker.init`).
 
 ## Airports and runways (`server/airports.py`, `runwaygeom.py`, `runwaymarks.py`; docs/research/2026-10-11-airports.md)
 

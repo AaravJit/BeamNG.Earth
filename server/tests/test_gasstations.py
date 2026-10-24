@@ -794,6 +794,22 @@ class TileTest(unittest.TestCase):
         gs.tile_sites(FRAME, 1, 0, md, flat, cuts=cuts)
         self.assertEqual(len(cuts), 1, "a neighbour tile's station's driveway cuts this tile's sidewalks too")
 
+    def test_tile_sites_pads(self):
+        # the road tiles' own pads, for the ground's painters (surface.Surface.add_fuel_pads): no other process lays
+        # the stations out again for them (a Steam Deck's memory: the user, 2026-10-23)
+        import polygon
+        md = station_md()
+        pads = []
+        gs.tile_sites(FRAME, 0, 0, md, flat, pads=pads)
+        self.assertEqual(len(pads), 1)
+        sid, rings = pads[0]
+        la, lo, _ = FRAME.enu_to_geodetic(275.0, 100.0, 0.0)          # the canopy's centre
+        self.assertTrue(any(polygon.contains_points(np.vstack([np.c_[lo_, la_], np.c_[lo_, la_][:1]]),
+                                                    np.array([[float(lo), float(la)]]))[0] for la_, lo_ in rings))
+        pads = []
+        gs.tile_sites(FRAME, 1, 0, md, flat, pads=pads)
+        self.assertEqual(pads, [], "a station's pads come with its own tile only")
+
     def test_mapped_lanes_reach_the_record(self):
         md = station_md()
         rows = [("r-1", [(320.0, -200.0), (320.0, 400.0)], {"class": "secondary"})]
@@ -887,26 +903,6 @@ class TileTest(unittest.TestCase):
         self.assertIn('ap.add_argument("--gas-stations", choices=("on", "off"), default="off"',
                       Path(earthd.__file__).read_text(encoding="utf-8"))
         self.assertIn(("--gas-stations", "on"), start.RECOMMENDED)
-
-
-class PadAreaTest(unittest.TestCase):
-    """The pads of a map area's stations in lat / lon, for the ground's painters (surface.Surface.fuel_pads)."""
-
-    def test_pads_in(self):
-        import polygon
-        md = station_md()
-        got = gs.pads_in(FRAME, [md.all["places"]], [md.all["buildings"]], [md.all["roads"]], lambda la, lo: True)
-        self.assertTrue(got)
-        la, lo, _ = FRAME.enu_to_geodetic(275.0, 100.0, 0.0)          # the canopy's centre
-        rings = [np.c_[lon_, lat_] for lat_, lon_ in got]
-        self.assertTrue(any(polygon.contains_points(np.vstack([r, r[:1]]), np.array([[float(lo), float(la)]]))[0]
-                            for r in rings))
-        self.assertEqual(gs.pads_in(FRAME, [md.all["places"]], [md.all["buildings"]], [md.all["roads"]],
-                                    lambda la, lo: False), [])
-
-    def test_pads_in_without_places(self):
-        md = station_md()
-        self.assertEqual(gs.pads_in(FRAME, [None], [md.all["buildings"]], [md.all["roads"]], lambda la, lo: True), [])
 
 
 REAL = __import__("os").environ.get("BNGE_GAS_REAL") == "1"
