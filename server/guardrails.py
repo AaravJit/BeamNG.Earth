@@ -152,6 +152,83 @@ def _surface_z(frame, points, elev, decks, deck_preference=None):
 
 
 
+# Do not place mapped Forest guardrails over the bridge deck: the bridge mesh already
+# supplies concrete parapets. Keep a small lateral allowance for OSM lines on the slab edge,
+# but do not extend the exclusion along the road approaches.
+BRIDGE_RAIL_EDGE_MARGIN_M = 1.0
+BRIDGE_DECK_LEVEL_TOLERANCE_M = 1.5
+BRIDGE_DECK_SAMPLE_COUNT = 9
+
+
+def _bridge_deck_segments(decks):
+    """Flatten bridge deck profiles for height-aware guardrail exclusion."""
+    starts, ends, z_starts, z_ends, radii = [], [], [], [], []
+    for deck in decks or ():
+        line = np.asarray(deck.get("n", ()), np.float64)
+        if line.ndim != 2 or len(line) < 2 or line.shape[1] < 3:
+            continue
+        a, b = line[:-1, :2], line[1:, :2]
+        za, zb = line[:-1, 2], line[1:, 2]
+        d = b - a
+        l2 = np.sum(d * d, axis=1)
+        keep = (l2 > 1e-12) & np.isfinite(za) & np.isfinite(zb)
+        if not keep.any():
+            continue
+        width = float(deck.get("w", 0.0))
+        if not np.isfinite(width):
+            width = 0.0
+        radius = max(0.0, width) / 2.0 + BRIDGE_RAIL_EDGE_MARGIN_M
+        starts.append(a[keep])
+        ends.append(b[keep])
+        z_starts.append(za[keep])
+        z_ends.append(zb[keep])
+        radii.append(np.full(int(keep.sum()), radius, np.float64))
+    if not starts:
+        return None
+
+    a, b = np.concatenate(starts), np.concatenate(ends)
+    radius = np.concatenate(radii)
+    d = b - a
+    return {
+        "a": a,
+        "b": b,
+        "d": d,
+        "l2": np.sum(d * d, axis=1),
+        "za": np.concatenate(z_starts),
+        "zb": np.concatenate(z_ends),
+        "radius": radius,
+        "lo": np.minimum(a, b) - radius[:, None],
+        "hi": np.maximum(a, b) + radius[:, None],
+    }
+
+
+def _over_bridge_deck(a, b, level, segments):
+    """True if any part of a guardrail module lies over a bridge deck at the same height.
+
+    Sampling the module avoids suppressing ordinary guardrails on the approaches several metres
+    before/after a bridge. The height test protects lower roads whose XY happens to overlap a deck.
+    """
+    if segments is None or not np.isfinite(level):
+        return False
+    a, b = np.asarray(a, np.float64).reshape(2), np.asarray(b, np.float64).reshape(2)
+    for p in np.linspace(a, b, BRIDGE_DECK_SAMPLE_COUNT):
+        box = ((segments["hi"][:, 0] >= p[0]) & (segments["lo"][:, 0] <= p[0]) &
+               (segments["hi"][:, 1] >= p[1]) & (segments["lo"][:, 1] <= p[1]))
+        if not box.any():
+            continue
+        starts, d = segments["a"][box], segments["d"][box]
+        l2, radius = segments["l2"][box], segments["radius"][box]
+        t = np.clip(np.sum((p - starts) * d, axis=1) / l2, 0.0, 1.0)
+        near = starts + t[:, None] * d
+        dist2 = np.sum((near - p) ** 2, axis=1)
+        deck_z = segments["za"][box] + t * (segments["zb"][box] - segments["za"][box])
+        on_deck = (dist2 <= radius * radius) & (
+            np.abs(deck_z - float(level)) <= BRIDGE_DECK_LEVEL_TOLERANCE_M)
+        if on_deck.any():
+            return True
+    return False
+
+
 # Stock Italy guardrail modules are 3 m long and overlap by 0.2 m at 2.8 m spacing.
 # They are Forest items: the engine batches repeated shapes and caches their collision mesh.
 MODULE_LENGTH_M = 3.0
@@ -322,6 +399,7 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=()):
     if infra_fn is None:
         return []
     parapet_segments = _parapet_segments(parapets, decks)
+    bridge_deck_segments = _bridge_deck_segments(decks)
     x0, y0, x1, y1 = map(float, exact)
     corners_x = np.array([x0, x0, x1, x1], np.float64)
     corners_y = np.array([y0, y1, y0, y1], np.float64)
@@ -450,6 +528,10 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=()):
     for i, (group, p, a, b, rank, reverse, parapet_xy_match,
             source_a, source_b, _deck_hint_value) in enumerate(placements):
         z, za, zb = (float(heights[3 * i]), float(heights[3 * i + 1]), float(heights[3 * i + 2]))
+        # The bridge's concrete parapets remain; mapped guardrail models are omitted from its deck.
+        # Check the sampled height too, so a lower road beneath the bridge is not erased.
+        if _over_bridge_deck(source_a, source_b, z, bridge_deck_segments):
+            continue
         if parapet_xy_match and _overlaps_bridge_parapet(
                 source_a, source_b, parapet_segments, level=z,
                 distance_limit=OUTER_PARAPET_DUPLICATE_M, outer_only=True):
