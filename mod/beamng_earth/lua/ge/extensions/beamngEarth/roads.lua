@@ -100,6 +100,7 @@ local sinceChange = stopwatch.new()  -- ms since a tile arrived / went or a road
 local sinceReload = stopwatch.new()
 local collisionDirty = false
 local lastReloadAt = -math.huge   -- now() of the last be:reloadCollision (ours or another's): M.ahead
+local reloads = 0                 -- be:reloadCollision runs so far (ours or another's): M.reloads
 local sinceUrgent = math.huge     -- frames since the last urgent walk import (M.urgentWalk)
 local deletesDirty = false  -- only far colliders deleted since the last rebuild (RELOAD_DELETES_S)
 
@@ -752,7 +753,7 @@ function M.update(gov, currentAnchor, player, view)
     local t0 = now()
     noteNewColliders()
     be:reloadCollision()
-    lastReloadAt = now()
+    lastReloadAt, reloads = now(), reloads + 1
     collisionDirty, deletesDirty, sinceReload = false, false, stopwatch.new()
     local ms = now() - t0
     -- out of the frame's budget, not into the meshes' cost estimate (from PR #41: a ~40 ms rebuild in the roadWalk
@@ -949,6 +950,10 @@ end
 -- next throttled slot.
 function M.requestCollision() collisionDirty = true end
 
+-- Collision rebuilds so far (be:reloadCollision, ours or the terrain commit's): what was made before one collides from
+-- the frame after it (terrainpatch.groundReady).
+function M.reloads() return reloads end
+
 function M.hasWork() return #createQ > 0 or #deleteQ > 0 or #walkQ > 0 or #farQ > 0 or collisionDirty end
 
 
@@ -956,7 +961,7 @@ function M.hasWork() return #createQ > 0 or #deleteQ > 0 or #walkQ > 0 or #farQ 
 function M.collisionRebuilt()
   -- that rebuild already made them solid: one held now leaves the physics at the next one
   local removed = noteNewColliders()
-  lastReloadAt = now()
+  lastReloadAt, reloads = now(), reloads + 1
   collisionDirty, deletesDirty, sinceReload = removed > 0, false, stopwatch.new()
 end
 

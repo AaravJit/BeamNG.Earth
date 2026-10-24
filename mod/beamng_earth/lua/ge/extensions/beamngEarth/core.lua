@@ -1404,6 +1404,15 @@ end
 
 local beammpBroken = false   -- an error in the BeamMP window turns it off for the session
 local mpsessionBroken = false -- the same for the BeamMP session by area (mpsession.lua)
+-- Collision foci besides the vehicles' (collisionfoci.update's extra): the stored far cars about to come back
+-- (farcars.lua) and, in BeamMP, where other players' cars switched off here are coming back on (mpsession.groundFoci)
+local function extraFoci()
+  local out = farcars.foci()
+  if beammp.inSession() then
+    for _, f in ipairs(mpsession.groundFoci()) do out[#out + 1] = f end
+  end
+  return out
+end
 -- the minimap's label (hudapps.hookCityZone)
 -- (the car's coordinates, formatted again only when they change at the label's 5 decimals)
 local coordsKey, coordsText = nil, nil
@@ -1723,7 +1732,7 @@ local function onUpdate(dtReal, dtSim)
       pb[1], pb[2], pb[3], pb[4] = lattice.groundBox(st.block.cx, st.block.cy)
     end
     if not fociBroken then
-      local ok, err = pcall(collisionfoci.update, dtReal, { roads.setFoci, trees.setFoci }, farcars.foci)
+      local ok, err = pcall(collisionfoci.update, dtReal, { roads.setFoci, trees.setFoci }, extraFoci)
       if not ok then fociBroken = true; log('E', 'beamngEarth', 'collision foci: ' .. tostring(err)) end
       t = mark('foci', t)
       ok, err = pcall(terrainpatch.update, dtReal, st.anchorId, collisionfoci.last, st.player, pb, net.send)

@@ -13,6 +13,7 @@ local M = {}
 M.ENABLED = true
 M.MARGIN_M = 64         -- an island whose box lies this far inside the block needs no patch
 M.SNAP_M = 128          -- as the server's terrainpatch.SNAP_M / MAX_SIDE_M: the keys match its boxes
+M.PIECE_M = 128         -- as the server's terrainpatch.PIECE_M: each cell's side, at its centre
 -- The ground under a far car reaches PATCH_R round it (not its whole island: the roads, buildings and trees reach
 -- collisionfoci's 320 m, the ground needs only where the car gets before the next patch; the whole island's 704 m
 -- box made a Steam Deck keep 977 cells as another player drove 4 km, 2026-10-24).
@@ -33,6 +34,7 @@ local patches = {}      -- key -> { box, cells (paths), pending, wantedAt, retry
 local cells = {}        -- path -> { path, x, y, refs, id (its TSStatic, once made) }
 local queue = {}        -- cells to make, in order
 local anchorId = nil
+local lastBlock = nil   -- the terrain block's box {x0, y0, x1, y1} at the last update (groundReady)
 local since = math.huge
 local clock = 0
 
@@ -74,6 +76,12 @@ local function requestCollision()
   if ok and roads.requestCollision then roads.requestCollision() end
 end
 
+-- Collision rebuilds so far (roads.reloads); nil: not counted (a cell is then taken as solid once made)
+local function reloadCount()
+  local ok, roads = pcall(require, 'beamngEarth/roads')
+  return ok and roads.reloads and roads.reloads() or nil
+end
+
 local function makeCell(c)
   local o = createObject('TSStatic')
   o:setField('shapeName', 0, c.path)
@@ -85,6 +93,7 @@ local function makeCell(c)
   o:registerObject('')
   scenetree.MissionGroup:addObject(o)
   c.id = o:getID()
+  c.reloadsAtMake = reloadCount()
 end
 
 -- A patch lets go of its cells: a cell no patch holds any more is deleted (or never made, if still queued).
@@ -131,6 +140,7 @@ end
 -- Each frame (core.lua): aid the active anchor, foci (collisionfoci.last), active { x, y } (the active car), block the
 -- terrain block's box {x0, y0, x1, y1} or nil; send(msg) to the server.
 function M.update(dt, aid, foci, active, block, send)
+  lastBlock = block
   if not M.ENABLED then
     if next(patches) then M.clear() end
     return
@@ -190,6 +200,26 @@ function M.onPatch(msg)
     end
   end
   if old then deletePatch(old) end
+end
+
+-- Is there solid ground at (x, y) (the active frame)? On the terrain block (MARGIN_M inside its edge), or under a cell
+-- made before a collision rebuild (roads.reloads: a cell collides from the rebuild after it was made). A remote car
+-- coming back from far away waits for it (mpsession.lua: switched on over no ground, it fell, the ground came in
+-- around it and its physics blew up; a Windows test PC, 2026-10-24). With the patches off always true: no ground will
+-- come, the car goes on as before.
+function M.groundReady(x, y)
+  if not M.ENABLED then return true end
+  local b = lastBlock
+  if b and x >= b[1] + M.MARGIN_M and y >= b[2] + M.MARGIN_M and x <= b[3] - M.MARGIN_M and y <= b[4] - M.MARGIN_M then
+    return true
+  end
+  local h, n = M.PIECE_M / 2, reloadCount()
+  for _, c in pairs(cells) do
+    if c.id and math.abs(x - c.x) <= h and math.abs(y - c.y) <= h then
+      return n == nil or c.reloadsAtMake == nil or n > c.reloadsAtMake
+    end
+  end
+  return false
 end
 
 -- (tests, the dev panel) key -> { box, cells, pending }; path -> cell; the queue

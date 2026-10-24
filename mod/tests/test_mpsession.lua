@@ -41,6 +41,10 @@ local function car(gid, owner, own)
   return o
 end
 MPVehicleGE = { getVehicles = function() return cars end, isOwn = function(id) return cars[id] and cars[id].own end }
+-- the ground under a car coming back on (terrainpatch.groundReady): there, unless a check below says otherwise
+local tp = require('beamngEarth/terrainpatch')
+local groundOk = true
+tp.groundReady = function() return groundOk end
 local asked = {}
 beamngEarth_core = { rebaseTo = function(lat, lon) asked.rebase = { lat, lon } end,
   teleport = function(lat, lon) asked.go = { lat, lon } end }
@@ -67,8 +71,38 @@ decoded.g = { ['1'] = { aLat = 36.5, aLon = -118.1, lat = 36.5, lon = -118.1 },
 handlers.bngeAnchors('g')
 ms.update(ms.HIDE_S, anchor, { x = 100, y = 0, z = 0 })
 T.check(other.active == 1 and stranger.active == 0, 'a known anchor: on (converted); unknown: still off')
+
+ms.update(ms.HIDE_S, anchor, { x = 100, y = 0, z = 0 })
 T.check(require('beamngEarth/mpanchor').knows(2) and not require('beamngEarth/mpanchor').knows(3),
   'mpanchor told the anchors')
+
+-- no ground where a car comes back on: it stays off, its spot a collision focus, until the ground is there (or
+-- GROUND_WAIT_S passed)
+local late = car(23, 4, false)
+local later = car(24, 5, false)
+ms.update(ms.HIDE_S, anchor, { x = 100, y = 0, z = 0 })
+T.check(late.active == 0 and later.active == 0, 'two more players\' cars, anchors unknown: off')
+decoded.g45 = { ['1'] = decoded.g['1'], ['2'] = decoded.g['2'],
+  ['4'] = { aLat = 36.6, aLon = -118.0, lat = 36.6, lon = -118.0 }, ['5'] = { aLat = 36.6, aLon = -118.0, lat = 36.6, lon = -118.0 } }
+groundOk = false
+handlers.bngeAnchors('g45')
+ms.update(ms.HIDE_S, anchor, { x = 100, y = 0, z = 0 })
+T.check(late.active == 0 and later.active == 0 and #ms.groundFoci() == 2,
+  'no ground under them: still off, their spots collision foci')
+groundOk = true
+ms.update(ms.HIDE_S, anchor, { x = 100, y = 0, z = 0 })
+T.check(late.active == 1 and later.active == 1 and #ms.groundFoci() == 0, 'the ground there: on')
+local last = car(25, 6, false)
+ms.update(ms.HIDE_S, anchor, { x = 100, y = 0, z = 0 })
+decoded.g6 = { ['1'] = decoded.g['1'], ['2'] = decoded.g['2'], ['4'] = decoded.g45['4'], ['5'] = decoded.g45['5'],
+  ['6'] = { aLat = 36.6, aLon = -118.0, lat = 36.6, lon = -118.0 } }
+groundOk = false
+handlers.bngeAnchors('g6')
+ms.update(ms.HIDE_S, anchor, { x = 100, y = 0, z = 0 })
+T.check(last.active == 0, 'no ground: off')
+ms.update(ms.GROUND_WAIT_S + 1, anchor, { x = 100, y = 0, z = 0 })
+T.check(last.active == 1 and #ms.groundFoci() == 0, 'no ground after GROUND_WAIT_S: on anyway')
+groundOk = true
 
 -- our anchor changes (a rebase): a pose at once, not after POSE_S
 local n0 = #sent

@@ -29,6 +29,12 @@ M.PROTO = 2                 -- as the plugin's G.PROTO
 M.SHARE_GEN = false
 M.POSE_S = 2
 M.HIDE_S = 0.5
+-- A car switched off here (far, or its owner's anchor unknown) comes back on only over ground (terrainpatch.groundReady
+-- at its latest position): switched on over none, it fell, the ground came in around it and its physics blew up
+-- (instabilities, which BeamMP turns into the car switched off or deleted; a Windows test PC, 2026-10-24, the other
+-- player back from a teleport across the world while this one had driven 3 km off). Its spot is a collision focus
+-- meanwhile (groundFoci), so the ground gets made; on after GROUND_WAIT_S whatever.
+M.GROUND_WAIT_S = 20
 M.GOTO_OFFSET_M = 12        -- a joining player lands this far from the one it goes to (not on top of it)
 M.DAMAGE_STEP = 50          -- (the game's damage figure, map.objects[id].damage)
 M.DAMAGE_SETTLE_S = 2
@@ -44,6 +50,7 @@ M.SETTLE_S = 10             -- ... and not within this of our own anchor's last 
 local handlers = false
 local anchors = {}          -- tostring(server player id) -> { aLat, aLon, lat, lon } (bngeAnchors)
 local deactivated = {}      -- game vehicle id -> true: deactivated here
+local waitGround = {}       -- game vehicle id -> { x, y, since }: to come back on, waiting for its ground
 local poseIn, hideIn = 0, 0
 local joined = false        -- BeamMP joined and no pose sent yet: the first pose asks for the meeting place
 local wentTo = false        -- the session's one bngeGoTo done
@@ -599,13 +606,46 @@ function M.update(dt, anchor, player)
       if veh then veh:setActive(0); deactivated[gid] = true end
     end
   end
+  local tp = require('beamngEarth/terrainpatch')
+  local now = clock
   for gid in pairs(deactivated) do
-    if not hide[gid] then
+    if hide[gid] then
+      waitGround[gid] = nil
+    else
       local veh = vehicle(gid)
-      if veh then veh:setActive(1) end
-      deactivated[gid] = nil
+      local x, y = mpanchor.lastPos(sids[gid])
+      if not x and veh then local p = veh:getPosition(); x, y = p.x, p.y end
+      local w = waitGround[gid]
+      if not x or tp.groundReady(x, y) or (w and now - w.since > M.GROUND_WAIT_S) then
+        if w and x and not tp.groundReady(x, y) then
+          log('W', 'beamngEarth', 'BeamMP: car ' .. tostring(gid) .. ' back on without ground under it (waited too long)')
+        elseif w then
+          log('I', 'beamngEarth', string.format('BeamMP: car %s back on, its ground in after %.1f s', tostring(gid),
+            now - w.since))
+        end
+        if veh then veh:setActive(1) end
+        deactivated[gid], waitGround[gid] = nil, nil
+      else
+        if not w then
+          w = { since = now }
+          waitGround[gid] = w
+          log('I', 'beamngEarth', string.format('BeamMP: car %s waits for its ground at %.0f, %.0f', tostring(gid), x, y))
+        end
+        w.x, w.y = x, y
+      end
     end
   end
+end
+
+-- Collision foci (collisionfoci.lua) where cars switched off here are coming back on (waitGround): their ground made
+-- before they are. [{ x, y, r, trees, id, kind }]
+function M.groundFoci()
+  local out = {}
+  local cf = require('beamngEarth/collisionfoci')
+  for gid, w in pairs(waitGround) do
+    out[#out + 1] = { x = w.x, y = w.y, r = cf.PLAYER_R, trees = true, id = gid, kind = 'player' }
+  end
+  return out
 end
 
 -- Our own cars' full damage to the players near (see the top), with BeamMP's own nodesVE.getNodes. (lat, lon): our
@@ -650,6 +690,7 @@ function M.reset()
     if veh then veh:setActive(1) end
   end
   deactivated, anchors, poseIn, hideIn, joined, wentTo, camPlaced, lastPlayers = {}, {}, 0, 0, false, false, false, -1
+  waitGround = {}
   members, sentDamage, damageSince, restoredAt, restores = {}, {}, {}, {}, {}
   share, config, configWait, convergeIn, anchorSince, lastAnchorKey = nil, nil, 0, 0, 0, nil
   stats, statusIn = { anchors = 0, go = 0, poses = 0, converged = 0, peers = 0 }, M.STATUS_S

@@ -31,6 +31,7 @@ local xfCache = {}                       -- [playerId] = { myLat, myLon, rLat, r
 local installed = false
 local far = {}                           -- [serverVehicleString] = true: its last position was beyond FAR_M (isFar)
 local wasFar = {}                        -- [serverVehicleString] = true: it was beyond FAR_M at some time (wasFar)
+local lastPos = {}                       -- [serverVehicleString] = { x, y, z }: its latest position placed (lastPos)
 
 local function isMPSession()
   return MPCoreNetwork ~= nil and MPCoreNetwork.isMPSession ~= nil and MPCoreNetwork.isMPSession()
@@ -59,9 +60,15 @@ function M.isFar(sid) return far[sid] == true end
 -- Was this remote car ever beyond FAR_M (where the game's physics break and the game deletes it)? (mpsession's restore)
 function M.wasFar(sid) return wasFar[sid] == true end
 function M._noteFar(sid) wasFar[sid] = true end       -- (tests)
+-- The latest position (our frame) a packet of this remote car was let through with: x, y, z (nil: none yet). Where a car
+-- hidden while far is coming back to (mpsession waits for the ground there).
+function M.lastPos(sid)
+  local p = lastPos[sid]
+  if p then return p[1], p[2], p[3] end
+end
 
 -- (the session's end) the remote anchors forgotten
-function M.reset() remote, xfCache, far, wasFar = {}, {}, {}, {} end
+function M.reset() remote, xfCache, far, wasFar, lastPos = {}, {}, {}, {}, {} end
 
 local function transformFor(pid)
   if not myLat then return nil end
@@ -138,6 +145,7 @@ local function wrapHandle(original)
     if not xf then                          -- (no conversion: the packet as sent, if it is sane)
       local sane, changed = M.sanitize(decoded)
       if not sane then return end
+      if type(decoded.pos) == 'table' then lastPos[serverVehicleID] = decoded.pos end
       if not changed then return original(rawData) end
       local okE, enc = pcall(jsonEncode, decoded)
       return original(okE and (code .. ':' .. serverVehicleID .. ':' .. enc) or rawData)
@@ -150,6 +158,7 @@ local function wrapHandle(original)
       return
     end
     far[serverVehicleID] = nil
+    if p then lastPos[serverVehicleID] = p end
     local ok2, reencoded = pcall(jsonEncode, decoded)
     if not ok2 then return original(rawData) end
     return original(code .. ':' .. serverVehicleID .. ':' .. reencoded)

@@ -4,6 +4,9 @@
 local dir = (arg[0]:match('^(.*)[/\\]') or '.')
 local T = dofile(dir .. '/testlib.lua')
 local S = dofile(dir .. '/stubs.lua')
+-- roads.lua's collision rebuilds (counted: a cell collides from the rebuild after it was made, groundReady)
+local rebuilds = 0
+package.loaded['beamngEarth/roads'] = { requestCollision = function() end, reloads = function() return rebuilds end }
 local tp = require('beamngEarth/terrainpatch')
 local cf = require('beamngEarth/collisionfoci')
 
@@ -75,6 +78,14 @@ local c1 = cellsNow['/temp/patch_7_1_0.cdae']
 local o1 = c1 and c1.id and scenetree.findObjectById(c1.id)
 T.check(#queueNow == 0 and o1 and o1.fields.shapeName == '/temp/patch_7_1_0.cdae' and o1.fields.collisionType == 'Collision Mesh'
   and o1.pos.x == 32, 'every cell made, at its centre')
+-- groundReady: on the block (MARGIN_M in), or under a cell a collision rebuild came after
+T.check(tp.groundReady(0, 0), 'on the block: ground')
+tp.update(0.01, 7, f, { x = 0, y = 0 }, nil, send)          -- (no block: only the cells)
+T.check(not tp.groundReady(32, 32), 'a cell made, no rebuild since: not solid yet')
+rebuilds = rebuilds + 1
+T.check(tp.groundReady(32, 32) and tp.groundReady(32 + tp.PIECE_M / 2 - 1, 32), 'after a rebuild: solid under the cell')
+T.check(not tp.groundReady(5000, 5000), 'no cell, off the block: no ground')
+tp.update(0.01, 7, f, { x = 0, y = 0 }, block, send)
 local objs0 = S.calls.createObject_TSStatic or 0
 if pk2 then
   tp.onPatch({ anchorId = 7, key = pk2, tris = 1024, parts = { parts[5], { path = '/temp/patch_7_6_0.cdae', x = 352, y = 32 } } })
