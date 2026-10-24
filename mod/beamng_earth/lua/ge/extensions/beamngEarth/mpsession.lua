@@ -431,6 +431,23 @@ local function onConfig(data)
   if not ok or type(d) ~= 'table' then return end
   config = d
   log('I', 'beamngEarth', 'BeamMP: the server\'s sharing port ' .. tostring(d.sharePort))
+  M.applyServerSky(d)
+end
+
+-- The server's time and weather (its plugin's G.TIME / G.WEATHER, in bngeConfig): { time = { hours, speed, epoch } or
+-- nil (the real clock), weather = a preset name or nil (the real weather) }. A player who set Sky or Weather to
+-- Manual keeps their own (the sky and weather only follow the server in their 'real' mode).
+function M.applyServerSky(d)
+  local sk, wx = rawget(_G, 'beamngEarth_sky'), rawget(_G, 'beamngEarth_weather')
+  local time = type(d) == 'table' and type(d.time) == 'table' and d.time or nil
+  local weather = type(d) == 'table' and type(d.weather) == 'string' and d.weather or nil
+  if sk and sk.setServerClock then pcall(sk.setServerClock, time) end
+  if wx and wx.setPreset then pcall(wx.setPreset, weather) end
+  if time or weather then
+    log('I', 'beamngEarth', string.format('BeamMP: the server\'s time %s, weather %s',
+      time and string.format('%05.2f h x%g', tonumber(time.hours) or 0, tonumber(time.speed) or 0) or 'real',
+      weather or 'real'))
+  end
 end
 
 -- Pure: the port our world server shares on: the BeamMP server's (bngeConfig) when it is a usable one, else nil.
@@ -833,7 +850,16 @@ function M.update(dt, anchor, player)
         blk.partial, blk.partialSink, blk.partialLevel, blk.over = fs.partial, fs.partialSink, fs.partialLevel, fs.overBlock
       end
     end
-    pcall(jsonWriteFile, M.STATUS_FILE, { t = os.time(), block = blk, anchor = anchor and M.key(anchor.lat, anchor.lon) or nil,
+    -- (the real time and weather in the session: the sky's and weather's own state)
+    local skyNow, wxNow = nil, nil
+    local sk, wx = rawget(_G, 'beamngEarth_sky'), rawget(_G, 'beamngEarth_weather')
+    if sk and sk.status then local okS, v = pcall(sk.status) if okS then skyNow = v; v.manualBy = sk.manualBy end end
+    if wx and wx.getMode then
+      local okW, m = pcall(wx.getMode)
+      local okL, line = pcall(function() return wx.statusLine and wx.statusLine() end)
+      wxNow = { mode = okW and m or nil, line = okL and line or nil, manualBy = wx.manualBy }
+    end
+    pcall(jsonWriteFile, M.STATUS_FILE, { t = os.time(), block = blk, sky = skyNow, weather = wxNow, anchor = anchor and M.key(anchor.lat, anchor.lon) or nil,
       perf = perf, switch = next(switchLog) and switchLog or nil, away = next(awayLog) and awayLog or nil,
       anchors = anchors, stats = stats, hidden = hidden, remote = remote, own = own, player = player and { x = player.x,
       y = player.y, z = player.z, camera = player.camera } or nil }, true)
@@ -1010,6 +1036,7 @@ function M.reset()
   end
   floating = {}
   pendingNodes, lastNodes, copyBase, copySince, copyQuiet, stale, morphs, applied, witnessed = {}, {}, {}, {}, {}, {}, {}, {}, {}
+  M.applyServerSky(nil)       -- (the real time and weather again after a session with the server's)
   deactivated, anchors, poseIn, hideIn, joined, wentTo, camPlaced, lastPlayers = {}, {}, 0, 0, false, false, false, -1
   waitGround = {}
   members, sentDamage, damageSince, restoredAt, restores = {}, {}, {}, {}, {}

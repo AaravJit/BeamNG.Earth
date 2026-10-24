@@ -229,7 +229,9 @@ over the internet, and start it (its log shows `[BeamNG.Earth] plugin loaded`). 
 `Private = false` with your AuthKey puts it on the BeamNG.Earth list (the in-game tab) and the plugin keeps it off
 BeamMP's own public list, so players without BeamNG.Earth never see it; `Private = true`, or no AuthKey: on no list,
 players use Direct Connect. The plugin lists the server once a minute with `curl` (Linux, and Windows 10 and later).
-Update the server zip with every release: it carries the mod the server sends to players. The players' sharing port (47621) is
+Update the server zip with every release: it carries the mod the server sends to players. The server's time and weather for everyone
+(`G.TIME`: real or a fixed / running time such as `'20:30'`; `G.WEATHER`: real or clear, cloudy, rain, storm, snow,
+fog) are set near the top of `Resources/Server/BeamNGEarth/main.lua`. The players' sharing port (47621) is
 `G.SHARE_PORT` near the top of `Resources/Server/BeamNGEarth/main.lua`. The server needs no world data and
 little CPU. From the source, `python3 tools/package.py --beammp` builds the same zip.
 
