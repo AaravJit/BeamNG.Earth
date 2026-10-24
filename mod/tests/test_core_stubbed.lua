@@ -628,10 +628,18 @@ T.check(lattice.N == 512 and lattice.HALF == 512 and follow.GRID == 128 and foll
 local rq = last('prepare_anchor')
 T.check(rq.cx % 128 == 0 and rq.cy % 128 == 0 and math.abs(rq.cx - veh.pos.x) <= follow.MIN_LEAD + 64, 'resync hint on the 128 m grid (at most MIN_LEAD ahead)')
 local imp512 = calls.importMaps
+-- the graded block (terrain_refresh) can come before its anchor's commit: kept and swapped in after it
+serverSend({ type = 'terrain_refresh', anchorId = 7, cx = rq.cx, cy = rq.cy, heightmap = '/temp/beamngEarth/s5/hm_7g.png',
+  size = 512, squareSize = SQ, zBase = 1120, maxHeight = 1024, q = 1 / 64 })
+frames(2)
+T.check(calls.importMaps == imp512, 'a refresh for an anchor not committed yet waits')
 serverSend({ type = 'anchor_ready', requestId = rq.requestId, anchorId = 7, lat = rq.lat, lon = rq.lon, groundZ = 0,
   terrain = { cx = rq.cx, cy = rq.cy, heightmap = '/temp/beamngEarth/s5/hm_7.png', size = 512, squareSize = SQ,
     zBase = 1120, maxHeight = 1024, q = 1 / 64 } })
-T.check(pumpUntil(function() return calls.importMaps == imp512 + 1 end, 10), '512: the size-512 anchor terrain is accepted and imported')
+T.check(pumpUntil(function() return calls.importMaps >= imp512 + 1 end, 10), '512: the size-512 anchor terrain is accepted and imported')
+frames(2)
+T.check(calls.importMaps == imp512 + 2 and tb.lastImport.path == '/temp/beamngEarth/s5/hm_7g.png',
+  'the graded block that came first is swapped in once its anchor is committed')
 T.check(last('commit_anchor').anchorId == 7, '512: resync committed')
 T.check(tb.pos.x == rq.cx - 512 and tb.pos.y == rq.cy - 512, '512: block position = (cx-512, cy-512)')
 T.check(tb.lastImport.maps[1].path:match('beamngEarth_layer_512%.png$') ~= nil, '512: the 512 layer map with the 512 heightmap')

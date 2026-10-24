@@ -660,6 +660,7 @@ local function onMessage(msg)
     setStatus('Disconnected from companion server: ' .. tostring(msg.error))
   elseif t == 'hello' then
     st.sessionId = msg.sessionId
+    st.refreshLater = nil       -- (a restarted server numbers its anchors from 1 again)
     roads.setSession(msg.sessionId)   -- the road / building tiles' pooled shape files belong to this server
     lastHello = {}           -- the server's version and options, for the reports' hardware.json
     for k, v in pairs(msg) do if k ~= 'attribution' and type(v) ~= 'table' then lastHello[k] = v end end
@@ -775,8 +776,12 @@ local function onMessage(msg)
     -- the graded block in place of a teleport's provisional one (server make_provisional; the user, 2026-10-22:
     -- "place the car as soon as possible"): swapped in while that block is still ours, else dropped (the block
     -- moved on: its replacements are built graded anyway)
-    if msg.anchorId == st.anchorId and st.block and msg.cx == st.block.cx and msg.cy == st.block.cy
-        and msg.size == terrain.SIZE then
+    -- A refresh for an anchor not committed yet is kept for the commit: a cached place's graded block came 1 s after
+    -- the provisional one while the teleport's commit waited out a 1.9 s level-load frame, and the provisional block
+    -- (no road grading, ground through the roads) stayed until the car drove off (BeamMP join, 2026-10-24)
+    if msg.anchorId ~= st.anchorId then
+      st.refreshLater = msg
+    elseif st.block and msg.cx == st.block.cx and msg.cy == st.block.cy and msg.size == terrain.SIZE then
       commitTerrain(msg)
     end
   elseif t == 'terrain_error' then
@@ -1695,6 +1700,11 @@ local function onUpdate(dtReal, dtSim)
       drawUi(dtReal)
       return -- positions are in neither frame for decisions this frame
     end
+  end
+  local rl = st.refreshLater
+  if rl and rl.anchorId == st.anchorId then     -- (its anchor committed: see 'terrain_refresh')
+    st.refreshLater = nil
+    if st.block and rl.cx == st.block.cx and rl.cy == st.block.cy and rl.size == terrain.SIZE then commitTerrain(rl) end
   end
   if st.recouple then                   -- a rebase's trailers hitched again over a few seconds (rebase.lua)
     local okR, plan = pcall(rebase.recoupleTick, st.recouple, st.clock)
