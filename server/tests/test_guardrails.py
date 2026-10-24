@@ -48,6 +48,19 @@ class GuardrailTagTest(unittest.TestCase):
                 self.assertFalse(guardrails._is_guardrail(f, 0))
 
 
+class BridgeBufferTest(unittest.TestCase):
+    def test_bridge_buffer_is_five_metres_from_deck_edge_not_centreline(self):
+        deck = {"n": [[0.0, 0.0, 20.0], [100.0, 0.0, 20.0]], "w": 8.0}
+        # Deck half-width is 4 m; the temporary buffer adds 5 m to the actual edge.
+        self.assertTrue(guardrails._within_bridge_buffer([10.0, 8.9], [90.0, 8.9], [deck]))
+        self.assertFalse(guardrails._within_bridge_buffer([10.0, 9.1], [90.0, 9.1], [deck]))
+
+    def test_bridge_buffer_detects_a_guardrail_crossing_the_deck(self):
+        deck = {"n": [[0.0, 0.0, 20.0], [100.0, 0.0, 20.0]], "w": 8.0}
+        # Endpoint-only distance checks would miss this: both rail endpoints are 20 m away.
+        self.assertTrue(guardrails._within_bridge_buffer([50.0, -20.0], [50.0, 20.0], [deck]))
+
+
 class GuardrailStockAssetTest(unittest.TestCase):
     def test_stock_italy_guardrail_model_is_registered_as_forest_type(self):
         root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -148,7 +161,7 @@ class GuardrailForestTest(unittest.TestCase):
         self.assertLess((one[2] - 50.0) * one[12], 0.0)
         self.assertLess((back[2] - 50.0) * back[12], 0.0)
 
-    def test_guardrails_are_absent_on_bridge_but_approaches_and_underpass_survive(self):
+    def test_bridge_buffer_temporarily_hides_all_guardrails_within_five_metres(self):
         deck = {"m": "road_asphalt_2lane", "w": 8.0, "tl": 11.0, "p": 20,
                 "deck": True, "fixed": True, "fid": "bridge",
                 "n": [[0.0, 0.0, 20.0], [100.0, 0.0, 20.0]]}
@@ -158,39 +171,43 @@ class GuardrailForestTest(unittest.TestCase):
         outer = max(parapets, key=lambda item: float(np.mean(item["line"][:, 1])))
         y = float(np.mean(outer["line"][:, 1]))
         upper_elev = lambda lat, lon: np.full(np.shape(lat), 20.0, np.float64)
-        exact = (0.0, -20.0, 160.0, 20.0)
 
-        # No mapped guardrails on the bridge itself, including the central divider and its
-        # two_sided instances. The concrete bridge parapets remain a part of the bridge mesh.
-        for line_y in (0.0, y, 5.0):
-            with self.subTest(line_y=line_y):
-                bridge_rail = self.features(
-                    "guard_rail", tags={"two_sided": "yes", "bridge": "yes"},
-                    xy=[[10.0, line_y], [90.0, line_y]])
+        # Any OSM guardrail inside the deck footprint plus its 5 m safety band is hidden,
+        # including an outer rail and a central separator.
+        for tags, line_y in (
+            ({"two_sided": "yes", "bridge": "yes"}, y),
+            ({"two_sided": "yes"}, 0.0),
+            ({"two_sided": "yes"}, 5.0),
+        ):
+            with self.subTest(tags=tags, line_y=line_y):
+                features = self.features("guard_rail", tags=tags,
+                                         xy=[[10.0, line_y], [90.0, line_y]])
                 rows = guardrails.forest_rows(
-                    self.frame, lambda _key: bridge_rail, exact, upper_elev,
-                    decks=decks, parapets=parapets)
-                self.assertEqual(rows, [], "mapped guardrails on the bridge should be omitted")
+                    self.frame, lambda _key: features, (0.0, -20.0, 100.0, 20.0),
+                    upper_elev, decks=decks, parapets=parapets)
+                self.assertEqual(rows, [],
+                                 "all guardrails within 5 m of a bridge footprint are temporarily hidden")
 
-        # Guardrails on the road approach, outside the deck, must still render.
-        approach = self.features("guard_rail", xy=[[105.0, 0.0], [155.0, 0.0]])
-        approach_rows = guardrails.forest_rows(
-            self.frame, lambda _key: approach, exact, upper_elev,
-            decks=decks, parapets=parapets)
-        self.assertTrue(approach_rows, "the old 5 m filter must not create a long gap on approaches")
-
-        # A lower road directly underneath the deck has the same XY but a different height;
-        # it must keep its own mapped rails.
+        # A lower road directly beneath the bridge is hidden by the temporary XY buffer too.
         lower_elev = lambda lat, lon: np.full(np.shape(lat), 12.0, np.float64)
         underpass = self.features("guard_rail", tags={"two_sided": "yes", "layer": "-1"},
-                                  xy=[[10.0, 0.0], [90.0, 0.0]])
-        lower_rows = guardrails.forest_rows(
-            self.frame, lambda _key: underpass, exact, lower_elev,
-            decks=decks, parapets=parapets)
-        self.assertTrue(lower_rows, "the lower road's rail must survive an XY overlap")
-        for row in lower_rows:
-            self.assertAlmostEqual(row[3], 12.0, delta=0.1)
+                                  xy=[[10.0, y], [90.0, y]])
+        self.assertEqual(
+            guardrails.forest_rows(self.frame, lambda _key: underpass,
+                                   (0.0, -20.0, 100.0, 20.0), lower_elev,
+                                   decks=decks, parapets=parapets),
+            [])
 
+        # But normal road rails well outside the five-metre bridge-edge buffer still render
+        # and remain on their own terrain height.
+        outside = self.features("guard_rail", tags={"layer": "-1"},
+                                xy=[[10.0, 15.0], [90.0, 15.0]])
+        outside_rows = guardrails.forest_rows(
+            self.frame, lambda _key: outside, (0.0, -20.0, 100.0, 20.0),
+            lower_elev, decks=decks, parapets=parapets)
+        self.assertTrue(outside_rows, "guardrails beyond the bridge buffer must remain")
+        for row in outside_rows:
+            self.assertAlmostEqual(row[3], 12.0, delta=0.1)
 
     def test_guardrails_pitch_to_the_ground_grade(self):
         feats = self.features("guard_rail", xy=[[10.0, 50.0], [90.0, 50.0]])
