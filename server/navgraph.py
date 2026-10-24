@@ -314,7 +314,11 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
         X = np.array([pending[nm][0] for nm in used])
         Y = np.array([pending[nm][1] for nm in used])
         la, lo, _ = frame.enu_to_geodetic(X, Y, 0.0)
-        Z = np.asarray(elev(la, lo), np.float64).copy()
+        # DEM elevations are geodetic heights, while graph nodes need Z in this anchor's ENU frame.
+        # Omitting this transform makes traffic float increasingly above the curved ground as the player
+        # moves away from the anchor (the same frame used by terrain and road tiles).
+        Z = np.asarray(frame.geodetic_to_enu(la, lo, np.asarray(elev(la, lo), np.float64))[2],
+                       np.float64).copy()
         if decks:
             for k, nm in enumerate(used):
                 dz = _deck_z(decks, node_fid.get(nm), X[k], Y[k])
