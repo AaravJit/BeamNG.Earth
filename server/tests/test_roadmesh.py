@@ -218,6 +218,15 @@ class BridgeLookTest(unittest.TestCase):
         offset = 4.0 + roadmesh.PARAPET_W / 2
         np.testing.assert_allclose(ys, [-offset, offset], atol=0.02)
 
+    def test_deck_accepts_xy_outward_normals_for_generated_parapets(self):
+        deck = self.deck(0.0, "a")
+        runs = roadmesh.parapet_runs([deck])
+        self.assertTrue(runs)
+        self.assertEqual(runs[0]["out"].shape[1], 2, "parapet runs store horizontal normals")
+        P, T, UV, mats, M = roadmesh.deck([deck], (0.0, 0.0, 0.0), parapets=runs)
+        self.assertEqual(P.shape[1], 3)
+        self.assertGreater(len(T), 0)
+
     def test_parapet_runs_exclude_the_centre_between_adjacent_decks(self):
         runs = roadmesh.parapet_runs([self.deck(0.0, "a"), self.deck(8.0, "b")])
         self.assertEqual(len(runs), 2)
