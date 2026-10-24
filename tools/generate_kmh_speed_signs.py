@@ -120,6 +120,7 @@ SEGMENTS = 28
 METAL_MATERIAL = 'sign_metal'
 METAL_COLOR = (0.62, 0.64, 0.66, 1.0)
 TEX_DIR = '/levels/beamng_earth/art/shapes/beamngEarth'
+BODY_NAME = 'sign_round_body'     # the model every sign shares: its pole, brackets and the plate's back (trees.lua)
 
 
 @dataclass(frozen=True)
@@ -264,13 +265,19 @@ def drop_front_facing(m: Mesh, kind: str, start: int) -> None:
     m.tri[kind] = kept
 
 
-def add_plate(m: Mesh, g: RoundSignGeometry) -> None:
-    """The textured front (alpha-tested, so the PNG's corners are cut away), and a bare-metal back and rim."""
+def add_face(m: Mesh, g: RoundSignGeometry) -> None:
+    """The textured front (alpha-tested, so the PNG's corners are cut away): the one part that differs per sign."""
     r = g.plate_size / 2
     zc = g.plate_centre_z
-    yf, yb = g.plate_y_front, g.plate_y_back
+    yf = g.plate_y_front
     m.quad('plate', [((-r, yf, zc - r), (0, 0)), ((r, yf, zc - r), (1, 0)),
                      ((r, yf, zc + r), (1, 1)), ((-r, yf, zc + r), (0, 1))], (0, -1, 0))
+
+
+def add_plate_back(m: Mesh, g: RoundSignGeometry) -> None:
+    """The plate's bare-metal back and rim."""
+    zc = g.plate_centre_z
+    yf, yb = g.plate_y_front, g.plate_y_back
     m.disc('metal', (0.0, yb, zc), g.plate_radius, (0, 1, 0), 'xz')
     m.cylinder('metal', (0.0, zc), g.plate_radius, yf, yb, 'y')
 
@@ -307,16 +314,17 @@ class SignLod:
     brackets: bool
 
 
-# triangles: 306, 122, 82 (10 per segment + 26, minus the brackets' 24). The pole and the brackets are a few
-# pixels wide a few tens of metres out; the face, 2 triangles in every level, is what is seen from afar.
+# triangles of the body: 304, 120, 80 (10 per segment + 24, minus the brackets' 24; the face adds 2). The pole and
+# the brackets are a few pixels wide a few tens of metres out; the face is what is seen from afar.
 SIGN_LODS = (SignLod(128, 28, True), SignLod(48, 12, False), SignLod(4, 8, False))
 
 
 def build_round_sign_mesh(g: RoundSignGeometry = ROUND_SIGN, lod: SignLod = SIGN_LODS[0]) -> Mesh:
-    """Upright sign, Z up. Front (-Y) carries the textured plate; the back is bare metal. Everything but the
-    plate's texture is the same for every sign of one geometry, so callers build it once and reuse it."""
+    """The sign's body, Z up: the plate's bare-metal back and rim, the pole and (nearest level) the brackets. It is
+    the same for every sign of one geometry, so it is one model (BODY_NAME) that all the signs share; each sign's
+    own model is just its face (build_face_lods), and trees.lua puts the two at one spot."""
     m = Mesh(lod.segments)
-    add_plate(m, g)
+    add_plate_back(m, g)
     add_pole(m, g)
     if lod.brackets:
         add_brackets(m, g)
@@ -328,6 +336,20 @@ def build_sign_lods(g: RoundSignGeometry = ROUND_SIGN, lods: tuple[SignLod, ...]
     return [(lod, build_round_sign_mesh(g, lod)) for lod in lods]
 
 
+# The face is 2 triangles whatever the distance: one level, which the game draws at any size from 4 px up.
+FACE_LODS = (SignLod(4, SEGMENTS, False),)
+
+
+def build_face_lods(g: RoundSignGeometry = ROUND_SIGN, lods: tuple[SignLod, ...] = FACE_LODS) -> list[tuple[SignLod, Mesh]]:
+    """The face's meshes (the textured quad: the same for every sign, only its texture differs)."""
+    out = []
+    for lod in lods:
+        m = Mesh(lod.segments)
+        add_face(m, g)
+        out.append((lod, m))
+    return out
+
+
 def _geometry_xml(name: str, lod: SignLod, m: Mesh) -> str:
     n = len(m.pos) // 3
     p = f'{name}_{lod.size}'
@@ -337,6 +359,8 @@ def _geometry_xml(name: str, lod: SignLod, m: Mesh) -> str:
 
     def tri_block(kind, mat):
         ids = m.tri[kind]
+        if not ids:
+            return ''
         return (f'        <triangles count="{len(ids) // 3}" material="{mat}_material">\n'
                 f'          <input semantic="VERTEX" source="#{p}_vertices" offset="0"/>\n'
                 f'          <input semantic="NORMAL" source="#{p}_normals" offset="0"/>\n'
@@ -383,16 +407,20 @@ def _geometry_xml(name: str, lod: SignLod, m: Mesh) -> str:
 """
 
 
-def _node_xml(name: str, lod: SignLod) -> str:
-    """One mesh node per level; the game takes the detail size from the digits ending the node's name."""
-    return f"""      <node id="{name}_node{lod.size}" name="sign{lod.size}" type="NODE">
+def _node_xml(name: str, lod: SignLod, face: bool) -> str:
+    """One mesh node per level; the game takes the detail size from the digits ending the node's name (sign128 for
+    the body, face4 for a face). A face has its sign's texture, the body the metal."""
+    if face:
+        material = (f'<instance_material symbol="{name}_material" target="#{name}_material">\n'
+                    '                <bind_vertex_input semantic="UVMap" input_semantic="TEXCOORD" input_set="0"/>\n'
+                    '              </instance_material>')
+    else:
+        material = f'<instance_material symbol="{METAL_MATERIAL}_material" target="#{METAL_MATERIAL}_material"/>'
+    return f"""      <node id="{name}_node{lod.size}" name="{'face' if face else 'sign'}{lod.size}" type="NODE">
         <instance_geometry url="#{name}_{lod.size}_geom">
           <bind_material>
             <technique_common>
-              <instance_material symbol="{name}_material" target="#{name}_material">
-                <bind_vertex_input semantic="UVMap" input_semantic="TEXCOORD" input_set="0"/>
-              </instance_material>
-              <instance_material symbol="{METAL_MATERIAL}_material" target="#{METAL_MATERIAL}_material"/>
+              {material}
             </technique_common>
           </bind_material>
         </instance_geometry>
@@ -400,29 +428,19 @@ def _node_xml(name: str, lod: SignLod) -> str:
 """
 
 
-def dae_xml(name: str, png_name: str, lods: list[tuple[SignLod, Mesh]]) -> str:
+def dae_xml(name: str, png_name: str | None, lods: list[tuple[SignLod, Mesh]]) -> str:
+    """A sign's face model, textured with png_name; or, with None, the metal body every sign shares."""
+    face = png_name is not None
     mr, mg, mb, _ = METAL_COLOR
     geometries = ''.join(_geometry_xml(name, lod, m) for lod, m in lods)
-    nodes = ''.join(_node_xml(name, lod) for lod, _ in lods)
-    return f"""<?xml version="1.0" encoding="utf-8"?>
-<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
-  <asset>
-    <contributor>
-      <author>BeamNG Earth</author>
-      <authoring_tool>Python generator</authoring_tool>
-    </contributor>
-    <created>2026-10-23T00:00:00</created>
-    <modified>2026-10-23T00:00:00</modified>
-    <unit meter="1" name="meter"/>
-    <up_axis>Z_UP</up_axis>
-  </asset>
-  <library_images>
+    nodes = ''.join(_node_xml(name, lod, face) for lod, _ in lods)
+    images = f"""  <library_images>
     <image id="{name}_image">
       <init_from>{png_name}</init_from>
     </image>
   </library_images>
-  <library_effects>
-    <effect id="{name}_effect">
+""" if face else ''
+    face_effect = f"""    <effect id="{name}_effect">
       <profile_COMMON>
         <newparam sid="{name}_surface">
           <surface type="2D">
@@ -443,7 +461,8 @@ def dae_xml(name: str, png_name: str, lods: list[tuple[SignLod, Mesh]]) -> str:
         </technique>
       </profile_COMMON>
     </effect>
-    <effect id="{METAL_MATERIAL}_effect">
+""" if face else ''
+    metal_effect = '' if face else f"""    <effect id="{METAL_MATERIAL}_effect">
       <profile_COMMON>
         <technique sid="common">
           <lambert>
@@ -454,15 +473,30 @@ def dae_xml(name: str, png_name: str, lods: list[tuple[SignLod, Mesh]]) -> str:
         </technique>
       </profile_COMMON>
     </effect>
-  </library_effects>
-  <library_materials>
-    <material id="{name}_material" name="{name}">
+"""
+    material = f"""    <material id="{name}_material" name="{name}">
       <instance_effect url="#{name}_effect"/>
     </material>
-    <material id="{METAL_MATERIAL}_material" name="{METAL_MATERIAL}">
+""" if face else f"""    <material id="{METAL_MATERIAL}_material" name="{METAL_MATERIAL}">
       <instance_effect url="#{METAL_MATERIAL}_effect"/>
     </material>
-  </library_materials>
+"""
+    return f"""<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset>
+    <contributor>
+      <author>BeamNG Earth</author>
+      <authoring_tool>Python generator</authoring_tool>
+    </contributor>
+    <created>2026-10-23T00:00:00</created>
+    <modified>2026-10-23T00:00:00</modified>
+    <unit meter="1" name="meter"/>
+    <up_axis>Z_UP</up_axis>
+  </asset>
+{images}  <library_effects>
+{face_effect}{metal_effect}  </library_effects>
+  <library_materials>
+{material}  </library_materials>
   <library_geometries>
 {geometries}  </library_geometries>
   <library_visual_scenes>
@@ -651,9 +685,17 @@ def build_sign_specs(speeds: Iterable[int | str] | None = None) -> dict[str, tup
     return sign_specs
 
 
+def write_body() -> None:
+    """The model every sign shares: the plate's back and rim, the pole and the brackets."""
+    path = OUT / f'{BODY_NAME}.dae'
+    path.write_text(dae_xml(BODY_NAME, None, build_sign_lods()), encoding='utf-8')
+    print(f'  {path.name}')
+
+
 def write_signs(speeds: Iterable[int | str] | None = None) -> None:
     sign_specs = build_sign_specs(speeds)
-    lods = build_sign_lods()            # the same pole, brackets and plate for every sign
+    write_body()
+    lods = build_face_lods()            # a sign's own model is its face: the same quad, its texture
     for name, (label, bg, accent, accent2, text_color) in sign_specs.items():
         img = make_sign(label, bg, accent, accent2, text_color)
         # The material alpha-tests (alphaRef 127), so only the cut-out matters: a face pixel with alpha below 255
