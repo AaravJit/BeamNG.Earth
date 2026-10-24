@@ -1012,9 +1012,16 @@ def _mapped_access(pad, edge, roads, service):
     if not lines:
         return False
     dense = [_dense(ln) for ln in lines]
-    at_pad = [bool(_inside(pad, q).any() or (_seg_dist(q, edge[:-1], edge[1:]) <= DRIVEWAY_ACCESS_M).any())
+    boxes = [(ln.min(0), ln.max(0)) for ln in lines]
+    rboxes = [(r.min(0) - h - DRIVEWAY_MAPPED_M, r.max(0) + h + DRIVEWAY_MAPPED_M) for r, h in roads]
+
+    def meets(bi, b2):                          # (bounding boxes first: a big lot's aisles, Buc-ee's 0.36 s of 0.44)
+        return (bi[1] >= b2[0]).all() and (bi[0] <= b2[1]).all()
+    ring = np.vstack([pad, pad[:1]])            # (its few sides, not the sampled edge: the same distance)
+    at_pad = [bool(_inside(pad, q).any() or (_seg_dist(q, ring[:-1], ring[1:]) <= DRIVEWAY_ACCESS_M).any())
               for q in dense]
-    at_road = [any((_seg_dist(q, r[:-1], r[1:]) <= h + DRIVEWAY_MAPPED_M).any() for r, h in roads) for q in dense]
+    at_road = [any(meets(boxes[i], rb) and (_seg_dist(q, r[:-1], r[1:]) <= h + DRIVEWAY_MAPPED_M).any()
+                   for (r, h), rb in zip(roads, rboxes)) for i, q in enumerate(dense)]
     group = list(range(len(lines)))
 
     def root(i):
@@ -1023,8 +1030,9 @@ def _mapped_access(pad, edge, roads, service):
             i = group[i]
         return i
     for i in range(len(lines)):
+        grown = (boxes[i][0] - DRIVEWAY_JOIN_M, boxes[i][1] + DRIVEWAY_JOIN_M)
         for j in range(i + 1, len(lines)):
-            if root(i) != root(j) and (_seg_dist(dense[i], lines[j][:-1], lines[j][1:]) <= DRIVEWAY_JOIN_M).any():
+            if root(i) != root(j) and meets(grown, boxes[j]) and                     (_seg_dist(dense[i], lines[j][:-1], lines[j][1:]) <= DRIVEWAY_JOIN_M).any():
                 group[root(i)] = root(j)
     pads = {root(i) for i in range(len(lines)) if at_pad[i]}
     return any(root(i) in pads for i in range(len(lines)) if at_road[i])
