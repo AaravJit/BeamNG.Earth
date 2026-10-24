@@ -69,6 +69,8 @@ class GuardrailStockAssetTest(unittest.TestCase):
             source = f.read()
         self.assertIn("M.CATALOG.guardrail", source)
         self.assertIn("/art/shapes/objects/italy_guardrails_basic", source)
+        self.assertIn("/art/shapes/objects/italy_guardrails_basic_end_cw", source)
+        self.assertIn("/art/shapes/objects/italy_guardrails_basic_end_ccw", source)
 
 
 class GuardrailMeshTest(unittest.TestCase):
@@ -135,7 +137,8 @@ class GuardrailMeshTest(unittest.TestCase):
                 data = json.load(f)
         self.assertEqual(count, 0)
         self.assertEqual(path, "vfs/roads_7_1_2.json")
-        self.assertEqual(data["guardrails"], {"items": rows, "groups": ["guardrail"]})
+        self.assertEqual(data["guardrails"], {"items": rows,
+                                               "groups": ["guardrail", "guardrail_start", "guardrail_end"]})
         self.assertNotIn("guardrail", roads.shape_files(7, 1, 2))
 
     def test_stock_guardrail_rows_have_ground_height_and_heading(self):
@@ -144,7 +147,7 @@ class GuardrailMeshTest(unittest.TestCase):
                                       lambda lat, lon: np.full(np.shape(lat), 12.0, np.float64))
         self.assertTrue(rows)
         for row in rows:
-            self.assertEqual(row[0], 0)
+            self.assertIn(row[0], (0, 1, 2))
             self.assertAlmostEqual(row[3], 12.0, delta=0.05)
             self.assertAlmostEqual(row[4], 0.0, delta=0.1)
             self.assertEqual(row[6], guardrails.MODULE_HEIGHT_M)
