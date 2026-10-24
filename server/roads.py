@@ -3981,7 +3981,8 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
         roadmesh.write(os.path.join(out_dir, shape), tunnel_mesh)
         data["tunnel"] = {"shape": f"{vfs_dir}/{shape}", "pos": [x0, y0, 0.0]}
     if guardrail_rows:
-        data["guardrails"] = {"items": guardrail_rows, "groups": ["guardrail", "guardrail_start", "guardrail_end"]}
+        data["guardrails"] = {"items": guardrail_rows, "groups": ["guardrail", "guardrail_start", "guardrail_end",
+                                                                "guardrail_back", "guardrail_back_start", "guardrail_back_end"]}
     if walks:
         x0, y0, _, _ = tile_bbox(tx, ty)
         b = sidewalks.Builder((x0, y0, 0.0), collision=True)
