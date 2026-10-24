@@ -9,6 +9,16 @@ on:
     paths:
       - "server/guardrails.py"
       - "server/tests/test_guardrails.py"
+      - "server/roads.py"
+      - "server/blockworker.py"
+      - "server/earthd.py"
+      - "server/bridges.py"
+      - "server/mapcells.py"
+      - "server/mapgeom.py"
+      - "server/geodesy.py"
+      - "server/staging.py"
+      - "mod/beamng_earth/lua/ge/extensions/beamngEarth/roads.lua"
+      - "mod/beamng_earth/lua/ge/extensions/beamngEarth/trees.lua"
       - ".github/workflows/guardrails-tests.yml"
 
 jobs:
