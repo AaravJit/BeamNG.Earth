@@ -47,6 +47,48 @@ def _is_guardrail(feats, i):
     return str(values.get("barrier", "")).strip().lower() == "guard_rail"
 
 
+def _deck_level_hint(feats, i):
+    """Return True for a mapped bridge-level barrier, False for lower/ground level, else None.
+
+    These tags belong to the barrier way itself. A negative layer must not be overwritten by a
+    nearby bridge deck merely because both features overlap in XY.
+    """
+    tags = feats.attrs.get("tags")
+    if tags is None:
+        return None
+    try:
+        values = json.loads(str(tags[i]))
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(values, dict):
+        return None
+
+    norm = {str(k).strip().lower(): str(v).strip().lower() for k, v in values.items()}
+    yes = {"yes", "true", "1"}
+    no = {"no", "false", "0"}
+    if norm.get("tunnel", "") in yes:
+        return False
+
+    layer = None
+    try:
+        layer = float(norm.get("layer", ""))
+    except (TypeError, ValueError):
+        pass
+    if layer is not None and layer < 0:
+        return False
+
+    bridge = norm.get("bridge", "")
+    if bridge in yes or bridge in {"viaduct", "movable", "swing", "drawbridge", "covered"}:
+        return True
+    if norm.get("location", "") in {"bridge", "on_bridge"}:
+        return True
+    if layer is not None:
+        return layer > 0
+    if bridge in no or norm.get("location", "") in {"underground", "underwater", "underground_passage"}:
+        return False
+    return None
+
+
 def _at(line, arc, distance):
     """Point and unit tangent at arc length distance along a 2D polyline."""
     k = min(max(int(np.searchsorted(arc, distance, side="right") - 1), 0), len(line) - 2)
@@ -78,14 +120,29 @@ def _clip_segment(a, b, box):
     return a + t0 * (b - a), a + t1 * (b - a)
 
 
-def _surface_z(frame, points, elev, decks):
-    """Height at XY positions; snap barriers on bridges to the generated deck, else use terrain."""
+DECK_AUTO_SNAP_TOLERANCE_M = 1.5  # An untagged barrier may be snapped to a deck only when terrain agrees.
+
+
+def _surface_z(frame, points, elev, decks, deck_preference=None):
+    """Sample terrain first; snap to a deck only when tags identify its level or heights agree.
+
+    OSM barrier lines are 2-D. XY-only snapping is wrong at an overpass: a lower road's guardrail
+    can otherwise be lifted onto the bridge above it. Explicit bridge/layer tags disambiguate levels;
+    for untagged ways the terrain must be within a small tolerance of the candidate deck.
+    """
     points = np.asarray(points, np.float64).reshape(-1, 2)
-    z = np.full(len(points), np.nan, np.float64)
+    if not len(points):
+        return np.zeros(0, np.float64)
+
+    la, lo, _ = frame.enu_to_geodetic(points[:, 0], points[:, 1], np.zeros(len(points), np.float64))
+    ground = np.asarray(elev(la, lo), np.float64)
+    ground_z = np.asarray(frame.geodetic_to_enu(la, lo, ground)[2], np.float64)
+
+    deck_z = np.full(len(points), np.nan, np.float64)
     best = np.full(len(points), np.inf, np.float64)
     for deck in decks or ():
         line = np.asarray(deck.get("n", ()), np.float64)
-        if len(line) < 2:
+        if len(line) < 2 or line.shape[1] < 3:
             continue
         a, b = line[:-1, :2], line[1:, :2]
         d = b - a
@@ -93,21 +150,33 @@ def _surface_z(frame, points, elev, decks):
         v = points[:, None, :] - a[None, :, :]
         t = np.clip(np.sum(v * d[None, :, :], axis=2) / l2[None, :], 0.0, 1.0)
         near = a[None, :, :] + t[:, :, None] * d[None, :, :]
-        dist = np.hypot(points[:, None, 0] - near[:, :, 0], points[:, None, 1] - near[:, :, 1])
+        dist = np.hypot(points[:, None, 0] - near[:, :, 0],
+                        points[:, None, 1] - near[:, :, 1])
         k = np.argmin(dist, axis=1)
         row = np.arange(len(points))
         dmin = dist[row, k]
         use = (dmin <= float(deck.get("w", 0.0)) / 2.0 + 2.0) & (dmin < best)
         if use.any():
             seg_z = line[k, 2] + t[row, k] * (line[k + 1, 2] - line[k, 2])
-            z[use], best[use] = seg_z[use], dmin[use]
-    missing = ~np.isfinite(z)
-    if missing.any():
-        la, lo, _ = frame.enu_to_geodetic(points[missing, 0], points[missing, 1],
-                                          np.zeros(int(missing.sum()), np.float64))
-        ground = np.asarray(elev(la, lo), np.float64)
-        z[missing] = frame.geodetic_to_enu(la, lo, ground)[2]
-    return z
+            deck_z[use], best[use] = seg_z[use], dmin[use]
+
+    if deck_preference is None:
+        preference = np.full(len(points), -1, np.int8)  # unknown: infer conservatively from terrain
+    else:
+        preference = np.asarray([
+            -1 if value is None else (1 if bool(value) else 0)
+            for value in deck_preference
+        ], np.int8)
+        if len(preference) != len(points):
+            raise ValueError("deck_preference must contain one value per sample point")
+
+    found = np.isfinite(deck_z)
+    explicit_bridge = found & (preference > 0)
+    terrain_matches = found & (preference < 0) & (
+        np.abs(deck_z - ground_z) <= DECK_AUTO_SNAP_TOLERANCE_M)
+    use_deck = explicit_bridge | terrain_matches
+    return np.where(use_deck, deck_z, ground_z)
+
 
 
 def _quad(triangles, a, b, c, d):
@@ -184,7 +253,7 @@ def mesh(frame, infra_fn, exact, elev, origin=(0.0, 0.0, 0.0), decks=()):
         return None
 
     seen = set()
-    rail_sections, post_sites, query_points = [], [], []
+    rail_sections, post_sites, query_points, query_deck_hints = [], [], [], []
     for key in keys:
         try:
             feats = infra_fn(key)
@@ -205,6 +274,7 @@ def mesh(frame, infra_fn, exact, elev, origin=(0.0, 0.0, 0.0), decks=()):
             if b[2] < x0 - BBOX_PAD_M or b[0] > x1 + BBOX_PAD_M or b[3] < y0 - BBOX_PAD_M or b[1] > y1 + BBOX_PAD_M:
                 continue
             seen.add(fid)
+            deck_hint = _deck_level_hint(feats, i)
             for part in feats.parts(i):
                 if not part:
                     continue
@@ -236,22 +306,25 @@ def mesh(frame, infra_fn, exact, elev, origin=(0.0, 0.0, 0.0), decks=()):
                         continue
                     k = len(query_points)
                     query_points.extend((p0, p1))
-                    rail_sections.append((k, k + 1, p0, p1))
+                    query_deck_hints.extend((deck_hint, deck_hint))
+                    rail_sections.append((k, k + 1, p0, p1, deck_hint))
                 for s in np.arange(0.0, total + 1e-6, POST_SPACING_M):
                     p, tangent = _at(line, arc, float(s))
                     if x0 <= p[0] < x1 and y0 <= p[1] < y1:
                         k = len(query_points)
                         query_points.append(p)
-                        post_sites.append((k, p, tangent))
+                        query_deck_hints.append(deck_hint)
+                        post_sites.append((k, p, tangent, deck_hint))
 
     if not query_points:
         return None
-    z = _surface_z(frame, np.asarray(query_points, np.float64), elev, decks)
+    z = _surface_z(frame, np.asarray(query_points, np.float64), elev, decks,
+                   deck_preference=query_deck_hints)
     vertices, triangles, uvs = [], [], []
-    for i0, i1, p0, p1 in rail_sections:
+    for i0, i1, p0, p1, _deck_hint_value in rail_sections:
         _prism(vertices, triangles, uvs, p0, p1, float(z[i0]), float(z[i1]),
                RAIL_DEPTH_M, RAIL_BOTTOM_M, RAIL_TOP_M, origin)
-    for i, p, tangent in post_sites:
+    for i, p, tangent, _deck_hint_value in post_sites:
         _post(vertices, triangles, uvs, p, tangent, float(z[i]), origin)
     if not triangles:
         return None
@@ -403,6 +476,7 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=()):
                 continue
             seen.add(fid)
             two_sided = _is_two_sided(feats, i)
+            deck_hint = _deck_level_hint(feats, i)
             for part_no, part in enumerate(feats.parts(i)):
                 if not part:
                     continue
@@ -477,18 +551,22 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=()):
                             side = 1.0 if reverse else -1.0
                             offset = normal * (0.5 * TWO_SIDED_SPACING_M * side)
                             p, a, b = p + offset, a + offset, b + offset
-                    placements.append((group, p, a, b, rank, reverse, parapet_xy_match, source_a, source_b))
+                    placements.append((group, p, a, b, rank, reverse, parapet_xy_match,
+                                       source_a, source_b, deck_hint))
 
     if not placements:
         return []
 
     # One batched terrain/deck query for all module origins and their grade endpoints.
-    sample_points = []
-    for _, p, a, b, _, _, _, _, _ in placements:
+    sample_points, sample_deck_hints = [], []
+    for _, p, a, b, _, _, _, _, _, deck_hint in placements:
         sample_points.extend((p, a, b))
-    heights = _surface_z(frame, np.asarray(sample_points, np.float64), elev, decks)
+        sample_deck_hints.extend((deck_hint, deck_hint, deck_hint))
+    heights = _surface_z(frame, np.asarray(sample_points, np.float64), elev, decks,
+                         deck_preference=sample_deck_hints)
     rows = []
-    for i, (group, p, a, b, rank, reverse, parapet_xy_match, source_a, source_b) in enumerate(placements):
+    for i, (group, p, a, b, rank, reverse, parapet_xy_match,
+            source_a, source_b, _deck_hint_value) in enumerate(placements):
         z, za, zb = (float(heights[3 * i]), float(heights[3 * i + 1]), float(heights[3 * i + 2]))
         if parapet_xy_match and _overlaps_bridge_parapet(source_a, source_b, parapet_segments, level=z):
             continue
