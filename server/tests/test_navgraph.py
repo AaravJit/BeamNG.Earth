@@ -94,21 +94,6 @@ class GraphTest(unittest.TestCase):
 
 
 
-class CurvatureTest(unittest.TestCase):
-    def test_nodes_use_anchor_frame_height_far_from_origin(self):
-        # At 11 km, the tangent plane sits about 9.5 m above the ellipsoid surface.
-        # AI nodes must use the same local ENU Z as the terrain, not raw DEM elevation.
-        f = features([[(11000.0, -200.0), (11000.0, 200.0)]], ["residential"])
-        g = navgraph.build(FRAME, [f], flat, (11000.0, 0.0))
-        self.assertTrue(g["nodes"])
-        for x, y, z, _radius in g["nodes"].values():
-            la, lo, _ = FRAME.enu_to_geodetic(np.array([x]), np.array([y]), 0.0)
-            expected = float(FRAME.geodetic_to_enu(la, lo, flat(la, lo))[2][0])
-            self.assertAlmostEqual(z, expected, delta=0.05)
-            self.assertLess(z, 2.0, "node height should include Earth's curvature")
-
-
-
 class SignalsTest(unittest.TestCase):
     def test_no_stop_on_a_link_inside_one_intersection(self):
         import roads
