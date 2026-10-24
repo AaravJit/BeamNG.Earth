@@ -143,6 +143,8 @@ blockBox = nil
 -- damage: due when a player comes near; after a change of DAMAGE_STEP that held DAMAGE_SETTLE_S
 T.check(ms.damageDue(true, 500, 0, 0, 0.5) == true, 'damage: a newcomer sees a damaged car: sent')
 T.check(ms.damageDue(true, 0, 0, 0, 0.5) == false, 'damage: a newcomer and an undamaged car: nothing to send')
+T.check(ms.damageDue(true, 0, nil, 0, 0.5) == false, 'damage: a newcomer, an undamaged car never sent: nothing')
+T.check(ms.damageDue(true, 0, 5000, 0, 0.5) == true, 'damage: a newcomer, our car reset since a wreck was sent: sent')
 local due, settled = ms.damageDue(false, 10, 0, 0, 0.5)
 T.check(due == false and settled == 0, 'damage: a small change: not sent')
 due, settled = ms.damageDue(false, 500, 0, 0, 0.5)

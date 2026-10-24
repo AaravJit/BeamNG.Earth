@@ -124,7 +124,11 @@ function M.damageDue(newcomer, damage, sent, settled, dt)
   -- (a newcomer gets our car's full state only when it has damage to show: an undamaged car is the one BeamMP spawned
   -- there already, and every join sent every nearby player's every car to every client, 2026-10-23: "the game freezes
   -- when players join")
-  if newcomer then return (damage or 0) >= M.DAMAGE_STEP, 0 end
+  -- (... or it changed since our last send: a car reset while no one was near would otherwise stay wrecked on the
+  -- copies of the players who saw it last, 2026-10-24)
+  if newcomer then
+    return (damage or 0) >= M.DAMAGE_STEP or (sent ~= nil and math.abs((damage or 0) - sent) >= M.DAMAGE_STEP), 0
+  end
   if not damage or math.abs(damage - (sent or 0)) < M.DAMAGE_STEP then return false, 0 end
   settled = (settled or 0) + dt
   return settled >= M.DAMAGE_SETTLE_S, settled
