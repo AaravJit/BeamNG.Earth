@@ -719,6 +719,8 @@ class Server:
         self.buildings = buildings  # building meshes with the road tiles (buildings.py)
         # gas stations with refuelling with the road tiles (gasstations.py; the user, 2026-10-23)
         self.gas_stations = bool(gas_stations) and mapdata is not None
+        if self.gas_stations and surface is not None and hasattr(surface, "gas_pads"):
+            surface.gas_pads = True     # their forecourts painted asphalt (surface.Surface.fuel_pads)
         self.traffic = bool(traffic) and mapdata is not None   # the AI road graph around the player (navgraph.py)
         self.road_widths = (roadwidthmod.RoadWidths(
             lambda key: mapdata.cell(key, layers=("buildings",), kind="demand").layers.get("buildings"),
@@ -1453,6 +1455,9 @@ class Server:
                                              blockworker._open_tunnels(g, keep))
             idx = (surfacemod.paint_lots(idx, keep["lat"], keep["lon"], self.surface.lots(keep["lat"], keep["lon"]))
                 if hasattr(self.surface, "lots") else idx)
+            if hasattr(self.surface, "fuel_pads"):      # gas station forecourts (--gas-stations on)
+                idx = surfacemod.paint_pads(idx, keep["lat"], keep["lon"],
+                                            self.surface.fuel_pads(keep["lat"], keep["lon"]))
             stages["roadPaint"] = time.perf_counter() - t1
             complete = complete and roads_complete
             info["layers"] = surfacemod.write_masks(idx[::-1], self.out_dir, self.hm_name((anchor.id, cx, cy))[:-4])
@@ -3967,7 +3972,7 @@ async def main_async(args):
                           args.grading == "on" and args.roads == "on",
                           args.road_widths == "on" and args.roads == "on", args.surface == "on", warm_q,
                           logging.getLogger().level, args.airports == "on", args.sea == "on", 0,
-                          roadsmod.ROADS_IN_GROUND)), warm_q))
+                          roadsmod.ROADS_IN_GROUND, args.gas_stations == "on" and args.roads == "on")), warm_q))
         far_pool = poolsmod.RespawningPool(
             "far tile", args.workers, mp_context=ctx, initializer=blockworker.init,
             initargs=(args.cache_dir, args.offline, args.roads == "on",

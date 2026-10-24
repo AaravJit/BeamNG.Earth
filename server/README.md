@@ -658,6 +658,16 @@ prompt's name is the place's, or its brand when the name does not mention it (an
 lays out the stations within reach of it, so a canopy outline is left out by whichever tile owns it (`tile_buildings`
 `skip`). Far building tiles still draw it as a box until the road tile arrives.
 
+The forecourt is painted asphalt (`forecourt_pad`): the box around the station's refuel areas, props and canopies
+with 6 m to drive round them (less where a neighbour's wall or a road's edge is nearer), reaching the shop's front
+when it is within 10 m, and an 8 m driveway to the nearest public road unless a mapped service road already joins
+them or a building stands between. `surface.Surface.fuel_pads` works each map cell's pads out once
+(`gasstations.pads_in`, from the cached places, buildings and roads of the cell and the cells around), in the
+background (0.1-0.4 s a city cell; around the player ahead of time with `prefetch`, never inside a block's build),
+and the ground's three painters use them: the ground models (`paint_pads`, asphalt), the photo (`photo_pads`, the
+paved roads' colour, under the roads) and the near tiles' asphalt mask (`road_mask`). Only with `--gas-stations on`
+(`Surface.gas_pads`, set by `Server` and `blockworker.init`).
+
 ## Airports and runways (`server/airports.py`, `runwaygeom.py`, `runwaymarks.py`; docs/research/2026-10-11-airports.md)
 
 Not used by earthd yet. OurAirports' `airports.csv` / `runways.csv` (public domain) are downloaded through

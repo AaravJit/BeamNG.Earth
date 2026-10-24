@@ -40,7 +40,8 @@ _s = None       # this process's state (init)
 
 
 class _State:
-    def __init__(self, cache_dir, offline, roads, grading, road_widths, surface, airports=False, sea=False):
+    def __init__(self, cache_dir, offline, roads, grading, road_widths, surface, airports=False, sea=False,
+                 gas_stations=False):
         self.cache_dir = cache_dir
         self.imagery = None         # (its settings, imagery.Imagery from the disk alone): far_tile's textures
         net = netfetch.Fetcher(offline=offline)
@@ -57,6 +58,8 @@ class _State:
             roadwidthmod.store_dir(cache_dir, md)).get
             if road_widths and self.md is not None else None)
         self.surface = surfacemod.Surface(md) if surface else None
+        if self.surface is not None:    # gas station forecourts painted asphalt (--gas-stations on)
+            self.surface.gas_pads = bool(gas_stations)
         self.graders = {}           # anchor id -> grading.Grader
         self.chunks = {}            # anchor id -> heightmap.ChunkCache
         self.bridges = {}           # anchor id -> roads.BridgeProfiles (roads_tile)
@@ -128,7 +131,7 @@ def _trace_memory(every_s=60.0, top=10):
 
 
 def init(cache_dir, offline, roads, grading, road_widths, surface, warm_q, log_level=logging.INFO, airports=False,
-         sea=False, nice=0, roads_in_ground=None):
+         sea=False, nice=0, roads_in_ground=None, gas_stations=False):
     """nice: this worker's niceness on top of the server's (earthd NICE_*): the terrain blocks' workers keep the
     server's own, the road tiles' and the far field's run below them, so the ground under the car wins the server's
     few cores (2026-10-19: at 180 mph the next block waited 6 s behind the road tiles ahead and a ball fell off the
@@ -151,7 +154,7 @@ def init(cache_dir, offline, roads, grading, road_widths, surface, warm_q, log_l
     import sampler
     sampler.maybe_start(f".{os.getpid()}")      # BNGE_SAMPLE: this worker's own sampling profile (debugging)
     xproc.PRIORITY = nice
-    _s = _State(cache_dir, offline, roads, grading, road_widths, surface, airports, sea)
+    _s = _State(cache_dir, offline, roads, grading, road_widths, surface, airports, sea, gas_stations)
     threading.Thread(target=_watch_parent, args=(os.getppid(),), daemon=True, name="parent-watch").start()
     threading.Thread(target=_read_warm, args=(warm_q,), daemon=True, name="warm-read").start()
     threading.Thread(target=_warm_loop, daemon=True, name="roads-ahead").start()
@@ -261,6 +264,8 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None)
                                          _s.surface.urban, _s.widths, _open_tunnels(g, keep))
         idx = (surfacemod.paint_lots(idx, keep["lat"], keep["lon"], _s.surface.lots(keep["lat"], keep["lon"]))
             if hasattr(_s.surface, "lots") else idx)
+        if hasattr(_s.surface, "fuel_pads"):    # gas station forecourts (--gas-stations on)
+            idx = surfacemod.paint_pads(idx, keep["lat"], keep["lon"], _s.surface.fuel_pads(keep["lat"], keep["lon"]))
         stages["roadPaint"] = time.perf_counter() - t1
         info["layers"] = surfacemod.write_masks(idx[::-1], out_dir, name[:-4])
         info["surfaceComplete"] = complete and roads_complete

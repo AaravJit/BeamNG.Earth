@@ -443,10 +443,21 @@ def paint_square(rgb, frame, x0, y0, size, surface, widths=None):
     Surface; never waits); as it was when its texels are coarser than PHOTO_ROADS_MAX_TEXEL or no cell is cached."""
     if surface is None or size / max(rgb.shape[1], 1) > PHOTO_ROADS_MAX_TEXEL:
         return rgb
+    rgb = photo_pads(rgb, frame, x0, y0, size, _square_pads(frame, x0, y0, size, surface))     # (under the roads)
     feats = _square_roads(frame, x0, y0, size, surface)
     if not feats:
         return rgb
     return photo_roads(rgb, frame, x0, y0, size, feats, surface.urban, widths)
+
+
+def _square_pads(frame, x0, y0, size, surface):
+    """The gas station pads (Surface.fuel_pads) of the cells around [x0, x0 + size]² of frame (never waits)."""
+    if not getattr(surface, "gas_pads", False):
+        return []
+    gx = x0 + np.array([0.0, size, 0.0, size, size / 2])
+    gy = y0 + np.array([0.0, 0.0, size, size, size / 2])
+    la, lo, _ = frame.enu_to_geodetic(gx, gy, np.zeros(5))
+    return surface.fuel_pads(np.asarray(la), np.asarray(lo))
 
 
 # The near tiles' asphalt (mesh near-visual mode, where the tiles are the ground seen): a mask of the built
@@ -469,15 +480,16 @@ def road_mask(frame, x0, y0, size, px, surface, widths=None):
     ROAD_MASK_MAX_TEXEL, no roads, no cell cached)."""
     if surface is None or size / max(px, 1) > ROAD_MASK_MAX_TEXEL:
         return None
+    pads = pads_mask(frame, x0, y0, size, px, _square_pads(frame, x0, y0, size, surface))
     feats = _square_roads(frame, x0, y0, size, surface)
-    if not feats:
-        return None
-    got = _road_segments(frame, x0, y0, size, px, px, feats, surface.urban, widths)
+    got = _road_segments(frame, x0, y0, size, px, px, feats, surface.urban, widths) if feats else None
     if got is None:
-        return None
+        return pads
     colors = np.array([(255.0, 255.0, 255.0, 1.0 if k in ROAD_MASK_KINDS else 0.0) for k in PHOTO_ROAD_RGBA],
                       np.float32)
     out = fast._ef.paint_lines(np.zeros((px, px, 3), np.uint8), *got, colors)[..., 0]
+    if pads is not None:
+        out = np.maximum(out, pads)
     return out if out.any() else None
 
 
@@ -501,6 +513,90 @@ def paint_lots(idx, lat, lon, feats_list):
     # (grey paving: the cobble layer's setts drew big squares and promenades pink, Harbor Point 2026-10-15)
     idx = _paint(idx, lat, lon, feats_list, _plazas, ASPHALT)
     return _paint(idx, lat, lon, feats_list, _parking, ASPHALT)
+
+
+# Gas station forecourts (gasstations.forecourt_pad: Surface.fuel_pads), asphalt in the ground models, the photo
+# (the paved roads' colour, under the roads) and the near tiles' asphalt mask
+FUEL_PAD_LAYERS = ("places", "buildings", "roads")
+FUEL_PAD_CELLS = 256
+FUEL_PAD_PREFETCH_M = 1500.0    # the pads of the cells this far around the player worked out ahead (Surface.prefetch)
+
+
+def paint_pads(idx, lat, lon, pads):
+    """idx with the pads [(lat (k,), lon (k,))] drawn in as asphalt. Pure."""
+    if not pads:
+        return idx
+    h, w = idx.shape
+    to_px = grid_affine(lat, lon)
+    im = Image.new("L", (w, h), 0)
+    draw = ImageDraw.Draw(im)
+    for la, lo in pads:
+        c, r = to_px(np.asarray(lo), np.asarray(la))
+        if c.max() < 0 or c.min() > w or r.max() < 0 or r.min() > h:
+            continue
+        draw.polygon(list(zip(c.tolist(), r.tolist())), fill=255)
+    out = idx.copy()
+    out[np.asarray(im) > 0] = ASPHALT
+    return out
+
+
+def _pads_px(frame, x0, y0, size, w, h, pads):
+    """A w x h coverage (float 0..1, 2x supersampled edges) of the pads in a photo over [x0, x0 + size]² of frame
+    (row 0 north), or None when none is in it. Drawn only over the pads' bounding box (most tiles have none: no image
+    is made for them)."""
+    if not pads:
+        return None
+    k = 2
+    px_m = w * k / size
+    polys = []
+    for la, lo in pads:
+        e, n, _ = frame.geodetic_to_enu(np.asarray(la), np.asarray(lo), np.zeros(len(la)))
+        c = (np.asarray(e) - x0) * px_m
+        r = (y0 + size - np.asarray(n)) * px_m
+        if c.max() < 0 or c.min() > w * k or r.max() < 0 or r.min() > h * k:
+            continue
+        polys.append((c, r))
+    if not polys:
+        return None
+    c0 = max(0, int(min(c.min() for c, _ in polys)) // k * k)
+    r0 = max(0, int(min(r.min() for _, r in polys)) // k * k)
+    c1 = min(w * k, -(-int(max(c.max() for c, _ in polys) + 1) // k) * k)
+    r1 = min(h * k, -(-int(max(r.max() for _, r in polys) + 1) // k) * k)
+    if c1 <= c0 or r1 <= r0:
+        return None
+    im = Image.new("L", (c1 - c0, r1 - r0), 0)
+    draw = ImageDraw.Draw(im)
+    for c, r in polys:
+        draw.polygon(list(zip((c - c0).tolist(), (r - r0).tolist())), fill=255)
+    sub = np.asarray(im, np.float32).reshape((r1 - r0) // k, k, (c1 - c0) // k, k).mean(axis=(1, 3)) / 255.0
+    out = np.zeros((h, w), np.float32)
+    out[r0 // k:r1 // k, c0 // k:c1 // k] = sub
+    return out
+
+
+def photo_pads(rgb, frame, x0, y0, size, pads):
+    """The photo rgb (H x W x 3, row 0 north, over [x0, x0 + size]² of frame) with the pads painted in the paved
+    roads' colour (PHOTO_ROAD_RGBA). Pure."""
+    h, w = rgb.shape[:2]
+    a = _pads_px(frame, x0, y0, size, w, h, pads)
+    if a is None:
+        return rgb
+    rows, cols = np.flatnonzero(a.any(axis=1)), np.flatnonzero(a.any(axis=0))
+    if not len(rows):
+        return rgb
+    r0, r1, c0, c1 = rows[0], rows[-1] + 1, cols[0], cols[-1] + 1     # (only the pads' box blended)
+    r, g, b, op = PHOTO_ROAD_RGBA["paved"]
+    sub = (a[r0:r1, c0:c1] * op)[..., None]
+    out = rgb.copy()
+    blend = rgb[r0:r1, c0:c1].astype(np.float32) * (1.0 - sub) + np.array([r, g, b], np.float32) * sub
+    out[r0:r1, c0:c1] = np.clip(np.round(blend), 0, 255).astype(np.uint8)
+    return out
+
+
+def pads_mask(frame, x0, y0, size, px, pads):
+    """The pads' coverage (px x px uint8, 255 inside) of a tile photo's square, or None (none in it)."""
+    a = _pads_px(frame, x0, y0, size, px, px, pads)
+    return None if a is None else np.round(a * 255.0).astype(np.uint8)
 
 
 def _parking(feats):
@@ -668,9 +764,15 @@ class Surface:
         self._pending = set()
         self._pending_layers = set()    # (key, layers) queued
         self._last = None           # (lat, lon) of the last prefetch
+        self.gas_pads = False       # gas station forecourts painted asphalt (earthd --gas-stations on: fuel_pads)
+        self._fuel_pads = {}        # cell key -> [(lat (k,), lon (k,))] (fuel_pads), the last FUEL_PAD_CELLS
+        self._pads_pending = set()  # cell keys whose pads are being worked out
+        # (a city cell's took 0.1-0.4 s, half of it reading its map data: never inside a terrain block's build)
+        self._pad_pool = ThreadPoolExecutor(1, thread_name_prefix="surface-pads")
 
     def close(self):
         self.pool.shutdown(wait=False)
+        self._pad_pool.shutdown(wait=False)
 
     def _cached(self, key):
         """The cell's land-cover Raster from the cache, None if absent (a fetch is queued) or no
@@ -721,6 +823,11 @@ class Surface:
                 self._queue(key)
             if not self.md.has(key, "roads"):
                 self._queue(key, ("roads",))
+        if self.gas_pads:               # the forecourts around worked out ahead (fuel_pads never waits for them)
+            plat = FUEL_PAD_PREFETCH_M / 111320.0
+            plon = FUEL_PAD_PREFETCH_M / (111320.0 * max(0.05, math.cos(math.radians(lat))))
+            for key in mapcells.cells_for_bbox(lat - plat, lon - plon, lat + plat, lon + plon):
+                self._queue_pads(key)
 
     def ready(self, lat, lon, radius_m=1000.0, timeout_s=3.0):
         """Fetch the land cover within radius_m now, and the squares and lots (land_use, infrastructure:
@@ -760,6 +867,74 @@ class Surface:
                 log.debug("surface: roads of %s: %s: %s", key, type(e).__name__, e)
                 complete = False
         return out, complete
+
+    def fuel_pads(self, lat, lon):
+        """[(lat (k,), lon (k,))] of the gas station forecourt pads (gasstations.pads_in) in the cells around the
+        points, each cell's worked out once (its places, buildings and roads and the cells around it cached); [] when
+        gas_pads is off. Never waits: a missing layer is fetched in the background and the cell tried again later."""
+        if not self.gas_pads:
+            return []
+        out = []
+        for key in mapcells.cells_for_points(np.asarray(lat, np.float64), np.asarray(lon, np.float64)):
+            got = self._fuel_pads.get(key)
+            if got is None:
+                self._queue_pads(key)
+                continue
+            out.extend(got)
+        return out
+
+    def _queue_pads(self, key):
+        """Work a cell's pads out in the background (_cell_fuel_pads), once at a time."""
+        with self._lock:
+            if key in self._fuel_pads or key in self._pads_pending:
+                return
+            self._pads_pending.add(key)
+
+        def run():
+            try:
+                got = self._cell_fuel_pads(key)
+                if got is not None:
+                    with self._lock:
+                        while len(self._fuel_pads) >= FUEL_PAD_CELLS:
+                            self._fuel_pads.pop(next(iter(self._fuel_pads)))
+                        self._fuel_pads[key] = got
+            except Exception as e:      # the cell without pads, tried again at the next ask
+                log.debug("surface: gas station pads of %s: %s: %s", key, type(e).__name__, e)
+            finally:
+                with self._lock:
+                    self._pads_pending.discard(key)
+        try:
+            self._pad_pool.submit(run)
+        except RuntimeError:            # (closed)
+            with self._lock:
+                self._pads_pending.discard(key)
+
+    def _cell_fuel_pads(self, key):
+        """The pads of the stations whose pin lies in cell key, or None (a layer not cached yet: queued)."""
+        import gasstations
+        import geodesy
+        lon0, lat0, lon1, lat1 = key.bounds()
+        m = 2 * gasstations.REACH_M + gasstations.MERGE_M     # (the stations around, their shops and canopies)
+        dlat = m / 111320.0
+        dlon = m / (111320.0 * max(0.05, math.cos(math.radians(lat0))))
+        keys = mapcells.cells_for_bbox(lat0 - dlat, lon0 - dlon, lat1 + dlat, lon1 + dlon)
+        missing = False
+        for k in keys:
+            for layer in FUEL_PAD_LAYERS:
+                if not self.md.has(k, layer):
+                    self._queue(k, (layer,))
+                    missing = True
+        if missing:
+            return None
+        try:
+            got = {n: [self.md.cell(k, layers=(n,), kind="background").layers.get(n) for k in keys]
+                   for n in FUEL_PAD_LAYERS}
+        except Exception as e:      # an unreadable cache file: like a missing one
+            log.debug("surface: gas station pads of %s: %s: %s", key, type(e).__name__, e)
+            return None
+        frame = geodesy.EnuFrame(*key.center())
+        return gasstations.pads_in(frame, got["places"], got["buildings"], got["roads"],
+                                   lambda la, lo: lat0 <= la < lat1 and lon0 <= lo < lon1)
 
     def lots(self, lat, lon):
         """The "infrastructure" and "land_use" Features of the cells around the points that are cached

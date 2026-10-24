@@ -316,6 +316,28 @@ class ServerSurfaceTest(unittest.TestCase):
         s.dem = self.Dem()
         return s
 
+    def test_gas_stations_paint_pads(self):
+        # --gas-stations on: the ground's painters get the forecourts (Surface.gas_pads); off: they do not
+        sur = sf.Surface(FuelPadTest.MD())
+        self.addCleanup(sur.close)
+        self.make(surface=sur, mapdata=FuelPadTest.MD(), gas_stations=True)
+        self.assertTrue(sur.gas_pads)
+        off = sf.Surface(FuelPadTest.MD())
+        self.addCleanup(off.close)
+        self.make(surface=off, mapdata=FuelPadTest.MD())
+        self.assertFalse(off.gas_pads)
+
+    def test_block_worker_paints_pads(self):
+        import blockworker
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        st = blockworker._State(tmp.name, True, False, False, False, True, gas_stations=True)
+        self.assertTrue(st.surface.gas_pads)
+        st.surface.close()
+        st = blockworker._State(tmp.name, True, False, False, False, True)
+        self.assertFalse(st.surface.gas_pads)
+        st.surface.close()
+
     def test_masks_and_message(self):
         s = self.make(surface=self.NorthGrass())
         a = s.new_anchor(LAT, LON)
@@ -433,6 +455,110 @@ class PhotoRoadsTest(unittest.TestCase):
         self.assertLessEqual(abs(painted - width), 2, f"{painted} px painted across a {width:.1f} m road")
         self.assertEqual(int(out[10, 64, 0]), 30, "the photo kept off the road")
         self.assertTrue(np.array_equal(sf.photo_roads(rgb, frame, -64.0, -64.0, 128.0, []), rgb))
+
+
+class FuelPadTest(unittest.TestCase):
+    """Gas station forecourts painted asphalt (the user, 2026-10-23: "some stations spawn on dirt because we do not
+    paint ashpat there"): Surface.fuel_pads (gasstations.pads_in, once per map cell) and the three painters."""
+
+    class MD:
+        """The gas station fixture (test_gasstations.station_md) in every cell; has() False for the layers in missing."""
+
+        def __init__(self, missing=()):
+            import test_gasstations as tg
+            self.all = tg.station_md().all
+            self.missing, self.cells, self.prefetched = set(missing), 0, []
+
+        def has(self, key, layer):
+            return layer not in self.missing
+
+        def cell(self, key, layers, kind="demand"):
+            import types
+            self.cells += 1
+            return types.SimpleNamespace(layers={n: self.all.get(n) for n in layers})
+
+        def prefetch(self, key, layers):
+            self.prefetched.append(layers)
+            return True
+
+    def station_ll(self):
+        import test_gasstations as tg
+        la, lo, _ = tg.FRAME.enu_to_geodetic(275.0, 100.0, 0.0)       # the fixture's canopy
+        return float(la), float(lo)
+
+    def test_off_by_default(self):
+        sur = sf.Surface(self.MD())
+        la, lo = self.station_ll()
+        self.assertEqual(sur.fuel_pads(np.array([la]), np.array([lo])), [])
+
+    def drain(self, sur):
+        sur._pad_pool.submit(lambda: None).result()             # (one thread: what was queued before is done)
+
+    def test_pads_in_the_background_once_per_cell(self):
+        # a miss never waits (a terrain block is not held up): the cell is worked out in the background, then kept
+        md = self.MD()
+        sur = sf.Surface(md)
+        self.addCleanup(sur.close)
+        sur.gas_pads = True
+        la, lo = self.station_ll()
+        self.assertEqual(sur.fuel_pads(np.array([la]), np.array([lo])), [])
+        self.drain(sur)
+        got = sur.fuel_pads(np.array([la]), np.array([lo]))
+        self.assertTrue(got)
+        n = md.cells
+        self.assertEqual(len(sur.fuel_pads(np.array([la]), np.array([lo]))), len(got))
+        self.assertEqual(md.cells, n, "the cell's pads kept")
+
+    def test_prefetch_works_pads_out_ahead(self):
+        md = self.MD()
+        sur = sf.Surface(md)
+        self.addCleanup(sur.close)
+        sur.gas_pads = True
+        la, lo = self.station_ll()
+        sur.prefetch(la, lo)
+        self.drain(sur)
+        self.assertTrue(sur.fuel_pads(np.array([la]), np.array([lo])), "ready at the first ask")
+
+    def test_missing_layer_queued_no_pads(self):
+        md = self.MD(missing=("places",))
+        sur = sf.Surface(md)
+        sur.gas_pads = True
+        la, lo = self.station_ll()
+        self.assertEqual(sur.fuel_pads(np.array([la]), np.array([lo])), [])
+        self.drain(sur)
+        self.assertEqual(sur.fuel_pads(np.array([la]), np.array([lo])), [])
+        sur.pool.shutdown(wait=True)
+        self.assertIn(("places",), md.prefetched)
+
+    def grid(self):
+        lat0, lon0 = 40.0, -76.0
+        lat = lat0 + np.arange(50)[:, None] * 2e-5 + np.zeros((1, 50))
+        lon = lon0 + np.arange(50)[None, :] * 2.6e-5 + np.zeros((50, 1))
+        a, b = lon0 + 10 * 2.6e-5, lon0 + 20 * 2.6e-5
+        c, d = lat0 + 10 * 2e-5, lat0 + 20 * 2e-5
+        return lat, lon, [(np.array([c, c, d, d]), np.array([a, b, b, a]))]
+
+    def test_paint_pads_asphalt(self):
+        lat, lon, pads = self.grid()
+        idx = np.full((50, 50), sf.DIRT, np.uint8)
+        out = sf.paint_pads(idx, lat, lon, pads)
+        self.assertEqual(out[15, 15], sf.ASPHALT)
+        self.assertEqual(out[40, 40], sf.DIRT)
+        self.assertTrue(np.array_equal(sf.paint_pads(idx, lat, lon, []), idx))
+
+    def test_photo_and_mask_pads(self):
+        import geodesy
+        frame = geodesy.EnuFrame(40.0, -76.0)
+        la, lo, _ = frame.enu_to_geodetic(np.array([-20.0, 20.0, 20.0, -20.0]), np.array([-10.0, -10.0, 10.0, 10.0]),
+                                          np.zeros(4))
+        pads = [(np.asarray(la), np.asarray(lo))]
+        rgb = np.full((128, 128, 3), 30, np.uint8)
+        out = sf.photo_pads(rgb, frame, -64.0, -64.0, 128.0, pads)
+        self.assertGreater(int(out[64, 64, 0]), 60, "the pad painted")
+        self.assertEqual(int(out[10, 10, 0]), 30, "the photo kept off it")
+        m = sf.pads_mask(frame, -64.0, -64.0, 128.0, 128, pads)
+        self.assertEqual(int(m[64, 64]), 255)
+        self.assertEqual(int(m[10, 10]), 0)
 
 
 if __name__ == "__main__":

@@ -497,6 +497,13 @@ def _pair_site(st, shop, blds, roads, kit=None, at_pin=False):
     steps = np.arange(reach + PAIR_HALF[1] + BLD_CLEAR_M, dist, 1.0)
     if shop is None:                            # from the pin both ways, nearest first (the forecourt may be behind it)
         steps = sorted(np.arange(-30.0, dist, 1.0), key=abs)
+    # only what a candidate can touch, once (the search's _clear calls were most of a city cell's pads: 0.35 of 0.48 s)
+    R = max(abs(float(steps[0])) if len(steps) else 0.0, abs(float(steps[-1])) if len(steps) else 0.0, 30.0) \
+        + 8.0 + float(np.hypot(*PAIR_HALF))
+    lo_, hi_ = sc - R - BLD_CLEAR_M, sc + R + BLD_CLEAR_M
+    blds = [b for b in blds if (b.ring.max(0) >= lo_).all() and (b.ring.min(0) <= hi_).all()]
+    roads = [(ln, h) for ln, h in roads
+             if _seg_dist(sc[None], ln[:-1], ln[1:])[0] <= R + h + ROAD_CLEAR_M]
     for t in steps:
         for lat in (0.0, 4.0, -4.0, 8.0, -8.0):
             c = sc + a * t + r * lat
@@ -886,7 +893,12 @@ def forecourt_pad(site, blds, roads, service=()):
     others = [b for b in blds if b is not shop and b not in canopies]
     margin = {(0, 1): PAD_MARGIN_M, (0, -1): PAD_MARGIN_M, (1, 1): PAD_MARGIN_M, (1, -1): PAD_MARGIN_M}
     half = (hl, hw)
-    obstacles = [(_dense(b.ring), PAD_BLD_GAP_M) for b in others] + [(_dense(line), h) for line, h in roads]
+    reach = float(np.hypot(hl, hw)) + PAD_MARGIN_M + 2.0      # (only what can meet the box with its margins)
+    lo_, hi_ = c - reach, c + reach
+    obstacles = [(_dense(b.ring), PAD_BLD_GAP_M) for b in others
+                 if (b.ring.max(0) >= lo_).all() and (b.ring.min(0) <= hi_).all()]
+    obstacles += [(_dense(line), h) for line, h in roads
+                  if (line.max(0) >= lo_ - h).all() and (line.min(0) <= hi_ + h).all()]
     for q, gap in obstacles:
         d = q - c
         a = np.stack([d @ u, d @ v], axis=1)
@@ -938,7 +950,10 @@ def _driveway(pad, centre, others, roads, service):
     strip = np.array([a - side, b - side, b + side, a + side])
     probe = _dense(np.vstack([strip, strip[:1]]), 0.5)
     core = a + (b - a) * np.linspace(0, 1, 9)[:, None]
+    slo, shi = strip.min(0), strip.max(0)
     for bld in others:
+        if (bld.ring.max(0) < slo).any() or (bld.ring.min(0) > shi).any():
+            continue
         if _inside(strip, _dense(bld.ring)).any() or _hits(bld.ring, np.vstack([probe, core])):
             return None
     return strip
@@ -1149,17 +1164,62 @@ def tile_sites(frame, tx, ty, md, elev):
             continue
         if site is not None:
             sites.append(site)
-    recs, skip, shops = [], set(), set()
-    for site in sorted(sites, key=lambda s: (not s.station.confirmed, s.station.id)):
-        # one forecourt per shop and per canopy (the same in every tile: all are laid out)
-        if site.shop_id in shops or skip.intersection(site.drop_ids):
-            continue
-        shops.add(site.shop_id)
+    recs, skip = [], set()
+    for site in _one_per_shop(sites):
         skip.update(site.drop_ids)
         st = site.station
         if x0 <= st.x < x1 and y0 <= st.y < y1:
             recs.append(_record(site, frame, elev))
     return recs, frozenset(skip)
+
+
+def _one_per_shop(sites):
+    """The sites kept: one forecourt per shop and per canopy, a confirmed station first (the same wherever they are
+    all laid out: every road tile, every area of pads_in)."""
+    shops, canopies = set(), set()
+    for site in sorted(sites, key=lambda s: (not s.station.confirmed, s.station.id)):
+        if site.shop_id in shops or canopies.intersection(site.drop_ids):
+            continue
+        shops.add(site.shop_id)
+        canopies.update(site.drop_ids)
+        yield site
+
+
+def pads_in(frame, places, blds, rds, inside):
+    """[(lat (k,), lon (k,))] of the forecourt pads (forecourt_pad) of the stations at (lat, lon) where inside(lat,
+    lon), laid out from the places, buildings and roads Features given (a map area and the cells around it, as the
+    road tiles lay them out: their pumps and these pads agree). Stations within REACH_M of one inside are laid out too
+    (one forecourt per shop). For the ground's painters (surface.Surface.fuel_pads)."""
+    try:
+        stations = merge(pins(frame, places))
+    except Exception as e:      # no places data: no stations
+        log.debug("gas station pads: %s", e)
+        return []
+    pos = [frame.enu_to_geodetic(st.x, st.y, 0.0)[:2] for st in stations]
+    mine = {st.id for st, (la, lo) in zip(stations, pos) if inside(float(la), float(lo))}
+    if not mine:
+        return []
+    near = [st for st in stations if any(np.hypot(st.x - o.x, st.y - o.y) <= 2 * REACH_M for o in stations
+                                         if o.id in mine)]
+    sites = []
+    for st, (la, lo) in ((st, frame.enu_to_geodetic(st.x, st.y, 0.0)[:2]) for st in near):
+        try:
+            site = layout(st, buildings_near(frame, blds, st.x, st.y, REACH_M),
+                          drive_lines(frame, rds, st.x, st.y, REACH_M + 50.0),
+                          service_lines(frame, rds, st.x, st.y, REACH_M), style_of(float(la), float(lo)))
+        except Exception as e:
+            log.debug("gas station pad %s: %s", st.id, e)
+            continue
+        if site is not None:
+            sites.append(site)
+    out = []
+    for site in _one_per_shop(sites):
+        if site.station.id not in mine:
+            continue
+        for poly in site.pad:
+            la, lo, _ = frame.enu_to_geodetic(poly[:, 0], poly[:, 1], np.zeros(len(poly)))
+            out.append((np.asarray(la, np.float64), np.asarray(lo, np.float64)))
+    return out
 
 
 PARK_CLEAR_M = 3.0      # a parked car's spot centre this far from every refuel area's edge and every prop

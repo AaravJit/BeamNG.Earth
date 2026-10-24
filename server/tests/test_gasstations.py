@@ -799,6 +799,26 @@ class TileTest(unittest.TestCase):
         self.assertIn(("--gas-stations", "on"), start.RECOMMENDED)
 
 
+class PadAreaTest(unittest.TestCase):
+    """The pads of a map area's stations in lat / lon, for the ground's painters (surface.Surface.fuel_pads)."""
+
+    def test_pads_in(self):
+        import polygon
+        md = station_md()
+        got = gs.pads_in(FRAME, [md.all["places"]], [md.all["buildings"]], [md.all["roads"]], lambda la, lo: True)
+        self.assertTrue(got)
+        la, lo, _ = FRAME.enu_to_geodetic(275.0, 100.0, 0.0)          # the canopy's centre
+        rings = [np.c_[lon_, lat_] for lat_, lon_ in got]
+        self.assertTrue(any(polygon.contains_points(np.vstack([r, r[:1]]), np.array([[float(lo), float(la)]]))[0]
+                            for r in rings))
+        self.assertEqual(gs.pads_in(FRAME, [md.all["places"]], [md.all["buildings"]], [md.all["roads"]],
+                                    lambda la, lo: False), [])
+
+    def test_pads_in_without_places(self):
+        md = station_md()
+        self.assertEqual(gs.pads_in(FRAME, [None], [md.all["buildings"]], [md.all["roads"]], lambda la, lo: True), [])
+
+
 REAL = __import__("os").environ.get("BNGE_GAS_REAL") == "1"
 
 
