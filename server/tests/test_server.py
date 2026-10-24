@@ -1248,3 +1248,19 @@ class PerfLogTest(ServerHarness):
         self.assertEqual(len(got[1]), 2000, "a line cut to PERF_LOG_CHARS")
         self.assertEqual(got[2], "two lines", "one log line each, not a number")
         self.assertEqual(len(got), 39, "the first PERF_LOG_LINES entries of a message, the number among them left out")
+
+
+class LoadProgressTest(ServerHarness):
+    """The loading line's counts (Connection.send_progress): [done, wanted] of the road, tree and far tiles after a pose."""
+
+    def test_progress_after_a_pose(self):
+        self.hello()
+        aid = self.prepare_anchor(1, LAT, LON)["anchorId"]
+        self.c.send({"type": "commit_anchor", "anchorId": aid})
+        self.pose(aid, 0.0, 0.0)
+        m, _ = self.c.until(lambda m: m["type"] == "load_progress", timeout=30)
+        self.assertEqual(m["anchorId"], aid)
+        for k in ("ground", "roads", "trees", "far"):
+            self.assertEqual(len(m[k]), 2)
+            self.assertTrue(0 <= m[k][0] <= m[k][1], k)
+        self.assertGreater(m["far"][1], 0, "far tiles wanted round the player")

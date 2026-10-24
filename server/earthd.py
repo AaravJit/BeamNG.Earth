@@ -225,6 +225,8 @@ AHEAD_LAYERS = ("roads", "buildings", "building_parts", "infrastructure", "water
 FAST_BASE_V = 70.0              # m/s (157 mph): faster, a block waits at most BASE_FAST_WAIT_S for its photo after its
 BASE_FAST_WAIT_S = 0.15         # heights, then goes without it (block_base later): blocks took 0.6-3 s at 600 mph on a
                                 # Steam Deck, mostly the photo (heights 0.1-0.4 s), and the game paused 11 times a minute
+PROGRESS_S = 0.5            # load_progress at most this often (Connection.send_progress)
+GROUND_WAIT_S = 90.0        # a block's photo still to be drawn again counts as loading this long at most
 PERF_LOG_LINES, PERF_LOG_CHARS = 40, 2000   # a perf_log message's lines and characters a line, at most
 SLOW_BASE_S = 3.0               # a base photo slower than this is logged with its stages
 BASE_PX = 1024                  # detail mode: the block's base photo (1 km -> 1 m per texel; USGS is ~1.9 m)
@@ -2571,6 +2573,8 @@ class Connection:
         self.zmax_region = None
         self.weather = weathermod.Tracker()     # real weather: fetch rule, last message sent
         self.roads = roadsmod.Tracker()         # road tiles sent to the mod (--roads on)
+        self.refining = set()                   # graded first blocks on their way (refine_first; send_progress)
+        self.ground_wait = {}                   # block key -> when its photo was first seen waiting (ground_progress)
         self.veg = vegetationmod.Tracker()      # vegetation tiles sent to the mod (--trees on)
         # far buildings (--buildings on); none under the road tiles (they carry the buildings themselves)
         self.bldfar = vegetationmod.Tracker(buildingsmod.FAR_SEND_M, buildingsmod.FAR_DROP_M,
@@ -2777,6 +2781,35 @@ class Connection:
             m["radius"] = round(self.radius)
             self.radius_sent = self.radius
         self.send(m)
+
+    def send_progress(self, aid):
+        """The loading line's counts (the mod's loadprogress.lua): (done, wanted) of the road tiles, the tree tiles and
+        the far tiles round the player, sent when they change, at most every PROGRESS_S."""
+        roads = self.roads.progress() if self.s.mapdata is not None else (0, 0)
+        trees = self.veg.progress() if self.s.veg is not None else (0, 0)
+        want = len(self.desired)
+        far = (want - self.backlog(), want)
+        counts = (self.ground_progress(aid), roads, trees, far)
+        now = time.monotonic()
+        if counts == getattr(self, "progress_sent", None) or now - getattr(self, "progress_at", 0.0) < PROGRESS_S:
+            return
+        self.progress_sent, self.progress_at = counts, now
+        self.send({"type": "load_progress", "anchorId": aid, "ground": list(counts[0]), "roads": list(roads),
+                   "trees": list(trees), "far": list(far)})
+
+    def ground_progress(self, aid):
+        """(1, 1) once the ground under the player is final, else (0, 1): a teleport's graded first block still on its
+        way (refine_first), or the block in use waiting to be drawn again with its full photo (a quick one without the
+        painted roads, or one without all its imagery: base_refresh), for GROUND_WAIT_S at most (an imagery source
+        that does not come back must not hold the loading line)."""
+        if any(k[0] == aid for k in self.refining):
+            return 0, 1
+        s = self.s
+        key = next((k for k in reversed(s.hm_committed) if k[0] == aid), None)
+        if key is None or s.near_visual != "detail" or not (key in s.base_stale or self.base_busy):
+            return 1, 1
+        since = self.ground_wait.setdefault(key, time.monotonic())
+        return (1, 1) if time.monotonic() - since > GROUND_WAIT_S else (0, 1)
 
     def refresh_status(self):
         """Re-send the last status when the network note changed (a host went down or came back);
@@ -3103,11 +3136,14 @@ class Connection:
         any block, sent as terrain_refresh (the mod swaps it in while that block is still its own). The provisional
         .ter is deleted a while later (the game may still be reading it)."""
         key = (anchor.id, cx, cy)
+        self.refining.add(key)              # (the loading line's ground: send_progress)
         try:
             info = await self.s.terrain(anchor, cx, cy)
         except Exception:
             log.exception("graded first block %s failed (the provisional one stays)", key)
             return
+        finally:
+            self.refining.discard(key)
         self.s.hm_sent.append(key)
         log.info("anchor %d: graded first block in %.2f s after the request", anchor.id, time.perf_counter() - t0)
         self.send({"type": "terrain_refresh", "anchorId": anchor.id, **self.terrain_msg(key, info)})
@@ -3335,6 +3371,8 @@ class Connection:
                                 view=self.view_at)
         if self.s.traffic and aid == self.active:
             self.nav.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_navgraph)
+        if aid == self.active:
+            self.send_progress(aid)
         self.refresh_status()
         self.credits.poke(self)             # the player moved: the near / far credits may change
 

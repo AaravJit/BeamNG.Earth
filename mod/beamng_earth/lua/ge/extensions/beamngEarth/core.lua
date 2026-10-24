@@ -48,6 +48,7 @@ local ui = require('beamngEarth/ui')
 local settings = require('beamngEarth/settings') -- the pause-menu page's values (docs/DEVTOOLS.md)
 local credits = require('beamngEarth/credits') -- the on-screen data credits (docs/DEVTOOLS.md)
 local statusbar = require('beamngEarth/statusbar') -- the slim bar at the top: street, place, loading, fps
+local loadprogress = require('beamngEarth/loadprogress') -- the bar's loading line after a teleport
 local places = require('beamngEarth/places') -- saved and recent places (the settings page)
 local levelinfo = require('beamngEarth/levelinfo') -- the level select's spawn points: the places, Random
 local banner = require('beamngEarth/banner') -- the connection banner (docs/DEVTOOLS.md)
@@ -133,6 +134,7 @@ local updateHidden = false   -- the notice closed for this session (its releases
 local cacheClears = 0         -- answers to a clear so far (the settings page waits for the next one)
 
 local function resetState()
+  loadprogress.reset()
   st = {
     inOurLevel = false,
     active = false,          -- world logic running (rebase, far field, sky, pose)
@@ -736,6 +738,8 @@ local function onMessage(msg)
     st.serverBacklog = tonumber(msg.backlog)
     -- M1h: the far-field radius rides on every status in horizon mode (the view distance follows it)
     if msg.radius ~= nil then M.setFarRadius(msg.radius) end
+  elseif t == 'load_progress' then      -- the loading line's counts (server Connection.send_progress)
+    st.loadProgress = msg
   elseif t == 'share' then              -- our world server serving our BeamMP group (mpsession.lua, peerwork.py)
     pcall(mpsession.onShare, msg)
   elseif t == 'terrain_patch' then
@@ -993,6 +997,7 @@ local function updateDropHold(dt)
   if not st.paused and drophold.observe(h, pl.x, pl.y, pl.z, pl.speed, dt, st.anchorId, box, busy, nearReady) == 'start' then
     log('I', 'beamngEarth', string.format('drop hold: the car is %.0f m from the block; paused until its ground, bridges ' ..
       'and buildings load', box and math.max(box[1] - pl.x, pl.x - box[3], box[2] - pl.y, pl.y - box[4], 0) or -1))
+    loadprogress.start(st.clock)    -- a jump the mod did not make (F7, the world editor): the bar says "Loading" too
     if not simPaused() then
       simPause(true)
       h.pausedByUs = true
@@ -1311,11 +1316,35 @@ end
 -- attribution line. Called every frame then, so no farfield.stats() table: its counters only.
 local function creditsFallback() return attributionText(farfield.counters()) end
 
+-- The status bar's loading part (loadprogress.lua): false when no load is on; worked out at most every LOAD_LINE_S.
+local LOAD_LINE_S = 0.25
+local loadLineAt, loadLineText = -math.huge, false
+local function loadLine()
+  if not loadprogress.active() then return false end
+  if st.clock - loadLineAt < LOAD_LINE_S then return loadLineText end
+  loadLineAt = st.clock
+  local p = st.pending
+  local placed = st.anchor ~= nil and not (p and (p.purpose == 'teleport' or p.purpose == 'resync'))
+    and st.placeFrames == nil and not dropHold.active
+  local lp = st.loadProgress
+  local pend = {}
+  local okR, rs = pcall(roads.status)
+  if okR and rs then pend.roads = (rs.queued or 0) + (rs.walksQueued or 0) end
+  local okT, ts = pcall(trees.status)
+  if okT and ts then pend.trees = ts.pending or 0 end
+  local okF, fs = pcall(farfield.stats)
+  if okF and fs then pend.far = fs.queued or 0 end
+  loadLineText = loadprogress.line(st.clock, { placed = placed,
+    progress = lp and lp.anchorId == st.anchorId and lp or nil, pending = pend }) or false
+  return loadLineText
+end
+
 -- The UI apps' texts (hudapps.update calls it at most every SEND_S while an app is on screen).
 local hudInput = { banner = nil }
 local function hudTexts()
   local shown = st.inOurLevel and st.active
-  hudInput.status = shown and statusbar.enabled and statusbar.text(st.status) or ''
+  hudInput.status = shown and statusbar.enabled and statusbar.text(st.status, loadLine()) or ''
+  hudInput.loading = shown and statusbar.enabled and statusbar.loading(st.status, loadLine()) or ''
   hudInput.credits = st.active and credits.enabled and credits.text(creditsFallback) or ''
   hudInput.banner = (st.inOurLevel or st.active) and banner.enabled and banner.current() or nil
   hudInput.hidden = credits.hiddenByUi()
@@ -1376,7 +1405,15 @@ end
 local beammpBroken = false   -- an error in the BeamMP window turns it off for the session
 local mpsessionBroken = false -- the same for the BeamMP session by area (mpsession.lua)
 -- the minimap's label (hudapps.hookCityZone)
-local function minimapName() return hudapps.minimapName(statusbar.location()) end
+-- (the car's coordinates, formatted again only when they change at the label's 5 decimals)
+local coordsKey, coordsText = nil, nil
+local function minimapName()
+  local p = st.player
+  if not (p and p.lat and p.lon) then return hudapps.minimapName(statusbar.location()) end
+  local k = math.floor(p.lat * 1e5 + 0.5) * 1e7 + math.floor(p.lon * 1e5 + 0.5)
+  if k ~= coordsKey then coordsKey, coordsText = k, hudapps.coordsLabel(p.lat, p.lon) end
+  return coordsText
+end
 -- the minimap compass's true north at the camera (hudapps.hookMinimapNorth)
 local function minimapNorth()
   if not st.anchor then return nil end
@@ -1391,7 +1428,7 @@ local function drawUi(dt)
   updateBanner(dt)
   if not hudapps.mounted('banner') then banner.draw(st.inOurLevel or st.active, credits.hiddenByUi()) end
   if not hudapps.mounted('status') then
-    statusbar.draw(st.inOurLevel and st.active, credits.hiddenByUi(), st.status)
+    statusbar.draw(st.inOurLevel and st.active, credits.hiddenByUi(), st.status, loadLine())
   end
   hudapps.update(st.clock or 0, hudTexts)
   if st.inOurLevel then
@@ -1888,6 +1925,8 @@ teleportTo = function(lat, lon, name, kind)
   end
   if requestAnchor(aLat, aLon, 'teleport', cx, cy, place) then
     setStatus(string.format('Preparing terrain at %.5f, %.5f ...', lat, lon))
+    loadprogress.reset()
+    loadprogress.start(st.clock)        -- the bar says "Loading" from now (loadprogress.lua)
     parking.onTeleport()
     navgraph.onTeleport()
     do local ok, err = pcall(farcars.onTeleport) if not ok then log('W', 'beamngEarth', 'far cars: ' .. tostring(err)) end end

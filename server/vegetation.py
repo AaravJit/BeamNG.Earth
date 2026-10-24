@@ -702,6 +702,11 @@ class Tracker:
         if self.pool is not None:
             self.pool.shutdown(wait=False, cancel_futures=True)
 
+    def progress(self):
+        """(done, wanted) of the tiles round the car at the last pose (done: sent to the mod); (0, 0) before one."""
+        car = getattr(self, "car", ())
+        return sum(1 for k in car if k in self.sent), len(car)
+
     def on_pose(self, conn, aid, x, y, loop, build, view=None, foci=()):
         """As roads.Tracker.on_pose: the tiles within send_m of the car (x, y) and of the camera when it is away
         (view), the car's first; dropped beyond drop_m of both. foci: other vehicles' collision foci (x, y, r, ...)
@@ -717,6 +722,7 @@ class Tracker:
         spots = [(x, y)] + ([tuple(view)] if view else [])
         skip = {k for p in spots for k in roadsmod.tiles_near(*p, self.skip_m)} if self.skip_m else ()
         car = set(roadsmod.tiles_near(x, y, self.send_m))
+        self.car = car - set(skip)          # (progress: the loading line's tiles)
         seen = set(roadsmod.tiles_near(*view, self.send_m)) - car if view else set()
         others = set()
         for f in foci:
