@@ -1,8 +1,7 @@
-"""Render mapped Overture guard rails as a lightweight per-tile mesh.
+"""Place mapped Overture guard rails using the stock Italy guardrail Forest models.
 
-Only guard rails already present in the map data are rendered. The mesh uses the
-game's shared `guardrail` material and is render-only; it does not add collision
-objects to every road tile.
+Only mapped guard rails are rendered. Their Forest rows reuse the game's model batching
+and near-field collision path instead of creating a custom mesh for every road tile.
 """
 import hashlib
 import json
@@ -16,12 +15,6 @@ import mapgeom
 
 log = logging.getLogger("earthd.guardrails")
 
-POST_SPACING_M = 2.0
-POST_WIDTH_M = 0.08
-POST_HEIGHT_M = 0.88
-RAIL_DEPTH_M = 0.07
-RAIL_BOTTOM_M = 0.62
-RAIL_TOP_M = 0.78
 BBOX_PAD_M = 2.0
 
 
@@ -202,30 +195,6 @@ def _at(line, arc, distance):
     return line[k] + t * d, d / length
 
 
-def _clip_segment(a, b, box):
-    """Clip segment a-b to (x0, y0, x1, y1); return clipped endpoints or None."""
-    x0, y0, x1, y1 = box
-    dx, dy = float(b[0] - a[0]), float(b[1] - a[1])
-    t0, t1 = 0.0, 1.0
-    for p, q in ((-dx, float(a[0] - x0)), (dx, float(x1 - a[0])),
-                 (-dy, float(a[1] - y0)), (dy, float(y1 - a[1]))):
-        if abs(p) < 1e-12:
-            if q < 0.0:
-                return None
-            continue
-        r = q / p
-        if p < 0.0:
-            t0 = max(t0, r)
-        else:
-            t1 = min(t1, r)
-        if t0 > t1:
-            return None
-    return a + t0 * (b - a), a + t1 * (b - a)
-
-
-DECK_AUTO_SNAP_TOLERANCE_M = 1.5  # An untagged barrier may be snapped to a deck only when terrain agrees.
-
-
 def _surface_z(frame, points, elev, decks, deck_preference=None):
     """Sample terrain first; snap to a deck only when tags identify its level or heights agree.
 
@@ -280,162 +249,6 @@ def _surface_z(frame, points, elev, decks, deck_preference=None):
     use_deck = explicit_bridge | terrain_matches
     return np.where(use_deck, deck_z, ground_z)
 
-
-
-def _quad(triangles, a, b, c, d):
-    triangles.extend(((a, b, c), (a, c, d)))
-
-
-def _prism(vertices, triangles, uvs, p0, p1, z0, z1, depth, bottom, top, origin):
-    """A rectangular beam following p0-p1, with offsets above the sampled ground."""
-    tangent = np.asarray(p1, np.float64) - np.asarray(p0, np.float64)
-    length = float(np.hypot(tangent[0], tangent[1]))
-    if length < 1e-3:
-        return
-    tangent /= length
-    normal = np.array([-tangent[1], tangent[0]]) * (depth / 2.0)
-    a, b = np.asarray(p0, np.float64), np.asarray(p1, np.float64)
-    base = len(vertices)
-    corners = (a + normal, a - normal, b - normal, b + normal)
-    for q, zz, u in ((corners[0], z0 + bottom, 0), (corners[1], z0 + bottom, 0),
-                     (corners[2], z1 + bottom, length), (corners[3], z1 + bottom, length),
-                     (corners[0], z0 + top, 0), (corners[1], z0 + top, 0),
-                     (corners[2], z1 + top, length), (corners[3], z1 + top, length)):
-        vertices.append((float(q[0] - origin[0]), float(q[1] - origin[1]), float(zz - origin[2])))
-        uvs.append((float(u), float(0 if len(vertices) - base <= 4 else 1)))
-    # Outward-facing bottom, top, sides and ends.
-    _quad(triangles, base + 0, base + 3, base + 2, base + 1)
-    _quad(triangles, base + 4, base + 5, base + 6, base + 7)
-    _quad(triangles, base + 0, base + 4, base + 7, base + 3)
-    _quad(triangles, base + 1, base + 2, base + 6, base + 5)
-    _quad(triangles, base + 0, base + 1, base + 5, base + 4)
-    _quad(triangles, base + 3, base + 7, base + 6, base + 2)
-
-
-def _post(vertices, triangles, uvs, centre, tangent, z, origin):
-    """A square post, oriented with the mapped line."""
-    t = np.asarray(tangent, np.float64)
-    t /= max(float(np.hypot(t[0], t[1])), 1e-9)
-    n = np.array([-t[1], t[0]])
-    c = np.asarray(centre, np.float64)
-    half = POST_WIDTH_M / 2.0
-    # Counter-clockwise footprint, then its top.
-    footprint = (c - t * half - n * half, c + t * half - n * half,
-                 c + t * half + n * half, c - t * half + n * half)
-    base = len(vertices)
-    for q in footprint:
-        vertices.append((float(q[0] - origin[0]), float(q[1] - origin[1]), float(z - 0.04 - origin[2])))
-        uvs.append((0.0, 0.0))
-    for q in footprint:
-        vertices.append((float(q[0] - origin[0]), float(q[1] - origin[1]),
-                         float(z + POST_HEIGHT_M - origin[2])))
-        uvs.append((1.0, 1.0))
-    _quad(triangles, base + 0, base + 3, base + 2, base + 1)
-    _quad(triangles, base + 4, base + 5, base + 6, base + 7)
-    _quad(triangles, base + 0, base + 1, base + 5, base + 4)
-    _quad(triangles, base + 1, base + 2, base + 6, base + 5)
-    _quad(triangles, base + 2, base + 3, base + 7, base + 6)
-    _quad(triangles, base + 3, base + 0, base + 4, base + 7)
-
-
-def mesh(frame, infra_fn, exact, elev, origin=(0.0, 0.0, 0.0), decks=()):
-    """Build a tile-local (positions, triangles, UVs) mesh from mapped barrier=guard_rail lines.
-
-    Every 2 m a post is placed. Rails are clipped to the exact tile bounds so adjacent tile
-    meshes meet without duplicate sections. The shape is render-only in the Lua client.
-    """
-    if infra_fn is None:
-        return None
-    bridge_buffer = _bridge_buffer_segments(decks)
-    x0, y0, x1, y1 = map(float, exact)
-    corners_x = np.array([x0, x0, x1, x1], np.float64)
-    corners_y = np.array([y0, y1, y0, y1], np.float64)
-    la, lo, _ = frame.enu_to_geodetic(corners_x, corners_y, np.zeros(4, np.float64))
-    try:
-        keys = mapcells.cells_for_points(la, lo, pad_lat=0.00005, pad_lon=0.00005, max_cells=64)
-    except (ValueError, OverflowError):
-        return None
-
-    seen = set()
-    rail_sections, post_sites, query_points, query_deck_hints = [], [], [], []
-    for key in keys:
-        try:
-            feats = infra_fn(key)
-        except Exception as ex:
-            log.debug("guardrails: infrastructure cell %s unavailable: %s", key, ex)
-            continue
-        if feats is None or not len(feats):
-            continue
-        classes = feats.attrs.get("class")
-        if classes is None and feats.attrs.get("tags") is None:
-            continue
-        boxes = feats.boxes(frame)
-        for i in range(len(feats)):
-            fid = str(feats.ids[i])
-            if fid in seen or int(feats.kind[i]) != mapgeom.LINE or not _is_guardrail(feats, i):
-                continue
-            b = boxes[i]
-            if b[2] < x0 - BBOX_PAD_M or b[0] > x1 + BBOX_PAD_M or b[3] < y0 - BBOX_PAD_M or b[1] > y1 + BBOX_PAD_M:
-                continue
-            seen.add(fid)
-            deck_hint = _deck_level_hint(feats, i)
-            for part in feats.parts(i):
-                if not part:
-                    continue
-                lonlat = np.asarray(part[0], np.float64)
-                if len(lonlat) < 2:
-                    continue
-                e, n = mapgeom.enu_xy(feats, frame, lonlat)
-                line = np.column_stack((e, n))
-                seglen = np.hypot(*np.diff(line, axis=0).T)
-                line = line[np.r_[True, seglen > 1e-4]]
-                if len(line) < 2:
-                    continue
-                seglen = np.hypot(*np.diff(line, axis=0).T)
-                arc = np.r_[0.0, np.cumsum(seglen)]
-                total = float(arc[-1])
-                if total < 0.05:
-                    continue
-                sample = np.unique(np.r_[arc, np.arange(0.0, total, POST_SPACING_M), total])
-                for sa, sb in zip(sample[:-1], sample[1:]):
-                    if sb - sa < 1e-4:
-                        continue
-                    a, ta = _at(line, arc, float(sa))
-                    b, _ = _at(line, arc, float(sb))
-                    clipped = _clip_segment(a, b, (x0, y0, x1, y1))
-                    if clipped is None:
-                        continue
-                    p0, p1 = clipped
-                    if float(np.hypot(*(p1 - p0))) < 0.05:
-                        continue
-                    if _within_bridge_buffer(p0, p1, bridge_buffer):
-                        continue
-                    k = len(query_points)
-                    query_points.extend((p0, p1))
-                    query_deck_hints.extend((deck_hint, deck_hint))
-                    rail_sections.append((k, k + 1, p0, p1, deck_hint))
-                for s in np.arange(0.0, total + 1e-6, POST_SPACING_M):
-                    p, tangent = _at(line, arc, float(s))
-                    if (x0 <= p[0] < x1 and y0 <= p[1] < y1 and
-                            not _within_bridge_buffer(p, p, bridge_buffer)):
-                        k = len(query_points)
-                        query_points.append(p)
-                        query_deck_hints.append(deck_hint)
-                        post_sites.append((k, p, tangent, deck_hint))
-
-    if not query_points:
-        return None
-    z = _surface_z(frame, np.asarray(query_points, np.float64), elev, decks,
-                   deck_preference=query_deck_hints)
-    vertices, triangles, uvs = [], [], []
-    for i0, i1, p0, p1, _deck_hint_value in rail_sections:
-        _prism(vertices, triangles, uvs, p0, p1, float(z[i0]), float(z[i1]),
-               RAIL_DEPTH_M, RAIL_BOTTOM_M, RAIL_TOP_M, origin)
-    for i, p, tangent, _deck_hint_value in post_sites:
-        _post(vertices, triangles, uvs, p, tangent, float(z[i]), origin)
-    if not triangles:
-        return None
-    return (np.asarray(vertices, np.float32), np.asarray(triangles, np.int32), np.asarray(uvs, np.float32))
 
 
 # Stock Italy guardrail modules are 3 m long and overlap by 0.2 m at 2.8 m spacing.
