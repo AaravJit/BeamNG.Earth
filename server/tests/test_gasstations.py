@@ -481,6 +481,53 @@ class RegionTest(unittest.TestCase):
         self.assertTrue(any(p["shape"].endswith("italy_petrolstation_awningSt.DAE") for p in recs[0]["props"]))
 
 
+def in_pad(site, x, y):
+    import polygon
+    pt = np.array([[x, y]])
+    return any(bool(polygon.contains_points(np.vstack([r, r[:1]]), pt)[0]) for r in site.pad)
+
+
+class PadTest(unittest.TestCase):
+    """The forecourt's asphalt (the user, 2026-10-23: "some stations spawn on dirt because we do not paint ashpat
+    there"; "I'd start with the pad and driveway, some driveways are there if caught by OSM but some do not")."""
+
+    ROOF = rect("roof", 0.0, 22.0, 30.0, 13.0, cls="roof")      # y 15.5 .. 28.5; the road's edge at y = 5
+
+    def test_pad_canopy_margin_shop_and_driveway(self):
+        site = gs.layout(STATION, [SHOP, self.ROOF], ROAD)
+        self.assertTrue(in_pad(site, 0.0, 22.0))
+        self.assertTrue(in_pad(site, 20.0, 22.0), "5 m past the canopy's end")
+        self.assertFalse(in_pad(site, 23.0, 22.0), "not more than the margin past it")
+        self.assertTrue(in_pad(site, 0.0, 35.0), "up to the shop's front (y = 36)")
+        self.assertTrue(in_pad(site, 0.0, 7.0), "the driveway to the road")
+        self.assertFalse(in_pad(site, 0.0, 3.0), "not across the road")
+        self.assertFalse(in_pad(site, 30.0, 7.0), "the driveway a strip, not the whole frontage")
+
+    def test_mapped_driveway_no_strip(self):
+        drive = [lane(0.0, 14.0, 0.0, 2.0)]        # a service road from the forecourt into the street
+        with_drive = gs.layout(STATION, [SHOP, self.ROOF], ROAD, service=drive)
+        without = gs.layout(STATION, [SHOP, self.ROOF], ROAD)
+        self.assertEqual(len(with_drive.pad), len(without.pad) - 1)
+        self.assertFalse(in_pad(with_drive, 0.0, 7.0), "the mapped driveway is painted as a road already")
+
+    def test_pad_stops_short_of_a_neighbour(self):
+        house = rect("house", 23.0, 22.0, 6.0, 10.0, cls="house")       # its west wall at x = 20, 5 m off the canopy
+        site = gs.layout(STATION, [SHOP, self.ROOF, house], ROAD)
+        self.assertTrue(in_pad(site, 18.0, 22.0))
+        self.assertFalse(in_pad(site, 19.8, 22.0), "half a metre short of the house")
+
+    def test_pump_pair_pad(self):
+        site = gs.layout(STATION, [SHOP], ROAD)
+        for a in site.areas:
+            self.assertTrue(in_pad(site, a["x"], a["y"]), a)
+
+    def test_driveway_blocked_by_a_building_left_out(self):
+        wall = rect("wall", 0.0, 7.0, 60.0, 3.0, cls="retail")          # a building between the forecourt and the road
+        site = gs.layout(STATION, [SHOP, self.ROOF, wall], ROAD)
+        self.assertFalse(in_pad(site, 0.0, 4.8))
+        self.assertFalse(any(in_pad(site, x, 7.0) for x in (-20.0, 0.0, 20.0)), "nothing painted through it")
+
+
 def lane(x0, y0, x1, y1):
     return np.array([(x0, y0), (x1, y1)], np.float64)
 

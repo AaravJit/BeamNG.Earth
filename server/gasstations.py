@@ -16,7 +16,7 @@ import hashlib
 import logging
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -410,6 +410,7 @@ class Site:
     areas: list         # {"x", "y", "dz", "yaw", "half", "icon"}: one refuel area per pump (icon: its height over it)
     drop_ids: tuple     # buildings left out of the mesh (the canopy outline)
     shop_id: str = ""   # one station per shop (unmerged pins of one station: tile_sites)
+    pad: list = field(default_factory=list)    # (k, 2) polygons of the forecourt's asphalt (forecourt_pad)
 
 
 def _yaw(u):
@@ -817,6 +818,138 @@ def _under(p, canopy):
 
 
 def layout(st, blds, roads, service=(), style="default"):
+    """The station's forecourt (_layout) with its asphalt (forecourt_pad), or None."""
+    site = _layout(st, blds, roads, service, style)
+    if site is not None:
+        site.pad = forecourt_pad(site, blds, roads, service)
+    return site
+
+
+# --- the forecourt's asphalt (the user, 2026-10-23: "some stations spawn on dirt because we do not paint ashpat there";
+# "I'd start with the pad and driveway, some driveways are there if caught by OSM but some do not obviously") -------
+PAD_MARGIN_M = 6.0          # around the islands or pumps: room to drive round them
+PAD_BLD_GAP_M = 0.5         # short of a neighbour's walls
+PAD_SHOP_LINK_M = 10.0      # the shop's front this close: the asphalt reaches it
+DRIVEWAY_W_M = 8.0          # a driveway made up where none is mapped ...
+DRIVEWAY_MAX_M = 40.0       # ... to a road at most this far from the pad
+DRIVEWAY_MAPPED_M = 3.0     # a service road with a point this near the pad and one this near a road's edge: mapped
+
+
+def _hull(pts):
+    """The convex hull of points (k, 2), counter-clockwise, not closed."""
+    p = sorted(set(map(tuple, np.round(np.asarray(pts, np.float64), 6).tolist())))
+    if len(p) < 3:
+        return np.array(p, np.float64)
+
+    def half(seq):
+        out = []
+        for q in seq:
+            while len(out) >= 2 and ((out[-1][0] - out[-2][0]) * (q[1] - out[-2][1])
+                                     - (out[-1][1] - out[-2][1]) * (q[0] - out[-2][0])) <= 0:
+                out.pop()
+            out.append(q)
+        return out
+    lo, hi = half(p), half(reversed(p))
+    return np.array(lo[:-1] + hi[:-1], np.float64)
+
+
+def _dense(ring, step=1.0):
+    """A polyline's points at most step apart."""
+    ring = np.asarray(ring, np.float64)
+    out = [ring[:1]]
+    for a, b in zip(ring[:-1], ring[1:]):
+        n = max(1, int(math.ceil(float(np.hypot(*(b - a))) / step)))
+        out.append(a + (b - a) * (np.arange(1, n + 1) / n)[:, None])
+    return np.vstack(out)
+
+
+def _inside(poly, pts):
+    import polygon
+    return polygon.contains_points(np.vstack([poly, poly[:1]]), np.asarray(pts, np.float64))
+
+
+def forecourt_pad(site, blds, roads, service=()):
+    """The forecourt's asphalt as polygons (k, 2) in the site's frame: the box around its refuel areas, props and
+    canopies with PAD_MARGIN_M on each side (less where a neighbour's wall or a road's edge is nearer), reaching to the
+    shop's front when that is within PAD_SHOP_LINK_M, and a DRIVEWAY_W_M strip to the nearest public road unless a
+    mapped service road already joins the two or a building stands between them."""
+    canopies = [b for b in blds if b.id in site.drop_ids]
+    shop = next((b for b in blds if b.id == site.shop_id), None)
+    pts = [_area_pts(a["x"], a["y"], a["yaw"]) for a in site.areas]
+    pts += [np.array([[p["x"], p["y"]]]) for p in site.props]
+    pts += [c.ring for c in canopies]
+    hull = _hull(np.vstack(pts))
+    if len(hull) < 3:
+        return []
+    c, u, hl, hw = _obox(hull)
+    v = np.array([-u[1], u[0]])
+    others = [b for b in blds if b is not shop and b not in canopies]
+    margin = {(0, 1): PAD_MARGIN_M, (0, -1): PAD_MARGIN_M, (1, 1): PAD_MARGIN_M, (1, -1): PAD_MARGIN_M}
+    half = (hl, hw)
+    obstacles = [(_dense(b.ring), PAD_BLD_GAP_M) for b in others] + [(_dense(line), h) for line, h in roads]
+    for q, gap in obstacles:
+        d = q - c
+        a = np.stack([d @ u, d @ v], axis=1)
+        for ax in (0, 1):
+            other = 1 - ax
+            for sg in (1, -1):
+                beyond = sg * a[:, ax] - half[ax]
+                sel = (beyond > 0) & (np.abs(a[:, other]) <= half[other] + margin[(other, 1)] + gap)
+                if sel.any():
+                    margin[(ax, sg)] = max(0.0, min(margin[(ax, sg)], float(beyond[sel].min()) - gap))
+    x0, x1 = -hl - margin[(0, -1)], hl + margin[(0, 1)]
+    y0, y1 = -hw - margin[(1, -1)], hw + margin[(1, 1)]
+    box = np.array([c + u * x + v * y for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))])
+    pad = box
+    if shop is not None and _gap(shop.ring, np.vstack([box, box[:1]])) <= PAD_SHOP_LINK_M:
+        pad = _hull(np.vstack([box, shop.ring]))
+    out = [pad]
+    strip = _driveway(pad, c, others, roads, service)
+    if strip is not None:
+        out.append(strip)
+    return out
+
+
+def _driveway(pad, centre, others, roads, service):
+    """A DRIVEWAY_W_M strip from the pad to the nearest public road's edge, or None: the pad reaches the road, the road
+    is farther than DRIVEWAY_MAX_M, a mapped service road joins them, or a building is in the way."""
+    if not len(roads):
+        return None
+    edge = _dense(np.vstack([pad, pad[:1]]), 0.5)
+    best = None
+    for line, h in roads:
+        d = _seg_dist(edge, line[:-1], line[1:]) - h
+        best = d if best is None else np.minimum(best, d)
+    dmin = float(best.min())
+    if dmin <= PAD_BLD_GAP_M or dmin > DRIVEWAY_MAX_M:
+        return None
+    for line in service:                        # (the mapped driveway: painted as a road already)
+        q = _dense(line)
+        near_pad = _inside(pad, q).any() or (_seg_dist(q, edge[:-1], edge[1:]) <= DRIVEWAY_MAPPED_M).any()
+        near_road = any((_seg_dist(q, r[:-1], r[1:]) <= h + DRIVEWAY_MAPPED_M).any() for r, h in roads)
+        if near_pad and near_road:
+            return None
+    cand = np.flatnonzero(best <= dmin + 0.5)
+    p = edge[cand[int(np.argmin(np.hypot(*(edge[cand] - centre).T)))]]
+    q, _, k = _nearest_on(roads, p)
+    dirn = (q - p) / max(float(np.hypot(*(q - p))), 1e-9)
+    side = np.array([-dirn[1], dirn[0]]) * (DRIVEWAY_W_M / 2)
+    a, b = p - dirn * 1.0, p + dirn * (float(np.hypot(*(q - p))) - roads[k][1] + PAD_BLD_GAP_M)
+    strip = np.array([a - side, b - side, b + side, a + side])
+    probe = _dense(np.vstack([strip, strip[:1]]), 0.5)
+    core = a + (b - a) * np.linspace(0, 1, 9)[:, None]
+    for bld in others:
+        if _inside(strip, _dense(bld.ring)).any() or _hits(bld.ring, np.vstack([probe, core])):
+            return None
+    return strip
+
+
+def _hits(ring, pts):
+    import polygon
+    return bool(polygon.contains_points(ring, pts).any())
+
+
+def _layout(st, blds, roads, service=(), style="default"):
     """The station's forecourt (a Site), or None. The shop (find_shop); then, most exact first: the forecourt's mapped
     drive lanes among the service roads (find_lanes), else lanes made up under its canopy (find_canopy,
     _outline_lanes): islands between them under a roof slab (_lane_site); else a pump pair clear of roads and
