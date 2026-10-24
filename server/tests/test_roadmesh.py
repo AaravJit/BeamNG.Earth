@@ -211,6 +211,20 @@ class BridgeLookTest(unittest.TestCase):
     def parapet_tops(self, P):
         return P[np.abs(P[:, 2] - (20.0 + roadmesh.PARAPET_H)) < 1e-6]
 
+    def test_parapet_runs_are_the_drawn_concrete_wall_lines(self):
+        runs = roadmesh.parapet_runs([self.deck(0.0, "a")])
+        self.assertEqual(len(runs), 2)
+        ys = sorted(float(np.mean(run["line"][:, 1])) for run in runs)
+        offset = 4.0 + roadmesh.PARAPET_W / 2
+        np.testing.assert_allclose(ys, [-offset, offset], atol=0.02)
+
+    def test_parapet_runs_exclude_the_centre_between_adjacent_decks(self):
+        runs = roadmesh.parapet_runs([self.deck(0.0, "a"), self.deck(8.0, "b")])
+        self.assertEqual(len(runs), 2)
+        ys = sorted(float(np.mean(run["line"][:, 1])) for run in runs)
+        self.assertLess(ys[0], -4.0)
+        self.assertGreater(ys[1], 12.0)
+
     def test_no_parapet_between_decks_side_by_side(self):
         P = roadmesh.deck([self.deck(0.0, "a"), self.deck(8.0, "b")], (0.0, 0.0, 0.0))[0]
         ys = np.unique(np.round(self.parapet_tops(P)[:, 1], 2))
