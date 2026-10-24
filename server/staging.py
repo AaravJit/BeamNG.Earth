@@ -70,9 +70,33 @@ def tmp_for(path):
     return os.path.join(d, f"{os.getpid()}_{threading.get_ident()}_{next(_serial)}_{os.path.basename(path)}.tmp")
 
 
+WARM_READ = os.name == "nt" and os.environ.get("BNGE_WARM_READ", "1") != "0"
+WARM_CHUNK = 1 << 20
+
+
+def warm(path):
+    """Read a file just written into the game's folder once, here (Windows): the first open of a new file is scanned
+    by the antivirus, and the game paid it in the frame (a far tile's shape and texture 20-184 ms per tile on a
+    Windows test PC, 2026-10-24, 0.4 ms on Linux; a second open of the same file 0.15 ms). Read in this process, a
+    server worker, the scan is done before the game opens it. Errors ignored (the game reads it anyway)."""
+    try:
+        with open(path, "rb") as f:
+            while f.read(WARM_CHUNK):
+                pass
+    except OSError:
+        pass
+
+
 def replace(tmp, path):
     """os.replace(tmp, path), making path's folder again if it was deleted under us (the game or the player
-    clearing its temp folder) instead of failing every write after it."""
+    clearing its temp folder) instead of failing every write after it. On Windows a file going into the game's folder
+    is read once at once (warm)."""
+    _replace(tmp, path)
+    if WARM_READ and staging_dir(path) is not None:
+        warm(path)
+
+
+def _replace(tmp, path):
     try:
         os.replace(tmp, path)
     except FileNotFoundError:

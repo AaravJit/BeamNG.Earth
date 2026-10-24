@@ -85,9 +85,8 @@ def build(frame, elev, box, prefix, step=STEP_M):
             i0, i1 = int(round((px0 - box[0]) / step)), int(round((px1 - box[0]) / step))
             j0, j1 = int(round((py0 - box[1]) / step)), int(round((py1 - box[1]) / step))
             pos, tris = mesh(xs[i0:i1 + 1], ys[j0:j1 + 1], z[j0:j1 + 1, i0:i1 + 1], (cx, cy))
-            tmp = path + ".part"
-            cdae.write(tmp, pos, tris, collision_only=True, material=MATERIAL)
-            os.replace(tmp, path)               # (whole or not at all: the game may load it at once)
+            # (atomic through staging: whole or not at all, the game may load it at once; read once on Windows, warm)
+            cdae.write(path, pos, tris, collision_only=True, material=MATERIAL)
         out.append((path, (cx, cy)))
         total += per_piece
     return out, total
