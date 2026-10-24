@@ -484,15 +484,19 @@ end
 
 function M.update(aid, b)
   if not M.enabled or not graph then return end
+  -- A teleport/rebase changes the coordinate frame before the replacement graph arrives.
+  -- Never run the old graph's guard against the new frame: it can forceTeleport traffic using stale nodes.
+  if graph.anchor ~= aid then
+    graph, applied = nil, nil
+    pendingSignals = nil
+    stillSince, seenAt, cuts = {}, {}, {}
+    return
+  end
   local t0 = os.clock()
   if applied and t0 - lastGuard >= M.GUARD_S then
     lastGuard = t0
     local ok, err = pcall(guard, b, false)
     if not ok then log('W', 'beamngEarth', 'navgraph guard: ' .. tostring(err)) end
-  end
-  if graph.anchor ~= aid then
-    graph = nil
-    return
   end
   if pendingSignals then
     local nodes = pendingSignals
