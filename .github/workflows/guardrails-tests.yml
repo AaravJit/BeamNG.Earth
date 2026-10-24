@@ -5,9 +5,6 @@ on:
   push:
     branches:
       - feature/mapped-guardrails
-permissions:
-  contents: read
-
   pull_request:
     paths:
       - "server/guardrails.py"
@@ -23,6 +20,9 @@ permissions:
       - "mod/beamng_earth/lua/ge/extensions/beamngEarth/roads.lua"
       - "mod/beamng_earth/lua/ge/extensions/beamngEarth/trees.lua"
       - ".github/workflows/guardrails-tests.yml"
+
+permissions:
+  contents: read
 
 jobs:
   guardrails:
