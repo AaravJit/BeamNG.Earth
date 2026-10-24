@@ -212,6 +212,11 @@ class GuardrailMeshTest(unittest.TestCase):
                                       (0.0, -20.0, 100.0, 20.0), elev, parapets=parapets)
         self.assertEqual(rows, [], "do not place metal on top of the generated concrete parapet")
 
+        lower_rows = guardrails.forest_rows(
+            self.frame, lambda _key: mapped_outer, (0.0, -20.0, 100.0, 20.0),
+            lambda lat, lon: np.full(np.shape(lat), 12.0, np.float64), parapets=parapets)
+        self.assertTrue(lower_rows, "an XY-overlapping guardrail on a lower level must not be suppressed")
+
         centre = self.features("guard_rail", xy=[[10.0, 0.0], [90.0, 0.0]])
         rows = guardrails.forest_rows(self.frame, lambda _key: centre,
                                       (0.0, -20.0, 100.0, 20.0), elev, parapets=parapets)
