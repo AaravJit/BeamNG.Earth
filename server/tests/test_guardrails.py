@@ -216,6 +216,15 @@ class GuardrailMeshTest(unittest.TestCase):
                                       (0.0, -20.0, 100.0, 20.0), elev, parapets=parapets)
         self.assertTrue(rows, "a central separator is not coincident with either outer parapet")
 
+        # Adjacent bridge decks can each have an inner concrete parapet. A real central divider
+        # between them must still remain when it is close, but not on top of, those parapets.
+        second_deck = {**deck, "fid": "bridge2", "n": [[0.0, 10.0, 20.0], [100.0, 10.0, 20.0]]}
+        paired_parapets = roadmesh.parapet_runs([deck, second_deck])
+        centre_gap = self.features("guard_rail", xy=[[10.0, 5.0], [90.0, 5.0]])
+        rows = guardrails.forest_rows(self.frame, lambda _key: centre_gap,
+                                      (0.0, -20.0, 100.0, 20.0), elev, parapets=paired_parapets)
+        self.assertTrue(rows, "the central divider must survive near, but distinct from, both parapets")
+
     def test_guardrails_pitch_to_the_ground_grade(self):
         feats = self.features("guard_rail", xy=[[10.0, 50.0], [90.0, 50.0]])
         # A stable east-west grade; longitude is nearly proportional to east distance here.
