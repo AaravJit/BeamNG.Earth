@@ -190,6 +190,7 @@ local lateGoTo = nil         -- (test 'late': the go-to held until TEST_LATE_S)
 M.TEST_LATE_S = 45
 M.TEST_DELREMOTE_S = 40
 M.TEST_DROP_S, M.TEST_DROP_M = 40, 2500
+M.TEST_LEAVE_S = 40         -- ('leave') after the car, the server left as with BeamMP's Leave button
 local brokenOf = {}         -- (test) remote game vehicle id -> broken beams
 
 -- (test) a remote car's broken beams, from its vehicle Lua
@@ -291,6 +292,13 @@ local function testStep(dt)
         log('I', 'beamngEarth', 'BeamMP test: removed the other player\'s car ' .. tostring(gid))
       end
     end
+  end
+  -- 'leave': TEST_LEAVE_S after the car, the server left (BeamMP's Leave button; MCP is off in a session)
+  if test.leave and testCarAt and not test.left and testClock - testCarAt > M.TEST_LEAVE_S then
+    test.left = true
+    log('I', 'beamngEarth', 'BeamMP test: leaving the server')
+    local mp = rawget(_G, 'MPCoreNetwork')
+    if mp and mp.leaveServer then pcall(mp.leaveServer, true) end
   end
   -- 'drop': TEST_DROP_S after the car, our car moved TEST_DROP_M east (BeamMP's teleport to a player far off our block)
   if test.drop and testCarAt and not test.dropped and veh and testClock - testCarAt > M.TEST_DROP_S then

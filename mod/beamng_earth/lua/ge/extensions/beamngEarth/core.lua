@@ -1853,7 +1853,7 @@ end
 function M.onBeamMPPostJoin() beammp.onPostJoin(); mpsession.onPostJoin() end
 
 -- BeamMP left the server (its own hook): the other players' cars we deactivated back on.
-function M.onBeamMPServerLeave() pcall(mpsession.reset) end
+function M.onBeamMPServerLeave() pcall(beammp.onServerLeave); pcall(mpsession.reset) end
 
 -- The UI apps (ui/modules/apps/BeamNGEarth*) say when they are on screen: hudapps.lua.
 function M.hudApp(name, on) return hudapps.setMounted(name, on) end
