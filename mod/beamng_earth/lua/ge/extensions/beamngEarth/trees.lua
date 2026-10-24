@@ -163,6 +163,10 @@ M.CATALOG = {
     { JRI .. 'trees/trees_tropical_1/tro_tree_1_filler', 33.0 },
   },
 }
+-- Italy's authored three-metre metal crash barrier; reuse the stock model instead of an improvised box beam.
+M.CATALOG.guardrail = { { '/art/shapes/objects/italy_guardrails_basic', 0.9 } }
+M.NO_COLLIDE.guardrail = true -- keep the same render-only physics behaviour as the first mapped-guardrail version
+
 local MATERIALS = {
   ECA .. 'trees/trees_oak', ECA .. 'trees/trees_beech', ECA .. 'trees/trees_aspen', ECA .. 'trees/trees_douglasfir',
   ECA .. 'trees/ECA_coast_bush', ECA .. 'trees/common', ECA .. 'trees', ECA .. 'rocks',
