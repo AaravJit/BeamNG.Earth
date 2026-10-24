@@ -130,6 +130,24 @@ class GuardrailMeshTest(unittest.TestCase):
         self.assertGreaterEqual(int(triangles.min()), 0)
         self.assertLess(int(triangles.max()), len(positions))
 
+    def test_render_mesh_uses_the_temporary_bridge_buffer(self):
+        deck = {"n": [[0.0, 0.0, 20.0], [100.0, 0.0, 20.0]], "w": 8.0}
+        decks = [deck]
+        elev = lambda lat, lon: np.full(np.shape(lat), 12.0, np.float64)
+        box = (0.0, -20.0, 100.0, 20.0)
+
+        near = self.features("guard_rail", xy=[[10.0, 0.0], [90.0, 0.0]])
+        near_mesh = guardrails.mesh(self.frame, lambda _key: near, box, elev,
+                                    (0.0, 0.0, 0.0), decks=decks)
+        self.assertIsNone(near_mesh, "no custom rail geometry should render inside the bridge buffer")
+
+        far = self.features("guard_rail", tags={"layer": "-1"},
+                            xy=[[10.0, 15.0], [90.0, 15.0]])
+        far_mesh = guardrails.mesh(self.frame, lambda _key: far, box, elev,
+                                   (0.0, 0.0, 0.0), decks=decks)
+        self.assertIsNotNone(far_mesh, "guardrails outside the bridge buffer should still render")
+        self.assertGreater(len(far_mesh[1]), 0)
+
     def test_mapped_line_is_clipped_contiguously_at_tile_seam(self):
         feats = self.features("guard_rail", xy=[[10.0, 50.0], [190.0, 50.0]])
         elev = lambda lat, lon: np.full(np.shape(lat), 12.0, np.float64)
