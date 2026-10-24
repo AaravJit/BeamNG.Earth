@@ -384,13 +384,13 @@ def forest_rows(frame, infra_fn, exact, elev, decks=()):
 
                 for group, p, a, b, rank, reverse in candidates:
                     if two_sided:
-                        # The standard model's traffic-facing side follows its back axis. Put that
-                        # face on the outside of the pair; the reversed model gets the opposite side.
+                        # The model's visible side is opposite its back axis. Keep the backs
+                        # toward the centre gap and the visible faces outward on both sides.
                         tangent = np.asarray(b, np.float64) - np.asarray(a, np.float64)
                         tangent_len = float(np.hypot(tangent[0], tangent[1]))
                         if tangent_len >= 1e-6:
                             normal = np.array([-tangent[1], tangent[0]], np.float64) / tangent_len
-                            side = -1.0 if reverse else 1.0
+                            side = 1.0 if reverse else -1.0
                             offset = normal * (0.5 * TWO_SIDED_SPACING_M * side)
                             p, a, b = p + offset, a + offset, b + offset
                     placements.append((group, p, a, b, rank, reverse))
