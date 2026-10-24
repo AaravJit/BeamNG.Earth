@@ -408,10 +408,8 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
                                                        bridge_rails=roadmeshmod.BRIDGE_RAILS)
     except Exception as ex:
         log.warning("mapped guardrails: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
-        try:
-            guardrail_rows = guardrailsmod.bridge_rows(parapets) if roadmeshmod.BRIDGE_RAILS else []
-        except Exception:
-            guardrail_rows = []
+        # A failed mapped-data pass cannot establish that a bridge needs rails.
+        guardrail_rows = []
     mesh = roadmeshmod.build(frame, chunks, elev, (x0, y0, 0.0), lift, clip=box, follow=True, q=q, drawn=drawn)
     mesh = _with_plazas(mesh, frame, tx, ty, elev, (x0, y0, 0.0), getattr(_s, "surface", None))
     dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0), bridges.piers_in(roadsmod.tile_bbox(tx, ty)), ctx,
