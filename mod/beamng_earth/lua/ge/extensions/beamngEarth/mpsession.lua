@@ -815,7 +815,10 @@ function M.sendDamage(lat, lon, dt)
       send, damageSince[gid] = M.damageDue(newcomer, dmg, sentDamage[gid], damageSince[gid], dt)
       local obj = send and vehicle(gid)
       if obj then
-        obj:queueLuaCommand('if nodesVE and nodesVE.getNodes then nodesVE.getNodes() end')
+        -- (BeamMP's getNodes calls a global Round that BeamNG 0.40's vehicle Lua no longer has: "attempt to call global
+        -- 'Round' (a nil value)", so no full damage was ever sent; given here when missing, BeamMP's file unchanged)
+        obj:queueLuaCommand('if not Round then Round = function(x, n) local m = 10 ^ (n or 0) return math.floor(x * m + 0.5) / m end end '
+          .. 'if nodesVE and nodesVE.getNodes then nodesVE.getNodes() end')
         sentDamage[gid] = dmg or 0
       end
     end
