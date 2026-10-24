@@ -66,7 +66,6 @@ Works with BeamNG.drive 0.40.3.
 - **The download cache keeps to its size limit.** Several of its folders grew outside it, run after run (35 GB on a
   test machine set to 20 GB); they are now trimmed when the world server starts, without stalling the ground's
   building.
-
 - **The mod loads in a game that was already running.** When the BeamNG.Earth app starts while the game runs (started
   by the BeamMP launcher, for example) and the mod was just installed, updated or turned back on, the app has the game
   reload its Lua, so the mod loads without restarting the game; a level that was open is started again.
