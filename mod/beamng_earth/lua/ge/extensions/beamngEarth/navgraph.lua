@@ -26,6 +26,9 @@ M.enabled = true
 -- place's graph is in.
 M.GUARD_M = 40
 M.GUARD_S = 0.5
+-- The server rebuilds after 400 m from a graph centre. Allow that movement plus the
+-- terrain block's grid-centre offset; a graph farther away after teleport is an old in-flight result.
+M.TELEPORT_GRAPH_MAX_OFFSET_M = 600
 -- A car standing still this long (longer than a signal cycle), this far from the player, is respawned too: stock
 -- traffic respawns only cars far away and out of sight, so one wedged on a corner the map's road cuts through a
 -- building, or queued behind the player's parked car in a one-lane street, stood for good (Frederick, Fells Point
@@ -142,7 +145,8 @@ function M.onMessage(msg, currentAnchor)
   if not M.enabled or msg.anchorId ~= currentAnchor then return false end
   local ok, g = pcall(jsonDecode, readFile(msg.path) or '')
   if not ok or type(g) ~= 'table' or type(g.nodes) ~= 'table' or type(g.edges) ~= 'table' then return false end
-  graph = { anchor = msg.anchorId, serial = msg.serial, nodes = g.nodes, edges = g.edges,
+  graph = { anchor = msg.anchorId, serial = msg.serial, cx = tonumber(msg.cx), cy = tonumber(msg.cy),
+            nodes = g.nodes, edges = g.edges,
             signals = type(g.signals) == 'table' and g.signals or {}, rules = type(g.rules) == 'table' and g.rules or nil }
   dirty = true
   return true
@@ -465,6 +469,13 @@ end
 local heldActive = nil
 function M.onTeleport()
   respawnAll = true
+  -- Invalidate the old graph even when a teleport keeps the same anchorId. The server builds
+  -- graphs asynchronously, so an old graph could otherwise drive the respawn guard during the
+  -- transition or arrive after teleport while still carrying the same anchorId.
+  graph, applied, dirty, foreign = nil, nil, false, false
+  pendingSignals = nil
+  lastApply, lastGuard = -math.huge, -math.huge
+  stillSince, seenAt, cuts = {}, {}, {}
   local gt = gameplay_traffic
   if gt and gt.getState() == 'on' and not heldActive then
     local vars = gt.getTrafficVars and gt.getTrafficVars() or {}
@@ -491,6 +502,18 @@ function M.update(aid, b)
     pendingSignals = nil
     stillSince, seenAt, cuts = {}, {}, {}
     return
+  end
+  -- Same-anchor teleports can still receive an older asynchronous graph after onTeleport.
+  -- Do not use it until its centre is near the new terrain block.
+  if respawnAll and b and b[4] and graph.cx and graph.cy then
+    local bx, by = (b[1] + b[3]) / 2, (b[2] + b[4]) / 2
+    if math.max(math.abs(graph.cx - bx), math.abs(graph.cy - by)) > M.TELEPORT_GRAPH_MAX_OFFSET_M then
+      graph, applied = nil, nil
+      pendingSignals = nil
+      dirty, foreign = false, false
+      stillSince, seenAt, cuts = {}, {}, {}
+      return
+    end
   end
   local t0 = os.clock()
   if applied and t0 - lastGuard >= M.GUARD_S then
