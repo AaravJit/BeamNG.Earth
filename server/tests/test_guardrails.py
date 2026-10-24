@@ -1,10 +1,8 @@
-"""Mapped guardrail mesh geometry and Overture tag filtering."""
+"""Mapped guardrail geometry, stock Italy model rows, and Overture tag filtering."""
 import json
 import os
 import sys
 import unittest
-from unittest import mock
-
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
@@ -62,17 +60,16 @@ class ClipSegmentTest(unittest.TestCase):
                                                    (0.0, 0.0, 10.0, 10.0)))
 
 
-class GuardrailMaterialTest(unittest.TestCase):
-    def test_guardrail_material_is_defined_and_opaque(self):
+class GuardrailStockAssetTest(unittest.TestCase):
+    def test_stock_italy_guardrail_model_is_registered_as_forest_type(self):
         root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        path = os.path.join(root, "mod", "beamng_earth", "levels", "beamng_earth", "art", "shapes",
-                            "beamngEarth", "guardrails.materials.json")
+        path = os.path.join(root, "mod", "beamng_earth", "lua", "ge", "extensions",
+                            "beamngEarth", "trees.lua")
         with open(path, encoding="utf-8") as f:
-            materials = json.load(f)
-        material = materials["bngEarth_mapped_guardrail"]
-        self.assertEqual(material["mapTo"], "bngEarth_mapped_guardrail")
-        self.assertFalse(material["translucent"])
-        self.assertEqual(material["class"], "Material")
+            source = f.read()
+        self.assertIn("M.CATALOG.guardrail", source)
+        self.assertIn("/art/shapes/objects/italy_guardrails_basic", source)
+
 
 class GuardrailMeshTest(unittest.TestCase):
     def setUp(self):
@@ -130,25 +127,28 @@ class GuardrailMeshTest(unittest.TestCase):
         self.assertGreaterEqual(float(right[0][:, 0].min()), -guardrails.POST_WIDTH_M / 2 - 1e-4)
         self.assertLessEqual(float(right[0][:, 0].min()), 0.0)
 
-    def test_guardrail_shape_is_in_tile_shape_pool(self):
-        self.assertEqual(roads.shape_files(7, 1, 2)["guardrail"], "guardrail_7_1_2.cdae")
-
-    def test_road_tile_writer_exports_guardrail_mesh_reference(self):
-        vertices = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], np.float32)
-        triangles = np.array([[0, 1, 2]], np.int32)
-        uvs = np.zeros((3, 2), np.float32)
-        with __import__("tempfile").TemporaryDirectory() as tmp, mock.patch("cdae.write") as write_mesh:
-            path, count = roads.write_tile(tmp, "vfs", 7, 1, 2, [],
-                                           guardrail_mesh=(vertices, triangles, uvs))
+    def test_stock_guardrail_rows_are_exported_in_road_tile_json(self):
+        rows = [[0, 300.0, 600.0, 12.0, 0.0, 0.0, 0.9, 0.0]]
+        with __import__("tempfile").TemporaryDirectory() as tmp:
+            path, count = roads.write_tile(tmp, "vfs", 7, 1, 2, [], guardrail_rows=rows)
             with open(os.path.join(tmp, "roads_7_1_2.json"), encoding="utf-8") as f:
                 data = json.load(f)
         self.assertEqual(count, 0)
         self.assertEqual(path, "vfs/roads_7_1_2.json")
-        self.assertEqual(data["guardrail"], {"shape": "vfs/guardrail_7_1_2.cdae", "pos": [256.0, 512.0, 0.0]})
-        write_mesh.assert_called_once()
-        args, kwargs = write_mesh.call_args
-        self.assertEqual(os.path.basename(args[0]), "guardrail_7_1_2.cdae")
-        self.assertEqual(kwargs["material"], "bngEarth_mapped_guardrail")
+        self.assertEqual(data["guardrails"], {"items": rows, "groups": ["guardrail"]})
+        self.assertNotIn("guardrail", roads.shape_files(7, 1, 2))
+
+    def test_stock_guardrail_rows_have_ground_height_and_heading(self):
+        feats = self.features("guard_rail", xy=[[10.0, 50.0], [90.0, 50.0]])
+        rows = guardrails.forest_rows(self.frame, lambda _key: feats, (0.0, 0.0, 100.0, 100.0),
+                                      lambda lat, lon: np.full(np.shape(lat), 12.0, np.float64))
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertEqual(row[0], 0)
+            self.assertAlmostEqual(row[3], 12.0, delta=0.05)
+            self.assertAlmostEqual(row[4], 0.0, delta=0.1)
+            self.assertEqual(row[6], guardrails.MODULE_HEIGHT_M)
+            self.assertEqual(row[7], 0.0)
 
     def test_unrelated_barrier_produces_no_mesh(self):
         feats = self.features("fence", {"barrier": "fence"})
