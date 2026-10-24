@@ -163,9 +163,13 @@ M.CATALOG = {
     { JRI .. 'trees/trees_tropical_1/tro_tree_1_filler', 33.0 },
   },
 }
--- Italy's authored three-metre metal crash barrier; reuse the stock model instead of an improvised box beam.
+-- Italy's authored three-metre crash barrier and its two end treatments.
 M.CATALOG.guardrail = { { '/art/shapes/objects/italy_guardrails_basic', 0.9 } }
-M.NO_COLLIDE.guardrail = true -- keep the same render-only physics behaviour as the first mapped-guardrail version
+M.CATALOG.guardrail_start = { { '/art/shapes/objects/italy_guardrails_basic_end_cw', 0.9 } }
+M.CATALOG.guardrail_end = { { '/art/shapes/objects/italy_guardrails_basic_end_ccw', 0.9 } }
+M.NO_COLLIDE.guardrail = true       -- retain the first version's render-only physics behaviour
+M.NO_COLLIDE.guardrail_start = true
+M.NO_COLLIDE.guardrail_end = true
 
 local MATERIALS = {
   ECA .. 'trees/trees_oak', ECA .. 'trees/trees_beech', ECA .. 'trees/trees_aspen', ECA .. 'trees/trees_douglasfir',
