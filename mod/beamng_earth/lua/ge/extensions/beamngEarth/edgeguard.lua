@@ -65,7 +65,7 @@ end
 
 -- The world frame changed (an anchor committed: teleport, rebase, resync): the ground height it
 -- remembers for the rescue is in the old frame's coordinates.
-function M.newFrame(g) g.lastGroundZ, g.lastGroundT = nil, nil end
+function M.newFrame(g) g.lastGroundZ, g.lastGroundT, g.lastT = nil, nil, nil end
 
 -- The highest speed towards an edge at distance d that can still stop STOP_M inside it; negative
 -- (a pull back inwards) inside the stop line.
@@ -107,7 +107,11 @@ function M.step(g, inp)
     return s > M.PAUSE_MIN_SPEED and dEdge - M.STOP_M <= s * M.PAUSE_LEAD_S + 1
   end
   local d = min(x - x0, x1 - x, y - y0, y1 - y)
-  if soon(x1 - x, vx) or soon(x - x0, -vx) or soon(y1 - y, vy) or soon(y - y0, -vy) then
+  -- (never farther in than a hold resumes by itself (update): such a hold ended the next frame and started again, every
+  -- frame: in BeamMP the car hidden for good after a teleport, the user 2026-10-23 "the car disappears when i teleport";
+  -- a car that fast is still caught: the pause line is RESUME_INSIDE_M deep, a frame moves it far less)
+  if d <= M.STOP_M + M.RESUME_INSIDE_M
+      and (soon(x1 - x, vx) or soon(x - x0, -vx) or soon(y1 - y, vy) or soon(y - y0, -vy)) then
     g.holds = g.holds + 1
     return 'hold', nil, nil, true
   end

@@ -112,6 +112,27 @@ do
   vx = edgeguard.plausible({}, 1, 0, 0, 1048, 0)
   T.check(math.abs(vx - edgeguard.SPEED_SLACK) < 1e-6, 'plausible: no sample: SPEED_SLACK at most')
 end
+-- a teleport: the car jumps far in one frame and reads a phantom speed towards an edge (8225 mph): no hold that the
+-- next frame would end (it started again every frame); near the edge it is still paused
+do
+  simTimeAuthority.pause(false)
+  local g = edgeguard.new()
+  local v4 = newVeh(-2000, 0, GROUND_Z + 0.5, 3677, 0)
+  edgeguard.update(g, v4, BOX, 60)
+  v4.pos = vec3(0, 0, GROUND_Z + 0.5)
+  local flips, was = 0, false
+  for f = 1, 60 do
+    edgeguard.update(g, v4, BOX, 60 + f / 60)
+    if simTimeAuthority.paused ~= was then flips, was = flips + 1, simTimeAuthority.paused end
+  end
+  T.check(flips == 0, 'a teleport with a phantom speed: no hold flapping (' .. flips .. ' flips)')
+  local st = edgeguard.new()
+  local mode = edgeguard.step(st, { clock = 1, x = 0, y = 0, z = GROUND_Z + 0.5, vx = 3677, vy = 0, box = BOX, ground = 0.5 })
+  T.check(mode ~= 'hold', 'step: 3677 m/s at the centre: no hold yet')
+  mode = edgeguard.step(st, { clock = 1, x = BOX[3] - edgeguard.STOP_M - 40, y = 0, z = GROUND_Z + 0.5, vx = 3677, vy = 0,
+    box = BOX, ground = 0.5 })
+  T.check(mode == 'hold', 'step: the same speed 40 m before the stop line: held')
+end
 -- the block follows while paused: the car well inside the new box resumes by itself
 do
   local g = edgeguard.new()
