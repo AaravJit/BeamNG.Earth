@@ -60,6 +60,17 @@ class ClipSegmentTest(unittest.TestCase):
         self.assertIsNone(guardrails._clip_segment(np.array([-5.0, -5.0]), np.array([-2.0, -2.0]),
                                                    (0.0, 0.0, 10.0, 10.0)))
 
+    def test_bridge_buffer_is_five_metres_from_deck_edge_not_centreline(self):
+        deck = {"n": [[0.0, 0.0, 20.0], [100.0, 0.0, 20.0]], "w": 8.0}
+        # Deck half-width is 4 m; the temporary buffer adds 5 m to the actual edge.
+        self.assertTrue(guardrails._within_bridge_buffer([10.0, 8.9], [90.0, 8.9], [deck]))
+        self.assertFalse(guardrails._within_bridge_buffer([10.0, 9.1], [90.0, 9.1], [deck]))
+
+    def test_bridge_buffer_detects_a_guardrail_crossing_the_deck(self):
+        deck = {"n": [[0.0, 0.0, 20.0], [100.0, 0.0, 20.0]], "w": 8.0}
+        # Endpoint-only distance checks would miss this: both rail endpoints are 20 m away.
+        self.assertTrue(guardrails._within_bridge_buffer([50.0, -20.0], [50.0, 20.0], [deck]))
+
 
 class GuardrailStockAssetTest(unittest.TestCase):
     def test_stock_italy_guardrail_model_is_registered_as_forest_type(self):
