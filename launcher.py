@@ -492,6 +492,14 @@ def start_game(use_gcpatch, build="native", gfx="", user_dir=None):
     win_args = ["-gfx", GFX_ARG.get(gfx, gfx)] if gfx else []
     extra = os.environ.get("BNGE_GAME_ARGS", "").split()     # (tests: e.g. "-bngetest car,damage")
     win_args += extra
+    if IS_WIN and not win_args and not under_wine():
+        # through Steam on Windows itself: Steam Input (a Steam Controller), the overlay and Steam's play time reach
+        # only a game Steam started (GitHub #218, 1.6.1 on Windows: "Steam doesn't pass input from the Steam
+        # Controller into the game"). Not with start options (--gfx, tests): Steam asks the player whether to allow
+        # them; not under Wine / Proton, where Steam's links do not reach Steam
+        row("Game", "starting through Steam")
+        os.startfile(f"steam://rungameid/{APP_ID}")
+        return None
     if IS_WIN:
         # as BeamMP's launcher: the game's own launcher (BeamNG.drive.exe) in its folder, waited on. Works under
         # Wine / Proton too (the .exe started with protontricks), where Steam's links do not reach Steam
@@ -580,6 +588,18 @@ def watch_game_log(user_dir, since):
     threading.Thread(target=run, name="watch-game-log", daemon=True).start()
 
 
+def game_launcher_running():
+    """Windows: BeamNG's own launcher (BeamNG.drive.exe, its renderer / launch options window) is open: the game is
+    starting, however long the player takes there."""
+    if not IS_WIN:
+        return False
+    try:
+        r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq BeamNG.drive.exe", "/FO", "CSV", "/NH"], capture_output=True)
+    except OSError:
+        return False
+    return '"BeamNG.drive.exe"' in (r.stdout or b"").decode("utf-8", errors="replace")
+
+
 def wait_for_game(proc):
     """Until the game closes."""
     if proc is not None:
@@ -587,12 +607,15 @@ def wait_for_game(proc):
         while game_pids():          # the Windows build's launcher may end before the game
             time.sleep(3)
         return
-    t0 = time.time()
+    # (started through Steam: the game may take a while, BeamNG's launch options window open for as long as the player
+    # likes; the server keeps waiting for it, and once it has gone, stops with it. It waited 180 s and then never looked
+    # again, the server left running after the game closed, 2026-10-24.)
+    t0, said = time.time(), False
     while not game_pids():
-        if time.time() - t0 > GAME_START_S:
-            say("the game did not start (no BeamNG.drive process); the server keeps running, Ctrl+C stops it")
-            while True:
-                time.sleep(3600)
+        if not said and time.time() - t0 > GAME_START_S and not game_launcher_running():
+            say("the game has not started yet (no BeamNG.drive process): start it from Steam; the server keeps "
+                "running for it, Ctrl+C stops it")
+            said = True
         time.sleep(2)
     gone_since = None
     while True:
