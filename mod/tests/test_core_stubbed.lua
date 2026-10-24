@@ -508,6 +508,7 @@ veh.vel = vec3(20, 0, 0)
 frames(2)
 local movesBefore, setOrig = calls.setClusterPosRelRot, calls.setOriginalTransform
 T.check(tb.renderEnabled == nil and (calls.setRenderEnabled or 0) == 0, 'terrain mode: the block is drawn, render flag never touched')
+T.check(tb.fields.castShadows == '0', 'the block casts no shadows (no shadow-map redraw at its moves)')
 T.check(farfield.nearVisual() == 'terrain', 'terrain near visual')
 local roadsMod = require('beamngEarth/roads')
 local roadClears, realClear = 0, roadsMod.clear
@@ -518,6 +519,7 @@ T.check(pumpUntil(function() return #received('prepare_anchor') == nAnchor + 1 e
 T.check(roadClears == 1, 'a new server session: the old session\'s road tiles cleared')
 roadsMod.clear = realClear
 T.check(tb.renderEnabled == false and farfield.nearVisual() == 'mesh', 'hello nearVisual = mesh: block render disabled, far field in mesh mode')
+T.check(tb.fields.castShadows == '0', 'mesh mode: still no shadows')
 T.check(warned('material mismatch: server bngEarthFar_v9, mod bngEarthFar_v3'), 'hello: a different far-tile material is reported')
 log = stubLog
 local rs = last('prepare_anchor')
