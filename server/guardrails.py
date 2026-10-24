@@ -356,16 +356,50 @@ def _is_two_sided(feats, i):
 
 
 # Keep this tight: a central divider between adjacent bridge decks can be close to both inner parapets.
+# Tight matching is used for all parapets; a wider tolerance is safe only for a parapet
+# proven to be on the OUTSIDE of a bridge. This avoids deleting the centre divider between decks.
 PARAPET_DUPLICATE_M = 0.7
+OUTER_PARAPET_DUPLICATE_M = 2.0
 PARAPET_LEVEL_TOLERANCE_M = 1.0
 PARAPET_PARALLEL_DOT = 0.75
 PARAPET_MATCH_SHARE = 0.75
 PARAPET_MATCH_SAMPLES = 7
+OUTER_DECK_SEARCH_M = 30.0
 
 
-def _parapet_segments(parapets):
-    """Flatten generated bridge-parapet centre lines into XY segments for matching."""
-    starts, ends, z_starts, z_ends = [], [], [], []
+def _deck_is_outward_of_parapet(mid, tangent, outward, z, decks):
+    """True when another same-level, parallel bridge deck lies outside this concrete parapet."""
+    for deck in decks or ():
+        line = np.asarray(deck.get("n", ()), np.float64)
+        if len(line) < 2 or line.shape[1] < 3:
+            continue
+        a, b = line[:-1, :2], line[1:, :2]
+        v = b - a
+        l2 = np.maximum(np.sum(v * v, axis=1), 1e-12)
+        t = np.clip(np.sum((mid - a) * v, axis=1) / l2, 0.0, 1.0)
+        near = a + t[:, None] * v
+        delta = near - mid
+        signed = delta @ outward
+        dist = np.hypot(delta[:, 0], delta[:, 1])
+        length = np.maximum(np.linalg.norm(v, axis=1), 1e-9)
+        parallel = np.abs((v / length[:, None]) @ tangent) >= PARAPET_PARALLEL_DOT
+        deck_z = line[:-1, 2] + t * (line[1:, 2] - line[:-1, 2])
+        level_ok = np.abs(deck_z - z) <= PARAPET_LEVEL_TOLERANCE_M
+        if np.any(parallel & level_ok & (signed >= 1.0) &
+                  (signed <= OUTER_DECK_SEARCH_M) & (dist <= OUTER_DECK_SEARCH_M)):
+            return True
+    return False
+
+
+def _parapet_segments(parapets, decks=()):
+    """Flatten generated bridge-parapet centre lines and identify inner versus outer walls.
+
+    The parapet's outward normal points away from its own deck. If another parallel, same-level
+    bridge deck lies in that direction, this is an inner parapet facing the central divider; only
+    the tighter duplicate tolerance may match it. Outer parapets may replace mapped roadside rails
+    that were mapped a little farther from the wall than its centre line.
+    """
+    starts, ends, z_starts, z_ends, outer_segments = [], [], [], [], []
     for parapet in parapets or ():
         line = np.asarray(parapet.get("line", ()) if isinstance(parapet, dict) else parapet,
                           np.float64).reshape(-1, 2)
@@ -374,15 +408,34 @@ def _parapet_segments(parapets):
         z = np.asarray(parapet.get("z", ()) if isinstance(parapet, dict) else (), np.float64).reshape(-1)
         if len(z) != len(line):
             z = np.full(len(line), np.nan, np.float64)
+        out = np.asarray(parapet.get("out", ()) if isinstance(parapet, dict) else (),
+                         np.float64).reshape(-1, 2)
+        if len(out) != len(line):
+            out = np.zeros_like(line)
         a, b = line[:-1], line[1:]
         d = b - a
         length = np.hypot(d[:, 0], d[:, 1])
         keep = length > 1e-6
-        if keep.any():
-            starts.append(a[keep])
-            ends.append(b[keep])
-            z_starts.append(z[:-1][keep])
-            z_ends.append(z[1:][keep])
+        if not keep.any():
+            continue
+        unit = d[keep] / length[keep, None]
+        mids = (a[keep] + b[keep]) * 0.5
+        normals = out[:-1][keep] + out[1:][keep]
+        nl = np.linalg.norm(normals, axis=1)
+        normals[nl > 1e-9] /= nl[nl > 1e-9, None]
+        is_outer = []
+        segment_z = (z[:-1][keep] + z[1:][keep]) * 0.5
+        for mid, tangent, outward, level in zip(mids, unit, normals, segment_z):
+            if np.linalg.norm(outward) < 1e-9 or not np.isfinite(level):
+                is_outer.append(False)
+                continue
+            inner = _deck_is_outward_of_parapet(mid, tangent, outward, float(level), decks)
+            is_outer.append(not inner)
+        starts.append(a[keep])
+        ends.append(b[keep])
+        z_starts.append(z[:-1][keep])
+        z_ends.append(z[1:][keep])
+        outer_segments.append(np.asarray(is_outer, bool))
     if not starts:
         return None
     a, b = np.concatenate(starts), np.concatenate(ends)
@@ -396,10 +449,12 @@ def _parapet_segments(parapets):
         "hi": np.maximum(a, b),
         "za": np.concatenate(z_starts),
         "zb": np.concatenate(z_ends),
+        "outer": np.concatenate(outer_segments),
     }
 
 
-def _overlaps_bridge_parapet(a, b, segments, level=None):
+def _overlaps_bridge_parapet(a, b, segments, level=None, distance_limit=PARAPET_DUPLICATE_M,
+                             outer_only=False):
     """Whether a module runs along a generated concrete parapet, not merely across it."""
     if segments is None:
         return False
@@ -409,10 +464,12 @@ def _overlaps_bridge_parapet(a, b, segments, level=None):
     if length < 1e-6:
         return False
     tangent = d / length
-    lo = np.minimum(a, b) - PARAPET_DUPLICATE_M
-    hi = np.maximum(a, b) + PARAPET_DUPLICATE_M
+    lo = np.minimum(a, b) - distance_limit
+    hi = np.maximum(a, b) + distance_limit
     box = ((segments["hi"][:, 0] >= lo[0]) & (segments["lo"][:, 0] <= hi[0]) &
            (segments["hi"][:, 1] >= lo[1]) & (segments["lo"][:, 1] <= hi[1]))
+    if outer_only:
+        box &= segments["outer"]
     if not box.any():
         return False
     pa, pb, unit = segments["a"][box], segments["b"][box], segments["unit"][box]
@@ -425,7 +482,7 @@ def _overlaps_bridge_parapet(a, b, segments, level=None):
     dist = np.hypot(samples[:, None, 0] - nearest[:, :, 0],
                     samples[:, None, 1] - nearest[:, :, 1])
     parallel = np.abs(unit @ tangent) >= PARAPET_PARALLEL_DOT
-    matches = (dist <= PARAPET_DUPLICATE_M) & parallel[None, :]
+    matches = (dist <= distance_limit) & parallel[None, :]
     if level is not None:
         parapet_z = segments["za"][box][None, :] + t * (segments["zb"][box] - segments["za"][box])[None, :]
         matches &= np.isfinite(parapet_z) & (np.abs(parapet_z - float(level)) <= PARAPET_LEVEL_TOLERANCE_M)
@@ -443,7 +500,7 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=()):
     """
     if infra_fn is None:
         return []
-    parapet_segments = _parapet_segments(parapets)
+    parapet_segments = _parapet_segments(parapets, decks)
     x0, y0, x1, y1 = map(float, exact)
     corners_x = np.array([x0, x0, x1, x1], np.float64)
     corners_y = np.array([y0, y1, y0, y1], np.float64)
@@ -568,7 +625,10 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=()):
     for i, (group, p, a, b, rank, reverse, parapet_xy_match,
             source_a, source_b, _deck_hint_value) in enumerate(placements):
         z, za, zb = (float(heights[3 * i]), float(heights[3 * i + 1]), float(heights[3 * i + 2]))
-        if parapet_xy_match and _overlaps_bridge_parapet(source_a, source_b, parapet_segments, level=z):
+        if parapet_xy_match and (
+                _overlaps_bridge_parapet(source_a, source_b, parapet_segments, level=z) or
+                _overlaps_bridge_parapet(source_a, source_b, parapet_segments, level=z,
+                                         distance_limit=OUTER_PARAPET_DUPLICATE_M, outer_only=True)):
             continue
         forward = np.array([float(b[0] - a[0]), float(b[1] - a[1]), zb - za], np.float64)
         length = float(np.linalg.norm(forward))
