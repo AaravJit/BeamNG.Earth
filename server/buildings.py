@@ -2125,6 +2125,100 @@ def road_across(ring, lines, max_w=ACROSS_W):
 CENTRE_PREFILTER_M = 1.0       # m of slack for Features.outer_centres (cumulative sums: within ~1e-5 m of the exact mean)
 
 
+def _parts_index(f):
+    """{building id: [rows]} of a building parts layer, kept on it (the cells stay decoded in memory: every tile of
+    them looks parts up again)."""
+    memo = f.__dict__.get("_bnge_parts_by_bid")
+    if memo is None:
+        memo = {}
+        col = f.attrs.get("building_id")
+        if col is not None:
+            for i in range(len(f.kind)):
+                bid = str(col[i])
+                if bid:
+                    memo.setdefault(bid, []).append(i)
+        f.__dict__["_bnge_parts_by_bid"] = memo
+    return memo
+
+
+def _parts_tops(f):
+    """Each part's own height + bottom (_part_heights' sum; nan without a height) for the whole layer, kept on it."""
+    tops = f.__dict__.get("_bnge_parts_tops")
+    if tops is None:
+        a, n = f.attrs, len(f.kind)
+
+        def col(k):
+            return np.asarray(a[k], np.float64) if k in a else np.full(n, np.nan)
+        with np.errstate(invalid="ignore"):
+            top, mh, nf, f0 = col("height"), col("min_height"), col("num_floors"), col("min_floor")
+            mh = np.where(np.isfinite(mh) & (mh > 0), mh, 0.0)
+            f0 = np.where(np.isfinite(f0) & (f0 > 0), f0, 0.0)
+            floors = np.maximum(FLOOR_M, (nf - f0) * FLOOR_M) + np.where(mh > 0, mh, f0 * FLOOR_M)
+            tops = np.where(np.isfinite(top) & (top > mh + 1.0), top,
+                            np.where(np.isfinite(nf) & (nf > 0), floors, np.nan))
+        f.__dict__["_bnge_parts_tops"] = tops
+    return tops
+
+
+class _PartsOf:
+    """The building parts of a tile's cells by building id, each [(ring in the anchor frame, _part_heights)], made
+    when asked for: a tile needs those of its own buildings, and the toll booths (booths), not all the cells' parts
+    (converting every part for every tile was half of tile_buildings' time in Manhattan, 2026-10-24). A part in two
+    cells' layers is taken once (the first)."""
+
+    def __init__(self, frame, part_layers):
+        self.frame = frame
+        self.layers = [f for f in part_layers if f is not None and len(f.kind)]
+        self.memo = {}
+
+    def _part(self, f, i):
+        pp = f.parts(i)
+        if not pp or not pp[0]:
+            return None
+        outer = np.asarray(pp[0][0], np.float64)
+        if len(outer) < 4:
+            return None
+        e, n = mapgeom.enu_xy(f, self.frame, outer)
+        return np.stack([e, n], 1), _part_heights(f.attrs, i)
+
+    def get(self, bid, default=None):
+        if bid not in self.memo:
+            out, seen = [], set()
+            for f in self.layers:
+                for i in _parts_index(f).get(bid, ()):
+                    pid = f.ids[i]
+                    if pid in seen:
+                        continue
+                    seen.add(pid)
+                    p = self._part(f, i)
+                    if p is not None:
+                        out.append(p)
+            self.memo[bid] = out or None
+        got = self.memo[bid]
+        return default if got is None else got
+
+    def booths(self, lo, hi):
+        """The parts (ring, _part_heights) whose top (own height + bottom) is within [lo, hi], of any building."""
+        out, seen = [], set()
+        for f in self.layers:
+            index = _parts_index(f)
+            if not index:
+                continue
+            col = f.attrs["building_id"]
+            tops = _parts_tops(f)
+            with np.errstate(invalid="ignore"):
+                rows = np.flatnonzero((tops >= lo - 1e-6) & (tops <= hi + 1e-6))
+            for i in rows.tolist():
+                pid = f.ids[i]
+                if pid in seen or not str(col[i]):
+                    continue
+                seen.add(pid)
+                p = self._part(f, i)
+                if p is not None:
+                    out.append(p)
+        return out
+
+
 def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=(), west_town=False, roads_xy=None,
                    tunnels_xy=None, garages_xy=None, supports=None, bridges_xy=None, water_xy=None, decks=None,
                    ml_roads_xy=None):
@@ -2137,28 +2231,7 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
     bridge's painted steel). bridges_xy / water_xy (bridge_lines, water_rings): a machine-learned footprint (not
     OSM) on a road bridge, over water or on a public road (roads_xy, or ml_roads_xy for that test alone: the far
     buildings) is a deck, a boat or a vehicle, left out (_ml_false)."""
-    parts_of = {}                       # building id -> [(ring in the anchor frame, own height, bottom)]
-    pseen = set()
-    for f in part_layers:
-        if f is None or len(f.kind) == 0:
-            continue
-        a = f.attrs
-        for i in range(len(f.kind)):
-            pid = f.ids[i]
-            if pid in pseen:
-                continue
-            pseen.add(pid)
-            bid = str(a["building_id"][i]) if "building_id" in a else ""
-            if not bid:
-                continue
-            pp = f.parts(i)
-            if not pp or not pp[0]:
-                continue
-            outer = np.asarray(pp[0][0], np.float64)
-            if len(outer) < 4:
-                continue
-            e, n = mapgeom.enu_xy(f, frame, outer)
-            parts_of.setdefault(bid, []).append((np.stack([e, n], 1), _part_heights(a, i)))
+    parts_of = _PartsOf(frame, part_layers)     # building id -> [(ring in the anchor frame, (own height, bottom))]
     seen = set()
     rings, attrs, looks, mins = [], [], [], []
     for f in layers:
@@ -2352,13 +2425,12 @@ def _toll_islands(frame, layers, parts_of, lines, x0, y0):
     road (lines, relative to (x0, y0)). Not only the tile's own buildings: a part is in its building's tile, and the
     Golden Gate's booths are parts of the plaza's footprint, centred in the next tile from most islands."""
     booths = []
-    for prings in parts_of.values():
-        for pring, hh in prings:
-            if hh is None or not (TOLL_BOOTH_H[0] <= hh[0] + hh[1] <= TOLL_BOOTH_H[1]):
-                continue
-            r = pring - np.array([x0, y0])
-            if _area2(r) / 2 <= TOLL_BOOTH_MAX_AREA:
-                booths.append(r[:-1].mean(0) if len(r) > 1 and np.allclose(r[0], r[-1]) else r.mean(0))
+    for pring, hh in parts_of.booths(*TOLL_BOOTH_H):
+        if hh is None or not (TOLL_BOOTH_H[0] <= hh[0] + hh[1] <= TOLL_BOOTH_H[1]):
+            continue
+        r = pring - np.array([x0, y0])
+        if _area2(r) / 2 <= TOLL_BOOTH_MAX_AREA:
+            booths.append(r[:-1].mean(0) if len(r) > 1 and np.allclose(r[0], r[-1]) else r.mean(0))
     if not booths:
         return []
     segs = [np.concatenate([np.asarray(ln, np.float64)[:-1], np.asarray(ln, np.float64)[1:]], 1)
