@@ -1506,12 +1506,13 @@ class Server:
         finally:
             self.hm_stage.pop(key, None)
 
-    def make_provisional(self, anchor, cx, cy, progress):
+    def make_provisional(self, anchor, cx, cy, progress, ground_at=(0.0, 0.0)):
         """Worker thread: a teleport's first block before its road plans (the user, 2026-10-22: "place the car as
         soon as possible"): the DEM's ground with the runways (no road grading, tunnels, arches or sea floor, which
         all wait on the map data of the cells around: 15-60 s of a fresh place's first block, ~5 s without), the
         cached land cover and the photo. The graded block replaces it when it is built (Connection.refine_first:
-        terrain_refresh). Not kept in hm (the graded one is the block of its key), nor in anchor.chunks."""
+        terrain_refresh). Not kept in hm (the graded one is the block of its key), nor in anchor.chunks. ground_at: the
+        point its groundZ is for (the car's spot)."""
         t0 = time.perf_counter()
         q = self.anchor_q(anchor)
         base = None
@@ -1522,21 +1523,22 @@ class Server:
             anchor.first_base = ((cx, cy), base)
         urgent = getattr(self.dem, "urgent", None)     # (test DEMs have no lane)
         with urgent() if urgent is not None else contextlib.nullcontext():
-            info = self._make_heightmap_here(anchor, cx, cy, progress, t0, q, base, provisional=True)
+            info = self._make_heightmap_here(anchor, cx, cy, progress, t0, q, base, provisional=True,
+                                             ground_at=ground_at)
         log.info("provisional first block %s in %.2f s (%s)", (anchor.id, cx, cy), time.perf_counter() - t0,
                  " ".join(f"{k} {v:.2f}" for k, v in info.get("stages", {}).items()))
         return info
 
-    def _make_heightmap_here(self, anchor, cx, cy, progress, t0, q, base=None, provisional=False):
+    def _make_heightmap_here(self, anchor, cx, cy, progress, t0, q, base=None, provisional=False, ground_at=(0.0, 0.0)):
         with self.hm_here_lock:
             self.hm_here += 1
         try:
-            return self._make_heightmap_here_(anchor, cx, cy, progress, t0, q, base, provisional)
+            return self._make_heightmap_here_(anchor, cx, cy, progress, t0, q, base, provisional, ground_at)
         finally:
             with self.hm_here_lock:
                 self.hm_here -= 1
 
-    def _make_heightmap_here_(self, anchor, cx, cy, progress, t0, q, base=None, provisional=False):
+    def _make_heightmap_here_(self, anchor, cx, cy, progress, t0, q, base=None, provisional=False, ground_at=(0.0, 0.0)):
         keep = {}
         g = None if provisional else self.grader_for(anchor)
         c0 = time.thread_time()
@@ -1568,7 +1570,8 @@ class Server:
                                                  (cx - half, cy - half, cx + half, cy + half))
         info = heightmap.generate(anchor.frame, gen,
                                   os.path.join(self.out_dir, self.hm_name((anchor.id, cx, cy))), cx, cy, q=q,
-                                  size=self.layout.block, keep=keep, chunks=None if provisional else anchor.chunks)
+                                  size=self.layout.block, keep=keep, chunks=None if provisional else anchor.chunks,
+                                  ground_at=ground_at)
         stages = {"heights": time.perf_counter() - t0, "grading": grade_s[0], "gradingCpu": grade_s[1],
                   "heightsCpu": time.thread_time() - c0}
         idx = None
@@ -3397,7 +3400,7 @@ class Connection:
         try:
             if provisional:
                 info = await asyncio.get_running_loop().run_in_executor(
-                    self.s.hm_pool, self.s.make_provisional, anchor, cx, cy, self._progress())
+                    self.s.hm_pool, self.s.make_provisional, anchor, cx, cy, self._progress(), place or (0.0, 0.0))
             else:
                 info = await self.s.terrain(anchor, cx, cy, self._progress())
         except Exception as e:
@@ -3414,7 +3417,9 @@ class Connection:
         self.s.hm_sent.append(key)
         # groundZ is None when (0, 0) lies outside the block (a resync around a distant player)
         gz = info["groundZ"]
-        if place is not None:
+        if place is not None and (not provisional or gz is None):
+            # (a provisional block's groundZ is at the place already: ground_z_at carves the sea floor, which waits on
+            # the water cells: 30 s of a fresh place's teleport, 2026-10-25)
             gz = await asyncio.get_running_loop().run_in_executor(self.s.ui_pool, self.s.ground_z_at, anchor, *place)
         floor_z = None                  # in a tunnel: its floor under the ground (the mod moves the car down onto it
         if gz is not None and not provisional and place is None:   # once the tube's collision is there: set down in
