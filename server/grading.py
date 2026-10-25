@@ -656,9 +656,16 @@ class Grader:
         fast.require(69, "road chains")
         f64 = np.float64
         q_node, q_dir, q_class, q_road, q_reach, q_cell = [], [], [], [], [], []
+        if not parts:
+            return []
+        # (the frame's conversion once for every part: it is per call)
+        alll = np.concatenate([np.asarray(ll, f64) for (ll, _sp) in parts])
+        ae, an, _ = self.frame.geodetic_to_enu(alll[:, 1], alll[:, 0], 0.0)
+        axy = np.stack([np.asarray(ae, f64), np.asarray(an, f64)], axis=1)
+        k0 = 0
         for (lonlat, spec), fid in zip(parts, ids):
-            e, n, _ = self.frame.geodetic_to_enu(lonlat[:, 1], lonlat[:, 0], 0.0)
-            xy = np.stack([np.asarray(e, f64), np.asarray(n, f64)], axis=1)
+            xy = axy[k0:k0 + len(lonlat)]
+            k0 += len(lonlat)
             sg = profile_sigma(spec)
             for end in (0, 1):
                 line = xy if end == 0 else xy[::-1]          # from this end inward
@@ -678,11 +685,9 @@ class Grader:
             qs = [i for i, c in enumerate(q_cell) if c == key]
             if not cands or not qs:
                 continue
-            cxy = np.concatenate([c[0] for c in cands])
-            coff = np.r_[0, np.cumsum([len(c[0]) for c in cands])].astype(np.int64)
+            cxy, coff, ccls, croad = self._cand_arrays(key, cands)
             pts, off = fast._ef.chain_extensions(
-                np.ascontiguousarray(cxy, f64), coff, np.array([int(round(c[1] * 1000)) for c in cands], np.int64),
-                np.array([c[2] for c in cands], np.int64),
+                cxy, coff, ccls, croad,
                 np.ascontiguousarray([q_node[i] for i in qs], f64), np.ascontiguousarray([q_dir[i] for i in qs], f64),
                 np.array([q_class[i] for i in qs], np.int64), np.array([q_road[i] for i in qs], np.int64),
                 np.array([q_reach[i] for i in qs], f64), float(CHAIN_JOIN_M), float(CHAIN_TURN_DEG), float(CHAIN_LOOK_M))
@@ -690,6 +695,22 @@ class Grader:
                 if off[j + 1] - off[j] >= 2:
                     out[i // 2][i % 2] = np.asarray(pts[off[j]:off[j + 1]])
         return [tuple(o) for o in out]
+
+    def _cand_arrays(self, key, cands):
+        """_chain_cands(key) as the Rust kernels take them (points, offsets, sigma class, road id), made once per cell."""
+        memo = self.__dict__.setdefault("_cand_arrays_memo", {})
+        got = memo.get(str(key))
+        if got is not None and got[0] is cands:
+            return got[1]
+        arr = (np.ascontiguousarray(np.concatenate([c[0] for c in cands]), np.float64),
+               np.r_[0, np.cumsum([len(c[0]) for c in cands])].astype(np.int64),
+               np.array([int(round(c[1] * 1000)) for c in cands], np.int64),
+               np.array([c[2] for c in cands], np.int64))
+        with self.lock:
+            if len(memo) > 64:
+                memo.clear()
+            memo[str(key)] = (cands, arr)
+        return arr
 
     def _pins(self, parts, ids, ext):
         """plan_roads' pins of a cell's parts: an end that no part of its own smoothing goes on from (ext None there) and
@@ -706,10 +727,13 @@ class Grader:
                 if ext is not None and ext[j][end] is not None:
                     continue
                 ll = lonlat[-1] if end else lonlat[0]
-                e, n, _ = self.frame.geodetic_to_enu(np.array([ll[1]]), np.array([ll[0]]), 0.0)
-                q_node.append((float(e[0]), float(n[0])))
+                q_node.append((float(ll[1]), float(ll[0])))         # (lat, lon: converted below, all at once)
                 q_cell.append(mapcells.cell_of(float(ll[1]), float(ll[0])))
                 q_who.append((j, end, profile_sigma(spec), road_id(fid)))
+        if q_node:
+            qa = np.asarray(q_node, f64)
+            qe, qn, _ = self.frame.geodetic_to_enu(qa[:, 0], qa[:, 1], 0.0)
+            q_node = list(zip(np.asarray(qe, f64).tolist(), np.asarray(qn, f64).tolist()))
         out = [[None, None] for _ in parts]
         held = False
         for key in sorted(set(q_cell), key=str):
