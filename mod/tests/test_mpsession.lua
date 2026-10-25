@@ -344,4 +344,17 @@ do
   T.check(back == 0, 'copy check: back near its figure: the wait starts over')
 end
 
+do -- a car switched off here: its BeamMP name tag hidden with it, shown again after
+  local rec = {}
+  local saved = rawget(_G, 'MPVehicleGE')
+  MPVehicleGE = { getVehicleByGameID = function(gid) return gid == 7 and rec or nil end }
+  ms.nametag(7, true)
+  T.check(rec.hideNametag == true, 'hidden with the car')
+  ms.nametag(7, false)
+  T.check(rec.hideNametag == nil, 'shown again')
+  ms.nametag(8, true)                       -- (a car BeamMP does not know: nothing)
+  MPVehicleGE = nil
+  ms.nametag(7, true)                       -- (no BeamMP: nothing)
+  MPVehicleGE = saved
+end
 T.done('test_mpsession')

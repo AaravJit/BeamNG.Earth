@@ -148,6 +148,15 @@ local function vehicle(gid)
   return o and o.setActive and o or nil         -- (vehicles only)
 end
 
+-- BeamMP's name tag of a car switched off here hidden with it (BeamMP draws the tags of every car it knows, switched
+-- off or not: a "guest" tag floated over an empty road, Discord 2026-10-24). Its own per-car flag, hideNametag
+-- (MPVehicleGE's tag loop skips it), on its own record of the car: no file of BeamMP's changed.
+function M.nametag(gid, hidden)
+  local mp = rawget(_G, 'MPVehicleGE')
+  local ok, v = pcall(function() return mp and mp.getVehicleByGameID and mp.getVehicleByGameID(gid) end)
+  if ok and type(v) == 'table' then v.hideNametag = hidden or nil end
+end
+
 -- Test switch (two BeamMP players, .claude/work/mp_two.sh): the game's start arguments -bngetest car,damage
 -- spawn a car TEST_CAR_S after the first pose with none, damage it TEST_DAMAGE_S after that; the status file then
 -- lists the other players' cars' broken beams (the damage they show here). 'switch': TEST_SWITCH_S after the car,
@@ -909,6 +918,7 @@ function M.update(dt, anchor, player)
       local veh = vehicle(gid)
       if veh then
         veh:setActive(0)
+        M.nametag(gid, true)
         deactivated[gid] = true
         log('I', 'beamngEarth', string.format('BeamMP: car %s (%s) switched off here (%s)', tostring(gid),
           tostring(sids[gid]), mpanchor.isFar(sids[gid]) and 'far' or 'its owner\'s anchor not known'))
@@ -940,6 +950,7 @@ function M.update(dt, anchor, player)
           log('I', 'beamngEarth', string.format('BeamMP: car %s back on at %.0f, %.0f, z %.2f (our ground %.2f)',
             tostring(gid), x or 0, y or 0, pz or -1, gz or -1))
         end
+        M.nametag(gid, false)
         if veh then
           veh:setActive(1)
           -- BeamMP's own reset of its position sync (smoothers, the remote clock, a clean teleport onto the next
@@ -1029,6 +1040,7 @@ function M.reset()
   for gid in pairs(deactivated) do
     local veh = vehicle(gid)
     if veh then veh:setActive(1) end
+    M.nametag(gid, false)
   end
   for gid in pairs(floating) do
     local veh = vehicle(gid)
