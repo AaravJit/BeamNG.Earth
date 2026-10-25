@@ -260,7 +260,7 @@ def plan_road(frame, lonlat, spec, elev):
     return plan_roads(frame, [(lonlat, spec)], elev)[0]
 
 
-def plan_roads(frame, parts, elev, abut=None, ext=None, pins=None):
+def plan_roads(frame, parts, elev, abut=None, ext=None, pins=None, cuts=True):
     """plan_road for many (lonlat, spec) parts with one elev call (its cost is per call); abut: per part (start, end)
     flags, the ends leading onto a bridge (fill_abutment); ext: per part (before, after), the lines (k, 2) in the frame
     from its start / end outward along the part the road goes on in (Grader._extensions), or None: their ground is in
@@ -325,7 +325,7 @@ def plan_roads(frame, parts, elev, abut=None, ext=None, pins=None):
             zx = zx.copy()
             zx[-1] = pin[1]
         out.append(_plan(xy, zx, spec, ab, (nb, na), step))
-    if SHARP_ON:
+    if SHARP_ON and cuts:           # (cuts False: the profile alone, Grader._stronger_z)
         _add_cuts(frame, [p if p is not None and sp.kind in roadsmod.BUILT else None
                           for p, (_ll, sp) in zip(out, parts)], elev)
     return out
@@ -627,14 +627,21 @@ class Grader:
         if feats is not None and len(feats):
             if specs is None:
                 specs = roadsmod.road_specs(feats, None, self.widths)
+            rows = []
             for i in range(len(feats)):
                 if specs[i] is None or specs[i].cls in UNGRADED:
                     continue
                 for ring in roadsmod.ground_parts(feats, i):
-                    e, n, _ = self.frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
-                    out.append((np.stack([np.asarray(e, np.float64), np.asarray(n, np.float64)], axis=1),
-                                profile_sigma(specs[i]), road_id(str(feats.ids[i])), np.asarray(ring, np.float64),
+                    rows.append((i, np.asarray(ring, np.float64)))
+            if rows:            # (the frame's conversion once for all: it is per call)
+                allr = np.concatenate([r for _, r in rows])
+                e, n, _ = self.frame.geodetic_to_enu(allr[:, 1], allr[:, 0], 0.0)
+                en = np.stack([np.asarray(e, np.float64), np.asarray(n, np.float64)], axis=1)
+                k0 = 0
+                for i, ring in rows:
+                    out.append((en[k0:k0 + len(ring)], profile_sigma(specs[i]), road_id(str(feats.ids[i])), ring,
                                 specs[i], str(feats.ids[i])))
+                    k0 += len(ring)
         with self.lock:
             if len(memo) > 64:
                 memo.clear()
@@ -739,6 +746,7 @@ class Grader:
             if k in memo:
                 return memo[k]
         z = None
+        other = None                    # (a short part's plan gives both ends' heights: the other kept too)
         try:
             part = ring
             if float(np.hypot(*np.diff(xy, axis=0).T).sum()) > LONG_PART_M:
@@ -750,15 +758,22 @@ class Grader:
                     la, lo, _ = self.frame.enu_to_geodetic(run[:, 0], run[:, 1], 0.0)
                     part = np.stack([np.asarray(lo), np.asarray(la)], axis=1)
                     at_last = bool(np.hypot(*(run[-1] - end)) <= np.hypot(*(run[0] - end)))
-            p = plan_roads(self.frame, [(part, spec)], self.elev, None, self._extensions([(part, spec)], [fid]))[0]
+            # (the profile alone: its cutting's walls cost most of a plan and no height, 2026-10-25)
+            p = plan_roads(self.frame, [(part, spec)], self.elev, None, self._extensions([(part, spec)], [fid]),
+                           cuts=False)[0]
             if p is not None:
                 z = float(p.z[-1] if at_last else p.z[0])
+                if part is ring:
+                    e2 = xy[0 if at_last else -1]
+                    other = ((rid, round(float(e2[0]), 1), round(float(e2[1]), 1)), float(p.z[0] if at_last else p.z[-1]))
         except Exception as e:      # not held rather than no grading
             log.debug("grading: pin height of %s: %s: %s", fid, type(e).__name__, e)
         with self.lock:
             if len(memo) > 4096:
                 memo.clear()
             memo[k] = z
+            if other is not None:
+                memo.setdefault(*other)
         return z
 
     def _clip_box(self, key, margin=CLIP_MARGIN_M):
@@ -859,8 +874,14 @@ class Grader:
         ends = np.array([[b[0], b[-1]] for b, _L, _f in spans], np.float64).reshape(-1, 2)
         ela, elo, _ = self.frame.enu_to_geodetic(ends[:, 0], ends[:, 1], 0.0)
         ez = np.asarray(self.elev(np.asarray(ela), np.asarray(elo)), np.float64).reshape(-1, 2)
-        for j, (b, _L, fixed) in enumerate(spans):
-            if not fixed:           # (an overpass that is raised: its abutments as high as its ramps could take them)
+        raised = set()
+
+        def lift(j):                # (an overpass that is raised: its abutments as high as its ramps could take them;
+            if j in raised:         # asked only for an overpass a plan here crosses under: every span's took 2 s a
+                return              # Canton cell, 2026-10-25)
+            raised.add(j)
+            b, _L, fixed = spans[j]
+            if not fixed:
                 ez[j, 0] += self._end_raised(b[0])
                 ez[j, 1] += self._end_raised(b[-1])
         for i, (fid, p) in enumerate(plans):
@@ -878,6 +899,7 @@ class Grader:
                 b, L, fixed = spans[bi]
                 if arc_b < APPROACH_MIN_CROSS_M or arc_b > L - APPROACH_MIN_CROSS_M:
                     continue                    # a junction at the bridge's end
+                lift(bi)
                 deck = float(ez[bi, 0] + (ez[bi, 1] - ez[bi, 0]) * arc_b / L)
                 # where along this road (its nearest vertex segment)
                 d = np.hypot(xy[:, 0] - pt[0], xy[:, 1] - pt[1])
