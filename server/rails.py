@@ -90,6 +90,32 @@ def _sleepers(xy, s, step, length, box, on_road):
     return list(zip(c[keep] - n, c[keep] + n))
 
 
+CROSS_WINDOW_M = 30.0           # m of track either side of where it crosses a carriageway's centre line (_crossing_windows)
+
+
+def _crossing_windows(xy, lines):
+    """The stretches of track xy (k, 2) within CROSS_WINDOW_M of where it crosses a carriageway centre line (lines),
+    overlapping ones joined: [(k, 2)]. Pure."""
+    import roads
+    cr = roads._crossings([xy], lines) if lines else []
+    if not cr:
+        return []
+    s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
+    spans = []
+    for arc in sorted(c[1] for c in cr):
+        a, b = max(0.0, arc - CROSS_WINDOW_M), min(float(s[-1]), arc + CROSS_WINDOW_M)
+        if spans and a <= spans[-1][1]:
+            spans[-1][1] = b
+        else:
+            spans.append([a, b])
+    out = []
+    for a, b in spans:
+        inner = xy[(s > a) & (s < b)]
+        out.append(np.vstack([[np.interp(a, s, xy[:, 0]), np.interp(a, s, xy[:, 1])], inner,
+                              [np.interp(b, s, xy[:, 0]), np.interp(b, s, xy[:, 1])]]))
+    return out
+
+
 def tile_chunks(frame, tx, ty, cells):
     """The track chunks of road tile (tx, ty) (anchor frame): ballast, sleepers, then the rails (material order: the
     road mesh draws them in that order). cells: the roads Features of the cells touching the tile."""
@@ -136,7 +162,16 @@ def tile_chunks(frame, tx, ty, cells):
         return roads._on_carriageways(pts, carriageways, -ON_ROAD_INSET_M)
 
     ballast, sleepers, rails = [], [], []
+    cw_lines = [ln for ln, _hw in carriageways.values()]
+    todo = []
     for kind, xy, meshed in tracks:
+        if meshed and kind != "tram":
+            # (a main line's only street track is where it crosses a road: just those stretches, every metre of every
+            # line in reach tested against every carriageway cost a tile ~0.1 s, 2026-10-25)
+            todo += [(kind, w, meshed) for w in _crossing_windows(xy, cw_lines)]
+        else:
+            todo.append((kind, xy, meshed))
+    for kind, xy, meshed in todo:
         bw, sl, sw, step = TRACK[kind]
         off = GAUGE_M[kind] / 2 + HEAD_M / 2
         full = roads.densify(xy, SAMPLE_M)
