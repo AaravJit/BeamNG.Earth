@@ -3370,10 +3370,13 @@ class Connection:
             return
         lon = (lon + 180.0) % 360.0 - 180.0
         old = self.s.anchors.get(self.active)
-        teleport = old is None          # (a session's first place, or a jump: the provisional first block)
+        # (a session's first place, or a jump: the provisional first block; the mod says so since 1.6.3, a teleport
+        # under TELEPORT_PAUSE_M away waited 26 s for a graded first block in Manhattan, 2026-10-25)
+        declared = msg.get("purpose") == "teleport"
+        teleport = old is None or declared
         if old is not None:
             la, lo, _ = old.frame.enu_to_geodetic(*self.focus, 0.0)
-            if geodesy.haversine_m(float(la), float(lo), lat, lon) > TELEPORT_PAUSE_M:
+            if declared or geodesy.haversine_m(float(la), float(lo), lat, lon) > TELEPORT_PAUSE_M:
                 teleport = True
                 self.teleport_pending, self.teleport_t0 = True, time.monotonic()
                 log.debug("teleport to %.5f, %.5f: the old place's work paused", lat, lon)

@@ -280,7 +280,7 @@ local function requestAnchor(lat, lon, purpose, cx, cy, place)
   st.pending = { requestId = id, purpose = purpose, lat = lat, lon = lon, sentAt = st.clock, cx = cx, cy = cy,
     place = place }
   net.send({ type = 'prepare_anchor', requestId = id, lat = lat, lon = lon, cx = cx or 0, cy = cy or 0,
-    px = place and place.x or nil, py = place and place.y or nil })
+    px = place and place.x or nil, py = place and place.y or nil, purpose = purpose })
   return true
 end
 
