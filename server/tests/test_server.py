@@ -1143,7 +1143,7 @@ class WarmPlaceTest(unittest.TestCase):
                 got.extend(needs)
                 return len(needs)
         s = SimpleNamespace(mapdata=MD(), sea=object(), buildings=True, road_widths=None,
-                            WARM_ORDER=earthd.Server.WARM_ORDER)
+                            WARM_ORDER=earthd.Server.WARM_ORDER, WARM_PLACE_LAYERS=earthd.Server.WARM_PLACE_LAYERS)
         anchor = SimpleNamespace(frame=geodesy.EnuFrame(LAT, LON))
         n = earthd.Server.warm_place(s, anchor, 0.0, 0.0)
         self.assertEqual(n, len(got))
@@ -1152,7 +1152,8 @@ class WarmPlaceTest(unittest.TestCase):
         self.assertEqual(layers, sorted(layers, key=lambda ly: earthd.Server.WARM_ORDER[ly]), "roads first")
         own = mapcells.cell_of(LAT, LON)
         self.assertEqual(got[0], (own, "roads"), "the anchor's own cell first")
-        self.assertIn((own, "water"), got)
+        self.assertNotIn((own, "water"), got, "the tiles' own buildings and water: when each starts")
+        self.assertIn((own, "infrastructure"), got)
         self.assertEqual(earthd.Server.warm_place(SimpleNamespace(mapdata=None), anchor, 0.0, 0.0), 0)
 
 

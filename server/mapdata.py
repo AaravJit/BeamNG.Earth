@@ -74,8 +74,12 @@ log = logging.getLogger("earthd.mapdata")
 
 LAYER_THREADS = 4               # layers of a cell built at once (each fetches through the shared limits)
 OSM_THREADS = 8                 # cells whose OpenStreetMap tags are read at once (alongside their Overture roads)
-WARM_THREADS = 8                # (cell, layer)s built ahead at once by warm() (a fresh place's first road tile asked for
-                                # ~70 of them one after another: 56 s in Marseille, GitHub #241)
+# (cell, layer)s built ahead at once by warm() (a fresh place's first road tile asked for ~70 of them one after another:
+# 56 s in Marseille, GitHub #241): half the CPUs, at most 8, and none on 8 or fewer: each is a DuckDB query and a
+# decode of its own, and on a Steam Deck (4 cores, 8 threads) the work done ahead kept the CPUs from the road tiles
+# (all 36 of a fresh place: 122 s -> 145-181 s over 8 places, 2026-10-25); on a 16-thread PC they came 2-10 s sooner.
+_CPUS = os.cpu_count() or 4
+WARM_THREADS = min(8, _CPUS // 2) if _CPUS > 8 else 0
 VERSION = 2                     # pipeline version: bump when what a cell's layers contain changes
 # per layer, on top of VERSION (a layer's own change without re-fetching the others): roads 2 adds
 # the "oneway" rule (Overture access_restrictions by heading)
@@ -590,6 +594,8 @@ class MapData:
         """Build the (cell, layer)s of needs into the cache ahead of the cell() calls that will ask for them, in their
         order, WARM_THREADS at once; returns at once with how many were queued. Those cached, in memory or already
         queued are skipped. A cell() of one meanwhile waits for its build (the cell's lock) or builds it itself."""
+        if WARM_THREADS <= 0:
+            return 0
         todo = []
         for key, layer in needs:
             key = _key(key)

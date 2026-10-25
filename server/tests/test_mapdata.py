@@ -791,14 +791,18 @@ class CacheTest(Sources, SmallBlocks, unittest.TestCase):
         # warm() builds the asked (cell, layer)s into the cache in the background; the cell() after it reads them back
         # without fetching, and what is cached or queued is not queued again
         md, t = self.mapdata()
-        self.assertEqual(md.warm([(mf.CELL, "roads"), (mf.CELL, "water"), (mf.CELL, "roads")]), 2)
+        with mock.patch.object(mapdata, "WARM_THREADS", 0):
+            self.assertEqual(md.warm([(mf.CELL, "roads")]), 0, "few CPUs: nothing ahead")
+        with mock.patch.object(mapdata, "WARM_THREADS", 2):
+            self.assertEqual(md.warm([(mf.CELL, "roads"), (mf.CELL, "water"), (mf.CELL, "roads")]), 2)
         md._warm_ex.shutdown(wait=True)
         self.assertTrue(md.has(mf.CELL, "roads") and md.has(mf.CELL, "water"))
         n = t.count()
         cd = md.cell(mf.CELL, ("roads", "water"))
         self.assertTrue(all(s["hit"] for s in cd.stats.values()))
         self.assertEqual(t.count(), n)
-        self.assertEqual(md.warm([(mf.CELL, "roads")]), 0)
+        with mock.patch.object(mapdata, "WARM_THREADS", 2):
+            self.assertEqual(md.warm([(mf.CELL, "roads")]), 0)
         self.assertEqual(md._warming, set())
 
     def test_a_deferred_osm_prefetch_is_not_cached(self):

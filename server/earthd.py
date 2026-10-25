@@ -1111,11 +1111,12 @@ class Server:
         return [(f"{self.vfs_dir}/{os.path.basename(p)}", c) for p, c in parts], n
 
     WARM_ORDER = {"roads": 0, "infrastructure": 1, "buildings": 2, "building_parts": 3, "water": 4}
+    WARM_PLACE_LAYERS = ("roads", "infrastructure")
 
     def warm_place(self, anchor, x, y):
-        """The map data of the road tiles the mod will want around (x, y) (roads.SEND_M), fetched at once, roads first
-        (the first block's grading and the road tiles both wait for them), nearest first in each layer: on a fresh
-        place they came one after another as each part of the work asked (GitHub #241). Returns how many were queued."""
+        """The roads and bridges (WARM_PLACE_LAYERS) of the road tiles the mod will want around (x, y) (roads.SEND_M),
+        fetched at once, nearest first: the first block's grading and the road tiles wait for them, and on a fresh place
+        they came one after another as each part of the work asked (GitHub #241). Returns how many were queued."""
         if self.mapdata is None:
             return 0
         water = 1 + seacarvemod.LINE_CELLS if self.sea is not None else 0
@@ -1127,7 +1128,10 @@ class Server:
             la, lo = k.center()
             e, n, _ = anchor.frame.geodetic_to_enu(la, lo, 0.0)
             return math.hypot(float(e) - x, float(n) - y)
-        order = sorted(needs, key=lambda kl: (self.WARM_ORDER.get(kl[1], 9), where(kl[0]), str(kl[0]), kl[1]))
+        # (only what the first block's grading and the bridges wait for: each road tile asks for its own buildings and
+        # water when it starts; all of it at once kept a Steam Deck's 4 cores from the road tiles themselves)
+        order = sorted((kl for kl in needs if kl[1] in self.WARM_PLACE_LAYERS),
+                       key=lambda kl: (self.WARM_ORDER.get(kl[1], 9), where(kl[0]), str(kl[0]), kl[1]))
         return self.mapdata.warm(order)
 
     def build_roads_tile(self, aid, tx, ty):
