@@ -67,6 +67,7 @@ import maprasters
 import netfetch
 import overture
 import rangeread
+import revisit
 import staging
 import xproc
 
@@ -542,6 +543,7 @@ class MapData:
             except Exception as e:
                 err = err or e
         if err is not None:
+            revisit.fault()                 # (a build that goes on without it is not kept)
             raise err
         for layer in layers:                # assembled in the caller's order, whatever finished first
             if layer in mem:                # decoded before: shared (cell layers are never changed after loading)

@@ -222,8 +222,13 @@ T.check(not warned('material'), 'hello: the server\'s far-tile material is the o
 T.check(crossover.cells() == 32 and farfield.stats().exactLevel == -2,
   'FORMAT 3 hello (no cells): 32-cell tiles, exact level L-2 (v1.3.1)')
 local req = received('prepare_anchor')[1]
-T.near(req.lat, 36.596718, 1e-9, 'default lat'); T.near(req.lon, -118.169991, 1e-9, 'default lon')
-T.check(req.cx == 0 and req.cy == 0, 'teleport terrain centred at (0,0)')
+do -- the default start's anchor on its grid (geodesy.snapAnchor), the car at its real spot in that frame
+  local geo = require('beamngEarth/geodesy')
+  T.near(req.lat, 36.6, 1e-9, 'default lat: snapped'); T.near(req.lon, -118.17, 1e-9, 'default lon: snapped')
+  local e, n = geo.newAnchor(36.6, -118.17):geodeticToEnu(36.596718, -118.169991, 0)
+  T.near(req.px, e, 1e-6, 'the start spot east of the anchor'); T.near(req.py, n, 1e-6, '... and north')
+  T.check(req.cx == 0 and req.cy == -256, 'teleport terrain centred on the block round the spot')
+end
 
 scenetree.PostFxMotionBlur = { strength = 0.3 } -- the player's motion blur setting
 serverSend({ type = 'anchor_ready', requestId = req.requestId, anchorId = 1, lat = req.lat, lon = req.lon, groundZ = 1180,

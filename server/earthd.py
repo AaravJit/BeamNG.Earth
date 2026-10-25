@@ -99,6 +99,7 @@ import plancache as plancachemod  # noqa: E402
 import grading as gradingmod  # noqa: E402
 import roadmesh as roadmeshmod  # noqa: E402
 import roadwidth as roadwidthmod  # noqa: E402
+import revisit as revisitmod  # noqa: E402
 import mapdata as mapdatamod  # noqa: E402
 import dem as demmod  # noqa: E402
 import mapcells  # noqa: E402
@@ -602,6 +603,7 @@ class Server:
             self.deshadow = deshadowmod.Deshadow(cache_dir, self.dem, deshadow)
             self.deshadow.add_listener(self._ds_listener)
         # Colour seams of the USGS mosaic (--colormatch s2; off = no object, textures as before).
+        self.tex_modes = (deshadow, colormatch)     # (the revisit cache's key of a far texture: tex_key)
         self.colormatch = None
         if colormatch != "off" and imagery and colormatchmod.SOURCE in [getattr(s, "name", s) for s in imagery]:
             self.colormatch = colormatchmod.ColorMatch(cache_dir, colormatch)
@@ -2167,13 +2169,25 @@ class Server:
             x0, y0, _, _ = tile.bbox
             try:
                 px = self.tex_size(lvl)
-                rgb, used = self.imagery.render(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px), px,
-                                                pending=pending)
-                rgb = self.rock_faces(anchor, tile, px, rgb, built.grid)
-                rgb = self.road_faces(anchor, tile, px, rgb)
                 texture = self.texture_name(anchor.id, tile.key, self.tex_rev.get((anchor.id, tile.key), 0))
-                self.write_road_mask(anchor, tile, px, texture)
-                tex_bytes = imagerymod.write_dds(os.path.join(self.out_dir, texture), rgb)
+                tk = self.tex_key(anchor, tile, px)
+                hit = revisitmod.load(self.cache_dir, "fartex", tk)
+                if hit is not None:         # (rendered in this anchor's place before: the revisit cache)
+                    blobs, extra = hit
+                    if "mask.dds" in blobs:
+                        self.write_file(os.path.join(self.out_dir, surfacemod.road_mask_name(texture)),
+                                        blobs["mask.dds"])
+                    self.write_file(os.path.join(self.out_dir, texture), blobs["tex.dds"])
+                    tex_bytes, used = int(extra["tex_bytes"]), extra["used"]
+                else:
+                    f0 = revisitmod.faults()
+                    rgb, used = self.imagery.render(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px),
+                                                    px, pending=pending)
+                    rgb = self.rock_faces(anchor, tile, px, rgb, built.grid)
+                    rgb = self.road_faces(anchor, tile, px, rgb)
+                    self.write_road_mask(anchor, tile, px, texture)
+                    tex_bytes = imagerymod.write_dds(os.path.join(self.out_dir, texture), rgb)
+                    self.keep_texture(tk, texture, tex_bytes, used, pending, f0)
                 material = self.matslots.take(ck)
                 self.degraded.discard(ck)
             except imagerymod.ImageryError as e:
@@ -2202,6 +2216,43 @@ class Server:
             info.rev = self.tex_rev.get((anchor.id, tile.key), 0)
             info.cm_pending = frozenset(pending or ())
         return info
+
+    def tex_key(self, anchor, tile, px):
+        """The revisit cache's key of a far tile's texture rendered here (revisit.py)."""
+        im = self.imagery
+        return revisitmod.key("fartex", round(float(anchor.lat), 7), round(float(anchor.lon), 7), tile.key, px,
+                              self.road_mask_px(tile.level) if self.road_masks else 0, [s.name for s in im.chain],
+                              self.tone, im.leaf_on, im.season_mode, self.tex_modes, roadsmod.ROADS_IN_GROUND,
+                              self.mapdata.versions() if self.mapdata is not None else None,
+                              self.road_widths is not None, self.surface is not None, self.layout.cells,
+                              anchor.zooms[max(tile.level, 0)])
+
+    def keep_texture(self, tk, texture, tex_bytes, used, pending, f0):
+        """A far texture rendered here kept in the revisit cache when it is final: no colour-match or de-shadow region
+        still to come (pending), nothing it read failed meanwhile (f0: revisit.faults() before; None: not checked, a
+        render again for a region that came)."""
+        if not revisitmod.ON or pending or (f0 is not None and revisitmod.faults() != f0):
+            return
+        try:
+            blobs = {}
+            with open(os.path.join(self.out_dir, texture), "rb") as f:
+                blobs["tex.dds"] = f.read()
+            mp = os.path.join(self.out_dir, surfacemod.road_mask_name(texture))
+            if os.path.exists(mp):
+                with open(mp, "rb") as f:
+                    blobs["mask.dds"] = f.read()
+            revisitmod.store(self.cache_dir, "fartex", tk, blobs,
+                             {"tex_bytes": int(tex_bytes), "used": {str(n): int(c) for n, c in (used or {}).items()}})
+        except Exception as e:          # (not kept rather than no tile)
+            log.debug("revisit: far texture %s not kept: %s: %s", texture, type(e).__name__, e)
+
+    @staticmethod
+    def write_file(path, data):
+        """path written atomically (staging: the game sees only finished files)."""
+        tmp = staging.tmp_for(path)
+        with open(tmp, "wb") as f:
+            f.write(data)
+        staging.replace(tmp, path)
 
     def rock_faces(self, anchor, tile, px, rgb, grid):
         """The far tile's photo with its steep ground drawn as rock (rockface.py: cliffs were the photo's top
@@ -2270,6 +2321,7 @@ class Server:
         texture = self.texture_name(anchor.id, tile.key, prev.rev + 1)
         self.write_road_mask(anchor, tile, px, texture)
         tex_bytes = imagerymod.write_dds(os.path.join(self.out_dir, texture), rgb)
+        self.keep_texture(self.tex_key(anchor, tile, px), texture, tex_bytes, used, pending, None)
         sources = prev.credits
         if self.credits is not None:        # the new texture's sources (the corrected one names S2 too)
             sources = creditsmod.tile_sources(anchor.frame, tile.bbox, self.dem, anchor.zooms[max(tile.level, 0)],
@@ -4510,7 +4562,8 @@ def prune_own_caches(cache_dir):
     for sub, mb, match in (("seacarve", seacarvemod.RAW_MB, lambda n: n.endswith(".raw.npy")),
                            (os.path.join("dem", "decoded"), demmod.MIRROR_MB, lambda n: n.endswith(".npy")),
                            ("peercache", peerworkmod.CACHE_BYTES / 1e6, None),
-                           ("roadwidth", roadwidthmod.STORE_MB, lambda n: n.endswith(".npy"))):
+                           ("roadwidth", roadwidthmod.STORE_MB, lambda n: n.endswith(".npy")),
+                           (revisitmod.SUBDIR, revisitmod.MAX_MB, lambda n: n.endswith(".zip"))):
         try:
             n, left = cachemod.prune_dir(os.path.join(cache_dir, sub), mb * 1e6, match=match)
             if n:

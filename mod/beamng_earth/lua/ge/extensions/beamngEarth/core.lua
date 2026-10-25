@@ -28,6 +28,8 @@
 local M = {}
 -- terrain-follow moves swap in the server's .ter when it sends one (terrain.swap); false: always importMaps
 M.TER_SWAP = true
+-- teleports land on an anchor on its grid (geodesy.snapAnchor; teleportTo): the server's revisit cache keys on it
+M.SNAP_TELEPORTS = true
 
 -- No terrain change while the window is minimized (canvas client size 0): on 0.40.3 every crash of 2026-10-24
 -- whose log shows the window state (access violation reading 0x48 at exe+0x143296, main thread) came 20-60 ms
@@ -626,7 +628,9 @@ local function placePlayer(z)
   dir = vec3(dir.x, dir.y, 0)
   if dir:length() < 1e-3 then dir = vec3(0, 1, 0) end
   local x, y = st.placeX or 0, st.placeY or 0
-  if x ~= 0 or y ~= 0 then
+  -- (a snapped teleport's spot: the server's height there is the first block's, as at the origin; a ray from above
+  -- hit the old place's buildings, still in the static collision, and the car fell 30 m, 2026-10-25)
+  if (x ~= 0 or y ~= 0) and not st.placeSnapped then
     -- away from the origin (a BeamMP player's anchor): the server's height there is the raw elevation data; set down
     -- on the collision under it (a graded road can be a few metres off)
     local ray = rawget(_G, 'castRayStatic')
@@ -2038,7 +2042,17 @@ teleportTo = function(lat, lon, name, kind)
     aLat, aLon, place = adLat, adLon, { x = x, y = y }
     cx, cy = follow.target(x, y, 0, 0)
     log('I', 'beamngEarth', string.format('teleport onto the anchor %.5f, %.5f (%.0f, %.0f there)', aLat, aLon, x, y))
+  elseif M.SNAP_TELEPORTS then
+    -- the anchor on its grid (geodesy.snapAnchor), the car at its real spot in that frame: the server's revisit cache
+    -- keeps what it built per anchor, so a place visited again (a game started where it was left) loads from it
+    local sLat, sLon = geodesy.snapAnchor(lat, lon)
+    if sLat ~= lat or sLon ~= lon then
+      local x, y = geodesy.newAnchor(sLat, sLon):geodeticToEnu(lat, lon, 0)
+      aLat, aLon, place = sLat, sLon, { x = x, y = y }
+      cx, cy = follow.target(x, y, 0, 0)
+    end
   end
+  st.placeSnapped = place ~= nil and not (okA and adLat)
   st.teleportRetry = nil       -- (a new teleport replaces a failed one's retry)
   if requestAnchor(aLat, aLon, 'teleport', cx, cy, place) then
     setStatus(string.format('Preparing terrain at %.5f, %.5f ...', lat, lon))

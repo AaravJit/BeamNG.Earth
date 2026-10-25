@@ -31,6 +31,7 @@ import netfetch
 import plancache
 import roadwidth as roadwidthmod
 import seacarve as seacarvemod
+import staging
 import surface as surfacemod
 import terraincache
 import xproc
@@ -357,7 +358,63 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
     written; returns roads.write_tile's (vfs path, chunks) and its stations' pads (gasstations.tile_sites pads: the
     server keeps them for the ground's painters). In the server's process its Python made up
     ~80 % of the main process's busy threads (in-game profile 2026-10-13): the block photos and far
-    textures waited for the GIL."""
+    textures waited for the GIL. A tile built in this anchor's place before comes from the revisit cache."""
+    import revisit
+    k = revisit.key("roads", round(float(lat), 7), round(float(lon), 7), zoom, tx, ty, bool(sidewalks), float(lift),
+                    bool(buildings), bool(left_hand), bool(mph), None if q is None else float(q), bool(gas_stations),
+                    _s.md.versions() if _s.md is not None else None)
+    return _revisit_tile("roads", k, aid, tx, ty, out_dir, vfs_dir, f"roads_{aid}_{tx}_{ty}.json",
+                         lambda: _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, buildings,
+                                             left_hand, mph, q, gas_stations),
+                         lambda res: {"n": int(res[1]), "pads": [[sid, [[np.asarray(la).tolist(), np.asarray(lo).tolist()]
+                                                                       for la, lo in rs]] for sid, rs in res[2]]},
+                         lambda path, extra: (path, int(extra.get("n", 0)),
+                                              [(sid, [(np.asarray(la), np.asarray(lo)) for la, lo in rs])
+                                               for sid, rs in extra.get("pads", [])]))
+
+
+def _revisit_tile(kind, k, aid, tx, ty, out_dir, vfs_dir, name, build, extra_of, result_of):
+    """A tile written to out_dir as name (a JSON pointing to its shapes in vfs_dir) from the revisit cache (key k), or
+    built (build() -> its result) and kept there when complete (revisit.faults unchanged). extra_of(result): JSON data
+    kept with it; result_of(vfs path of name, that data): the result again on a hit. The session's names (vfs_dir, the
+    anchor id) are taken out of the kept files and put back."""
+    import revisit
+    mine = [(f"{vfs_dir}/", "@V@/"), (f"_{aid}_{tx}_{ty}", f"_@A@_{tx}_{ty}")]
+    got = revisit.load(_s.cache_dir, kind, k)
+    if got is not None:
+        blobs, extra = got
+        back = [(b, a) for a, b in reversed(mine)]
+        for g, data in blobs.items():
+            if g.endswith(".json"):
+                data = revisit.swap(data.decode("utf-8"), back).encode("utf-8")
+            _write_bytes(os.path.join(out_dir, revisit.swap(g, back)), data)
+        return result_of(f"{vfs_dir}/{name}", extra or {})
+    f0 = revisit.faults()
+    res = build()
+    if res is not None and revisit.ON and revisit.faults() == f0:     # (complete: nothing it read failed or was missing)
+        try:
+            with open(os.path.join(out_dir, name), encoding="utf-8") as f:
+                text = f.read()
+            blobs = {revisit.swap(name, mine): revisit.swap(text, mine).encode("utf-8")}
+            for n in revisit.shapes_in(text, vfs_dir):
+                with open(os.path.join(out_dir, n), "rb") as f:
+                    blobs[revisit.swap(n, mine)] = f.read()
+            revisit.store(_s.cache_dir, kind, k, blobs, extra_of(res))
+        except Exception as e:          # (not kept rather than no tile)
+            log.debug("revisit: %s tile %d_%d not kept: %s: %s", kind, tx, ty, type(e).__name__, e)
+    return res
+
+
+def _write_bytes(path, data):
+    """path written atomically (staging: the game sees only finished files)."""
+    tmp = staging.tmp_for(path)
+    with open(tmp, "wb") as f:
+        f.write(data)
+    staging.replace(tmp, path)
+
+
+def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, buildings, left_hand, mph, q,
+                gas_stations):
     import parking as parkingmod
     import rails as railsmod
     import roadmesh as roadmeshmod
@@ -539,11 +596,19 @@ def tunnel_profiles(aid, frame, elev, g=None):
 
 
 def far_buildings_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir):
-    """earthd.Server.build_far_bld_tile here (road-tile pool): buildings.far_tile."""
+    """earthd.Server.build_far_bld_tile here (road-tile pool): buildings.far_tile (from the revisit cache when built in
+    this anchor's place before)."""
     import buildings as buildingsmod
+    import revisit
     frame = geodesy.EnuFrame(lat, lon)
-    return buildingsmod.far_tile(frame, tx, ty, _s.md, lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)),
-                                 out_dir, vfs_dir, aid)
+    k = revisit.key("bldfar", round(float(lat), 7), round(float(lon), 7), zoom, tx, ty,
+                    _s.md.versions() if _s.md is not None else None)
+    return _revisit_tile("bldfar", k, aid, tx, ty, out_dir, vfs_dir, f"bldfar_{aid}_{tx}_{ty}.json",
+                         lambda: buildingsmod.far_tile(frame, tx, ty, _s.md,
+                                                       lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)),
+                                                       out_dir, vfs_dir, aid),
+                         lambda res: {"n": int(res[1])},
+                         lambda path, extra: (path, int(extra.get("n", 0))))
 
 
 def base_entry(user_dir, base_vfs, ao_vfs, rgb, ao_value):
@@ -554,7 +619,51 @@ def base_entry(user_dir, base_vfs, ao_vfs, rgb, ao_value):
 def far_geometry(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout):
     """farfield.build_tile here (far-tile workers: the geometry, graded at levels <= 0 like the block, is
     most of a far tile's cost; its texture is rendered in the server, where the imagery corrections live).
-    Returns the Built."""
+    Returns the Built; one built in this anchor's place before comes from the revisit cache."""
+    import revisit
+    k = revisit.key("fargeo", *_far_key(lat, lon, tile, zoom, q, ref_zoom, with_sink, layout))
+    got = revisit.load(_s.cache_dir, "fargeo", k)
+    if got is not None:
+        return _built_from(got[0]["built.npz"], got[1])
+    f0 = revisit.faults()
+    built = _far_geometry(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout)
+    if revisit.ON and revisit.faults() == f0:
+        blob, meta = _built_blob(built)
+        revisit.store(_s.cache_dir, "fargeo", k, {"built.npz": blob}, meta)
+    return built
+
+
+def _far_key(lat, lon, tile, zoom, q, ref_zoom, with_sink, layout):
+    """What a far tile's geometry is built from (the revisit cache's key)."""
+    return (round(float(lat), 7), round(float(lon), 7), (tile.level, tile.i, tile.j), zoom,
+            None if q is None else float(q), ref_zoom, bool(with_sink), repr(layout),
+            _s.md.versions() if _s.md is not None else None, _s.sea is not None, _s.airports is not None)
+
+
+def _built_blob(built):
+    """(npz bytes, meta) of a farfield.Built (_built_from reads them back)."""
+    import io
+    buf = io.BytesIO()
+    arrays = {n: getattr(built, n) for n in ("positions", "normals", "uvs", "planar", "tris")}
+    if built.grid is not None:
+        arrays["grid"] = built.grid
+    np.savez(buf, **arrays)
+    meta = {"pos": [float(v) for v in built.pos], "err": float(built.err),
+            "sink": None if built.sink is None else float(built.sink), "skirt": float(built.skirt),
+            "size": float(built.size)}
+    return buf.getvalue(), meta
+
+
+def _built_from(blob, meta):
+    import io
+    with np.load(io.BytesIO(blob)) as z:
+        a = {n: z[n] for n in z.files}
+    return farfield.Built(pos=list(meta["pos"]), positions=a["positions"], normals=a["normals"], uvs=a["uvs"],
+                          planar=a["planar"], tris=a["tris"], grid=a.get("grid"), err=meta["err"], sink=meta["sink"],
+                          skirt=meta["skirt"], size=meta["size"])
+
+
+def _far_geometry(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout):
     g, _ = _s.anchor(aid, lat, lon)
     frame = geodesy.EnuFrame(lat, lon)
     base = _s.airports.wrap(_s.dem) if _s.airports is not None else _s.dem
@@ -643,11 +752,42 @@ def far_tile(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout, tex):
     de-shadow and colour match off, a small machine). The texture from the imagery tiles on disk alone, the server's
     chain (Imagery.strict): (Built, (texture bytes, sources used)), or (Built, None) when a tile it needs is not on
     disk (the server renders it, fetching what is missing). On a Steam Deck the textures were most of the server
-    process's own CPU, one interpreter for every thread (55 s of a drive), and the far field waited on it."""
+    process's own CPU, one interpreter for every thread (55 s of a drive), and the far field waited on it. A tile
+    built in this anchor's place before (and its texture) comes from the revisit cache."""
+    import revisit
+    mask = tex.get("mask") if tex.get("mask") and tex["mask"][1] else None
+    k = revisit.key("far", *_far_key(lat, lon, tile, zoom, q, ref_zoom, with_sink, layout), tex["px"],
+                    mask[1] if mask else 0, tuple(tex["chain"]), tex["tone"], tex["leaf_on"], tex["season_mode"],
+                    bool(tex.get("online")), _s.widths is not None, _s.surface is not None)
+    got = revisit.load(_s.cache_dir, "far", k)
+    if got is not None:
+        blobs, extra = got
+        if mask and "mask.dds" in blobs:
+            _write_bytes(mask[0], blobs["mask.dds"])
+        _write_bytes(tex["path"], blobs["tex.dds"])
+        return _built_from(blobs["built.npz"], extra), (int(extra["tex_bytes"]), extra["used"])
+    f0 = revisit.faults()
+    built, got = _far_tile(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout, tex, mask)
+    if got is not None and revisit.ON and revisit.faults() == f0:
+        try:
+            blob, meta = _built_blob(built)
+            blobs = {"built.npz": blob}
+            with open(tex["path"], "rb") as f:
+                blobs["tex.dds"] = f.read()
+            if mask and os.path.exists(mask[0]):
+                with open(mask[0], "rb") as f:
+                    blobs["mask.dds"] = f.read()
+            meta.update(tex_bytes=int(got[0]), used={str(n): int(c) for n, c in (got[1] or {}).items()})
+            revisit.store(_s.cache_dir, "far", k, blobs, meta)
+        except Exception as e:          # (not kept rather than no tile)
+            log.debug("revisit: far tile %s not kept: %s: %s", (tile.level, tile.i, tile.j), type(e).__name__, e)
+    return built, got
+
+
+def _far_tile(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout, tex, mask):
     import imagery as imagerymod
     import rockface as rockfacemod
-    geometry = getattr(far_geometry, "__wrapped__", far_geometry)        # (its CPU counted once, here)
-    built = geometry(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout)
+    built = _far_geometry(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout)    # (its CPU counted here)
     im = _imagery(tex)
     frame = geodesy.EnuFrame(lat, lon)
     x0, y0, _, _ = tile.bbox
@@ -670,12 +810,12 @@ def far_tile(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout, tex):
             rgb = surfacemod.paint_square(rgb, frame, *sq, getattr(_s, "surface", None), _s.widths)
         except Exception as e:
             log.debug("road faces of %s: %s", tile.key, e)
-    if tex.get("mask") and tex["mask"][1]:  # (earthd.Server.write_road_mask)
+    if mask:                            # (earthd.Server.write_road_mask)
         try:
             import surface as surfacemod
-            mask = surfacemod.road_mask(frame, *sq, tex["mask"][1], getattr(_s, "surface", None), _s.widths)
-            if mask is not None:
-                imagerymod.write_dds(tex["mask"][0], np.repeat(mask[..., None], 3, axis=2))
+            m = surfacemod.road_mask(frame, *sq, mask[1], getattr(_s, "surface", None), _s.widths)
+            if m is not None:
+                imagerymod.write_dds(mask[0], np.repeat(m[..., None], 3, axis=2))
         except Exception as e:
             log.debug("road mask of %s: %s", tile.key, e)
     return built, (imagerymod.write_dds(tex["path"], rgb), used)
