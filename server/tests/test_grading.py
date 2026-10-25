@@ -444,6 +444,33 @@ class UnderpassTest(unittest.TestCase):
         self.assertAlmostEqual(float(out[2]), 10.0, delta=0.1, msg="another road untouched")
 
 
+class UnderpassShortfallTest(unittest.TestCase):
+    def test_road_under_gives_way_for_what_the_ramps_could_not_raise(self):
+        """A local road's bridge over a motorway (the motorway never rises): with room for its ramps the overpass rises
+        and the motorway stays; with frontage roads hugging both ends (the ramps held down) the motorway dips under it
+        instead (BR-381 near Pouso Alegre: ~1 m of clearance, the AI car drove into the abutment)."""
+        mway = [(-300, 0), (300, 0)]
+        bridge = [(0, -20), (0, 20)]
+        ramps = [[(0, -260), (0, -20)], [(0, 20), (0, 260)]]
+        frontage = [[(-150, -26), (150, -26)], [(-150, 26), (150, 26)]]
+
+        def motorway_z(lines, classes):
+            f = features(lines, classes, flags=[(1, "is_bridge")])
+            g = grading.Grader(FRAME, FakeMD(f), lambda la, lo: np.full(np.shape(la), 10.0))
+            la, lo, _ = FRAME.enu_to_geodetic(np.array([0.0, 250.0]), np.array([0.0, 0.0]), 0.0)
+            return g.apply(la, lo, np.full(2, 10.0))
+        free = motorway_z([mway, bridge] + ramps, ["motorway", "tertiary", "tertiary", "tertiary"])
+        self.assertAlmostEqual(float(free[0]), 10.0, delta=0.3, msg="the overpass rises: the motorway stays")
+        held = motorway_z([mway, bridge] + ramps + frontage, ["motorway", "tertiary", "tertiary", "tertiary",
+                                                               "residential", "residential"])
+        self.assertLess(float(held[0]), 10.0 - 0.6 * grading.UNDER_CLEAR_M, "ramps held down: the motorway dips")
+        self.assertAlmostEqual(float(held[1]), 10.0, delta=0.1, msg="back up past its ramp")
+        with unittest.mock.patch.object(grading, "UNDER_ANY_ON", False):
+            off = motorway_z([mway, bridge] + ramps + frontage, ["motorway", "tertiary", "tertiary", "tertiary",
+                                                                  "residential", "residential"])
+        self.assertAlmostEqual(float(off[0]), 10.0, delta=0.3, msg="BNE_UNDERPASS_ANY=off: as before")
+
+
 class RacewayKeepTest(unittest.TestCase):
     def test_track_surface_is_the_terrain(self):
         """A road crossing a racetrack at grade: on the track (its carriageway + margin) the terrain stays as it is
