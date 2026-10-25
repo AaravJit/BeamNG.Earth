@@ -367,9 +367,9 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
     items = town = None
     if buildings:
         import buildings as buildingsmod
-        items = buildingsmod.road_tile_items(frame, tx, ty, _s.md,
-                                             lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)),
-                                             decks=_tile_decks(bridges, cells, tx, ty))
+        # (on the graded ground, the one the terrain is drawn with: on the raw elevation a building beside a road's
+        # cutting stood over the cut; hashk014's PR #69)
+        items = buildingsmod.road_tile_items(frame, tx, ty, _s.md, elev, decks=_tile_decks(bridges, cells, tx, ty))
         town = buildingsmod.coverage(items) < buildingsmod.POLES_COVERAGE
     rwalls = []
     ctx = []
@@ -407,9 +407,7 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
     bld = None
     if buildings:
         import buildings as buildingsmod
-        bld = buildingsmod.road_tile(frame, tx, ty, _s.md,
-                                     lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)), None, None,
-                                     items)
+        bld = buildingsmod.road_tile(frame, tx, ty, _s.md, elev, None, None, items)
     return roadsmod.write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks if sidewalks else None, mesh, dmesh,
                                bld, props, wires, park, tunnel_mesh=tmesh)
 

@@ -1176,10 +1176,9 @@ class Server:
         park = [] if self.buildings else None
         items = town = None
         if self.buildings:
-            items = buildingsmod.road_tile_items(
-                anchor.frame, tx, ty, self.mapdata,
-                lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom)),
-                decks=blockworker._tile_decks(anchor.bridges, cells, tx, ty))
+            # (on the graded ground, as blockworker.roads_tile)
+            items = buildingsmod.road_tile_items(anchor.frame, tx, ty, self.mapdata, elev,
+                                                 decks=blockworker._tile_decks(anchor.bridges, cells, tx, ty))
             town = buildingsmod.coverage(items) < buildingsmod.POLES_COVERAGE
         rwalls = []
         ctx = []
@@ -1223,9 +1222,7 @@ class Server:
         tmesh = roadmeshmod.tunnel(chunks, (x0, y0, 0.0), rwalls)
         bld = None
         if self.buildings:
-            bld = buildingsmod.road_tile(anchor.frame, tx, ty, self.mapdata,
-                                         lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom)),
-                                         None, None, items)
+            bld = buildingsmod.road_tile(anchor.frame, tx, ty, self.mapdata, elev, None, None, items)
         return roadsmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, chunks, walks if self.sidewalks else None,
                                    mesh, dmesh, bld, props, wires, park, tunnel_mesh=tmesh)
 
