@@ -568,6 +568,7 @@ end
 -- some: the car is reset (RESET_PHYSICS: BeamMP's positionVE puts it back on its next packet) and the state put on
 -- REPAIR_FRAMES frames later.
 M.REPAIR_FRAMES = 3
+M.BACK_ON_SETTLE_S = 2.0    -- a car switched off while far comes back on once its packets have come this long
 local nodesWrapped = nil   -- the nodesGE table wrapped (BeamMP reloading it makes a new one)
 local nodesBySid = {}       -- BeamMP vehicle id -> a full damage that came before its car was known here
 local pendingNodes = {}     -- game vehicle id -> { raw, frames } (the owner's state, applied after the reset)
@@ -968,6 +969,9 @@ function M.update(dt, anchor, player)
   for gid in pairs(deactivated) do
     if hide[gid] then
       waitGround[gid] = nil
+    elseif mpanchor.nearFor(sids[gid]) < M.BACK_ON_SETTLE_S then
+      -- (its packets in reach again only just: BeamMP's position sync settles first. Back on 0.5 s after its owner's
+      -- jump back, a pickup went unstable 0.9 s later on a 19-player server, 2026-10-24)
     else
       local veh = vehicle(gid)
       local x, y = mpanchor.lastPos(sids[gid])
@@ -994,8 +998,13 @@ function M.update(dt, anchor, player)
           -- BeamMP's own reset of its position sync (smoothers, the remote clock, a clean teleport onto the next
           -- packet): switched off a minute while its player teleported away and back (their car reset, its clock
           -- restarted), the car came back on with that state stale and two instabilities followed within 0.2 s, on the
-          -- right spot and height (a three-player test, 2026-10-24)
-          veh:queueLuaCommand('if positionVE and positionVE.onReset then positionVE.onReset() end')
+          -- right spot and height (a three-player test, 2026-10-24). Its physics reset first, as a freshly spawned car
+          -- (which BeamMP places stably): back on without it, a car floating off our block went unstable 0.8 s later,
+          -- every time (a player's 19-player session and the away test, 2026-10-24); the owner's damage goes on again
+          -- (lastNodes, once in range)
+          veh:queueLuaCommand('obj:requestReset(RESET_PHYSICS) if positionVE and positionVE.onReset then '
+            .. 'positionVE.onReset() end')
+          if lastNodes[gid] then stale[gid], applied[gid] = true, nil end
         end
         deactivated[gid], waitGround[gid] = nil, nil
       else
