@@ -97,6 +97,8 @@ def point_ground(frame, elev, key=None):
 
 
 GRADE_HALF_M = BALLAST_TOP_M + 1.2     # m: the ground graded flat to the bed line either side of a track (grade_plans)
+GRADE_REACH_M = 60.0        # m round a grading cell the lines are taken for its bed plans (the track's smoothing and the
+                            # ramps near it: REACH_M's 200 m had every cell profile ~1 km of line, 8.5 of 13 s at the A11)
 
 
 def cells_near(frame, box, reach=REACH_M):
@@ -111,13 +113,27 @@ def grade_plans(frame, cells, box, elev):
     """[(fid, xy (k, 2), z (k,))]: the bed line of each on-ground rail part near box, in elev's heights (elev(lat, lon):
     the grader's DEM), for grading.Grader to lay the ground to (the cutting's walls back from the track, the ramps'
     embankments filled). tile_mesh then finds the ground at its bed. Pure given elev."""
-    rails = parts(frame, cells, box)
+    rails = parts(frame, cells, box, reach=GRADE_REACH_M, clip=True)
     if not rails:
         return []
+    memo_key = ("dem", round(float(getattr(frame, "lat0", 0.0)), 7), round(float(getattr(frame, "lon0", 0.0)), 7))
+    memo = _GROUND_MEMO.setdefault(memo_key, {})
 
     def ground(xy):
-        la, lo, _ = frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
-        return np.asarray(elev(la, lo), np.float64)
+        # (the DEM's heights, remembered per point: every cell's plan asks for the same lines' points)
+        xy = np.asarray(xy, np.float64).reshape(-1, 2)
+        keys = list(map(tuple, np.round(xy * 100.0).astype(np.int64).tolist()))
+        out = np.array([memo.get(k, np.nan) for k in keys], np.float64)
+        miss = np.flatnonzero(np.isnan(out))
+        if len(miss):
+            la, lo, _ = frame.enu_to_geodetic(xy[miss, 0], xy[miss, 1], 0.0)
+            z = np.asarray(elev(la, lo), np.float64)
+            out[miss] = z
+            if len(memo) + len(miss) > GROUND_MEMO_MAX:
+                memo.clear()
+            for n, zz in zip(miss.tolist(), z.tolist()):
+                memo[keys[n]] = zz
+        return out
     pad = GRADE_HALF_M + 15.0
     out = []
     for (fid, _c, kind, xy), (zb, _zg) in zip(rails, profile(rails, ground)):
@@ -139,9 +155,11 @@ def _box_hit(b, box):
     return not (b[2] < box[0] or b[0] > box[2] or b[3] < box[1] or b[1] > box[3])
 
 
-def parts(frame, cells, box, reach=REACH_M):
+def parts(frame, cells, box, reach=REACH_M, clip=False):
     """[(fid, class, kind, xy (k, 2))]: the rail parts ("ground" / "bridge"; tunnels left out) of the drawn classes
-    within reach of box (x0, y0, x1, y1), resampled every STEP_M from each part's start, each feature once (by id)."""
+    within reach of box (x0, y0, x1, y1), resampled every STEP_M from each part's start, each feature once (by id).
+    clip: the ground parts cut to their points within reach of box (a segment of line runs on for km, and every one of
+    its points was profiled for each cell and tile: _clip); the bridges stay whole (a deck runs between its ends)."""
     near = (box[0] - reach, box[1] - reach, box[2] + reach, box[3] + reach)
     seen, out = set(), []
     for feats in cells:
@@ -165,7 +183,32 @@ def parts(frame, cells, box, reach=REACH_M):
                     if len(xy) >= 2:
                         out.append((fid, c, kind, xy))
     out.sort(key=lambda p: (p[0], p[2], float(p[3][0, 0]), float(p[3][0, 1])))
-    return _drop_stubs(out)
+    out = _drop_stubs(out)
+    return _clip(out, near) if clip else out
+
+
+def _clip(rails, near):
+    """rails with each ground part cut to its runs of points inside near (x0, y0, x1, y1), one STEP_M more each side
+    (the same sample points as the whole part: they lie every STEP_M from its start). Pure."""
+    out = []
+    for fid, c, kind, xy in rails:
+        if kind != "ground":
+            out.append((fid, c, kind, xy))
+            continue
+        inside = (xy[:, 0] >= near[0]) & (xy[:, 0] <= near[2]) & (xy[:, 1] >= near[1]) & (xy[:, 1] <= near[3])
+        if inside.all():
+            out.append((fid, c, kind, xy))
+            continue
+        grow = inside.copy()
+        grow[1:] |= inside[:-1]
+        grow[:-1] |= inside[1:]
+        idx = np.flatnonzero(grow)
+        if not len(idx):
+            continue
+        for run in np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1):
+            if len(run) >= 2:
+                out.append((fid, c, kind, xy[run[0]:run[-1] + 1]))
+    return out
 
 
 MIN_LINE_M = 50.0           # m: connected track shorter than this is left out (a siding's piece cut off by its
@@ -580,7 +623,7 @@ def tile_mesh(frame, tx, ty, cells, ground, sign_style=None, far_ground=None):
     box = roads.tile_bbox(tx, ty)
     ground = _mixed(ground, far_ground, box)
     ex = (box[0] - roads.OVERLAP, box[1] - roads.OVERLAP, box[2] + roads.OVERLAP, box[3] + roads.OVERLAP)
-    rails = parts(frame, cells, box)
+    rails = parts(frame, cells, box, clip=True)
     if not any(_box_hit((xy[:, 0].min(), xy[:, 1].min(), xy[:, 0].max(), xy[:, 1].max()),
                         (ex[0] - STEP_M, ex[1] - STEP_M, ex[2] + STEP_M, ex[3] + STEP_M)) for *_, xy in rails):
         return None
