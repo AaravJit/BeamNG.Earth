@@ -1224,8 +1224,102 @@ fn resample<'py>(py: Python<'py>, xy: PyReadonlyArray2<'py, f64>, step: f64)
     (a.into_pyarray(py), t.into_pyarray(py))
 }
 
-/// grading.smooth_profile: Gaussian smoothing of a profile sampled every step m (reflected at the ends, edge-padded
-/// when shorter than the kernel's radius).
+/// The point `dist` m along the polyline (x, y) from its first vertex (its last one when shorter).
+fn along(x: &[f64], y: &[f64], dist: f64) -> (f64, f64) {
+    let mut left = dist;
+    for i in 1..x.len() {
+        let l = (x[i] - x[i - 1]).hypot(y[i] - y[i - 1]);
+        if l >= left && l > 0.0 {
+            let t = left / l;
+            return (x[i - 1] + t * (x[i] - x[i - 1]), y[i - 1] + t * (y[i] - y[i - 1]));
+        }
+        left -= l;
+    }
+    (x[x.len() - 1], y[y.len() - 1])
+}
+
+/// grading.chain_extensions: for each query (a road part's end: its node, the way the road goes on through it, its
+/// smoothing class, its road), the straightest candidate line with an end within join m of the node, of the same class
+/// and another road, turning at most turn_deg (directions over look m of each line); its line from the node outward,
+/// cut reach m along (each query its own), as points (n, 2) and per-query offsets (q + 1): an empty run for none.
+/// Ties: the lower candidate index (the caller's order).
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn chain_extensions<'py>(py: Python<'py>, cand_xy: PyReadonlyArray2<'py, f64>, cand_off: PyReadonlyArray1<'py, i64>,
+                         cand_class: PyReadonlyArray1<'py, i64>, cand_road: PyReadonlyArray1<'py, i64>,
+                         q_node: PyReadonlyArray2<'py, f64>, q_dir: PyReadonlyArray2<'py, f64>,
+                         q_class: PyReadonlyArray1<'py, i64>, q_road: PyReadonlyArray1<'py, i64>,
+                         q_reach: PyReadonlyArray1<'py, f64>, join: f64, turn_deg: f64, look: f64)
+                         -> (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray1<i64>>) {
+    let (cxy, coff, ccl, crd) = (cand_xy.as_array(), cand_off.as_array(), cand_class.as_array(), cand_road.as_array());
+    let (qn, qd, qcl, qrd, qr) = (q_node.as_array(), q_dir.as_array(), q_class.as_array(), q_road.as_array(),
+                                  q_reach.as_array());
+    let cos_max = turn_deg.to_radians().cos();
+    let mut out: Vec<f64> = Vec::new();
+    let mut off: Vec<i64> = vec![0];
+    for q in 0..qn.nrows() {
+        let (nx, ny) = (qn[[q, 0]], qn[[q, 1]]);
+        let (dx, dy) = (qd[[q, 0]], qd[[q, 1]]);
+        let dl = dx.hypot(dy);
+        let mut best: Option<(f64, Vec<f64>, Vec<f64>)> = None;
+        if dl > 0.0 {
+            for c in 0..ccl.len() {
+                if ccl[c] != qcl[q] || crd[c] == qrd[q] {
+                    continue;
+                }
+                let (a, b) = (coff[c] as usize, coff[c + 1] as usize);
+                if b < a + 2 {
+                    continue;
+                }
+                // (the ends first: most candidates are nowhere near the node)
+                let at_start = (cxy[[a, 0]] - nx).hypot(cxy[[a, 1]] - ny) <= join;
+                if !at_start && (cxy[[b - 1, 0]] - nx).hypot(cxy[[b - 1, 1]] - ny) > join {
+                    continue;
+                }
+                let mut xs: Vec<f64> = (a..b).map(|i| cxy[[i, 0]]).collect();
+                let mut ys: Vec<f64> = (a..b).map(|i| cxy[[i, 1]]).collect();
+                if !at_start {
+                    xs.reverse();
+                    ys.reverse();
+                }
+                let (px, py) = along(&xs, &ys, look);
+                let (ex, ey) = (px - xs[0], py - ys[0]);
+                let el = ex.hypot(ey);
+                if el <= 0.0 {
+                    continue;
+                }
+                let cos = (dx * ex + dy * ey) / (dl * el);
+                if cos >= cos_max && best.as_ref().map_or(true, |b| cos > b.0) {
+                    best = Some((cos, xs, ys));
+                }
+            }
+        }
+        if let Some((_, xs, ys)) = best {
+            // from the node itself, cut reach m along
+            out.push(nx);
+            out.push(ny);
+            let mut left = qr[q];
+            for i in 1..xs.len() {
+                let l = (xs[i] - xs[i - 1]).hypot(ys[i] - ys[i - 1]);
+                if l >= left {
+                    let t = if l > 0.0 { left / l } else { 0.0 };
+                    out.push(xs[i - 1] + t * (xs[i] - xs[i - 1]));
+                    out.push(ys[i - 1] + t * (ys[i] - ys[i - 1]));
+                    break;
+                }
+                out.push(xs[i]);
+                out.push(ys[i]);
+                left -= l;
+            }
+        }
+        off.push((out.len() / 2) as i64);
+    }
+    let a = numpy::ndarray::Array2::from_shape_vec((out.len() / 2, 2), out).unwrap();
+    (a.into_pyarray(py), off.into_pyarray(py))
+}
+
+/// grading.smooth_profile: Gaussian smoothing of a profile sampled every step m (turned about its end points past the
+/// ends, so the ends keep their heights and a constant grade stays).
 #[pyfunction]
 fn smooth_profile<'py>(py: Python<'py>, z: PyReadonlyArray1<'py, f64>, step: f64, sigma: f64)
                        -> Bound<'py, PyArray1<f64>> {
@@ -1243,13 +1337,19 @@ fn smooth_profile<'py>(py: Python<'py>, z: PyReadonlyArray1<'py, f64>, step: f64
     for v in k.iter_mut() {
         *v /= sum;
     }
-    let reflect = n > r;
+    // Past the ends: the profile turned about its end point (2 z[0] - z[-i]), so a constant grade carries on to the end
+    // and the end keeps its own height. Mirrored (z[-i]), the end was the average of the one side it has: on a 20 %
+    // grade 1-2 m off the ground, the next part of the road (the same way split at a junction) off the other way, and
+    // the two met in a step at every junction on a slope (GitHub #266). Beyond what one turn reaches (a part shorter than
+    // the kernel), the straight line through the part's ends.
+    let m = n as isize;
+    let grade = (z[n - 1] - z[0]) / (n - 1) as f64;
     let at = |i: isize| -> f64 {
-        let m = n as isize;
         if i < 0 {
-            if reflect { z[(-i) as usize] } else { z[0] }
+            if -i < m { 2.0 * z[0] - z[(-i) as usize] } else { z[0] + grade * i as f64 }
         } else if i >= m {
-            if reflect { z[(2 * (m - 1) - i) as usize] } else { z[n - 1] }
+            let j = 2 * (m - 1) - i;
+            if j >= 0 { 2.0 * z[n - 1] - z[j as usize] } else { z[n - 1] + grade * (i - (m - 1)) as f64 }
         } else {
             z[i as usize]
         }
@@ -3843,6 +3943,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(resample, m)?)?;
     m.add_function(wrap_pyfunction!(tunnel_sections, m)?)?;
     m.add_function(wrap_pyfunction!(smooth_profile, m)?)?;
+    m.add_function(wrap_pyfunction!(chain_extensions, m)?)?;
     m.add_function(wrap_pyfunction!(seg_dist_min, m)?)?;
     m.add_function(wrap_pyfunction!(contains_points, m)?)?;
     m.add_function(wrap_pyfunction!(rock, m)?)?;
@@ -3889,6 +3990,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(photofill::fill_photo, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 68)?;
+    m.add("VERSION", 69)?;
     Ok(())
 }

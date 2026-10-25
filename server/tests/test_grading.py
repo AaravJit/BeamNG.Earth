@@ -26,6 +26,20 @@ class ProfileTest(unittest.TestCase):
         self.assertLess(np.abs(sm - ramp)[20:-20].max(), 0.02, "short bumps smoothed away")
         self.assertEqual(len(sm), len(s))
 
+    def test_the_parts_of_a_road_meet_at_one_height(self):
+        # a road on a 20 % grade split in two at a junction (GitHub #266, BR-381): each part's smoothed profile keeps
+        # the grade to its end and ends at the ground's height there, so the two meet without a step (mirrored at the
+        # ends, one ended 1.3 m under the ground and the next began 0.8 m over it)
+        s = np.arange(0, 400, 2.0)
+        ground = 0.20 * s + 0.3 * np.sin(s / 9.0)
+        a, b = grading.smooth_profile(ground[:101], 2.0, 12.0), grading.smooth_profile(ground[100:], 2.0, 12.0)
+        self.assertAlmostEqual(a[-1], ground[100], places=9)
+        self.assertAlmostEqual(b[0], ground[100], places=9)
+        ramp = 0.20 * s
+        self.assertTrue(np.allclose(grading.smooth_profile(ramp, 2.0, 12.0), ramp, atol=1e-9), "the grade to the ends")
+        short = 0.1 * np.arange(6) * 2.0        # shorter than the kernel: the line through its ends
+        self.assertTrue(np.allclose(grading.smooth_profile(short, 2.0, 12.0), short, atol=1e-9))
+
 
 class CrestTest(unittest.TestCase):
     def test_no_kinks_over_a_crest(self):
@@ -333,6 +347,57 @@ class GraderTest(unittest.TestCase):
         self.assertEqual(grading.clip_polyline(np.array([[200.0, 0], [300, 0]]), (0, 0, 10, 10)), [])
         two = grading.clip_polyline(np.array([[-5.0, 5], [15, 5], [15, 7], [-5, 7]]), (0, 0, 10, 10))
         self.assertEqual(len(two), 2)
+
+
+class ChainTest(unittest.TestCase):
+    """A road split at a junction (GitHub #266, BR-381): its parts are smoothed as one road."""
+
+    @staticmethod
+    def hill(la, lo):           # a 20 % grade, with a 1.5 m bump in the data right at the junction
+        e, n, _ = FRAME.geodetic_to_enu(la, lo, 0.0)
+        e = np.asarray(e)
+        return 100.0 + 0.20 * e + 0.4 * np.sin(e / 11.0) + 1.5 * np.exp(-(e / 6.0) ** 2)
+
+    def plans(self, on):
+        # A ends at the junction (0, 0) where B goes on straight and C branches off 31 degrees to the left
+        f = features([[(-300, 0), (0, 0)], [(0, 0), (300, 0)], [(0, 0), (200, 120)]], ["primary"] * 3)
+        with unittest.mock.patch.object(grading, "CHAIN_ON", on):
+            g = grading.Grader(FRAME, FakeMD(f), self.hill)
+            return {fid: p for fid, p in g._cell_plans(mapcells.cell_of(LAT, LON))}
+
+    def test_the_parts_meet_at_one_height(self):
+        p = self.plans(True)
+        a, b = p["id000"], p["id001"]
+        self.assertLess(abs(a.z[-1] - b.z[0]), 0.01)
+        self.assertLess(a.z[-1], 101.0, "smoothed through the junction: the bump in the data mostly gone")
+        alone = self.plans(False)
+        self.assertGreater(alone["id000"].z[-1], 101.4, "smoothed alone: each part pinned to the bump's top")
+        # the grade goes on through the junction (the plans' last / first 8 m)
+        ga = (a.z[-1] - a.z[-3]) / np.hypot(*(a.xy[-1] - a.xy[-3]))
+        gb = (b.z[2] - b.z[0]) / np.hypot(*(b.xy[2] - b.xy[0]))
+        self.assertAlmostEqual(ga, gb, delta=0.03)
+
+    def test_the_straightest_part_goes_on(self):
+        import fast
+        cand = [np.array([[0.0, 0.0], [300.0, 0.0]]), np.array([[200.0, 120.0], [0.0, 0.5]]),
+                np.array([[0.0, 0.0], [0.0, 300.0]]), np.array([[0.0, 0.0], [250.0, 1.0]])]
+        cxy = np.concatenate(cand)
+        coff = np.array([0, 2, 4, 6, 8], np.int64)
+
+        def ext(roads, cls=(1, 1, 1, 1), reach=50.0):
+            pts, off = fast._ef.chain_extensions(
+                cxy, coff, np.array(cls, np.int64), np.array(roads, np.int64), np.array([[0.0, 0.0]]),
+                np.array([[1.0, 0.0]]), np.array([1], np.int64), np.array([7], np.int64), np.array([reach]),
+                1.0, 35.0, 10.0)
+            return np.asarray(pts[off[0]:off[1]])
+        line = ext([1, 2, 3, 4])
+        self.assertEqual(line[0].tolist(), [0.0, 0.0])
+        self.assertAlmostEqual(float(np.hypot(*np.diff(line, axis=0).T).sum()), 50.0, places=6)
+        self.assertLess(abs(line[-1, 1]), 1e-6, "the straight one, not the 31 degree branch")
+        self.assertAlmostEqual(float(ext([7, 2, 3, 4])[-1, 1]), 0.2, places=4, msg="not its own road: the next straightest")
+        self.assertGreater(float(ext([7, 2, 3, 7])[-1, 1]), 10.0, "then the branch, its end at the node, turned")
+        self.assertEqual(len(ext([7, 7, 3, 7])), 0, "never a 90 degree turn")
+        self.assertEqual(len(ext([1, 2, 3, 4], cls=(2, 2, 2, 2))), 0, "only roads smoothed alike")
 
 
 class OverTunnels(unittest.TestCase):

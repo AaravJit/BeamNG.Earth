@@ -117,6 +117,14 @@ APPROACH_CAP_GRADE = 0.10   # steepest grade a ramp falls at where a road beside
 # at a bridge whose last ABUT_NEAR_M fall much more steeply toward it than its own grade further on keeps that grade to
 # its end instead, as the fill under a real approach does (every class, motorways too).
 ABUT_FILL_ON = os.environ.get("BNE_ABUT_FILL", "on") != "off"
+# A road split at a junction (the map's segments end at every one) is smoothed as one: each part's profile also samples
+# the ground along the straightest part that goes on from its end, so the parts meet at one height. Each was smoothed
+# alone, and on a slope each end took the average of its own side: on BR-381's 20 % grades the next part began 2 m
+# over where the last ended, a ramp at every junction (GitHub #266).
+CHAIN_ON = os.environ.get("BNE_GRADE_CHAIN", "on") != "off"
+CHAIN_JOIN_M = 1.0          # m: two parts' ends this close are one node
+CHAIN_TURN_DEG = 35.0       # the part that goes on turns at most this at the node
+CHAIN_LOOK_M = 10.0         # m along each part its direction at the node is taken over
 # Underpasses (GitHub #138, #142, #126's rule: "the road under gives way"): a ground road crossing under a short
 # overpass that is never raised (APPROACH_SKIP classes and links: a motorway's bridge over a local road) dips to the
 # deck's height (its abutments' ground, interpolated) minus UNDER_CLEAR_M, falling back at UNDER_GRADE. Lidar terrain
@@ -138,9 +146,10 @@ ABUT_MAX_M = 8.0            # m filled at most
 
 
 def smooth_profile(z, step, sigma):
-    """Gaussian smoothing of a profile sampled every `step` m (reflected at the ends). Pure."""
+    """Gaussian smoothing of a profile sampled every `step` m (turned about its end points past the ends: the ends keep
+    their heights, so the parts of a road split at a junction meet at one height). Pure."""
     import fast
-    fast.require(0, "smooth_profile")       # the Rust loop (~7000 roads a 9-tile set)
+    fast.require(69, "smooth_profile")      # the Rust loop (~7000 roads a 9-tile set)
     return fast._ef.smooth_profile(np.ascontiguousarray(z, np.float64), float(step), float(sigma))
 
 
@@ -222,39 +231,63 @@ def plan_road(frame, lonlat, spec, elev):
     return plan_roads(frame, [(lonlat, spec)], elev)[0]
 
 
-def plan_roads(frame, parts, elev, abut=None):
+def plan_roads(frame, parts, elev, abut=None, ext=None):
     """plan_road for many (lonlat, spec) parts with one elev call (its cost is per call); abut: per part (start, end)
-    flags, the ends leading onto a bridge (fill_abutment). Pure given elev."""
+    flags, the ends leading onto a bridge (fill_abutment); ext: per part (before, after), the lines (k, 2) in the frame
+    from its start / end outward along the part the road goes on in (Grader._extensions), or None: their ground is in
+    the part's profile smoothing. Pure given elev."""
     if not parts:
         return []
     ll = np.concatenate([lonlat for lonlat, _ in parts])
     E, N, _ = frame.geodetic_to_enu(ll[:, 1], ll[:, 0], 0.0)
     prof, k = [], 0
-    for lonlat, spec in parts:
+    for j, (lonlat, spec) in enumerate(parts):
         m = len(lonlat)
-        xy, _ = resample(np.stack([E[k:k + m], N[k:k + m]], axis=1), PROFILE_STEP)
+        line = np.stack([E[k:k + m], N[k:k + m]], axis=1)
         k += m
-        prof.append(xy if len(xy) >= 2 else None)
-    pts = [xy for xy in prof if xy is not None]
+        # (an even step, PROFILE_STEP or a little under, so the samples end on both ends: a short last step made the
+        # smoothing lean at that end, and the parts of a road met 0.2 m apart on a 20 % grade)
+        length = float(np.hypot(*np.diff(line, axis=0).T).sum()) if m >= 2 else 0.0
+        step = length / max(1, math.ceil(length / PROFILE_STEP - 1e-9)) * (1.0 + 1e-9) if length > 0 else PROFILE_STEP
+        xy, _ = resample(line, step)
+        if len(xy) < 2:
+            prof.append(None)
+            continue
+        side = []
+        for out in (ext[j] if ext is not None else (None, None)):
+            if out is None or len(out) < 2:
+                side.append(np.zeros((0, 2)))
+            else:                       # (from the node outward; the node is the part's own end sample)
+                side.append(resample(np.asarray(out, np.float64), step)[0][1:])
+        prof.append((xy, side[0][::-1], side[1], step))
+    pts = [np.concatenate([b, xy, a]) for xy, b, a, _ in (p for p in prof if p is not None)]
     if not pts:
         return [None] * len(parts)
     allxy = np.concatenate(pts)
     la, lo, _ = frame.enu_to_geodetic(allxy[:, 0], allxy[:, 1], 0.0)
     zall = np.asarray(elev(la, lo), np.float64)
     out, k = [], 0
-    for j, ((lonlat, spec), xy) in enumerate(zip(parts, prof)):
-        if xy is None:
+    for j, ((lonlat, spec), pr) in enumerate(zip(parts, prof)):
+        if pr is None:
             out.append(None)
             continue
-        z = zall[k:k + len(xy)]
-        k += len(xy)
+        xy, before, after, step = pr
+        nb, na = len(before), len(after)
+        zx = zall[k:k + nb + len(xy) + na]
+        k += nb + len(xy) + na
         ab = (False, False)
         if abut is not None and ABUT_FILL_ON:
             ab = (bool(abut[j][0]), bool(abut[j][1]))
+            if ab[0] and nb:            # (no extension past an end onto a bridge: its fill is the part's own)
+                zx, nb = zx[nb:], 0
+            if ab[1] and na:
+                zx, na = zx[:len(zx) - na], 0
+            z = zx[nb:nb + len(xy)]
             for at_end in (False, True):
                 if ab[int(at_end)]:
                     z = fill_abutment(z, at_end)
-        out.append(_plan(xy, z, spec, ab))
+            zx = np.concatenate([zx[:nb], z, zx[nb + len(xy):]])
+        out.append(_plan(xy, zx, spec, ab, (nb, na), step))
     if SHARP_ON:
         _add_cuts(frame, [p if p is not None and sp.kind in roadsmod.BUILT else None
                           for p, (_ll, sp) in zip(out, parts)], elev)
@@ -330,9 +363,16 @@ def _add_cuts(frame, plans, elev):
                 p.cut = cut
 
 
-def _plan(xy, z, spec, abut=(False, False)):
+def profile_sigma(spec):
+    """m: the profile smoothing of a road of this spec."""
+    return SIGMA_M if spec.kind in roadsmod.BUILT else DIRT_SIGMA_M
+
+
+def _plan(xy, z, spec, abut=(False, False), ext=(0, 0), step=PROFILE_STEP):
+    """ext: (before, after), samples of z past the part's ends (plan_roads): smoothed with it, then dropped. step: m
+    between the samples."""
     built = spec.kind in roadsmod.BUILT
-    zs = smooth_profile(z, PROFILE_STEP, SIGMA_M if built else DIRT_SIGMA_M)
+    zs = smooth_profile(z, step, profile_sigma(spec))[ext[0]:len(z) - ext[1]]
     # thin to VERTEX_STEP (the profile stays smooth between: linear in the grading pass)
     every = max(1, int(round(VERTEX_STEP / PROFILE_STEP)))
     keep = np.r_[np.arange(0, len(xy) - 1, every), len(xy) - 1]
@@ -473,8 +513,15 @@ class Grader:
                     abut = self._abut_ends(key, np.stack([np.asarray(e), np.asarray(n)], axis=1)).reshape(-1, 2)
                 except Exception as e:      # no fills rather than no grading
                     log.debug("grading: abutments of %s: %s: %s", key, type(e).__name__, e)
+            ext = None
+            if CHAIN_ON and parts:
+                try:
+                    self._chain_cands(key, feats, specs)        # (this cell's own: its specs are at hand)
+                    ext = self._extensions(parts, ids)
+                except Exception as e:      # each part smoothed alone rather than no grading
+                    log.debug("grading: road chains of %s: %s: %s", key, type(e).__name__, e)
             pclip = []
-            for fid, part, cl, p in zip(ids, parts, clipped, plan_roads(self.frame, parts, self.elev, abut)):
+            for fid, part, cl, p in zip(ids, parts, clipped, plan_roads(self.frame, parts, self.elev, abut, ext)):
                 if p is not None:
                     p.rid = road_id(fid)
                     plans.append((fid, p))
@@ -509,6 +556,78 @@ class Grader:
         else:
             covers, opens, keeps = [], [], []
         return plans, keeps, covers, opens
+
+    def _chain_cands(self, key, feats=None, specs=None):
+        """The graded ground parts of cell key's roads, as the continuations at a node in it are looked for (every cell
+        that plans a part looks in its nodes' own cells, so its plan is the same in each): [(xy (k, 2) in the frame,
+        smoothing sigma, road id)], in the map's feature order. Kept per cell. feats, specs: the cell's roads and their
+        road_specs when the caller has them."""
+        memo = self.__dict__.setdefault("_chain_memo", {})
+        with self.lock:
+            got = memo.get(key)
+        if got is not None:
+            return got
+        out = []
+        if feats is None:
+            feats = self.md.cell(key, layers=("roads",), kind="demand").layers.get("roads")
+        if feats is not None and len(feats):
+            if specs is None:
+                specs = roadsmod.road_specs(feats, None, self.widths)
+            for i in range(len(feats)):
+                if specs[i] is None or specs[i].cls in UNGRADED:
+                    continue
+                for ring in roadsmod.ground_parts(feats, i):
+                    e, n, _ = self.frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
+                    out.append((np.stack([np.asarray(e, np.float64), np.asarray(n, np.float64)], axis=1),
+                                profile_sigma(specs[i]), road_id(str(feats.ids[i]))))
+        with self.lock:
+            if len(memo) > 64:
+                memo.clear()
+            memo[key] = out
+        return out
+
+    def _extensions(self, parts, ids):
+        """plan_roads' ext of a cell's parts [(lonlat, spec)] (ids: their features'): per part (before, after), the line
+        from each end outward along the part the road goes on in there (earthfast.chain_extensions), 3 sigma of its
+        smoothing long, or None."""
+        import fast
+        fast.require(69, "road chains")
+        f64 = np.float64
+        q_node, q_dir, q_class, q_road, q_reach, q_cell = [], [], [], [], [], []
+        for (lonlat, spec), fid in zip(parts, ids):
+            e, n, _ = self.frame.geodetic_to_enu(lonlat[:, 1], lonlat[:, 0], 0.0)
+            xy = np.stack([np.asarray(e, f64), np.asarray(n, f64)], axis=1)
+            sg = profile_sigma(spec)
+            for end in (0, 1):
+                line = xy if end == 0 else xy[::-1]          # from this end inward
+                s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(line, axis=0).T))]
+                look = min(CHAIN_LOOK_M, float(s[-1]))
+                p = np.array([np.interp(look, s, line[:, 0]), np.interp(look, s, line[:, 1])])
+                q_node.append(line[0])
+                q_dir.append(line[0] - p)                    # the way the road goes on out of this end
+                q_class.append(int(round(sg * 1000)))
+                q_road.append(road_id(fid))
+                q_reach.append(3.0 * sg + PROFILE_STEP)
+                ll = lonlat[0] if end == 0 else lonlat[-1]
+                q_cell.append(mapcells.cell_of(float(ll[1]), float(ll[0])))
+        out = [[None, None] for _ in parts]
+        for key in sorted(set(q_cell), key=str):
+            cands = self._chain_cands(key)
+            qs = [i for i, c in enumerate(q_cell) if c == key]
+            if not cands or not qs:
+                continue
+            cxy = np.concatenate([c[0] for c in cands])
+            coff = np.r_[0, np.cumsum([len(c[0]) for c in cands])].astype(np.int64)
+            pts, off = fast._ef.chain_extensions(
+                np.ascontiguousarray(cxy, f64), coff, np.array([int(round(c[1] * 1000)) for c in cands], np.int64),
+                np.array([c[2] for c in cands], np.int64),
+                np.ascontiguousarray([q_node[i] for i in qs], f64), np.ascontiguousarray([q_dir[i] for i in qs], f64),
+                np.array([q_class[i] for i in qs], np.int64), np.array([q_road[i] for i in qs], np.int64),
+                np.array([q_reach[i] for i in qs], f64), float(CHAIN_JOIN_M), float(CHAIN_TURN_DEG), float(CHAIN_LOOK_M))
+            for j, i in enumerate(qs):
+                if off[j + 1] - off[j] >= 2:
+                    out[i // 2][i % 2] = np.asarray(pts[off[j]:off[j + 1]])
+        return [tuple(o) for o in out]
 
     def _clip_box(self, key, margin=CLIP_MARGIN_M):
         """The cell's box in the frame (east / north), margin wider each side; None for a key without bounds."""
