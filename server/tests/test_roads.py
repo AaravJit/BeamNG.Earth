@@ -1026,6 +1026,27 @@ class PaintRoadsTest(unittest.TestCase):
         self.assertEqual(int(out[64, 10]), sf.ASPHALT)
 
 
+class TileNeedsTest(unittest.TestCase):
+    def test_the_cells_a_tile_asks_for(self):
+        frame = geodesy.EnuFrame(43.2965, 5.3698)
+        own = set(roads.cells_of_tile(frame, 0, 0))
+        needs = roads.tile_needs(frame, 0, 0, buildings=True, widths=True, water_ring=3)
+        self.assertEqual(len(needs), len(set(needs)), "no (cell, layer) twice")
+        self.assertEqual({k for k, ly in needs if ly == "building_parts"}, own)   # the tile's own cells first
+        self.assertEqual({ly for k, ly in needs[:len(own) * 5]}, {"roads", "infrastructure", "buildings",
+                                                                    "building_parts", "water"})
+        xs = sorted({k.x for k in own})
+        ring = {k for k, ly in needs if ly == "buildings"}
+        self.assertEqual(sorted({k.x for k in ring}), list(range(xs[0] - 2, xs[-1] + 3)))
+        water = {k for k, ly in needs if ly == "water"}
+        self.assertEqual(sorted({k.x for k in water}), list(range(xs[0] - 3, xs[-1] + 4)))
+        far = [i for i, (k, ly) in enumerate(needs) if ly == "water" and k not in own]
+        self.assertEqual(far, list(range(far[0], len(needs))), "the water ring last")
+        bare = roads.tile_needs(frame, 0, 0, buildings=False, widths=False, water_ring=0)
+        self.assertEqual({ly for _, ly in bare}, {"roads", "infrastructure"})
+        self.assertEqual(sorted({k.x for k, ly in bare if ly == "roads"}), list(range(xs[0] - 1, xs[-1] + 2)))
+
+
 class InGroundTest(unittest.TestCase):
     """Carriageways painted into the ground (roads.ROADS_IN_GROUND, the default): no carriageway meshes, the markings
     kept."""

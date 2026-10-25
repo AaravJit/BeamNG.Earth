@@ -1981,6 +1981,39 @@ def cells_of_tile(frame, tx, ty, margin=OVERLAP):
     return mapcells.cells_for_bbox(float(np.min(lat)), float(np.min(lon)), float(np.max(lat)), float(np.max(lon)))
 
 
+TILE_BUILDING_LAYERS = ("buildings", "building_parts", "water")   # a road tile's own cells, with its buildings
+
+
+def tile_needs(frame, tx, ty, buildings=True, widths=True, water_ring=0):
+    """The (cell, layer)s a road tile asks the map data for, nearest first (MapData.warm, before building it): the
+    roads and infrastructure (bridges) of the cells under it and their buildings (buildings on), the roads of the ring
+    around (grading's neighbours), the buildings of two rings around (widths on: roadwidth's walls) and the water of
+    water_ring cells around (seacarve's rasters and river lines)."""
+    keys = cells_of_tile(frame, tx, ty)
+    if not keys:
+        return []
+    z = keys[0].z
+    n = 1 << z
+    x0, x1 = min(k.x for k in keys), max(k.x for k in keys)
+    y0, y1 = min(k.y for k in keys), max(k.y for k in keys)
+    cx, cy = 0.5 * (x0 + x1), 0.5 * (y0 + y1)
+
+    def ring(r):
+        out = [mapcells.CellKey(z, x % n, y) for x in range(x0 - r, x1 + r + 1) for y in range(y0 - r, y1 + r + 1)
+               if 0 <= y < n]
+        return sorted(out, key=lambda k: (abs((k.x - cx + n / 2) % n - n / 2) + abs(k.y - cy), k))
+    own = set(keys)
+    tile = ("roads", "infrastructure") + (TILE_BUILDING_LAYERS if buildings else ())
+    needs = [(k, ly) for k in sorted(keys) for ly in tile]
+    needs += [(k, "roads") for k in ring(1) if k not in own]
+    if widths:      # the walls of the cells the ring's roads cross, each with its neighbours' buildings
+        needs += [(k, "buildings") for k in ring(2) if k not in own]
+    if water_ring:
+        done = {k for k, ly in needs if ly == "water"}
+        needs += [(k, "water") for k in ring(water_ring) if k not in done]
+    return needs
+
+
 COVER_MARGIN_M = 30.0   # m past the tile: the ground carriageways a deck's parapet is tested against (build_tile cover_out)
 
 

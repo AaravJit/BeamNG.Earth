@@ -74,6 +74,8 @@ log = logging.getLogger("earthd.mapdata")
 
 LAYER_THREADS = 4               # layers of a cell built at once (each fetches through the shared limits)
 OSM_THREADS = 8                 # cells whose OpenStreetMap tags are read at once (alongside their Overture roads)
+WARM_THREADS = 8                # (cell, layer)s built ahead at once by warm() (a fresh place's first road tile asked for
+                                # ~70 of them one after another: 56 s in Marseille, GitHub #241)
 VERSION = 2                     # pipeline version: bump when what a cell's layers contain changes
 # per layer, on top of VERSION (a layer's own change without re-fetching the others): roads 2 adds
 # the "oneway" rule (Overture access_restrictions by heading)
@@ -233,9 +235,13 @@ class MapData:
         self._mem = OrderedDict()           # (cell, layer) -> (decoded layer, provenance, bytes): cell()'s LRU
         self._mem_bytes = 0
         self._mem_lock = threading.Lock()
+        self._warm_ex = None
+        self._warming = set()               # (cell, layer)s queued or building in warm()
 
     def close(self):
         self.pool.shutdown(wait=False)
+        if self._warm_ex is not None:
+            self._warm_ex.shutdown(wait=False, cancel_futures=True)
         self.overture.close()
 
     def versions(self):
@@ -578,6 +584,42 @@ class MapData:
             while self._mem_bytes > MEM_MB * 1e6 and len(self._mem) > 1:
                 _, (_, _, n) = self._mem.popitem(last=False)
                 self._mem_bytes -= n
+
+    def warm(self, needs, kind="demand"):
+        """Build the (cell, layer)s of needs into the cache ahead of the cell() calls that will ask for them, in their
+        order, WARM_THREADS at once; returns at once with how many were queued. Those cached, in memory or already
+        queued are skipped. A cell() of one meanwhile waits for its build (the cell's lock) or builds it itself."""
+        todo = []
+        for key, layer in needs:
+            key = _key(key)
+            k = (str(key), layer)
+            with self._mem_lock:
+                if k in self._mem:
+                    continue
+            with self._lock:
+                if k in self._warming:
+                    continue
+            if self.has(key, layer):
+                continue
+            with self._lock:
+                if k in self._warming:
+                    continue
+                self._warming.add(k)
+                if self._warm_ex is None:
+                    self._warm_ex = ThreadPoolExecutor(WARM_THREADS, thread_name_prefix="mapdata-warm")
+            todo.append((k, key, layer))
+
+        def run(k, key, layer):
+            try:
+                self.layer_arrays(key, layer, kind)
+            except Exception as e:      # (the caller's own cell() of it raises, or builds it again)
+                log.debug("mapdata warm %s %s: %s: %s", key, layer, type(e).__name__, e)
+            finally:
+                with self._lock:
+                    self._warming.discard(k)
+        for k, key, layer in todo:
+            self._warm_ex.submit(run, k, key, layer)
+        return len(todo)
 
     def cell_at(self, lat, lon, layers=LAYERS, kind="demand"):
         return self.cell(mapcells.cell_of(lat, lon), layers, kind)

@@ -345,8 +345,11 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
     import rails as railsmod
     import roadmesh as roadmeshmod
     import roads as roadsmod
-    g, _ = _s.anchor(aid, lat, lon)
     frame = geodesy.EnuFrame(lat, lon)
+    # everything the tile will ask for, fetched at once (one after another, a fresh place's first tile took ~1 min)
+    _s.md.warm(roadsmod.tile_needs(frame, tx, ty, buildings, _s.widths is not None,
+                                   1 + seacarvemod.LINE_CELLS if _s.sea is not None else 0))
+    g, _ = _s.anchor(aid, lat, lon)
     cells = [_s.md.cell(k, layers=("roads",), kind="demand").layers.get("roads")
              for k in roadsmod.cells_of_tile(frame, tx, ty)]
 

@@ -251,6 +251,7 @@ CDAE_ROOT = ("temp", "temp", "beamngearth")
 PLACE_PREVIEWS_MAX = 100     # place pictures made per request (a long list: the rest next time)
 
 HM_CACHE = 6                # heightmaps kept beyond the protected ones
+TERRAIN_STUCK_S = 90.0      # s: a terrain request still building this long is logged once (prepare_terrain)
 HM_KEEP_COMMITTED = 3       # the current terrain and the last two
 HM_KEEP_SENT = 2            # terrains handed to the mod but maybe not committed yet
 # Generated far-tile files kept per server, by layout: a 64-cell tile is ~3.7x the bytes (348 KB)
@@ -688,6 +689,7 @@ class Server:
         # Heightmaps: (anchorId, cx, cy) -> info, LRU order.
         self.hm = OrderedDict()
         self.hm_inflight = {}
+        self.hm_stage = {}              # terrain key -> what its build waits on now (the stuck log, prepare_terrain)
         self.ter_serial = itertools.count()
         self.base_stale = set()         # blocks whose base photo lacks lazy imagery (NAIP) still to come
         self.fast = False               # the player faster than FAST_BASE_V (the latest pose): photos follow blocks
@@ -1108,6 +1110,26 @@ class Server:
             parts, n = terrainpatchmod.build(anchor.frame, elev, box, path)
         return [(f"{self.vfs_dir}/{os.path.basename(p)}", c) for p, c in parts], n
 
+    WARM_ORDER = {"roads": 0, "infrastructure": 1, "buildings": 2, "building_parts": 3, "water": 4}
+
+    def warm_place(self, anchor, x, y):
+        """The map data of the road tiles the mod will want around (x, y) (roads.SEND_M), fetched at once, roads first
+        (the first block's grading and the road tiles both wait for them), nearest first in each layer: on a fresh
+        place they came one after another as each part of the work asked (GitHub #241). Returns how many were queued."""
+        if self.mapdata is None:
+            return 0
+        water = 1 + seacarvemod.LINE_CELLS if self.sea is not None else 0
+        needs = set()
+        for tx, ty in roadsmod.tiles_near(x, y, roadsmod.SEND_M):
+            needs.update(roadsmod.tile_needs(anchor.frame, tx, ty, self.buildings, self.road_widths is not None, water))
+
+        def where(k):
+            la, lo = k.center()
+            e, n, _ = anchor.frame.geodetic_to_enu(la, lo, 0.0)
+            return math.hypot(float(e) - x, float(n) - y)
+        order = sorted(needs, key=lambda kl: (self.WARM_ORDER.get(kl[1], 9), where(kl[0]), str(kl[0]), kl[1]))
+        return self.mapdata.warm(order)
+
     def build_roads_tile(self, aid, tx, ty):
         """roads.py: one road tile of anchor aid, written to the session folder. Returns (vfs path,
         chunks) or None if the anchor is gone. Worker threads (fetches the map cells it lacks)."""
@@ -1122,6 +1144,8 @@ class Server:
                 self.buildings, self.left_hand(anchor), self.mph(anchor), self.anchor_q(anchor)).result()
             log.debug("road tile %d_%d: %.2f s (queue + build)", tx, ty, time.perf_counter() - t0)
             return res
+        self.mapdata.warm(roadsmod.tile_needs(anchor.frame, tx, ty, self.buildings, self.road_widths is not None,
+                                              1 + seacarvemod.LINE_CELLS if self.sea is not None else 0))
         cells = [self.mapdata.cell(k, layers=("roads",), kind="demand").layers.get("roads")
                  for k in roadsmod.cells_of_tile(anchor.frame, tx, ty)]
         zoom = anchor.zooms[0]
@@ -1357,16 +1381,22 @@ class Server:
             base = (self.urgent_base_pool if lane == LANE_REQUEST else self.base_pool).submit(
                 self._base_photo, anchor, cx, cy, self._base_process(lane), lane == LANE_REQUEST)
         pool = self.block_pools[lane][0] if self.block_pools and progress is None else None
-        if pool is not None:
-            info = pool.submit(
-                blockworker.build, anchor.id, anchor.lat, anchor.lon, anchor.hm_zoom, q, cx, cy,
-                self.layout.block, self.out_dir, self.hm_name((anchor.id, cx, cy)),
-                self.ter_name((anchor.id, cx, cy))).result()
-            return self._finish_heightmap(anchor, cx, cy, info, t0, base)
-        urgent = getattr(self.dem, "urgent", None)     # (test DEMs have no lane)
-        with urgent() if urgent is not None else contextlib.nullcontext():     # the player waits for it (teleport,
-            # resync): ahead of every other download
-            return self._make_heightmap_here(anchor, cx, cy, progress, t0, q, base)
+        key = (anchor.id, cx, cy)
+        try:
+            if pool is not None:
+                self.hm_stage[key] = "the block process"
+                info = pool.submit(
+                    blockworker.build, anchor.id, anchor.lat, anchor.lon, anchor.hm_zoom, q, cx, cy,
+                    self.layout.block, self.out_dir, self.hm_name(key), self.ter_name(key)).result()
+                self.hm_stage[key] = "its base photo"
+                return self._finish_heightmap(anchor, cx, cy, info, t0, base)
+            self.hm_stage[key] = "the build in the server's process"
+            urgent = getattr(self.dem, "urgent", None)     # (test DEMs have no lane)
+            with urgent() if urgent is not None else contextlib.nullcontext():     # the player waits for it (teleport,
+                # resync): ahead of every other download
+                return self._make_heightmap_here(anchor, cx, cy, progress, t0, q, base)
+        finally:
+            self.hm_stage.pop(key, None)
 
     def make_provisional(self, anchor, cx, cy, progress):
         """Worker thread: a teleport's first block before its road plans (the user, 2026-10-22: "place the car as
@@ -3100,6 +3130,8 @@ class Connection:
                 self.boost_t0 = time.monotonic()
                 self.s.load_boost(True, "teleport")
         anchor = self.s.new_anchor(lat, lon)
+        # (the map data the first block's grading and the road tiles will ask for, fetched meanwhile)
+        asyncio.get_running_loop().run_in_executor(self.s.ui_pool, self.s.warm_place, anchor, cx, cy)
         self.status(f"Building terrain at {lat:.5f}, {lon:.5f}...")
         t0 = time.perf_counter()
         # a teleport's first block without its road plans, the graded one sent when built (make_provisional)
@@ -3195,7 +3227,15 @@ class Connection:
         t0 = time.perf_counter()
         self.terrain_wait += 1
         try:
-            info = await self.s.terrain(anchor, cx, cy)
+            job = asyncio.ensure_future(self.s.terrain(anchor, cx, cy))
+            try:
+                info = await asyncio.wait_for(asyncio.shield(job), TERRAIN_STUCK_S)
+            except asyncio.TimeoutError:
+                # (a game waited 5 min for one block with nothing in the log, GitHub #263)
+                log.warning("terrain request %s still building after %.0f s (waiting on %s): it may be stuck",
+                            (aid, cx, cy), time.perf_counter() - t0,
+                            self.s.hm_stage.get((aid, cx, cy), "a heightmap worker"))
+                info = await job
         except Exception as e:
             self.terrain_wait -= 1
             log.exception("terrain request %s failed", req)

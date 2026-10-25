@@ -27,6 +27,9 @@ class FakeMapData:
     def cell(self, key, layers=(), kind="demand"):
         return SimpleNamespace(layers={"roads": self.feats if key == self.first else None})
 
+    def warm(self, needs, kind="demand"):
+        return 0
+
 
 class FakeDem:
     def sample(self, lat, lon, zoom, progress=None):
