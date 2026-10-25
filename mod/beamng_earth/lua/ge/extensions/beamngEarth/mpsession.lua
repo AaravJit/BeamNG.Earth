@@ -967,7 +967,9 @@ function M.update(dt, anchor, player)
   local tp = require('beamngEarth/terrainpatch')
   local now = clock
   for gid in pairs(deactivated) do
-    if hide[gid] then
+    if not vehicle(gid) then
+      deactivated[gid], waitGround[gid] = nil, nil      -- (gone: removed by the server or its owner)
+    elseif hide[gid] then
       waitGround[gid] = nil
     elseif mpanchor.nearFor(sids[gid]) < M.BACK_ON_SETTLE_S then
       -- (its packets in reach again only just: BeamMP's position sync settles first. Back on 0.5 s after its owner's
