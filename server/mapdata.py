@@ -86,7 +86,8 @@ VERSION = 2                     # pipeline version: bump when what a cell's laye
 # roads 3: OpenStreetMap's lanes, width, sidewalk, maxspeed... joined by way id (osmtags.py)
 # roads 4: OpenStreetMap's raceways appended (osmtags.raceways, GitHub #143)
 # roads 5: a segment from an OSM relation (no way id) takes the tags of the same-named way around it (osmtags.join)
-LAYER_VERSIONS = {"roads": 5}
+# roads 6: rail segments' rail_flags (is_bridge / is_tunnel) in the "flags" rule (railways.py, mpsteppe's PR #287)
+LAYER_VERSIONS = {"roads": 6}
                                 # (2: clipped polygon pieces `own`ed by their cell, exact cell edges,
                                 # the exact no-area test of clipped rings)
 VECTOR_LAYERS = ("roads", "connectors", "buildings", "water", "land_use", "infrastructure", "building_parts", "places")

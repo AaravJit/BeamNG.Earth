@@ -4,13 +4,16 @@ Overture's rail segments (subtype "rail", in the roads layer; each OSM way one t
 ranges left out) as draped chunks of the road tile: on open ground a ballast bed, the sleepers across it and two rails;
 where the track runs on a carriageway (a street tram, a level crossing) West Coast USA's street track instead: its
 road_tramline decal, both rails in one 1.8 m ribbon (textureLength 30, as in its DecalRoads). Standard gauge. Flat: no
-collision, as the markings. Subways and the rail classes Overture leaves unknown are left out.
+collision, as the markings. Subways are left out.
+The classes railways.py builds as a colliding 3D track on the ground and on bridges (standard and narrow gauge, light
+rail, unknown: mpsteppe's PR #287) get only their street track here, where they cross a carriageway (railways.py stops
+its track at the road's edge); trams get it all.
 """
 import math
 
 import numpy as np
 
-KINDS = {"standard_gauge": "rail", "narrow_gauge": "narrow", "light_rail": "tram", "tram": "tram"}
+KINDS = {"standard_gauge": "rail", "narrow_gauge": "narrow", "light_rail": "tram", "tram": "tram", "unknown": "rail"}
 GAUGE_M = {"rail": 1.435, "narrow": 1.0, "tram": 1.435}
 HEAD_M = 0.075                  # a rail head's width; the rail lines lie half of it outside the gauge
 TRACK = {                       # ballast top width, sleeper length, sleeper width, sleeper spacing (m)
@@ -90,6 +93,7 @@ def _sleepers(xy, s, step, length, box, on_road):
 def tile_chunks(frame, tx, ty, cells):
     """The track chunks of road tile (tx, ty) (anchor frame): ballast, sleepers, then the rails (material order: the
     road mesh draws them in that order). cells: the roads Features of the cells touching the tile."""
+    import railways
     import roads
     box = roads.tile_bbox(tx, ty)
     reach = max(t[0] for t in TRACK.values()) + MARGIN_M
@@ -104,6 +108,11 @@ def tile_chunks(frame, tx, ty, cells):
             if fid in seen:
                 continue
             kind = KINDS.get(str(cls[i])) if str(sub[i]) == "rail" else None
+            # the classes railways.py builds as a 3D track (mpsteppe's PR #287): only where they cross a carriageway
+            # (its street track across the road, which railways.py leaves to the road), nothing on open ground
+            meshed = str(sub[i]) == "rail" and str(cls[i]) in railways.DRAWN
+            if meshed and railways._gone(feats, i):
+                continue
             if str(sub[i]) == "road":
                 if specs is None:
                     specs = roads.road_specs(feats)
@@ -119,7 +128,7 @@ def tile_chunks(frame, tx, ty, cells):
                 if kind is None:
                     carriageways[(fid, k)] = (xy, specs[i].width / 2)
                 else:
-                    tracks.append((kind, xy))
+                    tracks.append((kind, xy, meshed))
     if not tracks:
         return []
 
@@ -127,12 +136,12 @@ def tile_chunks(frame, tx, ty, cells):
         return roads._on_carriageways(pts, carriageways, -ON_ROAD_INSET_M)
 
     ballast, sleepers, rails = [], [], []
-    for kind, xy in tracks:
+    for kind, xy, meshed in tracks:
         bw, sl, sw, step = TRACK[kind]
         off = GAUGE_M[kind] / 2 + HEAD_M / 2
         full = roads.densify(xy, SAMPLE_M)
         s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(full, axis=0).T))]
-        for a, b in _sleepers(full, s, step, sl, box, on_road):
+        for a, b in (() if meshed else _sleepers(full, s, step, sl, box, on_road)):
             sleepers.append(_chunk(SLEEPER, sw, (a, b)))
         for piece in roads.clip_polyline(full, box[0] - MARGIN_M, box[1] - MARGIN_M, box[2] + MARGIN_M,
                                          box[3] + MARGIN_M):
@@ -145,6 +154,8 @@ def tile_chunks(frame, tx, ty, cells):
                     continue
                 if street:
                     rails.append(_chunk(STREET_TRACK, STREET_TRACK["w"], run))
+                    continue
+                if meshed:
                     continue
                 ballast.append(_chunk(BALLAST, bw, run))
                 for side in (off, -off):

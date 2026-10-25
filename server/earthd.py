@@ -1261,11 +1261,16 @@ class Server:
                                  anchor.bridges.beams_in(roadsmod.tile_bbox(tx, ty)) if anchor.bridges is not None else (),
                                  ground=cover)
         tmesh = roadmeshmod.tunnel(chunks, (x0, y0, 0.0), rwalls)
+        import railways
+        rmesh = railways.tile_mesh(anchor.frame, tx, ty,
+                                   [cell_fn(k) for k in roadsmod.cells_of_tile(anchor.frame, tx, ty, railways.REACH_M)],
+                                   railways.point_ground(anchor.frame, elev))
         bld = None
         if self.buildings:
             bld = buildingsmod.road_tile(anchor.frame, tx, ty, self.mapdata, elev, None, None, items)
         return roadsmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, chunks, walks if self.sidewalks else None,
-                                   mesh, dmesh, bld, props, wires, park, tunnel_mesh=tmesh, fuel=fuel)
+                                   mesh, dmesh, bld, props, wires, park, tunnel_mesh=tmesh, fuel=fuel,
+                                   rail_mesh=rmesh)
 
     def set_gas_stations(self, on):
         """The settings page's "Gas stations" switch (the mod's gas_stations; the user, 2026-10-23: off saves their
