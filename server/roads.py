@@ -2021,41 +2021,15 @@ def _seg_dist_min(line, p):
 
 def clip_polyline(pts, x0, y0, x1, y1):
     """The pieces of a polyline (k, D >= 2, xy first) inside the box, as a list of arrays (Liang-Barsky
-    per segment, consecutive pieces joined). Pure."""
-    pieces, cur = [], []
-    for a, b in zip(pts[:-1], pts[1:]):
-        dx, dy = b[0] - a[0], b[1] - a[1]
-        t0, t1 = 0.0, 1.0
-        ok = True
-        for p, q in ((-dx, a[0] - x0), (dx, x1 - a[0]), (-dy, a[1] - y0), (dy, y1 - a[1])):
-            if p == 0:
-                if q < 0:
-                    ok = False
-                    break
-            else:
-                t = q / p
-                if p < 0:
-                    t0 = max(t0, t)
-                else:
-                    t1 = min(t1, t)
-        if not ok or t0 > t1:
-            if len(cur) >= 2:
-                pieces.append(np.array(cur))
-            cur = []
-            continue
-        pa = a + (b - a) * t0
-        pb = a + (b - a) * t1
-        if not cur or np.abs(np.asarray(cur[-1]) - pa).max() > 1e-6:
-            if len(cur) >= 2:
-                pieces.append(np.array(cur))
-            cur = [pa]
-        cur.append(pb)
-        if t1 < 1.0:
-            pieces.append(np.array(cur))
-            cur = []
-    if len(cur) >= 2:
-        pieces.append(np.array(cur))
-    return pieces
+    per segment, consecutive pieces joined; earthfast.clip_polyline). Pure."""
+    import fast
+    fast.require(74, "clip_polyline")
+    P = np.ascontiguousarray(np.asarray(pts, np.float64))
+    if P.ndim != 2 or len(P) < 2:
+        return []
+    out, starts = fast._ef.clip_polyline(P, float(x0), float(y0), float(x1), float(y1))
+    out, starts = np.asarray(out), np.asarray(starts)
+    return [out[starts[i]:starts[i + 1]].copy() for i in range(len(starts) - 1)]
 
 
 def simplify(pts, tol=SIMPLIFY_M, ztol=None):
@@ -3303,19 +3277,38 @@ WALL_DECK_OVER_M = 2.0      # ... a deck this far over the road (an overpass, no
 
 def _under_decks(xy, z, decks):
     """Which points xy (k, 2) at road heights z lie under a bridge deck (deck chunks: "n" points [x, y, z], "w" m):
-    within its half width + WALL_DECK_MARGIN_M and the deck WALL_DECK_OVER_M or more over them. Pure."""
-    out = np.zeros(len(xy), bool)
-    for ch in decks or ():
-        n = np.asarray(ch["n"], np.float64)
-        if len(n) < 2:
-            continue
-        a, b = n[:-1, :2], n[1:, :2]
-        d = _seg_dist(np.asarray(xy, np.float64), a, b)        # (k, m)
-        j = d.argmin(axis=1)
-        near = d[np.arange(len(xy)), j] <= float(ch.get("w") or 0) / 2 + WALL_DECK_MARGIN_M
-        dz = np.minimum(n[j, 2], n[j + 1, 2]) - np.asarray(z, np.float64)
-        out |= near & (dz >= WALL_DECK_OVER_M)
-    return out
+    within its half width + WALL_DECK_MARGIN_M of its nearest segment and the deck WALL_DECK_OVER_M or more over them
+    (earthfast.under_decks). Pure."""
+    import fast
+    xy = np.asarray(xy, np.float64).reshape(-1, 2)
+    pack = _deck_pack(decks)
+    if pack is None or not len(xy):
+        return np.zeros(len(xy), bool)
+    fast.require(74, "under_decks")
+    return np.asarray(fast._ef.under_decks(np.ascontiguousarray(xy), np.ascontiguousarray(np.asarray(z, np.float64)),
+                                           *pack, float(WALL_DECK_OVER_M)), bool)
+
+
+_DECK_PACK = [(None, None)]     # [(the decks list, its packed arrays)]: one tile's walls ask with the same list
+
+
+def _deck_pack(decks):
+    """(points (n, 3), starts (C + 1,), reach (C,)) of the deck chunks with 2 points or more, or None."""
+    if not decks:
+        return None
+    last = _DECK_PACK[0]
+    if last[0] is decks:
+        return last[1]
+    ns = [np.asarray(ch["n"], np.float64)[:, :3] for ch in decks]
+    keep = [k for k, n in enumerate(ns) if len(n) >= 2]
+    pack = None
+    if keep:
+        pts = np.ascontiguousarray(np.concatenate([ns[k] for k in keep]))
+        starts = np.r_[0, np.cumsum([len(ns[k]) for k in keep])].astype(np.int64)
+        reach = np.array([float(decks[k].get("w") or 0) / 2 + WALL_DECK_MARGIN_M for k in keep], np.float64)
+        pack = (pts, starts, reach)
+    _DECK_PACK[0] = (decks, pack)
+    return pack
 
 
 def _off_wall_tops(chunks, walls):

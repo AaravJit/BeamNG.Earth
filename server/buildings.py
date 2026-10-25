@@ -2147,16 +2147,13 @@ def road_through(ring, lines, step=2.0):
     lo, hi = ring.min(0), ring.max(0)
     b = line_boxes(lines)
     near = np.flatnonzero((b[:, 2] >= lo[0]) & (b[:, 0] <= hi[0]) & (b[:, 3] >= lo[1]) & (b[:, 1] <= hi[1]))
-    total = 0.0
-    for li in near:
-        ln = lines[li]
-        for p, q in zip(ln[:-1], ln[1:]):
-            L = float(np.hypot(*(q - p)))
-            k = max(1, int(L / step))
-            for t in (np.arange(k) + 0.5) / k:
-                if _inside(ring, p + (q - p) * t):
-                    total += L / k
-    return total
+    if not len(near):
+        return 0.0
+    fast.require(74, "road_through")         # (the Rust loop: every sample's even-odd test there)
+    sel = [np.asarray(lines[li], np.float64)[:, :2] for li in near]
+    starts = np.r_[0, np.cumsum([len(ln) for ln in sel])].astype(np.int64)
+    return float(fast._ef.road_through(np.ascontiguousarray(np.asarray(ring, np.float64)[:, :2]),
+                                       np.ascontiguousarray(np.concatenate(sel)), starts, float(step)))
 
 
 def road_across(ring, lines, max_w=ACROSS_W):

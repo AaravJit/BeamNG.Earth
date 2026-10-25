@@ -400,26 +400,38 @@ def profile(rails, ground):
 
 
 def _blocked(xy, z, crossers):
-    """Per point of xy (bed heights z): inside a crossing road's carriageway (+ CROSSING_PAD_M) at grade."""
-    out = np.zeros(len(xy), bool)
-    for line, hw, lz in crossers:
-        if len(line) < 2:
-            continue
-        a, b = line[:-1], line[1:]
-        ab = b - a
-        L2 = np.maximum((ab ** 2).sum(1), 1e-12)
-        lo, hi = xy.min(0) - hw - 5, xy.max(0) + hw + 5
-        keep = ~((np.maximum(a, b) < lo).any(1) | (np.minimum(a, b) > hi).any(1))
-        if not keep.any():
-            continue
-        a, ab, L2, za = a[keep], ab[keep], L2[keep], lz[:-1][keep]
-        t = np.clip(((xy[:, None, :] - a[None]) * ab[None]).sum(2) / L2[None], 0.0, 1.0)
-        d = np.hypot(*(xy[:, None, :] - (a[None] + t[..., None] * ab[None])).transpose(2, 0, 1))
-        j = d.argmin(1)
-        # (either way: a road over a cutting on a ground segment, its bridge range short of it, cut the track under it,
-        # 2026-10-25)
-        out |= (d[np.arange(len(xy)), j] < hw + CROSSING_PAD_M) & (np.abs(z - za[j]) < CROSSING_DZ)
-    return out
+    """Per point of xy (bed heights z): inside a crossing road's carriageway (+ CROSSING_PAD_M) at grade: its nearest
+    segment's start within CROSSING_DZ of the bed (earthfast.near_crossers)."""
+    import fast
+    xy = np.asarray(xy, np.float64).reshape(-1, 2)
+    pack = _crosser_pack(crossers)
+    if pack is None or not len(xy):
+        return np.zeros(len(xy), bool)
+    fast.require(74, "near_crossers")
+    return np.asarray(fast._ef.near_crossers(np.ascontiguousarray(xy), np.ascontiguousarray(np.asarray(z, np.float64)),
+                                             *pack, float(CROSSING_DZ)), bool)
+
+
+_CROSSER_PACK = [(None, None)]  # [(the crossers list, its packed arrays)]: a tile's parts ask with the same list
+
+
+def _crosser_pack(crossers):
+    """(points (n, 3) [x, y, road z], starts (C + 1,), reach (C,)) of the crossing roads with 2 points or more."""
+    if not crossers:
+        return None
+    last = _CROSSER_PACK[0]
+    if last[0] is crossers:
+        return last[1]
+    keep = [(np.asarray(line, np.float64)[:, :2], float(hw), np.asarray(lz, np.float64))
+            for line, hw, lz in crossers if len(line) >= 2]
+    pack = None
+    if keep:
+        pts = np.ascontiguousarray(np.concatenate([np.c_[ln, lz[:len(ln)]] for ln, _hw, lz in keep]))
+        starts = np.r_[0, np.cumsum([len(ln) for ln, _hw, _lz in keep])].astype(np.int64)
+        reach = np.array([hw + CROSSING_PAD_M for _ln, hw, _lz in keep], np.float64)
+        pack = (pts, starts, reach)
+    _CROSSER_PACK[0] = (crossers, pack)
+    return pack
 
 
 def _runs(mask):
