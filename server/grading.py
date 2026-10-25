@@ -671,8 +671,10 @@ class Grader:
 
     def _pins(self, parts, ids, ext):
         """plan_roads' pins of a cell's parts: an end that no part of its own smoothing goes on from (ext None there) and
-        that ends on a more smoothed road's part (a slip road on a motorway, a side road on a trunk) is held at that
-        road's planned height there (_stronger_z), so the two meet at one height. None when no end is held."""
+        that ends on another road's part smoothed as much or more (a slip road on a motorway, a side road on a trunk or
+        on a street of its own class) is held at that road's planned height there (_stronger_z), so the two meet at one
+        height (a same-class side road ended at the raw ground, the street through the junction at its smoothed height:
+        0.6 m apart on a hill). The most smoothed such road, the first of equals. None when no end is held."""
         import fast
         fast.require(70, "road pins")
         f64 = np.float64
@@ -691,7 +693,7 @@ class Grader:
         for key in sorted(set(q_cell), key=str):
             cands = self._chain_cands(key)
             qs = [i for i, c in enumerate(q_cell) if c == key]
-            strong = [c for c in cands if c[1] > min(q_who[i][2] for i in qs)]
+            strong = [c for c in cands if c[1] >= min(q_who[i][2] for i in qs)]
             if not strong:
                 continue
             cxy = np.concatenate([c[0] for c in strong])
@@ -703,7 +705,7 @@ class Grader:
                 best = None
                 for h in hits[off[k]:off[k + 1]]:
                     c = strong[int(h) // 2]
-                    if c[1] > sg and c[2] != rid and (best is None or c[1] > best[0][1]):
+                    if c[1] >= sg and c[2] != rid and (best is None or c[1] > best[0][1]):
                         best = (c, bool(int(h) % 2))
                 if best is not None:
                     z = self._stronger_z(best[0], best[1])
