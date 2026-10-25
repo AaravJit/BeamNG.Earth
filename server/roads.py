@@ -204,7 +204,31 @@ SHOULDER_M = 2.2
 PARKING_CLASSES = {"residential", "tertiary", "secondary", "unclassified", "living_street"}
 EDGE_STRIP_M = 1.0
 URBAN_CLASS = 50                # ESA WorldCover "built-up"
-URBAN_SHARE = 0.5               # a road is urban when this share of its vertices is built-up
+URBAN_SHARE = 0.5               # a road is urban when this share of its vertices is built-up ...
+URBAN_BESIDE_M = 30.0           # ... and at least URBAN_BESIDE_SHARE of them have built-up land this far to one side:
+URBAN_BESIDE_SHARE = 0.2        # the land cover counts a wide road's own pavement as built-up, and the Eyre Highway
+                                # through Eucla (centre 94 %, beside it 3 %) got a town's footpaths, bins and hydrants
+                                # across the Nullarbor (GitHub #267). Baltimore and Chicago keep every urban road.
+
+
+def _beside(ll, counts, d):
+    """The points d m to the left and to the right of each vertex of the lines (lon/lat (n, 2), counts: the vertices of
+    each line in turn), square to the line there; a one-vertex line's are the vertex itself. Pure."""
+    left, right = np.empty_like(ll), np.empty_like(ll)
+    k = 0
+    for c in counts:
+        p = ll[k:k + c]
+        if c < 2:
+            left[k:k + c] = right[k:k + c] = p
+            k += c
+            continue
+        m = np.array([111320.0 * math.cos(math.radians(float(p[:, 1].mean()))), 110540.0])   # m per degree
+        t = np.gradient(p * m, axis=0)
+        t /= np.maximum(np.hypot(t[:, 0], t[:, 1]), 1e-9)[:, None]
+        off = np.stack([-t[:, 1], t[:, 0]], axis=1) * d / m
+        left[k:k + c], right[k:k + c] = p + off, p - off
+        k += c
+    return left, right
 
 
 def _rule_value(table, i):
@@ -793,10 +817,15 @@ def _road_specs(feats, urban_fn, widths, left_hand):
                         lanes=lanes, surf=surface_token(surf)))
     if ask:
         ll = np.concatenate([feats.lonlat[a:b] for _, _, _, a, b, *_ in ask])
-        u = np.asarray(urban_fn(ll[:, 1], ll[:, 0]), bool)
+        left, right = _beside(ll, [b - a for _, _, _, a, b, *_ in ask], URBAN_BESIDE_M)
+        n = len(ll)
+        pts = np.concatenate([ll, left, right])
+        u_all = np.asarray(urban_fn(pts[:, 1], pts[:, 0]), bool)      # (one call: its cost is per call)
+        u, by = u_all[:n], u_all[n:2 * n] | u_all[2 * n:]
         k = 0
         for j, cls, kind, a, b, ow, dk, lanes, token in ask:
-            urban = float(np.mean(u[k:k + (b - a)])) >= URBAN_SHARE
+            urban = (float(np.mean(u[k:k + (b - a)])) >= URBAN_SHARE
+                     and float(np.mean(by[k:k + (b - a)])) >= URBAN_BESIDE_SHARE)
             k += b - a
             out[j] = Spec(carriageway(cls, kind, urban, None, ow, lanes), kind, urban, cls, ow, 2.5, *dk, lanes=lanes,
                           surf=token)

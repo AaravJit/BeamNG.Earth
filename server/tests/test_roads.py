@@ -1026,6 +1026,22 @@ class PaintRoadsTest(unittest.TestCase):
         self.assertEqual(int(out[64, 10]), sf.ASPHALT)
 
 
+class UrbanBesideTest(unittest.TestCase):
+    def test_a_highway_through_a_built_up_strip_is_not_a_town_street(self):
+        # the land cover counts the pavement itself as built-up: a road is urban only with built-up land beside it too
+        # (GitHub #267: the Eyre Highway through Eucla got footpaths and street furniture)
+        f = features([[(0, 0), (400, 0)], [(0, 100), (400, 100)]], ["trunk", "residential"])
+
+        def pavement_only(lat, lon):            # built-up within 6 m of the first road's line, and around the second
+            e, n, _ = FRAME.geodetic_to_enu(np.asarray(lat), np.asarray(lon), 0.0)
+            n = np.asarray(n)
+            return (np.abs(n) < 6.0) | (np.abs(n - 100.0) < 60.0)
+        specs = roads.road_specs(f, pavement_only)
+        self.assertFalse(specs[0].urban, "built-up only on its own pavement")
+        self.assertTrue(specs[1].urban, "built-up beside it")
+        self.assertFalse(roads.has_sidewalks(specs[0]))
+
+
 class TileNeedsTest(unittest.TestCase):
     def test_the_cells_a_tile_asks_for(self):
         frame = geodesy.EnuFrame(43.2965, 5.3698)
