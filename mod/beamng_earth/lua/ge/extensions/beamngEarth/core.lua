@@ -229,7 +229,15 @@ local teleportTo -- defined with M.teleport (the level start's own teleport is o
 -- the level start's teleport: to the place picked in the level select (levelinfo.lua: a saved place, or a random
 -- road from the server), else to the window's lat/lon (the default start until it is changed)
 local RANDOM_WAIT_S = 15 -- s for the server's random place (an older server never answers: the default start)
+-- "Where you left off": the last place of this game run, else the newest of the saved recent places (the window's
+-- lat / lon live only as long as the game: after a restart, an update's for one, every start went to Mount Whitney,
+-- Discord 2026-10-25), else the default start
 local function defaultStart()
+  if not ui.hasLatLon() then
+    local okR, recent = pcall(places.recentList)
+    local r = okR and type(recent) == 'table' and recent[1] or nil
+    if r and tonumber(r.lat) and tonumber(r.lon) then return teleportTo(r.lat, r.lon, r.name, 'start') end
+  end
   local lat, lon = ui.getLatLon(DEFAULT_LAT, DEFAULT_LON)
   return teleportTo(lat, lon, nil, 'start')
 end
