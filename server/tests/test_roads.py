@@ -1041,6 +1041,20 @@ class UrbanBesideTest(unittest.TestCase):
         self.assertTrue(specs[1].urban, "built-up beside it")
         self.assertFalse(roads.has_sidewalks(specs[0]))
 
+    def test_a_trunk_needs_a_town_on_both_sides(self):
+        # a roadhouse on one side of a highway is no town's main street (Eucla: one side 33 %, the other 0 %)
+        f = features([[(0, 0), (400, 0)], [(0, 200), (400, 200)]], ["trunk", "residential"])
+
+        def one_side(lat, lon):                 # the pavement and 40 m north of each road built-up
+            e, n, _ = FRAME.geodetic_to_enu(np.asarray(lat), np.asarray(lon), 0.0)
+            n = np.asarray(n)
+            return ((n > -6.0) & (n < 40.0)) | ((n > 194.0) & (n < 240.0))
+        specs = roads.road_specs(f, one_side)
+        self.assertFalse(specs[0].urban, "a trunk with built-up land on one side only")
+        self.assertTrue(specs[1].urban, "a street with houses on one side is still a town street")
+        both = roads.road_specs(f, lambda lat, lon: np.ones(np.shape(lat), bool))
+        self.assertTrue(both[0].urban and roads.has_sidewalks(both[0]), "a town's main street on a highway")
+
 
 class TileNeedsTest(unittest.TestCase):
     def test_the_cells_a_tile_asks_for(self):

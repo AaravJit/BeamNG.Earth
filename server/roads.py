@@ -209,6 +209,9 @@ URBAN_BESIDE_M = 30.0           # ... and at least URBAN_BESIDE_SHARE of them ha
 URBAN_BESIDE_SHARE = 0.2        # the land cover counts a wide road's own pavement as built-up, and the Eyre Highway
                                 # through Eucla (centre 94 %, beside it 3 %) got a town's footpaths, bins and hydrants
                                 # across the Nullarbor (GitHub #267). Baltimore and Chicago keep every urban road.
+URBAN_BOTH_SHARE = 0.1          # a trunk (a town's main street when urban: has_sidewalks) needs built-up land on both
+                                # sides of this share of its vertices: a roadhouse beside the Eyre Highway (Eucla: one
+                                # side 33 %, the other 0 %) is no town
 
 
 def _beside(ll, counts, d):
@@ -821,11 +824,12 @@ def _road_specs(feats, urban_fn, widths, left_hand):
         n = len(ll)
         pts = np.concatenate([ll, left, right])
         u_all = np.asarray(urban_fn(pts[:, 1], pts[:, 0]), bool)      # (one call: its cost is per call)
-        u, by = u_all[:n], u_all[n:2 * n] | u_all[2 * n:]
+        u, by, both = u_all[:n], u_all[n:2 * n] | u_all[2 * n:], u_all[n:2 * n] & u_all[2 * n:]
         k = 0
         for j, cls, kind, a, b, ow, dk, lanes, token in ask:
             urban = (float(np.mean(u[k:k + (b - a)])) >= URBAN_SHARE
-                     and float(np.mean(by[k:k + (b - a)])) >= URBAN_BESIDE_SHARE)
+                     and float(np.mean(by[k:k + (b - a)])) >= URBAN_BESIDE_SHARE
+                     and (cls != "trunk" or float(np.mean(both[k:k + (b - a)])) >= URBAN_BOTH_SHARE))
             k += b - a
             out[j] = Spec(carriageway(cls, kind, urban, None, ow, lanes), kind, urban, cls, ow, 2.5, *dk, lanes=lanes,
                           surf=token)
