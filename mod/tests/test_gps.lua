@@ -16,6 +16,17 @@ local si, st, sd = G.nearestSegment(xs, ys, 50, 10)
 T.check(si == 1 and math.abs(st - 0.5) < 1e-9 and math.abs(sd - 10) < 1e-9, 'on the first segment, halfway, 10 m off')
 si, st, sd = G.nearestSegment(xs, ys, 120, 60)
 T.check(si == 2 and math.abs(st - 0.6) < 1e-9 and math.abs(sd - 20) < 1e-9, 'on the second segment')
+-- a hairpin (GitHub #269): the route goes east along y = 0, turns, and comes back west along y = 20; a car at (100, 12)
+-- driving east, last seen 90 m along: on the way out (the way back passes nearer, 8 m, but runs against it)
+do
+  local hx, hy, hc = { 0, 200, 200, 0 }, { 0, 0, 20, 20 }, { 0, 200, 220, 420 }
+  local ri, rt, rd = G.routePosition(hx, hy, hc, 100, 12, 15, 0, 90, 1, 4)
+  T.check(ri == 1 and math.abs(rt - 0.5) < 1e-9 and math.abs(rd - 12) < 1e-9, 'hairpin: the car on its own stretch')
+  ri = G.routePosition(hx, hy, hc, 100, 12, 0, 0, nil, 1, 4)
+  T.check(ri == 3, 'standing, nothing known: the nearest stretch as before')
+  ri = G.routePosition(hx, hy, hc, 100, 12, -15, 0, 300, 1, 4)
+  T.check(ri == 3, 'on the way back (driving west, last seen 300 m along): that stretch')
+end
 local gnodes = { a = { pos = { x = 0, y = 0, z = 1 }, links = { b = {} } }, b = { pos = { x = 200, y = 0, z = 3 }, links = { a = {} } } }
 local segs = G.edgeSegments(gnodes)
 T.check(#segs == 1, 'one edge, once')
