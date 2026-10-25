@@ -96,6 +96,10 @@ class RulesTest(unittest.TestCase):
         # a value not understood at all is the class's own surface, not the dirt road
         self.assertEqual(roads.surface_kind("residential", "whatever"), "paved")
         self.assertEqual(roads.surface_kind("track", "whatever"), "dirt")
+        self.assertEqual(roads.surface_kind("unclassified", "wbm"), "gravel")
+        self.assertEqual(roads.surface_kind("unclassified", "laterite"), "gravel")
+        self.assertEqual(roads.surface_kind("residential", "interlocking"), "cobble")
+        self.assertEqual(roads.surface_kind("primary", "bitumen"), "paved")
 
     def test_surface_token(self):
         self.assertEqual(roads.surface_token("sett:pattern"), "sett")

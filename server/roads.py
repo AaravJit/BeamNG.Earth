@@ -68,15 +68,16 @@ STYLE = {
     # and graded by the terrain alone (grading.UNGRADED: an oval's banking stays)
     "raceway": (12.0, True),
 }
-PAVED = {"paved", "asphalt", "concrete", "metal", "wood"}
-COBBLE = {"paving_stones", "sett", "cobblestone", "unhewn_cobblestone", "bricks"}   # Overture: "paving_stones"
+PAVED = {"paved", "asphalt", "concrete", "metal", "wood", "tar", "bitumen"}
+COBBLE = {"paving_stones", "sett", "cobblestone", "unhewn_cobblestone", "bricks",   # Overture: "paving_stones"
+          "interlocking", "paver", "paver_blocks"}      # (South Asia's names, PR #146)
 # interlocking concrete pavers under the names the map gives them (surface_kind: a street paved with them is a
 # cobble street, not a gravel track)
 COBBLE_ALIASES = {"interlocking_pavers", "interlocking_stones", "pavers", "block_pavers", "paving_stone",
                   # OSM's surface=stone is mostly stone paving (flagstones, slabs), not a rock track (merge review of
                   # PR #119, 2026-10-22)
                   "stone", "stones"}
-GRAVEL = {"gravel", "fine_gravel", "compacted", "pebblestone"}
+GRAVEL = {"gravel", "fine_gravel", "compacted", "pebblestone", "wbm", "laterite"}   # (water-bound macadam: PR #146)
 # ... and the values that do mean "no hard surface": an unrecognised one is not one of these (the class decides)
 UNPAVED = {"unpaved", "ground", "dirt", "earth", "mud", "grass", "grass_paver", "sand", "soil",
            # the rock family: a rough, unpaved surface, never a marked asphalt street (gridmap v2's Rock is a
@@ -1647,9 +1648,10 @@ def extras(spec, pts, lon, left_hand=False):
             # narrows, the band was cut away)
             band = max(0.3, mw / 2 - 0.15) if mw <= MEDIAN_SLAB_M else MEDIAN_CURB_W
             out.append(({**SIDEWALK, "side": ms, "median": True}, band, offset_polyline(pts, ms * (w / 2 + band / 2))))
-            if kind == "paved":     # a double yellow line along it (Boston Street, Mapillary 2026-10-17)
+            if kind == "paved":     # a double yellow line along it (Boston Street, Mapillary 2026-10-17) ...
                 look = {"m": centre_colour(lon), "tl": CENTRE["tl"], "p": CENTRE["p"]}
-                for k in (0, 1):
+                # ... outside the Americas one solid white edge line along the median's curb (PR #146)
+                for k in ((0,) if centre_colour(lon) == "line_white" else (0, 1)):
                     out.append((look, CENTRE["w"], offset_polyline(
                         pts, ms * (w / 2 - EDGE_LINE["inset"] - 2 * k * CENTRE["gap"]))))
             out.append(({**GUTTER, "side": ms}, GUTTER["w"], offset_polyline(pts, ms * (w / 2 - GUTTER["w"] / 2))))
