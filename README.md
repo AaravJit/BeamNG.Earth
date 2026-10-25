@@ -32,10 +32,12 @@ the mod, report problems, and get an IP to join a BeamMP.Earth server (see [Mult
   traffic islands, roundabouts, rural motorways with shoulders and toll booths; the ground graded under them, with
   retaining walls where a road is cut into a hill (dry stone in the mountains and towns, concrete along major roads)
   and stone parapets along mountain roads' drops; street lights, utility poles with wires, traffic signals,
-  stop signs and speed-limit signs (mph or km/h by country).
+  stop signs and speed-limit signs (mph or km/h by country); railway and tram tracks (ballast, sleepers and rails,
+  street track where trams run on the road).
 - Bridges drawn as their real type (beam, truss, arch, cable-stayed, suspension) with real heights and spans, piers
-  that keep clear of the roads under them; tunnels through hills, with portals, lights and low arches where little
-  is over them.
+  that keep clear of the roads under them and 6 m (20 ft) of headroom over roads where the ground allows; a divided
+  road's two decks joined across a narrow median; tunnels through hills, with portals, lights and low arches where
+  little is over them.
 - Water: the sea with real depth (cars sink), lakes, and rivers kept beside the roads.
 - Airports with graded, marked runways; racetracks (circuits, ovals and pit lanes, with their real banking);
   landmarks such as the pyramids of Giza.
