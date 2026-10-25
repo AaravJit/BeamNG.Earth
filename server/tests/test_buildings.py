@@ -765,6 +765,26 @@ class RoadLinesTest(unittest.TestCase):
         self.assertTrue(bld._ml_false(ring, [], [], lines), "a lorry-sized outline on its lanes: not a building")
 
 
+
+class SteepMachineLearnedTest(unittest.TestCase):
+    """GitHub #242: machine-learned outlines on a volcano's bare slopes (rocks, shadows) are left out; huts are not."""
+    def ring(self, x=100.0, y=100.0, s=6.0):
+        return np.array([[x, y], [x + s, y], [x + s, y + s], [x, y + s], [x, y]], np.float64)
+
+    def test_slope_and_access(self):
+        r = self.ring()
+        flat = np.full(5, 10.0)
+        steep30 = 10.0 + np.tan(np.radians(30)) * r[:, 0]       # 30 deg rising east
+        steep40 = 10.0 + np.tan(np.radians(40)) * r[:, 0]
+        far = [np.array([[0.0, 0.0], [0.0, 10.0]])]             # a path ~140 m away
+        near = [np.array([[90.0, 0.0], [90.0, 300.0]])]          # a path 13 m away
+        self.assertFalse(bld._ml_steep(r, flat, far), "flat: kept")
+        self.assertTrue(bld._ml_steep(r, steep30, far), "30 deg, no way near: out")
+        self.assertFalse(bld._ml_steep(r, steep30, near), "30 deg beside a path: kept (a hut on the trail)")
+        self.assertTrue(bld._ml_steep(r, steep40, near), "40 deg: out wherever it is")
+        self.assertTrue(bld._ml_steep(r, steep30, []), "no ways at all")
+
+
 if __name__ == "__main__":
     unittest.main()
 

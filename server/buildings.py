@@ -2023,6 +2023,56 @@ def _ml_false(ring, bridges_xy, water_xy, roads_xy=None):
     return False
 
 
+ML_STEEP_DEG = 25.0         # a machine-learned footprint on ground this steep ...
+ML_FAR_FROM_WAY_M = 60.0    # ... this far from any mapped way (a road, track or path) is a rock or a shadow, not a hut
+ML_CLIFF_DEG = 36.0         # ... and on ground this steep, wherever it is
+# (GitHub #242: 64 machine-learned outlines (Shi et al.'s East Asia set) on Mount Fuji's slopes, median 34 deg, half over 60 m from a trail; the real
+# huts on 6 deg next to the trail. Steep places with real ones, 2026-10-24: La Paz 0 of 5453, Gorkha (Nepal) 0 of 50,
+# Rwanda's hills 1 of 293, Medellin and Valparaiso 0)
+
+
+def _ml_steep(ring, g, ways_xy):
+    """Is a machine-learned footprint (ring, relative to the tile's corner; g its ground at each corner) on ground too
+    steep for it (ML_*)? The slope of the plane through its corners; the distance from its centre to the nearest
+    mapped way (ways_xy: way_lines, the same corner). Pure."""
+    r = np.asarray(ring, np.float64)[:, :2]
+    g = np.asarray(g, np.float64)
+    if len(r) < 3 or len(g) != len(r):
+        return False
+    A = np.c_[r - r.mean(0), np.ones(len(r))]
+    try:
+        (a, b, _), *_ = np.linalg.lstsq(A, g, rcond=None)
+    except np.linalg.LinAlgError:
+        return False
+    slope = math.degrees(math.atan(math.hypot(a, b)))
+    if slope > ML_CLIFF_DEG:
+        return True
+    if slope <= ML_STEEP_DEG:
+        return False
+    return not ways_xy or _line_dist(r.mean(0), ways_xy) > ML_FAR_FROM_WAY_M
+
+
+def way_lines(frame, road_layers, x0, y0, margin=ML_FAR_FROM_WAY_M + 20.0, size=256.0):
+    """Polylines (k, 2) relative to (x0, y0) of every mapped way near the tile (roads of any class, tracks, paths,
+    steps: _ml_steep's access test)."""
+    out = []
+    for f in road_layers:
+        if f is None or len(f.kind) == 0:
+            continue
+        bb = f.boxes(frame)
+        near = np.flatnonzero((bb[:, 2] - x0 >= -margin) & (bb[:, 0] - x0 <= size + margin)
+                              & (bb[:, 3] - y0 >= -margin) & (bb[:, 1] - y0 <= size + margin))
+        for i in near.tolist():
+            a = f.coord_off[f.ring_off[f.part_off[i]]]
+            b = f.coord_off[f.ring_off[f.part_off[i + 1]]]
+            ll = f.lonlat[a:b]
+            if len(ll) < 2:
+                continue
+            e, n = mapgeom.enu_xy(f, frame, ll)
+            out.append(np.stack([e - x0, n - y0], 1))
+    return out
+
+
 def bridge_lines(frame, road_layers, x0, y0, margin=50.0, size=256.0):
     """Polylines (k, 2) relative to (x0, y0) of the road bridges near the tile (their bridge ranges)."""
     import roads as roadsmod
@@ -2227,7 +2277,7 @@ class _PartsOf:
 
 def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=(), west_town=False, roads_xy=None,
                    tunnels_xy=None, garages_xy=None, supports=None, bridges_xy=None, water_xy=None, decks=None,
-                   ml_roads_xy=None):
+                   ml_roads_xy=None, ways_xy=None):
     """[(Spec, gmin, gmax)] of the buildings whose footprint centroid is in the tile [x0, x1) x [y0, y1)
     (anchor frame), rings relative to (x0, y0). layers: mapgeom.Features of buildings (one per map cell; a
     building in two cells is taken once, by id); elev(lat, lon) the physics ground. part_layers: the
@@ -2308,8 +2358,8 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
             ring = clean_ring(np.stack([e - x0, n - y0], 1))
             if ring is None or _area2(ring) / 2 < MIN_AREA_M2:
                 continue
-            if "src_dataset" in a and str(a["src_dataset"][i]) != "OpenStreetMap" and \
-                    _ml_false(ring, bridges_xy, water_xy, ml_roads_xy if ml_roads_xy is not None else roads_xy):
+            is_ml = "src_dataset" in a and str(a["src_dataset"][i]) != "OpenStreetMap"
+            if is_ml and _ml_false(ring, bridges_xy, water_xy, ml_roads_xy if ml_roads_xy is not None else roads_xy):
                 continue
             if key is not None:
                 seen.add(key)
@@ -2338,6 +2388,8 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
             if on is not None:              # a bridge's own: no flats' windows (Tower Bridge's towers, the user 2026-10-18)
                 fm_ = str(at.get("facade_material") or "").lower()
                 at = dict(at, bridge_part=on) if fm_ in STEEL_MATERIALS else dict(at, bridge_masonry=fm_)
+            if is_ml:
+                at = dict(at, ml=True)          # (_ml_steep once its ground is known)
             attrs.append(at)
             looks.append(None)
             mins.append(mh)
@@ -2386,6 +2438,8 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
         if not ok[i0:i1].all():
             continue
         g = up_all[i0:i1].copy()
+        if at.get("ml") and ways_xy is not None and _ml_steep(ring, g, ways_xy):
+            continue
         if water is not None:
             c = ring.mean(0)
             cla, clo, _ = frame.enu_to_geodetic(c[0] + x0, c[1] + y0, 0.0)
@@ -2811,6 +2865,7 @@ def road_tile_items(frame, tx, ty, md, ground, decks=None):
                           part_layers=[c.layers.get("building_parts") for c in cds],
                           west_town=district_town(frame, tx, ty, md),
                           roads_xy=road_lines(frame, [c.layers.get("roads") for c in cds], x0, y0),
+                          ways_xy=way_lines(frame, [c.layers.get("roads") for c in cds], x0, y0),
                           tunnels_xy=tunnel_lines(frame, [c.layers.get("roads") for c in cds], x0, y0),
                           garages_xy=garage_rings(frame, [c.layers.get("infrastructure") for c in cds], x0, y0),
                           supports=support_rings(frame, [c.layers.get("infrastructure") for c in cds], x0, y0),
@@ -2877,7 +2932,8 @@ def far_tile(frame, tx, ty, md, ground, out_dir, vfs_dir, aid):
                            supports=support_rings(frame, [c.layers.get("infrastructure") for c in cds], x0, y0),
                            bridges_xy=bridge_lines(frame, [c.layers.get("roads") for c in cds], x0, y0),
                            water_xy=water_rings(frame, [c.layers.get("water") for c in cds], x0, y0),
-                           ml_roads_xy=road_lines(frame, [c.layers.get("roads") for c in cds], x0, y0))
+                           ml_roads_xy=road_lines(frame, [c.layers.get("roads") for c in cds], x0, y0),
+                           ways_xy=way_lines(frame, [c.layers.get("roads") for c in cds], x0, y0, size=x1 - x0))
     mesh = build(items, lite=True)
     data = {"v": 1}
     if mesh is not None:
