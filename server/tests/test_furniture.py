@@ -186,22 +186,27 @@ class SpeedSignTest(unittest.TestCase):
 
 
 class SignAssetsTest(unittest.TestCase):
-    """The km/h sign set is written in three places (furniture.SIGN_KMH, trees.lua's catalog, the generator's
-    defaults); a number in one and not another is a sign that is never placed or a model that is missing."""
+    """The km/h sign set is written in three places (furniture.SIGN_KMH, the mod's vienna_convention_speed_signs.lua
+    LIMITS, the generator's defaults); a number in one and not another is a sign that is never placed or a model that
+    is missing."""
     ROOT = Path(__file__).resolve().parents[2]
 
     def test_server_catalog_and_generator_agree(self):
-        lua = (self.ROOT / "mod/beamng_earth/lua/ge/extensions/beamngEarth/trees.lua").read_text(encoding="utf-8")
-        catalog = {int(n) for n in re.findall(r"^\s*speedk(\d+) = \{ \{ '", lua, re.M)}
-        capped = {int(n) for n in re.findall(r"\bspeedk(\d+) = 300\b", lua)}
+        lua = (self.ROOT / "mod/beamng_earth/lua/ge/extensions/beamngEarth/vienna_convention_speed_signs.lua"
+               ).read_text(encoding="utf-8")
+        limits = re.search(r"^M\.LIMITS = \{([^}]*)\}", lua, re.M)
+        catalog = {int(n) for n in re.findall(r"\d+", limits.group(1))}
+        self.assertRegex(lua, r"M\.NONE = 'speedknone'")
         tree = ast.parse((self.ROOT / "tools/generate_kmh_speed_signs.py").read_text(encoding="utf-8"))
         defaults = next(ast.literal_eval(s.value) for s in tree.body
                         if isinstance(s, ast.Assign) and any(getattr(t, "id", "") == "DEFAULT_SPEEDS" for t in s.targets))
         generated = {s for s in defaults if isinstance(s, int)}
         self.assertEqual(set(furniture.SIGN_KMH), catalog)
-        self.assertEqual(set(furniture.SIGN_KMH), capped)
         self.assertEqual(set(furniture.SIGN_KMH), generated)
         self.assertIn("none", defaults)
+        art = self.ROOT / "mod/beamng_earth/levels/beamng_earth/art/shapes/beamngEarth"
+        for n in [str(k) + "kph" for k in furniture.SIGN_KMH] + ["_none"]:
+            self.assertTrue((art / f"sign_speed{n}.dae").exists() and (art / f"sign_speed{n}.png").exists(), n)
 
 
 class RoundaboutTest(unittest.TestCase):
