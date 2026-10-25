@@ -353,37 +353,40 @@ def _bridge_reach(feats, i):
     ring = rings[0]
     kx, ky = 111320.0 * math.cos(math.radians(float(ring[0, 1]))), 111320.0
     m = (ring - ring[0]) * [kx, ky]
-    L = float(np.hypot(*np.diff(m, axis=0).T).sum())
+    sm = np.r_[0.0, np.cumsum(np.hypot(*np.diff(m, axis=0).T))]
+    L = float(sm[-1])
     if L <= 0:
         return got
     boxes = _feature_boxes(feats)
-    reach = SKEW_MAX_M + 40.0
-    lo = ring.min(0) - [reach / kx, reach / ky]
-    hi = ring.max(0) + [reach / kx, reach / ky]
-    near = np.flatnonzero((boxes[:, 0] <= hi[0]) & (boxes[:, 2] >= lo[0]) & (boxes[:, 1] <= hi[1]) &
-                          (boxes[:, 3] >= lo[1]))
-    hits = []                                   # (arc m on feature i, half reach m) of each road crossing it
-    for j in near:
-        if j == i or specs[j] is None:
-            continue
-        for g in _raw_ground_parts(feats, j):
-            gm = (np.asarray(g, np.float64) - ring[0]) * [kx, ky]
-            for sc, sin in _seg_hits(m, gm):
-                sin = max(sin, SKEW_MIN_SIN)
-                cos = math.sqrt(max(0.0, 1.0 - sin * sin))
-                hits.append((sc, (specs[j].width / 2 + SKEW_MARGIN_M + SKEW_SLOPE_M) / sin +
-                             (up.width / 2) * cos / sin))
-    if not hits:
-        return got
     out, over = [], [0.0, 0.0]
     for n, (a, b, k) in enumerate(rngs):
         if k == "bridge":
             a0, b0 = a, b
             lo_m, hi_m = a0 * L, b0 * L
-            for sc, h in hits:
-                if a0 * L < sc < b0 * L:        # under the mapped bridge (where the centre lines cross)
-                    lo_m = min(lo_m, max(a0 * L - SKEW_MAX_M, sc - h))
-                    hi_m = max(hi_m, min(b0 * L + SKEW_MAX_M, sc + h))
+            # (only the bridge's own stretch: a crossing counts under it; a 3 km segment's whole line and every road
+            # near it cost a rail-yard tile seconds, 2026-10-25)
+            inner = (sm > lo_m) & (sm < hi_m)      # (metres: sub_polyline scales lon/lat)
+            sub = np.vstack([[np.interp(lo_m, sm, m[:, 0]), np.interp(lo_m, sm, m[:, 1])], m[inner],
+                             [np.interp(hi_m, sm, m[:, 0]), np.interp(hi_m, sm, m[:, 1])]])
+            pad = 1.0
+            blo = (sub.min(0) - pad) / [kx, ky] + ring[0]
+            bhi = (sub.max(0) + pad) / [kx, ky] + ring[0]
+            near = np.flatnonzero((boxes[:, 0] <= bhi[0]) & (boxes[:, 2] >= blo[0]) & (boxes[:, 1] <= bhi[1]) &
+                                  (boxes[:, 3] >= blo[1]))
+            for j in near:
+                if j == i or specs[j] is None:
+                    continue
+                for g in _raw_ground_parts(feats, j):
+                    gm = (np.asarray(g, np.float64) - ring[0]) * [kx, ky]
+                    for sc, sin in _seg_hits(sub, gm):
+                        sc += lo_m
+                        if not lo_m < sc < hi_m:
+                            continue
+                        sin = max(sin, SKEW_MIN_SIN)
+                        cos = math.sqrt(max(0.0, 1.0 - sin * sin))
+                        h = (specs[j].width / 2 + SKEW_MARGIN_M + SKEW_SLOPE_M) / sin + (up.width / 2) * cos / sin
+                        lo_m = min(lo_m, max(a0 * L - SKEW_MAX_M, sc - h))
+                        hi_m = max(hi_m, min(b0 * L + SKEW_MAX_M, sc + h))
             prev = out[-1][1] if out else 0.0   # (never into a neighbouring range; past the feature's ends: "over")
             nxt = rngs[n + 1][0] if n + 1 < len(rngs) else 1.0
             if lo_m < 0 and a0 <= 1e-9:
@@ -396,6 +399,23 @@ def _bridge_reach(feats, i):
     return got
 
 
+def _bridge_ends(feats):
+    """(indices (k,), end points lon/lat (k, 2, 2)) of the features with a bridge range, once per cell."""
+    got = feats.__dict__.get("_bridge_ends")
+    if got is None:
+        idx, ends = [], []
+        for b in range(len(feats)):
+            if not any(k == "bridge" for _, _, k in raw_level_ranges(feats, b)):
+                continue
+            rings = [r for part in feats.parts(b) for r in part if len(r) >= 2]
+            if rings:
+                idx.append(b)
+                ends.append((rings[0][0], rings[0][-1]))
+        got = (np.asarray(idx, np.int64), np.asarray(ends, np.float64).reshape(-1, 2, 2))
+        feats.__dict__["_bridge_ends"] = got
+    return got
+
+
 def _skew_decks(feats, i, rngs):
     """rngs (feature i's raw_level_ranges) with its bridge ranges lengthened over the roads crossing under them
     (_bridge_reach), and a bridge range at an end of i where a bridge feature joined there reaches past its own end
@@ -404,34 +424,31 @@ def _skew_decks(feats, i, rngs):
         return rngs
     if any(k == "bridge" for _, _, k in rngs):
         rngs = _bridge_reach(feats, i)["ranges"]
+    bidx, bends = _bridge_ends(feats)
+    if not len(bidx):
+        return rngs
     rings = [np.asarray(r, np.float64) for part in feats.parts(i) for r in part if len(r) >= 2]
     if not rings:
         return rngs
     ring = rings[0]
     kx, ky = 111320.0 * math.cos(math.radians(float(ring[0, 1]))), 111320.0
-    L = float(np.hypot(*(np.diff(ring, axis=0) * [kx, ky]).T).sum())
-    if L <= 0:
-        return rngs
-    boxes = _feature_boxes(feats)
+    tol = 0.75
     add = []
+    L = None
     for end, p in ((0, ring[0]), (1, ring[-1])):
         if any((a <= 1e-9 if end == 0 else b >= 1.0 - 1e-9) for a, b, _ in rngs):
             continue                            # off the ground at that end already
-        tol = 0.75
-        near = np.flatnonzero((boxes[:, 0] <= p[0] + tol / kx) & (boxes[:, 2] >= p[0] - tol / kx) &
-                              (boxes[:, 1] <= p[1] + tol / ky) & (boxes[:, 3] >= p[1] - tol / ky))
+        d = np.hypot((bends[:, :, 0] - p[0]) * kx, (bends[:, :, 1] - p[1]) * ky)     # (k, 2) to each bridge's ends
         best = 0.0
-        for b in near:
-            if b == i or not any(k == "bridge" for _, _, k in raw_level_ranges(feats, b)):
-                continue
-            brings = [np.asarray(r, np.float64) for part in feats.parts(b) for r in part if len(r) >= 2]
-            if not brings:
-                continue
-            reach = _bridge_reach(feats, b)["over"]
-            for e2, q in ((0, brings[0][0]), (1, brings[0][-1])):
-                if math.hypot((q[0] - p[0]) * kx, (q[1] - p[1]) * ky) < tol:
-                    best = max(best, reach[e2])
+        for r, e2 in zip(*np.nonzero(d < tol)):
+            b = int(bidx[r])
+            if b != i:
+                best = max(best, _bridge_reach(feats, b)["over"][int(e2)])
         if best > 0:
+            if L is None:
+                L = float(np.hypot(*(np.diff(ring, axis=0) * [kx, ky]).T).sum())
+            if L <= 0:
+                break
             f = min(best, SKEW_MAX_M) / L
             add.append((0.0, min(f, 1.0), "bridge") if end == 0 else (max(1.0 - f, 0.0), 1.0, "bridge"))
     if not add:
