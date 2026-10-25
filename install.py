@@ -218,8 +218,9 @@ def ensure_mod_active(user_dir):
 
 
 def install_mod(user_dir, assume_yes, dry_run, quiet=False):
-    """Copy the mod into the user folder. Returns 'current', 'updated', 'installed', 'kept' or None (dry run);
-    quiet: no messages but the notes (the launcher prints one status line)."""
+    """Copy the mod into the user folder. Returns 'current', 'enabled' (current, but it had been turned off in the
+    game's mod list), 'updated', 'installed', 'kept' or None (dry run); quiet: no messages but the notes (the launcher
+    prints one status line)."""
     def note(msg):
         if not quiet:
             say(msg)
@@ -229,12 +230,13 @@ def install_mod(user_dir, assume_yes, dry_run, quiet=False):
     packed = os.path.join(user_dir, "mods", MOD_NAME + ".zip")
     if os.path.isfile(packed):
         say(f"Note: there is also a zipped copy at {packed}; remove it so the game does not load two versions.")
-    if not dry_run and ensure_mod_active(user_dir):
+    enabled = not dry_run and ensure_mod_active(user_dir)
+    if enabled:
         say("Mod: it had been turned off in the game's mod list (a BeamMP server does that); turned it back on.")
     if os.path.isdir(dest):
         if tree_hash(dest) == tree_hash(MOD_SRC):
             note(f"Mod: already up to date in {dest}")
-            return "current"
+            return "enabled" if enabled else "current"
         if not (assume_yes and quiet) and not ask(f"Mod: an older copy is installed in {dest}. Replace it?", assume_yes):
             note("Mod: kept the installed copy (it may not match this server version).")
             return "kept"
@@ -290,6 +292,132 @@ def _stamp_times(dest, old_times):
                 os.utime(full, old_times.get(os.path.relpath(full, dest)))
             except OSError:
                 pass
+
+
+# --- a game already running: its Lua reloaded so it mounts the mod ------------------------------
+
+# A game started before the app (by the BeamMP launcher, or by hand) read its mod list when it started: a mod installed,
+# updated or turned back on since would load only on its next start (the user, 2026-10-23: "If the game is already
+# running and you launch the .earth server. Force the game to reload so it loads the mod properly"). The game takes
+# beamng: commands on a named pipe (BinLinux/BeamNG_scheme_handler.sh writes them there; Windows: the same name under
+# \\.\pipe\), and one fires its Reload Lua action (Ctrl+L): a Lua reload reads the mod list again and mounts what is on.
+# A level open through the reload is left behind the main menu (freeroam's state gone), so a one-shot script in the user
+# folder (every modScript.lua runs when the mod list is read) starts it again and removes itself.
+GAME_PIPE = r"\\.\pipe\BEAMNGCOMMANDLISTENER" if IS_WIN else "/tmp/BEAMNGCOMMANDLISTENER"
+RELOAD_COMMAND = b"v1/core_input_actions/triggerDownUp/lua_reload"
+RELOADED_FILES = {
+    "scripts/beamng_earth_reload/modScript.lua": """\
+-- Written by the BeamNG.Earth app, which asked the running game to reload its Lua (to mount the mod): loads
+-- beamngEarthReloaded once after that reload (it removes both files).
+if FS:fileExists('/lua/ge/extensions/beamngEarthReloaded.lua') then
+  setExtensionUnloadMode('beamngEarthReloaded', 'manual')
+end
+""",
+    "lua/ge/extensions/beamngEarthReloaded.lua": """\
+-- Written by the BeamNG.Earth app; runs once after the Lua reload it asked for (the game was already running when the
+-- app started, so it had read its mod list without the mod). A freeroam level open through the reload is left behind
+-- the main menu with freeroam's state gone: it is started again. Then this file and its modScript are removed.
+local M = {}
+local frames, since, missionId, nudged, inAt, hides = 0, nil, nil, false, nil, 0
+local HIDE_AT = { 3, 8, 15, 25, 40 }      -- s after the level is in
+
+local function done()
+  -- (the modScript first: left alone it asks for this extension at every mod-list read, "extension unavailable" in a
+  -- Windows player's log)
+  FS:removeFile('/scripts/beamng_earth_reload/modScript.lua')
+  FS:directoryRemove('/scripts/beamng_earth_reload')
+  FS:removeFile('/lua/ge/extensions/beamngEarthReloaded.lua')
+  extensions.unload('beamngEarthReloaded')
+end
+
+function M.onUpdate(dtReal)
+  frames = frames + 1
+  if since then
+    -- the restart: the UI is itself starting again after the reload and can miss the loading screen's messages
+    since = since + math.min(dtReal or 0, 0.25)
+    if not nudged and since > 2 and scenetree.MissionGroup and scenetree.MissionGroup:getId() == missionId then
+      nudged = true                       -- the old level still there: the UI never confirmed the loading screen
+      core_gamestate.loadingScreenActive()
+    end
+    if freeroam_freeroam.state.freeroamActive and not core_gamestate.loading() then
+      -- the level in: its loading screen hidden again, a few times (a UI still starting misses the hides before it is
+      -- up, ~10 s on a Steam Deck; one more when it is already hidden changes nothing)
+      inAt = inAt or since
+      if hides < #HIDE_AT and since - inAt > HIDE_AT[hides + 1] then
+        hides = hides + 1
+        guihooks.trigger('LoadingScreen', { active = false, gotoMainMenu = false, gameState = core_gamestate.state })
+        if hides == #HIDE_AT then done() end
+      end
+    end
+    if since > 180 then done() end
+    return
+  end
+  if frames < 10 or not (core_modmanager and core_modmanager.isReady()) then return end
+  local mission = getMissionFilename() or ''
+  local level = mission:match('^/?(levels/[^/]+/)')
+  local freeroamOn = freeroam_freeroam and freeroam_freeroam.state and freeroam_freeroam.state.freeroamActive
+  local career = career_career and career_career.isActive and career_career.isActive()
+  log('I', 'beamngEarth', 'Lua reloaded by the BeamNG.Earth app to mount the mod (level: ' .. (level or 'none') .. ')')
+  if level and scenetree.MissionGroup and not freeroamOn and not career and freeroam_freeroam then
+    missionId = scenetree.MissionGroup:getId()
+    since = 0
+    freeroam_freeroam.startFreeroam(level)
+    return
+  end
+  done()
+end
+
+return M
+""",
+}
+
+
+def _reload_files(user_dir):
+    return [os.path.join(user_dir, *rel.split("/")) for rel in RELOADED_FILES]
+
+
+def clear_reload_files(user_dir):
+    """The one-shot reload script removed (left over from a reload that did not happen)."""
+    for path in _reload_files(user_dir):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    try:
+        os.rmdir(os.path.dirname(_reload_files(user_dir)[0]))
+    except OSError:
+        pass
+
+
+def send_game_command(command):
+    """A beamng: command (without 'beamng:') to the running game through its pipe. False if no game takes it (none
+    running; the Windows build under Proton, whose pipe is inside Wine; a sandbox with its own /tmp)."""
+    try:
+        if IS_WIN:
+            with open(GAME_PIPE, "wb", buffering=0) as f:
+                f.write(command)
+            return True
+        # (non-blocking: a pipe left by a game that is gone has no reader, and the open fails instead of waiting)
+        fd = os.open(GAME_PIPE, os.O_WRONLY | os.O_NONBLOCK)
+        try:
+            return os.write(fd, command) == len(command)
+        finally:
+            os.close(fd)
+    except OSError:
+        return False
+
+
+def reload_running_game(user_dir):
+    """The running game's Lua reloaded, so it mounts the mod as it is now; an open freeroam level is started again.
+    False if the game could not be reached."""
+    for path, text in zip(_reload_files(user_dir), RELOADED_FILES.values()):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+    if send_game_command(RELOAD_COMMAND):
+        return True
+    clear_reload_files(user_dir)
+    return False
 
 
 # --- the server's Python environment ------------------------------------------------------------

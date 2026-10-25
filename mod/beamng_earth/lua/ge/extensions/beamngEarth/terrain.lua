@@ -99,9 +99,11 @@ M.square = 2.0   -- the block's square size (m per sample), from the last load
 M.runtimeMade = {}
 M.seenMats = {}         -- material names some block of this session listed (M.swap)
 M.looked = {}   -- material name -> the square size its look was applied for
--- (M.swap) Windows only: the rebind was a guess at GitHub #115's stripes, whose cause was the terrain cache's mips
--- (server bc7.dds, 4ad1642); kept on Windows until checked there, off elsewhere (~18 ms of every swap on a Deck)
-M.REBIND_AFTER_SWAP = rawget(_G, 'jit') ~= nil and jit.os == 'Windows'
+-- (M.swap) Off: the rebind was a guess at GitHub #115's stripes, whose cause was the terrain cache's mips (server
+-- bc7.dds, 4ad1642). 1.6.0 kept it on Windows: a second rebuild of every slot's textures after each block swap (Deck
+-- A/B 2026-10-23, Baltimore at 67 mph: the commit's next frame 127 ms with it, 92 without; a GTX 1060 player's
+-- commits, GitHub #180: 250-340 ms of RenderShadows on every other one)
+M.REBIND_AFTER_SWAP = false
 local baseNow = nil
 local function toSamples(metres) return math.max(1, math.floor(metres / M.square + 0.5)) end
 
@@ -186,6 +188,12 @@ function M.configure(size)
   return n
 end
 
+-- The block casts no sun shadows. Every block move redrew the sun's cached shadow map for it: on a Steam Deck Fells
+-- Point drive (2026-10-24) 11 of 27 frames with RenderShadows >= 25 ms came within 3 frames of a swap, 112x the swaps'
+-- share of frames; with castShadows 0 none of 20 did, shadow hitches 34 -> 18. It drew nothing into that map: with the
+-- block drawn (detail mode), screenshots after a forced redraw were pixel-identical with and without, the redraw
+-- itself as dear (PC 8.4 / 7.7 ms vs 8.4 / 7.5), the floor of Yosemite Valley sunlit near sunset either way; trees,
+-- roads, buildings and the far meshes cast the shadows.
 local function getOrCreate()
   local tb = M.get()
   if tb then return tb end
@@ -195,6 +203,7 @@ local function getOrCreate()
   -- the resolution the engine bakes the block's base colour at (default 1024; West Coast USA's block 2048;
   -- set before registerObject: the engine sizes it when the block is added)
   tb:setField('baseTexSize', 0, tostring(M.BASE_TEX_SIZE))
+  tb:setField('castShadows', 0, '0')     -- (no sun shadows: see above)
   tb:registerObject(M.NAME)
   tb.canSave = false
   -- importMaps keeps its .ter data under this folder; /temp is writable and outside any level.
@@ -280,6 +289,7 @@ function M.load(path, squareSize, maxHeight, x, y, z, layers, base, baseSize)
     ok, err = importMaps(tb, path, squareSize, maxHeight, false)
     if not ok then return false, err end
   end
+  tb:setField('castShadows', 0, '0')     -- (no sun shadows: kept across imports, set again to be sure)
   tb:setPosition(vec3(x, y, z))
   applyRender(tb) -- mesh mode: hidden again after every import
   if base ~= nil then M.setBase(base or nil, baseSize) end

@@ -1236,17 +1236,10 @@ def _no_sag(s, z):
 
 def _dedupe(xy, tol=0.5):
     """A polyline without points closer than tol m to the previous one (ends kept). Pure."""
-    if len(xy) < 3:
-        return xy
-    keep = [0]
-    for k in range(1, len(xy) - 1):
-        if np.hypot(*(xy[k] - xy[keep[-1]])) >= tol:
-            keep.append(k)
-    if np.hypot(*(xy[-1] - xy[keep[-1]])) < tol and len(keep) > 1:
-        keep[-1] = len(xy) - 1
-    else:
-        keep.append(len(xy) - 1)
-    return xy[keep]
+    import fast
+    fast.require(66, "dedupe_polyline")     # (the Rust loop: 14-21 CPU-s a Deck teleport in each road process)
+    xy = np.asarray(xy, np.float64)
+    return xy[fast._ef.dedupe_polyline(xy, float(tol))]
 
 
 def _ground_envelope(s, g, grade, curve=0.0):
@@ -2214,18 +2207,18 @@ class BridgeProfiles:
                 xy = pool[k][1]
                 for p in (xy[0], xy[-1]):
                     deg[nk(p)] = deg.get(nk(p), 0) + 1
+            # the loose ends first, in key order: a cell loaded can put a longer copy of a part in the pool (_load), whose
+            # ends deg never saw (KeyError: a Chicago road tile on a Windows test PC, 2026-10-24), and the set's order
+            # changes with each process's string hashing (which cells CHAIN_CELLS let in)
+            ends = [p for k in sorted(comp) for p in (pool[k][1][0], pool[k][1][-1]) if deg[nk(p)] == 1]
             grew = False
-            for k in comp:
-                xy = pool[k][1]
-                for p in (xy[0], xy[-1]):
-                    if deg[nk(p)] != 1:
-                        continue
-                    la, lo, _ = self.frame.enu_to_geodetic(np.array([p[0]]), np.array([p[1]]), 0.0)
-                    key = mapcells.cell_of(float(la[0]), float(lo[0]))
-                    if str(key) not in loaded and len(loaded) < CHAIN_CELLS:
-                        loaded.add(str(key))
-                        self._load(key, pool, ground)
-                        grew = True
+            for p in ends:
+                la, lo, _ = self.frame.enu_to_geodetic(np.array([p[0]]), np.array([p[1]]), 0.0)
+                key = mapcells.cell_of(float(la[0]), float(lo[0]))
+                if str(key) not in loaded and len(loaded) < CHAIN_CELLS:
+                    loaded.add(str(key))
+                    self._load(key, pool, ground)
+                    grew = True
             if not grew:
                 return sorted(comp)
 
@@ -3846,6 +3839,13 @@ class Tracker:
         if self.pool is not None:
             self.pool.shutdown(wait=False, cancel_futures=True)
 
+    def progress(self):
+        """(done, wanted) of the road tiles round the car at the last pose: done = sent to the mod, empty, or failed
+        and waiting for its retry (nothing more comes for it now). (0, 0) before a pose."""
+        car = getattr(self, "car", ())
+        done = sum(1 for k in car if k in self.sent or k in self.empty or k in self.retry)
+        return done, len(car)
+
     def on_pose(self, conn, aid, x, y, loop, build, vel=(0.0, 0.0), ground_busy=False, view=None, foci=()):
         """Called with the player's position (and velocity, m/s) in the active anchor's frame. build(aid, tx, ty) runs
         in a worker and returns the tile's (path, n) or None; its result is announced with conn.send. ground_busy: a
@@ -3865,6 +3865,7 @@ class Tracker:
         vx, vy = (float(vel[0]), float(vel[1])) if vel else (0.0, 0.0)
         fast = math.hypot(vx, vy) >= FAST_MS
         car = wanted_tiles(x, y, vx, vy)
+        self.car = car                      # (progress: the loading line's road tiles)
         seen = set(tiles_near(*view, SEND_M)) - car if view else set()
         others = set()
         for f in foci:
@@ -3925,6 +3926,10 @@ class Tracker:
         path, n = res
         self.sent.add(key)
         m = {"type": "roads_tile", "anchorId": aid, "key": f"{key[0]}_{key[1]}", "path": path, "n": n}
+        out_dir = getattr(getattr(conn, "s", None), "out_dir", None)
+        data = staging.inline_json(out_dir, path) if out_dir else None
+        if data is not None:                # (the game need not open the file: staging.inline_json)
+            m["data"] = data
         pool = getattr(getattr(conn, "s", None), "pool_shapes", None)
         if pool is not None:                # its meshes at pooled shape paths (matslots.py)
             slots = pool(conn, shape_files(aid, *key))
