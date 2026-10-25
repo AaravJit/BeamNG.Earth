@@ -2726,9 +2726,12 @@ class Connection:
         self.ground_wait = {}                   # block key -> when its photo was first seen waiting (ground_progress)
         self.veg = vegetationmod.Tracker()      # vegetation tiles sent to the mod (--trees on)
         # far buildings (--buildings on); none under the road tiles (they carry the buildings themselves)
+        # the far (lite) buildings under the road tiles too, nearest first: they come in seconds after a teleport and the
+        # mod hides each as its road tile's full buildings are made (roads.lua updateFar), the town round the car
+        # drawn simply first and in detail after (the user, 2026-10-25: "load simpler versions first then higher detail
+        # version later"); without them the far ones came first and the car's surroundings last
         self.bldfar = vegetationmod.Tracker(buildingsmod.FAR_SEND_M, buildingsmod.FAR_DROP_M,
-                                            buildingsmod.FAR_PER_POSE, "bldfar",
-                                            skip_m=roadsmod.SEND_M if self.s.mapdata is not None else None)
+                                            buildingsmod.FAR_PER_POSE, "bldfar")
         self.nav = navgraphmod.Tracker()        # the AI road graph around the player (--traffic on)
         self.gravity = gravitymod.Tracker()     # real gravity: recompute rule, last message sent
         self.credits = creditsmod.Tracker()     # data credits: throttle, last message sent (--credits on)
