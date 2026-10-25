@@ -1961,6 +1961,9 @@ def cells_of_tile(frame, tx, ty, margin=OVERLAP):
     return mapcells.cells_for_bbox(float(np.min(lat)), float(np.min(lon)), float(np.max(lat)), float(np.max(lon)))
 
 
+COVER_MARGIN_M = 30.0   # m past the tile: the ground carriageways a deck's parapet is tested against (build_tile cover_out)
+
+
 def _chunk(look, w, c):
     return {"m": look["m"], "w": round(float(w), 2), "tl": look["tl"], "p": look["p"],
             "n": [[round(float(v), 3) for v in p] for p in c]}
@@ -3591,7 +3594,7 @@ def drains(run, side, caps, walk_w=None):
 
 def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=None, widths=None, props=None,
                lines=None, wires=None, town=None, park=None, left_hand=False, structures=(), mph=True, tunnels=None,
-               walls=None, deck_context=None, ground=None, terrain_paint=True):
+               walls=None, deck_context=None, ground=None, terrain_paint=True, cover_out=None):
     """The chunks of one tile. cells: the mapgeom.Features of the "roads" layer of every cell touching
     the tile; elev(lat, lon) -> metres (the DEM); urban_fn: as road_specs. Features in several cells are
     taken once (by id). The carriageways, then each road's sidewalks / gutters / markings (extras), cut
@@ -3640,6 +3643,16 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                           float(np.mean(ring[:, 0]))))
             k += m
     chunks = []
+    if cover_out is not None:
+        # the ground carriageways for the decks' parapet test (roadmesh.deck ground=): drawn or painted into the ground,
+        # a deck at grade across one has no parapet over its lanes (GitHub #96). With the roads in the ground there
+        # were none, and a small bridge's wall stood across the road at its end (GitHub #258)
+        for fid, spec, pts, _ in roads:
+            for piece in clip_polyline(pts, x0 - COVER_MARGIN_M, y0 - COVER_MARGIN_M, x1 + COVER_MARGIN_M,
+                                       y1 + COVER_MARGIN_M):
+                for c in split(densify(simplify(piece))):
+                    if len(c) >= 2:
+                        cover_out.append(_chunk(look_of(spec), spec.width, c))
     for fid, spec, pts, _ in roads:
         if ROADS_IN_GROUND:                     # the carriageway painted into the ground (surface.photo_roads)
             continue

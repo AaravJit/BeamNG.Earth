@@ -1164,6 +1164,7 @@ class Server:
         def drawn(la, lo):      # the block's ground: raised over the low arches as the terrain is (_make_heightmap_here)
             return roadsmod.block_arch_raise(anchor.tunnels, cell_fn, anchor.frame, la, lo, elev(la, lo),
                                              (box[0] - 8, box[1] - 8, box[2] + 8, box[3] + 8))
+        cover = []                      # the ground carriageways for the decks' parapets (roadmesh.deck ground=)
         chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, elev, urban, walks=walks, deck_context=ctx, bridges=anchor.bridges,
                                      widths=self.road_widths, props=props, lines=lines, wires=wires, town=town, park=park,
                                      left_hand=self.left_hand(anchor), mph=self.mph(anchor),
@@ -1171,7 +1172,7 @@ class Server:
                                      tunnels=anchor.tunnels, walls=rwalls,
                                      ground=lambda x, y: roadmeshmod.drawn_ground(anchor.frame, drawn, np.c_[x, y],
                                                                                   self.anchor_q(anchor)),
-                                     terrain_paint=self.surface is not None)
+                                     terrain_paint=self.surface is not None, cover_out=cover)
         if self.airports is not None:   # runway markings, drawn by the road mesh like the lane lines
             chunks += self.airports.tile_chunks(anchor.frame, tx, ty, elev, roadsmod.tile_bbox)
         x0, y0, _, _ = roadsmod.tile_bbox(tx, ty)
@@ -1191,7 +1192,8 @@ class Server:
         dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0),
                                  anchor.bridges.piers_in(roadsmod.tile_bbox(tx, ty)) if anchor.bridges is not None else (),
                                  ctx,
-                                 anchor.bridges.beams_in(roadsmod.tile_bbox(tx, ty)) if anchor.bridges is not None else ())
+                                 anchor.bridges.beams_in(roadsmod.tile_bbox(tx, ty)) if anchor.bridges is not None else (),
+                                 ground=cover)
         tmesh = roadmeshmod.tunnel(chunks, (x0, y0, 0.0), rwalls)
         bld = None
         if self.buildings:

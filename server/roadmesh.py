@@ -368,12 +368,13 @@ PIER_BENT_W = 16.0      # a deck wider than this stands on columns (a bent) rath
 PIER_COLUMN = 1.6       # m square columns of a bent
 
 
-def deck(chunks, origin, piers=(), context=(), beams=()):
+def deck(chunks, origin, piers=(), context=(), beams=(), ground=()):
     """The bridge decks of a tile as one colliding mesh: per "deck" chunk a slab of opaque concrete
     (DECK_SIDE) whose top is at the chunk's fixed heights (the road surface, drawn DECK_SKIN above it
     by build()), with sides and underside DECK_DEPTH below; the piers, and the truss beams (p, q, width, height:
     bridgetypes.truss_members) in painted steel (TRUSS_STEEL). (positions, tris, uvs, materials, tri
-    material index) or None. Pure."""
+    material index) or None. ground: the tile's ground carriageways (roads.build_tile cover_out) for the parapet
+    test, drawn or not (with the roads painted into the ground the chunks have none). Pure."""
     dch = [c for c in chunks if c.get("deck")]
     rb = [(r, c) for r, c in zip(ribbons(dch), dch) if r[5] is not None]
     if not rb and not piers and not beams:
@@ -403,7 +404,7 @@ def deck(chunks, origin, piers=(), context=(), beams=()):
         mats.append(DECK_SIDE)
     side = mats.index(DECK_SIDE)                # opaque concrete; the asphalt is the road mesh's
     cr = [r for r in ribbons(list(context)) if r[5] is not None]
-    cov_ctx = [(r, c) for r, c in zip(cr, context)] + _ground_carriageways(chunks)
+    cov_ctx = [(r, c) for r, c in zip(cr, context)] + _ground_carriageways(list(chunks) + list(ground))
     covered = _parapet_cover([(r, c) for r, c in rb], cov_ctx)
     for n, ((left, right, v, m, layer, z), c) in enumerate(rb):
         k = len(z)

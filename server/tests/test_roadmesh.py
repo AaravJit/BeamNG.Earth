@@ -233,6 +233,10 @@ class BridgeLookTest(unittest.TestCase):
             return ((t[:, 0] > 21.0) & (t[:, 0] < 29.0)).sum()
         self.assertEqual(tops_over_road(19.5), 0, "at grade: no wall across the road")
         self.assertGreater(tops_over_road(12.0), 0, "a road 8 m below: the parapets stay")
+        # the roads painted into the ground (no ground chunks drawn): the carriageway comes as ground= (GitHub #258)
+        P = roadmesh.deck([self.deck(0.0, "a")], (0.0, 0.0, 0.0), ground=[road(19.5)])[0]
+        t = self.parapet_tops(P)
+        self.assertEqual(((t[:, 0] > 21.0) & (t[:, 0] < 29.0)).sum(), 0, "ground=: no wall across the road either")
 
     def test_tunnel_floor_is_a_slab(self):
         d = self.deck(0.0, "a")
