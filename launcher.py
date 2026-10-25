@@ -23,6 +23,7 @@ terminal when started from a file manager (else it logs to ~/.cache/beamng-earth
 """
 
 import argparse
+import json
 import multiprocessing
 import os
 import shutil
@@ -116,6 +117,45 @@ def data_dir():
         base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
         return os.path.join(base, "beamng-earth")
     return os.path.join(os.path.expanduser("~"), ".cache", "beamng-earth")
+
+
+APP_SETTINGS = "app.json"       # in data_dir(): the launcher's own remembered choices ({"cacheDir": ...})
+
+
+def app_settings(dd=None):
+    try:
+        with open(os.path.join(dd or data_dir(), APP_SETTINGS), encoding="utf-8") as f:
+            d = json.load(f)
+            return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_app_settings(dd=None, **kw):
+    dd = dd or data_dir()
+    d = app_settings(dd)
+    d.update(kw)
+    d = {k: v for k, v in d.items() if v is not None}
+    os.makedirs(dd, exist_ok=True)
+    with open(os.path.join(dd, APP_SETTINGS), "w", encoding="utf-8") as f:
+        json.dump(d, f, indent=2)
+
+
+def cache_dir_arg(given, dd=None):
+    """The download cache's folder for the server (GitHub #254: "re locate the map files to a different hard drive"):
+    --cache-dir PATH is remembered for the next starts, --cache-dir default forgets it. Returns the folder, or None
+    (the server's default, .cache/beamng-earth in the home folder). Files already downloaded stay where they were: the
+    player moves the folder over (or they are downloaded again)."""
+    if given is not None:
+        if given.strip().lower() in ("", "default"):
+            save_app_settings(dd, cacheDir=None)
+            return None
+        path = os.path.abspath(os.path.expanduser(given.strip().strip('"')))
+        os.makedirs(path, exist_ok=True)
+        save_app_settings(dd, cacheDir=path)
+        return path
+    path = app_settings(dd).get("cacheDir")
+    return path if isinstance(path, str) and path else None
 
 
 # --- the server -----------------------------------------------------------------------------------
@@ -852,6 +892,9 @@ def main():
     ap.add_argument("--keep-mod", action="store_true", help="leave the game's copy of the mod as it is")
     ap.add_argument("--no-beammp", action="store_true",
                     help="do not start BeamMP (multiplayer) with the game (bmplaunch.py)")
+    ap.add_argument("--cache-dir", metavar="PATH",
+                    help="where the map download cache goes, e.g. another drive (kept for the next starts; "
+                         "'default' goes back to .cache/beamng-earth in your home folder)")
     ap.add_argument("--beammp-launcher", metavar="PATH",
                     help="the BeamMP launcher you already have (its file or folder; kept for the next starts)")
     ap.add_argument("--user-dir", help="BeamNG.drive user folder (default: found)")
@@ -1035,6 +1078,16 @@ def run(args):
         row("Mod", {"current": "up to date", "enabled": "turned back on", "updated": "updated",
                     "installed": "installed", "kept": "kept the installed copy"}.get(status, status or ""))
     extra = args.extra[1:] if args.extra[:1] == ["--"] else args.extra
+    if "--cache-dir" not in extra:
+        try:
+            cache = cache_dir_arg(args.cache_dir)
+        except OSError as e:
+            problem(f"the download cache folder {args.cache_dir} cannot be made ({e}).",
+                    "Pick another folder (--cache-dir PATH), or --cache-dir default.")
+            sys.exit(1)
+        if cache:
+            extra = ["--cache-dir", cache] + extra
+            row("Download cache", cache)
     if "--port" not in extra and server_port_busy():
         problem(f"another BeamNG.Earth world server is already running (port {SERVER_PORT} is in use), maybe "
                 "left over from an earlier start.",

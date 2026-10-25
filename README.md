@@ -154,6 +154,10 @@ the source: unzip it over the old folder and run the installer again).
 downloaded file (or this folder); the map cache is `.cache/beamng-earth` in your home folder (`~/.cache/beamng-earth` on Linux,
 `C:\Users\<you>\.cache\beamng-earth` on Windows).
 
+**The map cache on another drive:** start the app once with `--cache-dir PATH` (e.g. a shortcut to
+`BeamNG.Earth-<version>.exe --cache-dir "D:\BeamNG.Earth cache"`); it is remembered for the next starts, and
+`--cache-dir default` goes back. Move the old cache folder there first to keep what is already downloaded.
+
 More detail (traffic, the status bar, reporting problems, troubleshooting): [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
 **Compute sharing (optional, for tinkerers):** another computer on your network can build part of the distant
