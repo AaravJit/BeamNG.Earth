@@ -1960,6 +1960,7 @@ teleportTo = function(lat, lon, name, kind)
     parking.onTeleport()
     navgraph.onTeleport()
     do local ok, err = pcall(farcars.onTeleport) if not ok then log('W', 'beamngEarth', 'far cars: ' .. tostring(err)) end end
+    pcall(mpsession.onTeleport, place and place.x or 0, place and place.y or 0)    -- (no car: the free camera there)
     if kind ~= 'tool' then
       statusbar.reset()
       local ok, err = pcall(places.noteTeleport, lat, lon, name, kind)

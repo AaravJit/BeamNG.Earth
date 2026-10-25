@@ -357,4 +357,29 @@ do -- a car switched off here: its BeamMP name tag hidden with it, shown again a
   ms.nametag(7, true)                       -- (no BeamMP: nothing)
   MPVehicleGE = saved
 end
+do -- no car (BeamMP joins without one): the free camera on the ground, and at a teleport's target on the ground again,
+   -- lower ground too (it was left hundreds of metres up and the car spawned there fell: the user, 2026-10-24)
+  local savedBe, savedCam, savedGet, savedQ = rawget(_G, 'be'), rawget(_G, 'core_camera'), rawget(_G, 'getPlayerVehicle'), rawget(_G, 'quatFromDir')
+  local ground, put = 100, nil
+  be = { getSurfaceHeightBelow = function(_, p) return ground end }
+  core_camera = { setPosRot = function(_, x, y, z) put = { x, y, z } end }
+  getPlayerVehicle = function() return nil end
+  quatFromDir = quatFromDir or function() return { x = 0, y = 0, z = 0, w = 1 } end
+  ms.onPostJoin()
+  ms.placeCamera({ x = 5, y = 5, z = 0 }, 'A')
+  T.check(put and put[3] == 103, 'first: on the ground at the origin')
+  put = nil
+  ms.placeCamera({ x = 0, y = -8, z = 400 }, 'A')
+  T.check(put == nil, 'a free camera flown up stays')
+  ms.onTeleport(30, 40)
+  ground = 2
+  ms.placeCamera({ x = 0, y = -8, z = 103 }, 'A')
+  T.check(put == nil, 'the teleport\'s anchor not in yet: not moved')
+  ms.placeCamera({ x = 0, y = -8, z = 103 }, 'B')
+  T.check(put and put[1] == 30 and put[2] == 40 and put[3] == 5, 'new anchor: at the target, 3 m over its ground')
+  put = nil
+  ms.placeCamera({ x = 30, y = 40, z = 500 }, 'C')
+  T.check(put == nil, 'a rebase (no teleport): a free camera keeps its height')
+  be, core_camera, getPlayerVehicle, quatFromDir = savedBe, savedCam, savedGet, savedQ
+end
 T.done('test_mpsession')

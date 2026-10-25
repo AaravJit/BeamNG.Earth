@@ -519,25 +519,42 @@ onGoToRef = onGoTo
 -- No car yet (BeamMP joins without one): the free camera, left at the level's spawn point under the generated
 -- ground, put once on the ground at the origin (where the vehicle selector spawns the car); and lifted back over the
 -- ground whenever it is under it (a teleport moves the world under a free camera: from a valley to a mountain it
--- ended 1400 m underground, a black screen).
-local function placeCamera(player)
-  if (getPlayerVehicle and getPlayerVehicle(0)) or not be or not be.getSurfaceHeightBelow then return end
+-- ended 1400 m underground, a black screen). A teleport (the join's to the other players, or the map's) does not move
+-- a free camera either way: onto lower ground it was left hundreds of metres up, and the car the vehicle selector
+-- spawns there (at the camera) fell from it (the user, 2026-10-24: "sometimes i spawn high above the ground in
+-- beammp"); so on each new anchor it is put on the ground again, 3 m over it.
+local goTo = nil            -- after a teleport with no car: { from = the anchor key then, x, y = its target there }
+local seenKey = nil         -- the anchor (M.key) of the latest placeCamera call
+local function placeCamera(player, anchorKey)
+  seenKey = anchorKey or seenKey
+  if (getPlayerVehicle and getPlayerVehicle(0)) or not be or not be.getSurfaceHeightBelow then goTo = nil return end
   local x, y = 0, -8
-  if camPlaced then
+  local moved = goTo ~= nil and anchorKey ~= nil and anchorKey ~= goTo.from      -- (the teleport's anchor is in)
+  if moved then
+    x, y = goTo.x, goTo.y
+  elseif camPlaced then
     if not player or not player.x then return end
     x, y = player.x, player.y
   end
   local z = be:getSurfaceHeightBelow(vec3(x, y, 9000))
   if type(z) ~= 'number' or z < -1e5 then return end      -- (the ground not there yet)
-  if camPlaced and player.z >= z - 0.5 then return end
+  if camPlaced and not moved and player.z >= z - 0.5 then return end
   camPlaced = true
+  if moved then goTo = nil end
   local q = quatFromDir(vec3(0, 1, -0.15), vec3(0, 0, 1))
   if core_camera and core_camera.setPosRot then core_camera.setPosRot(0, x, y, z + 3, q.x, q.y, q.z, q.w) end
 end
 
+-- A teleport asked (core.teleportTo): with no car the camera goes to its target (x, y in the new anchor's frame) once
+-- that anchor is in. A rebase does not come here (a free camera flown far keeps its height).
+function M.onTeleport(x, y)
+  goTo = { from = seenKey or '', x = tonumber(x) or 0, y = tonumber(y) or 0 }
+end
+M.placeCamera = placeCamera     -- (tests)
+
 -- BeamMP's join done (core.lua onBeamMPPostJoin): the first pose asks the plugin where the others are.
 function M.onPostJoin()
-  joined, wentTo, camPlaced = true, false, false
+  joined, wentTo, camPlaced, goTo = true, false, false, nil
   anchors = {}
 end
 
@@ -879,7 +896,7 @@ function M.update(dt, anchor, player)
     require('beamngEarth/net').send({ type = 'share', port = M.sharePort(config) })     -- the server's port
   end
   if not anchor then return end
-  placeCamera(player)
+  placeCamera(player, M.key(anchor.lat, anchor.lon))
   anchorRef = anchor
   testStep(dt)
   if not player then return end
