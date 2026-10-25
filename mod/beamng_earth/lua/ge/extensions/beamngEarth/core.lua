@@ -72,6 +72,8 @@ local roads = require('beamngEarth/roads') -- DecalRoads from the server's road 
 local sea = require('beamngEarth/sea') -- the sea's WaterBlock tiles (server seatiles.py)
 local trees = require('beamngEarth/trees') -- trees, bushes, rocks (server vegetation.py)
 local parking = require('beamngEarth/parking') -- parked cars on the road tiles' spots (stock gameplay_parking)
+local gasstations = require('beamngEarth/gasstations') -- pumps and the stock refuel prompt (server gasstations.py)
+gasstations.onCollide = roads.markCollisionDirty
 local navgraph = require('beamngEarth/navgraph')
 local postfx = require('beamngEarth/postfx')       -- no far depth-of-field blur in our level
 local gps = require('beamngEarth/gps')               -- the game's GPS route to a place picked on the world map
@@ -110,6 +112,7 @@ local VISIBLE_DISTANCE = 100000
 local LAG_PROBE_FRAMES = 10   -- simulated frames to watch for a rebase's vehicle move to show up
 local PLACE_DELAY_FRAMES = 2   -- let the collision rebuild settle before placing the vehicle
 local FLOOR_WAIT_S = 60        -- s a teleport into a tunnel waits for the tube's floor before giving up (car stays on top)
+local TELEPORT_RETRY_MAX_S = 60 -- s at most between the tries of a teleport whose first block failed (anchor_error)
 local FLOOR_HIT_M = 0.8        -- m the static collision found under floorZ + 2 may differ from floorZ: the tube is there
 local PRE_LIFT = 5             -- m above groundZ + 1 to hold the vehicle until it is placed
 local LOADING_AFTER_TELEPORT_S = 3 -- governor loading mode (8 ms budget) this long after a teleport
@@ -265,7 +268,8 @@ local function requestAnchor(lat, lon, purpose, cx, cy, place)
     return false
   end
   local id = nextId()
-  st.pending = { requestId = id, purpose = purpose, lat = lat, lon = lon, sentAt = st.clock }
+  st.pending = { requestId = id, purpose = purpose, lat = lat, lon = lon, sentAt = st.clock, cx = cx, cy = cy,
+    place = place }
   net.send({ type = 'prepare_anchor', requestId = id, lat = lat, lon = lon, cx = cx or 0, cy = cy or 0,
     px = place and place.x or nil, py = place and place.y or nil })
   return true
@@ -473,6 +477,7 @@ local function finishRebase()
   -- roads, buildings, street furniture and trees move with it and stay until the new anchor's tiles cover them
   roads.transform(xf, geodesy)
   trees.transform(xf, geodesy)
+  gasstations.transform(xf)
   sea.transform(xf, msg.anchorId)
   -- a resync with a restarted server keeps the previous session's tiles the same way (st.sessionId
   -- is the new session's): they go once the new session's tiles cover them
@@ -556,6 +561,13 @@ end
 
 local function commitAnchor(msg, purpose)
   if st.rebasing then finishRebase() end -- never mix two frame changes
+  -- the anchor's region's gas station shapes loaded now (in this heavy slot), not at its first station
+  if msg.fuelShapes then
+    local gt = stopwatch.new()
+    local ok, err = pcall(gasstations.prewarm, msg.fuelShapes)
+    if ok then log('D', 'beamngEarth', string.format('gas stations: shapes prewarmed in %.0f ms', gt()))
+    else log('W', 'beamngEarth', 'gas stations prewarm: ' .. tostring(err)) end
+  end
   if purpose == 'teleport' or not st.anchor then return commitTeleport(msg) end
   return commitRebase(msg, purpose)
 end
@@ -705,6 +717,8 @@ local function onMessage(msg)
     cacheInfo = nil
     local settings = rawget(_G, 'beamngEarth_settings')
     if settings and settings.cacheCapGb then net.send({ type = 'cache', capGb = settings.cacheCapGb() }) end
+    -- the gas stations switch, after every hello (a new server starts with them on; this comes before any tile request)
+    net.send({ type = 'gas_stations', on = gasstations.enabled })
     -- the on-screen credits: this session's own follow (the attribution line until then)
     credits.clear()
     -- M4: the terrain block size first (everything below may use the lattice / follow table); a
@@ -780,7 +794,17 @@ local function onMessage(msg)
     if not p or msg.requestId ~= p.requestId then return end
     st.pending = nil
     st.retryAt = st.clock + rebase.RETRY_S
-    setStatus('Anchor request failed: ' .. tostring(msg.error))
+    if p.purpose == 'teleport' then
+      -- a teleport's (or the level start's) first block that failed (a damaged elevation download, a host down) is
+      -- asked again, RETRY_S doubling up to TELEPORT_RETRY_MAX_S: nothing else asks for it, and the world stayed
+      -- empty (#286: the start block failed once and the map never loaded)
+      local n = (p.retries or 0) + 1
+      local wait = math.min(TELEPORT_RETRY_MAX_S, rebase.RETRY_S * 2 ^ (n - 1))
+      st.teleportRetry = { lat = p.lat, lon = p.lon, cx = p.cx, cy = p.cy, place = p.place, n = n, at = st.clock + wait }
+      setStatus(string.format('Terrain failed (%s), trying again in %d s', tostring(msg.error), wait))
+    else
+      setStatus('Anchor request failed: ' .. tostring(msg.error))
+    end
   elseif t == 'terrain_ready' then
     local p = st.terrainPending
     if not p or msg.requestId ~= p.requestId or msg.anchorId ~= st.anchorId then return end -- stale
@@ -1104,6 +1128,14 @@ local function updateWorld(dt)
     end
     return -- no rebase decisions while the player is being placed
   end
+  -- a teleport whose first block failed (anchor_error), asked again (before the player test: there is
+  -- none before the first anchor)
+  local retry = st.teleportRetry
+  if retry and not st.pending and st.clock >= retry.at and net.isConnected() then
+    st.teleportRetry = nil
+    if requestAnchor(retry.lat, retry.lon, 'teleport', retry.cx, retry.cy, retry.place) then st.pending.retries = retry.n end
+  end
+
   local pl = st.player
   if not pl then return end
 
@@ -1766,6 +1798,7 @@ local function onUpdate(dtReal, dtSim)
     -- teleport the far field's hundreds of tiles took it frame after frame and the road meshes under the car
     -- came after it had passed (Brasov, Sinaia 2026-10-15: the car drove bare ground)
     roads.update(gov, st.anchorId, st.player, M.viewAway())
+    gasstations.update(gov)
     t = mark('roads', t)
     farfield.update(gov, (gov.w1 or dtReal * 1000) / 1000, st.cam, st.player)
     t = mark('far', t)
@@ -1904,6 +1937,7 @@ local function onClientEndMission()
   hudapps.unhookMinimapNorth()
   postfx.restore()
   pcall(terrainpatch.clear)
+  pcall(gasstations.reset)
   pcall(farcars.reset)
   pcall(mpsession.reset)
   gps.reset()
@@ -1986,6 +2020,7 @@ teleportTo = function(lat, lon, name, kind)
     cx, cy = follow.target(x, y, 0, 0)
     log('I', 'beamngEarth', string.format('teleport onto the anchor %.5f, %.5f (%.0f, %.0f there)', aLat, aLon, x, y))
   end
+  st.teleportRetry = nil       -- (a new teleport replaces a failed one's retry)
   if requestAnchor(aLat, aLon, 'teleport', cx, cy, place) then
     setStatus(string.format('Preparing terrain at %.5f, %.5f ...', lat, lon))
     loadprogress.reset()
@@ -2213,8 +2248,15 @@ function M._governor() return gov end
 function M.setRoadsEnabled(on)
   if roads.setEnabled(on) then net.send({ type = 'roads_reset' }) end
 end
+-- the settings page's "Gas stations" switch: ours dropped or kept, and the server told (it lays them out or not and
+-- sends the road tiles again)
+function M.setGasStationsEnabled(on)
+  if gasstations.setEnabled(on) then net.send({ type = 'gas_stations', on = gasstations.enabled }) end
+end
 
 M.onUpdate = onUpdate
+-- the stock gas stations' POI list (gameplay/rawPois.lua): ours, so freeroam/gasStations.lua offers "Refuel" at them
+M.onGetRawPoiListForLevel = function(levelIdentifier, elements) gasstations.pois(levelIdentifier, elements) end
 M.onPreRender = onPreRender
 M.onUiChangedState = onUiChangedState
 M.onClientStartMission = onClientStartMission
