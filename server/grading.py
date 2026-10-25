@@ -400,6 +400,21 @@ def _add_cuts(frame, plans, elev):
                 p.cut = cut
 
 
+def _point_along(line, d):
+    """The point d m along polyline line (k, 2) from its first point (its last when shorter). Walks only as far as it
+    needs (a whole line's cumulative length per road end cost Grader._extensions most of its time, 2026-10-25)."""
+    acc = 0.0
+    for i in range(len(line) - 1):
+        ax, ay = float(line[i][0]), float(line[i][1])
+        bx, by = float(line[i + 1][0]), float(line[i + 1][1])
+        seg = math.hypot(bx - ax, by - ay)
+        if seg > 0 and acc + seg >= d:
+            t = (d - acc) / seg
+            return np.array([ax + (bx - ax) * t, ay + (by - ay) * t])
+        acc += seg
+    return np.array([float(line[-1][0]), float(line[-1][1])])
+
+
 def profile_sigma(spec):
     """m: the profile smoothing of a road of this spec."""
     if spec.kind not in roadsmod.BUILT:
@@ -669,9 +684,7 @@ class Grader:
             sg = profile_sigma(spec)
             for end in (0, 1):
                 line = xy if end == 0 else xy[::-1]          # from this end inward
-                s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(line, axis=0).T))]
-                look = min(CHAIN_LOOK_M, float(s[-1]))
-                p = np.array([np.interp(look, s, line[:, 0]), np.interp(look, s, line[:, 1])])
+                p = _point_along(line, CHAIN_LOOK_M)
                 q_node.append(line[0])
                 q_dir.append(line[0] - p)                    # the way the road goes on out of this end
                 q_class.append(int(round(sg * 1000)))
