@@ -26,6 +26,18 @@ class ProfileTest(unittest.TestCase):
         self.assertLess(np.abs(sm - ramp)[20:-20].max(), 0.02, "short bumps smoothed away")
         self.assertEqual(len(sm), len(s))
 
+    def test_a_bridge_deck_in_the_data_is_no_hump(self):
+        # GitHub #271: the elevation data had a bridge deck 8.5 m up in 3 samples (6 m) where it crosses over the road
+        s = np.arange(0, 300, 2.0)
+        ground = 50.0 + 0.01 * s
+        spiked = ground.copy()
+        spiked[74:77] += 8.5
+        xy = np.stack([s, np.zeros(len(s))], axis=1)
+        plan = grading._plan(xy, spiked, roads.Spec(7.0, "paved", False, "residential"))
+        self.assertLess(float(np.max(plan.z - np.interp(plan.xy[:, 0], s, ground))), 0.2)
+        steps = grading.median_profile(ground, 2.0, grading.MEDIAN_M)
+        self.assertTrue(np.allclose(steps, ground), "a constant grade stays, ends included")
+
     def test_the_parts_of_a_road_meet_at_one_height(self):
         # a road on a 20 % grade split in two at a junction (GitHub #266, BR-381): each part's smoothed profile keeps
         # the grade to its end and ends at the ground's height there, so the two meet without a step (mirrored at the

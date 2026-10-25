@@ -1346,6 +1346,24 @@ fn node_parts<'py>(py: Python<'py>, cand_xy: PyReadonlyArray2<'py, f64>, cand_of
     (out.into_pyarray(py), off.into_pyarray(py))
 }
 
+/// grading.median_profile: each sample the median of the samples within half of it (the window shrunk evenly near the
+/// ends: an end keeps its own value, a constant grade stays). A bridge deck in the elevation data (a spike a few
+/// samples wide) goes; slopes, crests and steps longer than the window stay.
+#[pyfunction]
+fn median_profile<'py>(py: Python<'py>, z: PyReadonlyArray1<'py, f64>, half: usize) -> Bound<'py, PyArray1<f64>> {
+    let z = z.as_array();
+    let n = z.len();
+    let mut buf: Vec<f64> = Vec::with_capacity(2 * half + 1);
+    let out: Vec<f64> = (0..n).map(|i| {
+        let h = half.min(i).min(n - 1 - i);
+        buf.clear();
+        buf.extend((i - h..=i + h).map(|j| z[j]));
+        buf.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        buf[h]
+    }).collect();
+    out.into_pyarray(py)
+}
+
 /// grading.smooth_profile: Gaussian smoothing of a profile sampled every step m (turned about its end points past the
 /// ends, so the ends keep their heights and a constant grade stays).
 #[pyfunction]
@@ -3973,6 +3991,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(smooth_profile, m)?)?;
     m.add_function(wrap_pyfunction!(chain_extensions, m)?)?;
     m.add_function(wrap_pyfunction!(node_parts, m)?)?;
+    m.add_function(wrap_pyfunction!(median_profile, m)?)?;
     m.add_function(wrap_pyfunction!(seg_dist_min, m)?)?;
     m.add_function(wrap_pyfunction!(contains_points, m)?)?;
     m.add_function(wrap_pyfunction!(rock, m)?)?;
@@ -4019,6 +4038,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(photofill::fill_photo, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 70)?;
+    m.add("VERSION", 71)?;
     Ok(())
 }

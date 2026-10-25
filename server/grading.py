@@ -42,6 +42,11 @@ SIGMA_M = 12.0              # m, profile smoothing of built roads
 SIGMA_MAJOR_M = float(os.environ.get("BNE_GRADE_MAJOR", "40"))
 MAJOR_CLASSES = ("motorway", "trunk")      # (not their slip roads: Overture's subclass "link", Spec.link)
 DIRT_SIGMA_M = 5.0          # m, profile smoothing of gravel / dirt roads
+# A running median before the smoothing (median_profile): a bridge deck left in the elevation data where it crosses
+# over a road is a spike a few samples wide, and the Gaussian spread it into a hump in the road under (GitHub #271, an
+# 8.5 m spike near Thetford: a 3.2 m hump). Slopes, crests and steps longer than the window stay.
+MEDIAN_M = float(os.environ.get("BNE_GRADE_MEDIAN", "24"))
+DIRT_MEDIAN_M = 10.0        # (tracks keep their small real bumps)
 SHOULDER_M = 1.0            # m of flat shoulder beyond the carriageway, each side
 SIDEWALK_MARGIN_M = 0.5     # m of flat ground beyond a sidewalk (roads.SIDEWALK_CLASSES)
 LONG_PART_M = 3000.0        # a road part longer than this is planned per cell, only within CLIP_MARGIN_M of the cell
@@ -153,6 +158,17 @@ ABUT_FAR_M = 40.0           # ... against its grade from ABUT_NEAR_M to this far
 ABUT_STEEP = 0.15           # a fall this much steeper than that grade, near the end: the valley's side, not the road
 ABUT_MIN_M = 0.3            # m: a smaller fill at the end is left out
 ABUT_MAX_M = 8.0            # m filled at most
+
+
+def median_profile(z, step, width):
+    """The running median of a profile sampled every `step` m over `width` m (the window shrunk evenly near the ends, so
+    an end keeps its height). Pure."""
+    import fast
+    half = int(round(width / 2.0 / step))
+    if half < 1 or len(z) < 3:
+        return np.asarray(z, np.float64)
+    fast.require(71, "median_profile")
+    return fast._ef.median_profile(np.ascontiguousarray(z, np.float64), half)
 
 
 def smooth_profile(z, step, sigma):
@@ -392,7 +408,8 @@ def _plan(xy, z, spec, abut=(False, False), ext=(0, 0), step=PROFILE_STEP):
     """ext: (before, after), samples of z past the part's ends (plan_roads): smoothed with it, then dropped. step: m
     between the samples."""
     built = spec.kind in roadsmod.BUILT
-    zs = smooth_profile(z, step, profile_sigma(spec))[ext[0]:len(z) - ext[1]]
+    zs = smooth_profile(median_profile(z, step, MEDIAN_M if built else DIRT_MEDIAN_M), step,
+                        profile_sigma(spec))[ext[0]:len(z) - ext[1]]
     # thin to VERTEX_STEP (the profile stays smooth between: linear in the grading pass)
     every = max(1, int(round(VERTEX_STEP / PROFILE_STEP)))
     keep = np.r_[np.arange(0, len(xy) - 1, every), len(xy) - 1]
