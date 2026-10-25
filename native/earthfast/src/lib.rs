@@ -1318,6 +1318,34 @@ fn chain_extensions<'py>(py: Python<'py>, cand_xy: PyReadonlyArray2<'py, f64>, c
     (a.into_pyarray(py), off.into_pyarray(py))
 }
 
+/// grading node parts: for each query node (n, 2), the candidate lines (cand_xy / cand_off as chain_extensions') with an
+/// end within join m of it, as flat indices with per-query offsets (q + 1); each index is the candidate's times 2, plus 1
+/// when it is its last point that is at the node.
+#[pyfunction]
+fn node_parts<'py>(py: Python<'py>, cand_xy: PyReadonlyArray2<'py, f64>, cand_off: PyReadonlyArray1<'py, i64>,
+                   q_node: PyReadonlyArray2<'py, f64>, join: f64)
+                   -> (Bound<'py, PyArray1<i64>>, Bound<'py, PyArray1<i64>>) {
+    let (cxy, coff, qn) = (cand_xy.as_array(), cand_off.as_array(), q_node.as_array());
+    let mut out: Vec<i64> = Vec::new();
+    let mut off: Vec<i64> = vec![0];
+    for q in 0..qn.nrows() {
+        let (nx, ny) = (qn[[q, 0]], qn[[q, 1]]);
+        for c in 0..coff.len().saturating_sub(1) {
+            let (a, b) = (coff[c] as usize, coff[c + 1] as usize);
+            if b < a + 2 {
+                continue;
+            }
+            if (cxy[[a, 0]] - nx).hypot(cxy[[a, 1]] - ny) <= join {
+                out.push(2 * c as i64);
+            } else if (cxy[[b - 1, 0]] - nx).hypot(cxy[[b - 1, 1]] - ny) <= join {
+                out.push(2 * c as i64 + 1);
+            }
+        }
+        off.push(out.len() as i64);
+    }
+    (out.into_pyarray(py), off.into_pyarray(py))
+}
+
 /// grading.smooth_profile: Gaussian smoothing of a profile sampled every step m (turned about its end points past the
 /// ends, so the ends keep their heights and a constant grade stays).
 #[pyfunction]
@@ -3944,6 +3972,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(tunnel_sections, m)?)?;
     m.add_function(wrap_pyfunction!(smooth_profile, m)?)?;
     m.add_function(wrap_pyfunction!(chain_extensions, m)?)?;
+    m.add_function(wrap_pyfunction!(node_parts, m)?)?;
     m.add_function(wrap_pyfunction!(seg_dist_min, m)?)?;
     m.add_function(wrap_pyfunction!(contains_points, m)?)?;
     m.add_function(wrap_pyfunction!(rock, m)?)?;
@@ -3990,6 +4019,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(photofill::fill_photo, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 69)?;
+    m.add("VERSION", 70)?;
     Ok(())
 }

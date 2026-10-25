@@ -123,10 +123,11 @@ def look_of(spec):
     if spec.kind == "paved" and spec.surf == "concrete":
         return CONCRETE
     return LOOK[spec.kind]
-Spec = namedtuple("Spec", "width kind urban cls oneway walk dir kmh gap median lanes surf",
-                  defaults=(False, 2.5, 0, None, None, None, None, None))   # median: m to the other carriageway's centre line
+Spec = namedtuple("Spec", "width kind urban cls oneway walk dir kmh gap median lanes surf link",
+                  defaults=(False, 2.5, 0, None, None, None, None, None, False))   # median: m to the other carriageway's centre line
 # (lanes: OpenStreetMap's lane count, both directions on a two-way road, None unknown: osmtags.py; surf: the surface
-# rule value's base token, e.g. "concrete": the look's concrete, roads.py look_of)
+# rule value's base token, e.g. "concrete": the look's concrete, roads.py look_of; link: a ramp / slip road, Overture's
+# subclass "link", its class the road's it leads to)
 # road_specs' result per feature (walk: the sidewalk width, measured from the buildings where known: roadwidth.py;
 # dir: a one-way road's direction along its geometry, +1 / -1, 0 two-way; kmh: its speed limit, None unknown;
 # gap: m of road per junction along it (its connectors), None unknown)
@@ -802,7 +803,8 @@ def _road_specs(feats, urban_fn, widths, left_hand):
         surf = _rule_value(rules.get("surface"), i)
         kind = surface_kind(cls, surf)
         ow = _rule_value(rules.get("oneway"), i) is not None
-        if rule_w is None and _rule_value(rules.get("subclass"), i) == "link" and lanes is None:
+        link = _rule_value(rules.get("subclass"), i) == "link"
+        if rule_w is None and link and lanes is None:
             rule_w = LINK_M[1] if ow else LINK_M[2]
         dk = _dir_kmh(feats, i, ncon, lens)
         if dk[1] is None:                       # OpenStreetMap's speed limit where Overture has none
@@ -813,11 +815,11 @@ def _road_specs(feats, urban_fn, widths, left_hand):
             a = feats.coord_off[feats.ring_off[feats.part_off[i]]]
             b = feats.coord_off[feats.ring_off[feats.part_off[i + 1]]]
             if b > a:
-                ask.append((len(out), cls, kind, a, b, ow, dk, lanes, surface_token(surf)))
+                ask.append((len(out), cls, kind, a, b, ow, dk, lanes, surface_token(surf), link))
                 out.append(None)
                 continue
         out.append(Spec(carriageway(cls, kind, False, rule_w, ow, lanes), kind, False, cls, ow, 2.5, *dk,
-                        lanes=lanes, surf=surface_token(surf)))
+                        lanes=lanes, surf=surface_token(surf), link=link))
     if ask:
         ll = np.concatenate([feats.lonlat[a:b] for _, _, _, a, b, *_ in ask])
         left, right = _beside(ll, [b - a for _, _, _, a, b, *_ in ask], URBAN_BESIDE_M)
@@ -826,13 +828,13 @@ def _road_specs(feats, urban_fn, widths, left_hand):
         u_all = np.asarray(urban_fn(pts[:, 1], pts[:, 0]), bool)      # (one call: its cost is per call)
         u, by, both = u_all[:n], u_all[n:2 * n] | u_all[2 * n:], u_all[n:2 * n] & u_all[2 * n:]
         k = 0
-        for j, cls, kind, a, b, ow, dk, lanes, token in ask:
+        for j, cls, kind, a, b, ow, dk, lanes, token, link in ask:
             urban = (float(np.mean(u[k:k + (b - a)])) >= URBAN_SHARE
                      and float(np.mean(by[k:k + (b - a)])) >= URBAN_BESIDE_SHARE
                      and (cls != "trunk" or float(np.mean(both[k:k + (b - a)])) >= URBAN_BOTH_SHARE))
             k += b - a
             out[j] = Spec(carriageway(cls, kind, urban, None, ow, lanes), kind, urban, cls, ow, 2.5, *dk, lanes=lanes,
-                          surf=token)
+                          surf=token, link=link)
     out = dual_carriageways(feats, out, left_hand)
     if widths is not None:                      # measured between the buildings (roadwidth.py)
         for j, sp in enumerate(out):

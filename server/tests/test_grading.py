@@ -12,7 +12,7 @@ import geodesy  # noqa: E402
 import grading  # noqa: E402
 import mapcells  # noqa: E402
 import roads  # noqa: E402
-from test_roads import features, LAT, LON, FRAME  # noqa: E402
+from test_roads import features, rules, LAT, LON, FRAME  # noqa: E402
 
 
 class ProfileTest(unittest.TestCase):
@@ -400,6 +400,40 @@ class ChainTest(unittest.TestCase):
         self.assertEqual(len(ext([1, 2, 3, 4], cls=(2, 2, 2, 2))), 0, "only roads smoothed alike")
 
 
+class MajorRoadTest(unittest.TestCase):
+    """Motorways and trunks are smoothed more (SIGMA_MAJOR_M); a road ending on one meets it at its height (pins)."""
+
+    @staticmethod
+    def bumpy(la, lo):          # a 4 % grade with a 3 m bump 60 m long (a forest edge in a surface model)
+        e, n, _ = FRAME.geodetic_to_enu(la, lo, 0.0)
+        e = np.asarray(e)
+        return 100.0 + 0.04 * e + 3.0 * np.exp(-((e - 20.0) / 30.0) ** 2)
+
+    def plans(self):
+        # the motorway split at the slip road's junction (0, 0); the slip road leaves at 25 degrees
+        f = features([[(-400, 0), (0, 0)], [(0, 0), (400, 0)], [(0, 0), (180, -84)]], ["motorway"] * 3)
+        f.rules["subclass"] = rules([(2, "link")])
+        g = grading.Grader(FRAME, FakeMD(f), self.bumpy)
+        return {fid: p for fid, p in g._cell_plans(mapcells.cell_of(LAT, LON))}
+
+    def test_major_roads_smoothed_more(self):
+        self.assertEqual(grading.profile_sigma(roads.Spec(7.0, "paved", False, "motorway")), grading.SIGMA_MAJOR_M)
+        self.assertEqual(grading.profile_sigma(roads.Spec(7.0, "paved", False, "motorway", link=True)), grading.SIGMA_M)
+        p = self.plans()
+        a = p["id000"]
+        bump = np.interp(20.0, a.xy[:, 0], a.z) if a.xy[-1, 0] > 20 else np.interp(20.0, p["id001"].xy[:, 0],
+                                                                                    p["id001"].z)
+        self.assertLess(bump - (100.0 + 0.04 * 20.0), 1.6, "most of the bump smoothed out of the motorway")
+
+    def test_a_slip_road_meets_the_motorway(self):
+        p = self.plans()
+        mway, link = p["id001"], p["id002"]
+        self.assertLess(abs(mway.z[0] - p["id000"].z[-1]), 0.01, "the motorway's parts meet")
+        self.assertLess(abs(link.z[0] - mway.z[0]), 0.01, "the slip road ends at the motorway's height")
+        self.assertGreater(abs(link.z[0] - self.bumpy(np.array([LAT]), np.array([LON]))[0]), 0.5,
+                           "not at the bump's height")
+
+
 class OverTunnels(unittest.TestCase):
     """Grader._over_tunnels (earthfast.over_tunnel): over the tube within its half width, from TUNNEL_KEEP_IN_M inside
     its portals."""
@@ -437,10 +471,17 @@ class UnderpassTest(unittest.TestCase):
         f = features([[(-200, 0), (200, 0)], [(0, -20), (0, 20)], [(-200, 300), (200, 300)]],
                      ["residential", "motorway", "residential"], flags=[(1, "is_bridge")])
         g = grading.Grader(FRAME, FakeMD(f), lambda la, lo: np.full(np.shape(la), 10.0))
-        la, lo, _ = FRAME.enu_to_geodetic(np.array([0.0, 150.0, 0.0]), np.array([0.0, 0.0, 300.0]), 0.0)
+        la, lo, _ = FRAME.enu_to_geodetic(np.array([0.0, 195.0, 0.0]), np.array([0.0, 0.0, 300.0]), 0.0)
         out = g.apply(la, lo, np.full(3, 10.0))
         self.assertAlmostEqual(float(out[0]), 10.0 - grading.UNDER_CLEAR_M, delta=0.3, msg="under the deck")
         self.assertAlmostEqual(float(out[1]), 10.0, delta=0.1, msg="back up past the ramp")
+        # the ramp: no steeper than UNDER_GRADE, and no kinks (the grade changes smoothly)
+        xs = np.arange(0.0, 200.0, 2.0)
+        la, lo, _ = FRAME.enu_to_geodetic(xs, np.zeros(len(xs)), 0.0)
+        z = g.apply(la, lo, np.full(len(xs), 10.0))
+        grade = np.diff(z) / 2.0
+        self.assertLessEqual(float(np.abs(grade).max()), grading.UNDER_GRADE + 0.005)
+        self.assertLess(float(np.abs(np.diff(grade)).max()), 0.01, "no kink")
         self.assertAlmostEqual(float(out[2]), 10.0, delta=0.1, msg="another road untouched")
 
 

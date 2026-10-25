@@ -36,6 +36,11 @@ log = logging.getLogger("earthd.grading")
 VERSION = 2
 PROFILE_STEP = 2.0          # m between profile samples
 SIGMA_M = 12.0              # m, profile smoothing of built roads
+# ... and of motorways and trunks: real ones keep long, gentle grades, and 12 m kept every bump of the elevation data in
+# them where it is a 30 m surface model (BR-381 in Brazil: a junction's pad, forest edges; 20 % grades between them, a
+# flat bench halfway down a long descent; GitHub #266). Lidar areas change little: their roads are smooth already.
+SIGMA_MAJOR_M = float(os.environ.get("BNE_GRADE_MAJOR", "40"))
+MAJOR_CLASSES = ("motorway", "trunk")      # (not their slip roads: Overture's subclass "link", Spec.link)
 DIRT_SIGMA_M = 5.0          # m, profile smoothing of gravel / dirt roads
 SHOULDER_M = 1.0            # m of flat shoulder beyond the carriageway, each side
 SIDEWALK_MARGIN_M = 0.5     # m of flat ground beyond a sidewalk (roads.SIDEWALK_CLASSES)
@@ -138,6 +143,7 @@ UNDER_CLEAR_M = 6.7         # deck surface to the road under: slab + girders (ro
 UNDER_GRADE = 0.06          # the dip's ramps
 UNDER_MAX_BRIDGE_M = 120.0  # only single short spans (both ends on the ground): a chain's inner ends are no abutments
 UNDER_MAX_DROP_M = 8.0      # never lowered more than this (bad data: rather a low bridge than a pit)
+UNDER_FLAT_M = 12.0         # m either side of the crossing kept at the dip's full depth (under_dip)
 # ... and under any other short overpass, by what its ramps could not raise it (BR-381 near Pouso Alegre: a local
 # road's bridge whose ramps the frontage roads at both ends held down sat ~1 m over the motorway; the 30 m elevation
 # data has no cutting under it, and the AI car drove into its abutment wall, 2026-10-25)
@@ -235,11 +241,12 @@ def plan_road(frame, lonlat, spec, elev):
     return plan_roads(frame, [(lonlat, spec)], elev)[0]
 
 
-def plan_roads(frame, parts, elev, abut=None, ext=None):
+def plan_roads(frame, parts, elev, abut=None, ext=None, pins=None):
     """plan_road for many (lonlat, spec) parts with one elev call (its cost is per call); abut: per part (start, end)
     flags, the ends leading onto a bridge (fill_abutment); ext: per part (before, after), the lines (k, 2) in the frame
     from its start / end outward along the part the road goes on in (Grader._extensions), or None: their ground is in
-    the part's profile smoothing. Pure given elev."""
+    the part's profile smoothing; pins: per part (start, end) heights its ends are held at, or None (Grader._pins: a
+    road ending on a more smoothed one meets it at its height). Pure given elev."""
     if not parts:
         return []
     ll = np.concatenate([lonlat for lonlat, _ in parts])
@@ -291,6 +298,13 @@ def plan_roads(frame, parts, elev, abut=None, ext=None):
                 if ab[int(at_end)]:
                     z = fill_abutment(z, at_end)
             zx = np.concatenate([zx[:nb], z, zx[nb + len(xy):]])
+        pin = pins[j] if pins is not None else (None, None)
+        if pin[0] is not None and not nb and not ab[0]:     # (the end sample held: the smoothing keeps an end's height)
+            zx = zx.copy()
+            zx[0] = pin[0]
+        if pin[1] is not None and not na and not ab[1]:
+            zx = zx.copy()
+            zx[-1] = pin[1]
         out.append(_plan(xy, zx, spec, ab, (nb, na), step))
     if SHARP_ON:
         _add_cuts(frame, [p if p is not None and sp.kind in roadsmod.BUILT else None
@@ -369,7 +383,9 @@ def _add_cuts(frame, plans, elev):
 
 def profile_sigma(spec):
     """m: the profile smoothing of a road of this spec."""
-    return SIGMA_M if spec.kind in roadsmod.BUILT else DIRT_SIGMA_M
+    if spec.kind not in roadsmod.BUILT:
+        return DIRT_SIGMA_M
+    return max(SIGMA_M, SIGMA_MAJOR_M) if spec.cls in MAJOR_CLASSES and not getattr(spec, "link", False) else SIGMA_M
 
 
 def _plan(xy, z, spec, abut=(False, False), ext=(0, 0), step=PROFILE_STEP):
@@ -517,15 +533,16 @@ class Grader:
                     abut = self._abut_ends(key, np.stack([np.asarray(e), np.asarray(n)], axis=1)).reshape(-1, 2)
                 except Exception as e:      # no fills rather than no grading
                     log.debug("grading: abutments of %s: %s: %s", key, type(e).__name__, e)
-            ext = None
+            ext = pins = None
             if CHAIN_ON and parts:
                 try:
                     self._chain_cands(key, feats, specs)        # (this cell's own: its specs are at hand)
                     ext = self._extensions(parts, ids)
+                    pins = self._pins(parts, ids, ext)
                 except Exception as e:      # each part smoothed alone rather than no grading
                     log.debug("grading: road chains of %s: %s: %s", key, type(e).__name__, e)
             pclip = []
-            for fid, part, cl, p in zip(ids, parts, clipped, plan_roads(self.frame, parts, self.elev, abut, ext)):
+            for fid, part, cl, p in zip(ids, parts, clipped, plan_roads(self.frame, parts, self.elev, abut, ext, pins)):
                 if p is not None:
                     p.rid = road_id(fid)
                     plans.append((fid, p))
@@ -564,7 +581,7 @@ class Grader:
     def _chain_cands(self, key, feats=None, specs=None):
         """The graded ground parts of cell key's roads, as the continuations at a node in it are looked for (every cell
         that plans a part looks in its nodes' own cells, so its plan is the same in each): [(xy (k, 2) in the frame,
-        smoothing sigma, road id)], in the map's feature order. Kept per cell. feats, specs: the cell's roads and their
+        smoothing sigma, road id, lon/lat ring, spec, feature id)], in the map's feature order. Kept per cell. feats, specs: the cell's roads and their
         road_specs when the caller has them."""
         memo = self.__dict__.setdefault("_chain_memo", {})
         with self.lock:
@@ -583,7 +600,8 @@ class Grader:
                 for ring in roadsmod.ground_parts(feats, i):
                     e, n, _ = self.frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
                     out.append((np.stack([np.asarray(e, np.float64), np.asarray(n, np.float64)], axis=1),
-                                profile_sigma(specs[i]), road_id(str(feats.ids[i]))))
+                                profile_sigma(specs[i]), road_id(str(feats.ids[i])), np.asarray(ring, np.float64),
+                                specs[i], str(feats.ids[i])))
         with self.lock:
             if len(memo) > 64:
                 memo.clear()
@@ -632,6 +650,81 @@ class Grader:
                 if off[j + 1] - off[j] >= 2:
                     out[i // 2][i % 2] = np.asarray(pts[off[j]:off[j + 1]])
         return [tuple(o) for o in out]
+
+    def _pins(self, parts, ids, ext):
+        """plan_roads' pins of a cell's parts: an end that no part of its own smoothing goes on from (ext None there) and
+        that ends on a more smoothed road's part (a slip road on a motorway, a side road on a trunk) is held at that
+        road's planned height there (_stronger_z), so the two meet at one height. None when no end is held."""
+        import fast
+        fast.require(70, "road pins")
+        f64 = np.float64
+        q_node, q_cell, q_who = [], [], []
+        for j, ((lonlat, spec), fid) in enumerate(zip(parts, ids)):
+            for end in (0, 1):
+                if ext is not None and ext[j][end] is not None:
+                    continue
+                ll = lonlat[-1] if end else lonlat[0]
+                e, n, _ = self.frame.geodetic_to_enu(np.array([ll[1]]), np.array([ll[0]]), 0.0)
+                q_node.append((float(e[0]), float(n[0])))
+                q_cell.append(mapcells.cell_of(float(ll[1]), float(ll[0])))
+                q_who.append((j, end, profile_sigma(spec), road_id(fid)))
+        out = [[None, None] for _ in parts]
+        held = False
+        for key in sorted(set(q_cell), key=str):
+            cands = self._chain_cands(key)
+            qs = [i for i, c in enumerate(q_cell) if c == key]
+            strong = [c for c in cands if c[1] > min(q_who[i][2] for i in qs)]
+            if not strong:
+                continue
+            cxy = np.concatenate([c[0] for c in strong])
+            coff = np.r_[0, np.cumsum([len(c[0]) for c in strong])].astype(np.int64)
+            hits, off = fast._ef.node_parts(np.ascontiguousarray(cxy, f64), coff,
+                                            np.ascontiguousarray([q_node[i] for i in qs], f64), float(CHAIN_JOIN_M))
+            for k, i in enumerate(qs):
+                j, end, sg, rid = q_who[i]
+                best = None
+                for h in hits[off[k]:off[k + 1]]:
+                    c = strong[int(h) // 2]
+                    if c[1] > sg and c[2] != rid and (best is None or c[1] > best[0][1]):
+                        best = (c, bool(int(h) % 2))
+                if best is not None:
+                    z = self._stronger_z(best[0], best[1])
+                    if z is not None:
+                        out[j][end] = z
+                        held = True
+        return [tuple(o) for o in out] if held else None
+
+    def _stronger_z(self, cand, at_last):
+        """The planned height of a candidate part (_chain_cands') at its first or last point: its own plan (its chains,
+        no pins), within CLIP_MARGIN_M of that point when it is long. Kept per part end."""
+        xy, _sg, rid, ring, spec, fid = cand
+        k = (rid, round(float(xy[-1 if at_last else 0][0]), 1), round(float(xy[-1 if at_last else 0][1]), 1))
+        memo = self.__dict__.setdefault("_strong_memo", {})
+        with self.lock:
+            if k in memo:
+                return memo[k]
+        z = None
+        try:
+            part = ring
+            if float(np.hypot(*np.diff(xy, axis=0).T).sum()) > LONG_PART_M:
+                end = xy[-1] if at_last else xy[0]
+                m = CLIP_MARGIN_M
+                runs = clip_polyline(xy, (end[0] - m, end[1] - m, end[0] + m, end[1] + m))
+                run = min(runs, key=lambda r: min(np.hypot(*(r[0] - end)), np.hypot(*(r[-1] - end)))) if runs else None
+                if run is not None:
+                    la, lo, _ = self.frame.enu_to_geodetic(run[:, 0], run[:, 1], 0.0)
+                    part = np.stack([np.asarray(lo), np.asarray(la)], axis=1)
+                    at_last = bool(np.hypot(*(run[-1] - end)) <= np.hypot(*(run[0] - end)))
+            p = plan_roads(self.frame, [(part, spec)], self.elev, None, self._extensions([(part, spec)], [fid]))[0]
+            if p is not None:
+                z = float(p.z[-1] if at_last else p.z[0])
+        except Exception as e:      # not held rather than no grading
+            log.debug("grading: pin height of %s: %s: %s", fid, type(e).__name__, e)
+        with self.lock:
+            if len(memo) > 4096:
+                memo.clear()
+            memo[k] = z
+        return z
 
     def _clip_box(self, key, margin=CLIP_MARGIN_M):
         """The cell's box in the frame (east / north), margin wider each side; None for a key without bounds."""
@@ -747,7 +840,7 @@ class Grader:
             changed = False
             for c in cr:
                 bi, arc_b, pt = c[0], c[1], np.asarray(c[2], np.float64)
-                b, L, _f = spans[bi]
+                b, L, fixed = spans[bi]
                 if arc_b < APPROACH_MIN_CROSS_M or arc_b > L - APPROACH_MIN_CROSS_M:
                     continue                    # a junction at the bridge's end
                 deck = float(ez[bi, 0] + (ez[bi, 1] - ez[bi, 0]) * arc_b / L)
@@ -758,7 +851,16 @@ class Grader:
                 target = max(deck - UNDER_CLEAR_M, zc - UNDER_MAX_DROP_M)
                 if target >= zc - 0.1:
                     continue
-                z = np.minimum(z, target + UNDER_GRADE * np.abs(s - sc))
+                dip = under_dip(s - sc, zc - target)
+                if dip[0] < -0.1 or dip[-1] < -0.1:
+                    # the dip runs past this part's ends (a junction near the bridge: the next part, not crossing
+                    # under it, stays up, a step where they meet): the old straight ramps under a never-raised bridge,
+                    # none under the others (TODO: carry the dip along the road across its junctions)
+                    if not fixed:
+                        continue
+                    z = np.minimum(z, target + UNDER_GRADE * np.abs(s - sc))
+                else:
+                    z = np.minimum(z, z + dip)
                 changed = True
             if changed:
                 np_ = Plan(p.xy, z, p.half, p.abut, p.cut, p.road_half)
@@ -1371,6 +1473,16 @@ def fill_abutment(z, at_end, step=PROFILE_STEP):
     q = p.copy()
     q[:n] = np.minimum(np.maximum(p[:n], e), p[:n] + ABUT_MAX_M)
     return q[::-1] if at_end else q
+
+
+def under_dip(d, depth):
+    """m added (<= 0) to a road's heights d m (along it) from where it crosses under an overpass, for a dip depth m deep:
+    flat under the deck (UNDER_FLAT_M either way), then back up on a cosine ramp whose steepest grade is UNDER_GRADE (a
+    V of straight UNDER_GRADE ramps was a 6 % kink at each end and at the bottom: at motorway speed a jolt). Pure."""
+    d = np.abs(np.asarray(d, np.float64))
+    run = depth * math.pi / (2 * UNDER_GRADE)
+    u = np.clip((d - UNDER_FLAT_M) / max(run, 1e-9), 0.0, 1.0)
+    return -depth * 0.5 * (1.0 + np.cos(math.pi * u))
 
 
 def approach_add(xy, at_end, lift, half, others=()):
