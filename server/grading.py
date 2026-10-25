@@ -902,15 +902,8 @@ class Grader:
                 z = np.minimum(z, z + dip)
                 changed = True
             if changed:
-                np_ = Plan(p.xy, z, p.half, p.abut, None, p.road_half)
+                np_ = Plan(p.xy, z, p.half, p.abut, p.cut, p.road_half)
                 np_.rid, np_.max_wall = p.rid, p.max_wall
-                # its cutting's walls for the lowered road (_add_cuts ran on the heights before the dip: the road under
-                # the Baltimore-Washington Parkway lay 3-4 m down with no wall, the Parkway's embankment beside it a
-                # near-vertical slope drawn as a staircase, 2026-10-25); none where the ground does not rise
-                try:
-                    _add_cuts(self.frame, [np_], self.elev)
-                except Exception as e:      # the dip without walls rather than no dip
-                    log.debug("grading: underpass walls: %s: %s", type(e).__name__, e)
                 plans[i] = (fid, np_)
 
     def _abut_ends(self, key, pe, ok=None):
