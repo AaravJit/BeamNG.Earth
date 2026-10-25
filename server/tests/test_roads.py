@@ -738,6 +738,37 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual(keys, want)
         self.assertEqual(len(built), len(want), "each tile built once")
 
+    def test_stuck_build_said_once(self):
+        """A road tile whose build never ends (a stuck worker: "roads & buildings 0/36" with an empty log, GitHub #241)
+        is logged once it has run TILE_STUCK_S."""
+        import threading
+        from unittest import mock
+        conn = FakeConn()
+        tr = roads.Tracker()
+        gate = threading.Event()
+
+        def build(aid, tx, ty):
+            gate.wait(5)
+            return None
+        clock = [1000.0]
+
+        async def go():
+            loop = asyncio.get_running_loop()
+            with mock.patch.object(roads.time, "monotonic", lambda: clock[0]):
+                tr.on_pose(conn, 1, 0.0, 0.0, loop, build)
+                clock[0] += roads.TILE_STUCK_S + 1
+                with self.assertLogs("earthd.roads", level="WARNING") as logs:
+                    tr.on_pose(conn, 1, 0.0, 0.0, loop, build)
+                    tr.on_pose(conn, 1, 0.0, 0.0, loop, build)
+            gate.set()
+            await asyncio.sleep(0.05)
+            return logs
+        logs = asyncio.run(go())
+        stuck = [m for m in logs.output if "may be stuck" in m]
+        self.assertEqual(len(stuck), len(set(stuck)), "each tile once")
+        self.assertTrue(stuck)
+        tr.close()
+
     def test_empty_and_failed_tiles_not_built_at_every_pose(self):
         # (from PR #64) a tile with no roads came back None and was built again at every pose; a failed one too, at
         # once: an empty one now stays done while within reach, a failed one waits TILE_RETRY_S

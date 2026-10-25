@@ -3895,6 +3895,8 @@ class Tracker:
         self.empty = set()
         self.retry = {}         # tile -> monotonic time it may be built again
         self.fails = {}         # tile -> builds failed in a row (TILE_FAILS_WARN)
+        self.started = {}       # tile -> monotonic time its build started (TILE_STUCK_S)
+        self.stuck_said = set()
 
     def close(self):
         if self.pool is not None:
@@ -3920,6 +3922,7 @@ class Tracker:
                 f.cancel()
             self.aid, self.sent, self.building, self.futs = aid, set(), set(), {}
             self.empty, self.retry, self.fails = set(), {}, {}
+            self.started, self.stuck_said = {}, set()
         if self.pool is None:
             from concurrent.futures import ThreadPoolExecutor
             self.pool = ThreadPoolExecutor(BUILD_PER_POSE, thread_name_prefix="roads-tile")
@@ -3944,8 +3947,17 @@ class Tracker:
         want.sort(key=lambda k: (2, focus_d(k)) if k in others else (1, cam_key(k)) if k in seen else (0, car_key(k)))
         for tx, ty in want[:max(0, BUILD_PER_POSE - len(self.building))]:   # in flight at most (vegetation.Tracker)
             self.building.add((tx, ty))
+            self.started[(tx, ty)] = now
             fut = self.futs[(tx, ty)] = loop.run_in_executor(self.pool, build, aid, tx, ty)
             fut.add_done_callback(lambda f, k=(tx, ty), a=aid: self._built(conn, a, k, f))
+        # a build that never ends leaves the loading line at "roads & buildings 0/36" with nothing in the log (GitHub
+        # #241, a Discord report): said once per tile, with how many are in flight
+        for k in self.building:
+            t0 = self.started.get(k)
+            if t0 is not None and now - t0 > TILE_STUCK_S and k not in self.stuck_said:
+                self.stuck_said.add(k)
+                log.warning("roads tile %s of anchor %d: building for %.0f s (%d tiles in flight, %d sent): the road "
+                            "workers may be stuck", k, aid, now - t0, len(self.building), len(self.sent))
         def far(k):
             return tile_distance(k[0], k[1], x, y) > DROP_M and (not view or tile_distance(k[0], k[1], *view) > DROP_M) \
                 and all(tile_distance(k[0], k[1], f[0], f[1]) > f[2] + TILE for f in foci)
@@ -3963,6 +3975,7 @@ class Tracker:
             return
         self.building.discard(key)
         self.futs.pop(key, None)
+        self.started.pop(key, None)
         if fut.cancelled():
             return
         try:
@@ -4000,6 +4013,7 @@ class Tracker:
 
 
 TILE_RETRY_S = 3.0              # s before a road tile whose build failed is built again (Tracker._built)
+TILE_STUCK_S = 90.0             # s a road tile's build may take before the log says it may be stuck
 TILE_FAILS_WARN = 5             # a tile's builds failed in a row before an expected kind of failure is logged as a warning
 _FAILS_SEEN = set()             # the kinds of road tile failures logged in full (Tracker._built)
 BLD_PARTS_MAX = 4               # building meshes per road tile ("bld", "bld2".."bld4": the mod's list)
