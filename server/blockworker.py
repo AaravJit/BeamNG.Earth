@@ -435,7 +435,10 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
     import railways
     rmesh = railways.tile_mesh(frame, tx, ty,
                                [cell_fn(k) for k in roadsmod.cells_of_tile(frame, tx, ty, railways.REACH_M)],
-                               railways.point_ground(frame, elev))
+                               railways.point_ground(frame, elev, (aid, lat, lon)),
+                               far_ground=railways.point_ground(
+                                   frame, lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)),
+                                   ("raw", aid, lat, lon)))
     bld = None
     if buildings:
         import buildings as buildingsmod

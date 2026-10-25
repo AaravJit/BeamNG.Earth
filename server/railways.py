@@ -53,16 +53,46 @@ SLEEPER = "bne_rail_sleeper"        # weathered concrete sleepers (bne_bridge_co
 STEEL = "bne_rail_steel"            # rust-brown rails
 
 
-def point_ground(frame, elev):
+_GROUND_MEMO = {}            # anchor key -> {point (cm): z}: point_ground's heights, shared by the tiles of an anchor
+GROUND_MEMO_MAX = 400000     # points per anchor kept (then forgotten, and asked again)
+GROUND_MEMO_ANCHORS = 2
+
+
+def point_ground(frame, elev, key=None):
     """ground(xy (n, 2)) -> z in frame at exactly those points, from elev(lat, lon) (the graded physics ground). Not
     roadmesh.drawn_ground: that fills a 2 m grid over the points' whole box, and the lines here span ~1 km (a road
-    tile's workers spun on it for minutes, 2026-10-25)."""
+    tile's workers spun on it for minutes, 2026-10-25). key (the anchor's): heights remembered per point. Every tile
+    within REACH_M of a line asks for the same points (each part resampled from its start), ~6 tiles each, and the
+    graded ground's lookups were most of a rail tile's time (16 tiles round Baltimore Penn Station: 28 of 68 s)."""
+    memo = None
+    if key is not None:
+        memo = _GROUND_MEMO.get(key)
+        if memo is None:
+            while len(_GROUND_MEMO) >= GROUND_MEMO_ANCHORS:
+                _GROUND_MEMO.pop(next(iter(_GROUND_MEMO)))
+            memo = _GROUND_MEMO[key] = {}
+
+    def look(xy):
+        la, lo, _ = frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
+        return np.asarray(frame.geodetic_to_enu(la, lo, np.asarray(elev(la, lo), np.float64))[2], np.float64)
+
     def ground(xy):
         xy = np.asarray(xy, np.float64).reshape(-1, 2)
         if not len(xy):
             return np.zeros(0)
-        la, lo, _ = frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
-        return frame.geodetic_to_enu(la, lo, np.asarray(elev(la, lo), np.float64))[2]
+        if memo is None:
+            return look(xy)
+        keys = list(map(tuple, np.round(xy * 100.0).astype(np.int64).tolist()))
+        out = np.array([memo.get(k, np.nan) for k in keys], np.float64)
+        miss = np.flatnonzero(np.isnan(out))
+        if len(miss):
+            z = look(xy[miss])
+            out[miss] = z
+            if len(memo) + len(miss) > GROUND_MEMO_MAX:
+                memo.clear()
+            for n, zz in zip(miss.tolist(), z.tolist()):
+                memo[keys[n]] = zz
+        return out
     return ground
 
 
@@ -519,11 +549,36 @@ def _piers(s, xy, u, t, zg, i, j):
     return np.c_[cx, cy], np.c_[un[:, 1], -un[:, 0]], un, zgs - PIER_FOOT_M, zt
 
 
-def tile_mesh(frame, tx, ty, cells, ground, sign_style=None):
+GRADED_NEAR_M = 40.0        # m around the tile where the track's heights read the graded ground (tile_mesh far_ground)
+
+
+def _mixed(ground, far_ground, box):
+    """ground(xy) within GRADED_NEAR_M of box, far_ground(xy) beyond it."""
+    if far_ground is None:
+        return ground
+    lo = np.array([box[0] - GRADED_NEAR_M, box[1] - GRADED_NEAR_M])
+    hi = np.array([box[2] + GRADED_NEAR_M, box[3] + GRADED_NEAR_M])
+
+    def mixed(xy):
+        xy = np.asarray(xy, np.float64).reshape(-1, 2)
+        near = ((xy >= lo) & (xy <= hi)).all(1)
+        out = np.empty(len(xy))
+        if near.any():
+            out[near] = ground(xy[near])
+        if (~near).any():
+            out[~near] = far_ground(xy[~near])
+        return out
+    return mixed
+
+
+def tile_mesh(frame, tx, ty, cells, ground, sign_style=None, far_ground=None):
     """The road tile (tx, ty)'s railway mesh (roadmesh.write's (positions, tris, uvs, materials, tri material)) or
     None. cells: the roads layers of the cells within REACH_M of the tile (cells_of_tile(..., margin=REACH_M));
-    ground(xy (n, 2)) -> z: the drawn ground in the frame."""
+    ground(xy (n, 2)) -> z: the drawn ground in the frame. far_ground: the natural ground, read beyond GRADED_NEAR_M
+    of the tile (the lines REACH_M round it only smooth the track and carry its ramps: the graded ground there made the
+    grader plan the cells round every tile, and the railways doubled a tile's time, 2026-10-25)."""
     box = roads.tile_bbox(tx, ty)
+    ground = _mixed(ground, far_ground, box)
     ex = (box[0] - roads.OVERLAP, box[1] - roads.OVERLAP, box[2] + roads.OVERLAP, box[3] + roads.OVERLAP)
     rails = parts(frame, cells, box)
     if not any(_box_hit((xy[:, 0].min(), xy[:, 1].min(), xy[:, 0].max(), xy[:, 1].max()),
