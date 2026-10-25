@@ -4691,7 +4691,8 @@ def main():
                     help="trees, bushes and rocks near the player (vegetation.py): from the canopy height model and "
                          "land cover, Forest items of stock shapes in the mod")
     ap.add_argument("--road-processes", type=int, default=ROAD_PROCESSES,
-                    help="processes building the road tiles (--block-process on); 0 = threads in the server")
+                    help="processes building the road tiles (--block-process on); 0 = threads in the server; left at "
+                    "the default: 2-4 by the machine's threads and memory (budget.road_processes)")
     ap.add_argument("--download-ahead", choices=("on", "off"), default="on",
                     help="fetch the elevation tiles and map cells 10-60 s ahead of a driving player (AHEAD_S)")
     ap.add_argument("--route-prefetch", choices=("on", "off"), default="on",
@@ -4810,6 +4811,10 @@ def main():
         log.info("small machine (%.1f GB): %d far-tile and %d road-tile processes, smaller caches, imagery analyses "
                  "off (budget.py; BNGE_BUDGET=desktop for the desktop sizes)", budget.total_gb() or 0, args.workers,
                  args.road_processes)
+    elif args.road_processes == ROAD_PROCESSES:
+        args.road_processes = budget.road_processes()
+        log.info("road-tile processes: %d (%d threads, %.0f GB)", args.road_processes, os.cpu_count() or 0,
+                 budget.total_gb() or 0)
     if args.pin == "on" and (sys.platform.startswith("linux") or sys.platform == "win32"):   # (Windows: KyzoFox, PR #112)
         try:
             server_cpus, game_cpus = cpupin.split(budget.SMALL_SERVER_SHARE if small else cpupin.SERVER_SHARE)
