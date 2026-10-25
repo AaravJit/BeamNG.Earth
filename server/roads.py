@@ -254,8 +254,196 @@ def level_ranges(feats, i):
     memo = feats.__dict__.setdefault("_level_ranges", {})
     got = memo.get(i)
     if got is None:
+        got = memo[i] = _skew_decks(feats, i, raw_level_ranges(feats, i))
+    return list(got)
+
+
+def raw_level_ranges(feats, i):
+    """level_ranges as the map has them, before _skew_decks (road_specs reads these: _skew_decks needs the specs)."""
+    memo = feats.__dict__.setdefault("_raw_level_ranges", {})
+    got = memo.get(i)
+    if got is None:
         got = memo[i] = _level_ranges(feats, i)
     return list(got)
+
+
+# A bridge over a road spans more than its carriageway: the road's shoulders and the abutments' slopes stand under it.
+# The map's bridge range often ends close to the lower road's edge (an 18 m deck of the Baltimore-Washington Parkway
+# over an 11 m local road, 2026-10-25: the ground climbed 10 m from the road's edge to the Parkway within 3 m, wedges
+# into its lanes), or, crossing at an angle, short of its edge under the upper road's outer lanes. A bridge range is
+# lengthened until it covers, across the upper road's whole width, the lower road's carriageway, SKEW_MARGIN_M and an
+# abutment slope of SKEW_SLOPE_M either side: (lower half width + margin + slope) / sin + upper half width / tan of
+# the angle between them, at most SKEW_MAX_M more per end (onto the road joined there: _skew_decks).
+SKEW_ON = os.environ.get("BNE_SKEW_DECKS", "on") != "off"
+SKEW_MARGIN_M = 1.5         # m past the lower road's carriageway edge kept level (its shoulder)
+SKEW_SLOPE_M = 6.0          # m for the abutment's slope up to the upper road, under the deck
+SKEW_MAX_M = 30.0           # m a bridge range grows at most at each end
+SKEW_MIN_SIN = math.sin(math.radians(20.0))    # flatter crossings are taken as this (the reach would run away)
+
+
+def _feature_boxes(feats):
+    """(n, 4) lon/lat boxes (lon0, lat0, lon1, lat1) of the features, remembered on feats."""
+    got = feats.__dict__.get("_lonlat_boxes")
+    if got is None:
+        n = len(feats)
+        got = np.full((n, 4), np.nan)
+        for i in range(n):
+            a = feats.coord_off[feats.ring_off[feats.part_off[i]]]
+            b = feats.coord_off[feats.ring_off[feats.part_off[i + 1]]]
+            if b > a:
+                ll = feats.lonlat[a:b]
+                got[i] = (ll[:, 0].min(), ll[:, 1].min(), ll[:, 0].max(), ll[:, 1].max())
+        feats.__dict__["_lonlat_boxes"] = got
+    return got
+
+
+def _raw_ground_parts(feats, j):
+    """Feature j's on-ground pieces from its raw_level_ranges (_skew_decks: level_ranges of the others would recurse)."""
+    pieces, at = [], 0.0
+    for a, b, _ in raw_level_ranges(feats, j):
+        if a - at > MIN_PART:
+            pieces.append((at, a))
+        at = max(at, b)
+    if 1.0 - at > MIN_PART:
+        pieces.append((at, 1.0))
+    out = []
+    for part in feats.parts(j):
+        for ring in part:
+            if len(ring) >= 2:
+                for a, b in pieces:
+                    out.append(ring if (a, b) == (0.0, 1.0) else sub_polyline(ring, a, b))
+    return out
+
+
+def _seg_hits(m, g):
+    """(arc m along polyline m, sin of the angle) where polyline g (both (k, 2) m) crosses m. Pure."""
+    out = []
+    sm = np.r_[0.0, np.cumsum(np.hypot(*np.diff(m, axis=0).T))]
+    c, d = g[:-1], g[1:]
+    sg = d - c
+    for k, (p, q) in enumerate(zip(m[:-1], m[1:])):
+        r = q - p
+        den = r[0] * sg[:, 1] - r[1] * sg[:, 0]
+        ok = np.abs(den) > 1e-12
+        w = c - p
+        t = np.where(ok, (w[:, 0] * sg[:, 1] - w[:, 1] * sg[:, 0]) / np.where(ok, den, 1.0), -1.0)
+        u = np.where(ok, (w[:, 0] * r[1] - w[:, 1] * r[0]) / np.where(ok, den, 1.0), -1.0)
+        for n in np.flatnonzero(ok & (t >= 0) & (t <= 1) & (u >= 0) & (u <= 1)):
+            sin = abs(float(den[n])) / max(float(np.hypot(*r) * np.hypot(*sg[n])), 1e-12)
+            out.append((float(sm[k] + t[n] * (sm[k + 1] - sm[k])), sin))
+    return out
+
+
+def _bridge_reach(feats, i):
+    """Bridge feature i's ranges lengthened over the ground roads crossing under them (SKEW_*), and how far past each
+    end of the feature they would reach: {"ranges": [...], "over": [m past its start, m past its end]} (_skew_decks
+    puts that on the road joined there). Remembered on feats. Pure given feats."""
+    memo = feats.__dict__.setdefault("_bridge_reach", {})
+    got = memo.get(i)
+    if got is not None:
+        return got
+    rngs = raw_level_ranges(feats, i)
+    got = {"ranges": rngs, "over": [0.0, 0.0]}
+    memo[i] = got
+    specs = road_specs(feats)
+    up = specs[i]
+    rings = [np.asarray(r, np.float64) for part in feats.parts(i) for r in part if len(r) >= 2]
+    if up is None or not rings or not any(k == "bridge" for _, _, k in rngs):
+        return got
+    ring = rings[0]
+    kx, ky = 111320.0 * math.cos(math.radians(float(ring[0, 1]))), 111320.0
+    m = (ring - ring[0]) * [kx, ky]
+    L = float(np.hypot(*np.diff(m, axis=0).T).sum())
+    if L <= 0:
+        return got
+    boxes = _feature_boxes(feats)
+    reach = SKEW_MAX_M + 40.0
+    lo = ring.min(0) - [reach / kx, reach / ky]
+    hi = ring.max(0) + [reach / kx, reach / ky]
+    near = np.flatnonzero((boxes[:, 0] <= hi[0]) & (boxes[:, 2] >= lo[0]) & (boxes[:, 1] <= hi[1]) &
+                          (boxes[:, 3] >= lo[1]))
+    hits = []                                   # (arc m on feature i, half reach m) of each road crossing it
+    for j in near:
+        if j == i or specs[j] is None:
+            continue
+        for g in _raw_ground_parts(feats, j):
+            gm = (np.asarray(g, np.float64) - ring[0]) * [kx, ky]
+            for sc, sin in _seg_hits(m, gm):
+                sin = max(sin, SKEW_MIN_SIN)
+                cos = math.sqrt(max(0.0, 1.0 - sin * sin))
+                hits.append((sc, (specs[j].width / 2 + SKEW_MARGIN_M + SKEW_SLOPE_M) / sin +
+                             (up.width / 2) * cos / sin))
+    if not hits:
+        return got
+    out, over = [], [0.0, 0.0]
+    for n, (a, b, k) in enumerate(rngs):
+        if k == "bridge":
+            a0, b0 = a, b
+            lo_m, hi_m = a0 * L, b0 * L
+            for sc, h in hits:
+                if a0 * L < sc < b0 * L:        # under the mapped bridge (where the centre lines cross)
+                    lo_m = min(lo_m, max(a0 * L - SKEW_MAX_M, sc - h))
+                    hi_m = max(hi_m, min(b0 * L + SKEW_MAX_M, sc + h))
+            prev = out[-1][1] if out else 0.0   # (never into a neighbouring range; past the feature's ends: "over")
+            nxt = rngs[n + 1][0] if n + 1 < len(rngs) else 1.0
+            if lo_m < 0 and a0 <= 1e-9:
+                over[0] = max(over[0], -lo_m)
+            if hi_m > L and b0 >= 1.0 - 1e-9:
+                over[1] = max(over[1], hi_m - L)
+            a, b = max(lo_m / L, prev, 0.0), min(hi_m / L, nxt, 1.0)
+        out.append((a, b, k))
+    got = memo[i] = {"ranges": out, "over": over}
+    return got
+
+
+def _skew_decks(feats, i, rngs):
+    """rngs (feature i's raw_level_ranges) with its bridge ranges lengthened over the roads crossing under them
+    (_bridge_reach), and a bridge range at an end of i where a bridge feature joined there reaches past its own end
+    onto i (Overture makes most short bridges a segment of their own). Pure given feats."""
+    if not SKEW_ON:
+        return rngs
+    if any(k == "bridge" for _, _, k in rngs):
+        rngs = _bridge_reach(feats, i)["ranges"]
+    rings = [np.asarray(r, np.float64) for part in feats.parts(i) for r in part if len(r) >= 2]
+    if not rings:
+        return rngs
+    ring = rings[0]
+    kx, ky = 111320.0 * math.cos(math.radians(float(ring[0, 1]))), 111320.0
+    L = float(np.hypot(*(np.diff(ring, axis=0) * [kx, ky]).T).sum())
+    if L <= 0:
+        return rngs
+    boxes = _feature_boxes(feats)
+    add = []
+    for end, p in ((0, ring[0]), (1, ring[-1])):
+        if any((a <= 1e-9 if end == 0 else b >= 1.0 - 1e-9) for a, b, _ in rngs):
+            continue                            # off the ground at that end already
+        tol = 0.75
+        near = np.flatnonzero((boxes[:, 0] <= p[0] + tol / kx) & (boxes[:, 2] >= p[0] - tol / kx) &
+                              (boxes[:, 1] <= p[1] + tol / ky) & (boxes[:, 3] >= p[1] - tol / ky))
+        best = 0.0
+        for b in near:
+            if b == i or not any(k == "bridge" for _, _, k in raw_level_ranges(feats, b)):
+                continue
+            brings = [np.asarray(r, np.float64) for part in feats.parts(b) for r in part if len(r) >= 2]
+            if not brings:
+                continue
+            reach = _bridge_reach(feats, b)["over"]
+            for e2, q in ((0, brings[0][0]), (1, brings[0][-1])):
+                if math.hypot((q[0] - p[0]) * kx, (q[1] - p[1]) * ky) < tol:
+                    best = max(best, reach[e2])
+        if best > 0:
+            f = min(best, SKEW_MAX_M) / L
+            add.append((0.0, min(f, 1.0), "bridge") if end == 0 else (max(1.0 - f, 0.0), 1.0, "bridge"))
+    if not add:
+        return rngs
+    out = []
+    for a, b, k in sorted(list(rngs) + add):
+        if out and a <= out[-1][1] + 1e-9:     # (overlapping a range already there: joined, as level_ranges does)
+            pa, pb, pk = out[-1]
+            out[-1] = (pa, max(pb, b), "tunnel" if "tunnel" in (pk, k) else "bridge")
+        else:
+            out.append((a, b, k))
+    return out
 
 
 def _level_ranges(feats, i):
@@ -813,7 +1001,7 @@ def _road_specs(feats, urban_fn, widths, left_hand):
         if str(feats.attrs.get("subtype", ["road"] * len(feats))[i]) != "road" or cls not in STYLE:
             out.append(None)
             continue
-        rngs = level_ranges(feats, i)
+        rngs = raw_level_ranges(feats, i)        # (raw: _skew_decks reads these specs)
         if rngs and sum(b - a for a, b, _ in rngs) > 1.0 - MIN_PART:     # entirely off the ground
             out.append(None)
             continue
@@ -907,7 +1095,7 @@ def _bridge_specs(feats, want="bridge"):
         if str(feats.attrs.get("subtype", ["road"] * len(feats))[i]) != "road" or cls not in STYLE:
             out.append(None)
             continue
-        if not any(k == want for _, _, k in level_ranges(feats, i)):
+        if not any(k == want for _, _, k in raw_level_ranges(feats, i)):
             out.append(None)
             continue
         width = _rule_value(rules.get("width"), i)
