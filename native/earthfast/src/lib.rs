@@ -1346,6 +1346,39 @@ fn node_parts<'py>(py: Python<'py>, cand_xy: PyReadonlyArray2<'py, f64>, cand_of
     (out.into_pyarray(py), off.into_pyarray(py))
 }
 
+/// routeahead.arc_length_points: the route [lat], [lon] (routing.py's geometry, from the player) sampled every step m
+/// along its length (plate carree about its first point), nearest first, up to max_m or the route's end.
+#[pyfunction]
+fn route_samples<'py>(py: Python<'py>, lat: PyReadonlyArray1<'py, f64>, lon: PyReadonlyArray1<'py, f64>, max_m: f64,
+                      step: f64) -> (Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>) {
+    let (lat, lon) = (lat.as_array(), lon.as_array());
+    let n = lat.len().min(lon.len());
+    let (mut ola, mut olo) = (Vec::new(), Vec::new());
+    if n > 0 {
+        ola.push(lat[0]);
+        olo.push(lon[0]);
+    }
+    let m = 111320.0;
+    let c = lat.get(0).copied().unwrap_or(0.0).to_radians().cos();
+    let xy = |i: usize| (lon[i] * m * c, lat[i] * m);
+    let (mut next, mut cum) = (step, 0.0);
+    for i in 1..n {
+        let ((ax, ay), (bx, by)) = (xy(i - 1), xy(i));
+        let seg = (bx - ax).hypot(by - ay);
+        while step > 0.0 && next <= cum + seg && next <= max_m {
+            let t = if seg > 0.0 { (next - cum) / seg } else { 0.0 };
+            ola.push(lat[i - 1] + (lat[i] - lat[i - 1]) * t);
+            olo.push(lon[i - 1] + (lon[i] - lon[i - 1]) * t);
+            next += step;
+        }
+        cum += seg;
+        if cum >= max_m {
+            break;
+        }
+    }
+    (ola.into_pyarray(py), olo.into_pyarray(py))
+}
+
 /// grading.median_profile: each sample the median of the samples within half of it (the window shrunk evenly near the
 /// ends: an end keeps its own value, a constant grade stays). A bridge deck in the elevation data (a spike a few
 /// samples wide) goes; slopes, crests and steps longer than the window stay.
@@ -3990,6 +4023,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(tunnel_sections, m)?)?;
     m.add_function(wrap_pyfunction!(smooth_profile, m)?)?;
     m.add_function(wrap_pyfunction!(chain_extensions, m)?)?;
+    m.add_function(wrap_pyfunction!(route_samples, m)?)?;
     m.add_function(wrap_pyfunction!(node_parts, m)?)?;
     m.add_function(wrap_pyfunction!(median_profile, m)?)?;
     m.add_function(wrap_pyfunction!(seg_dist_min, m)?)?;
@@ -4038,6 +4072,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(photofill::fill_photo, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 71)?;
+    m.add("VERSION", 72)?;
     Ok(())
 }

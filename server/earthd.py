@@ -119,6 +119,7 @@ import buildings as buildingsmod  # noqa: E402
 import rockface as rockfacemod  # noqa: E402
 import riverlines as riverlinesmod  # noqa: E402
 import groundahead as groundaheadmod  # noqa: E402
+import routeahead as routeaheadmod  # noqa: E402
 import heightmap  # noqa: E402
 import staging  # noqa: E402
 import imagery as imagerymod  # noqa: E402
@@ -227,6 +228,11 @@ AHEAD_MARGIN_M = 250.0          # m around the block's half width at each point
 # the road tiles' cells (landcover: surface.prefetch). With roads (surface.prefetch has them within 3 km, with the land
 # cover on) and water, which a road tile otherwise fetched itself when it needed it (from KyzoFox's 1.5.4, PR #64)
 AHEAD_LAYERS = ("roads", "buildings", "building_parts", "infrastructure", "water", "land_use")
+# route_download: like download_ahead, but along the planned GPS route's own geometry (routeahead.py)
+# instead of the player's current heading, since a road route can wander off that heading entirely.
+ROUTE_AHEAD_ON = True            # --route-prefetch
+ROUTE_AHEAD_MAX_M = 20000.0      # --route-prefetch-km * 1000 (15-25 km is sane; the user, 2026-10-22)
+ROUTE_RETRY_S = 2.0               # a deferred tile/cell backs off this long before the next one in the corridor
 FAST_BASE_V = 70.0              # m/s (157 mph): faster, a block waits at most BASE_FAST_WAIT_S for its photo after its
 BASE_FAST_WAIT_S = 0.15         # heights, then goes without it (block_base later): blocks took 0.6-3 s at 600 mph on a
                                 # Steam Deck, mostly the photo (heights 0.1-0.4 s), and the game paused 11 times a minute
@@ -680,6 +686,7 @@ class Server:
         self.ahead_busy = False
         self.ahead_last = None          # (anchor id, x, y) of the last round
         self.ahead_stats = {"dem": 0, "cells": 0, "deferred": 0}
+        self.route_pool = ThreadPoolExecutor(1, thread_name_prefix="route-download")   # Connection.route_download
         self.horizon_grids = {}             # anchorId -> farfield.HorizonGrid
         self.horizon_inflight = {}          # anchorId -> (future, half-size)
         self.horizon_failed = {}            # anchorId -> monotonic time of the last failed build
@@ -978,6 +985,13 @@ class Server:
         if rows is None:
             return None
         return vegetationmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, rows)
+
+    def country_at(self, lat, lon):
+        """The ISO country code at (lat, lon) (its nearest airport's: navgraph.country_near), or None."""
+        try:
+            return navgraphmod.country_near(self.airports_db, float(lat), float(lon))
+        except (TypeError, ValueError):
+            return None
 
     def left_hand(self, anchor):
         """Whether traffic drives on the left at the anchor (its country's road rules, navgraph.road_rules)."""
@@ -2705,6 +2719,7 @@ class Connection:
         self.gravity = gravitymod.Tracker()     # real gravity: recompute rule, last message sent
         self.credits = creditsmod.Tracker()     # data credits: throttle, last message sent (--credits on)
         self.ground_busy = False                # a groundahead job is running (one at a time)
+        self.route_dl_version = 0               # bumped by every route(): supersedes a running route_download job
         self.sea_busy = False                   # a water-tile plan is running (sea_tiles)
         self.sea_checked = None                 # (anchor id, 512 m square, monotonic, complete) of the last plan
         self.sea_sent = None                    # (anchor id, tiles) of the last "sea" message
@@ -2748,7 +2763,9 @@ class Connection:
 
     async def route(self, msg):
         """{"id", "lat0", "lon0", "lat1", "lon1"} -> route_result {"id", "points": [[lat, lon]...], "dist", "dur",
-        "error"?}."""
+        "error"?}. Also (re)starts this route's corridor prefetch (route_download, routeahead.py)."""
+        self.route_dl_version += 1
+        version = self.route_dl_version
         out = {"type": "route_result", "id": msg.get("id"), "points": [], "dist": 0.0, "dur": 0.0}
         try:
             r = await asyncio.get_running_loop().run_in_executor(
@@ -2761,6 +2778,77 @@ class Connection:
                  msg.get("lon0"), msg.get("lat1"), msg.get("lon1"), len(out["points"]), out["dist"] / 1000,
                  (" (" + out["error"] + ")") if "error" in out else "")
         self.send(out)
+        self.route_download(version, out["points"])
+
+    def route_download(self, version, points):
+        """Prefetch the route's corridor (elevation tiles and road/building map cells) up to
+        ROUTE_AHEAD_MAX_M ahead, at "prefetch" priority, pushing route_download {total, done, active}
+        (throttled like Server._progress) until it finishes or a newer route() supersedes it (checked by
+        version, since self.route_pool's single worker already serializes a newer job behind this one)."""
+        empty = {"type": "route_download", "total": 0, "done": 0, "active": False}
+        if not ROUTE_AHEAD_ON or self.s.dem is None or len(points) < 2:
+            self.send(empty)
+            return
+        aid = self.active
+        zoom = self.s.anchors[aid].hm_zoom if aid in self.s.anchors else demmod.FINE_ZOOM
+        reach = self.s.layout.block * heightmap.SQUARE / 2 + AHEAD_MARGIN_M
+        layers = (AHEAD_LAYERS if self.s.buildings else ("roads",)) if self.s.mapdata is not None else ()
+        pts = routeaheadmod.arc_length_points(points, ROUTE_AHEAD_MAX_M)
+        dem_keys, cell_layer_pairs = routeaheadmod.need(self.s.dem, self.s.mapdata, pts, reach, zoom, layers)
+        total = len(dem_keys) + len(cell_layer_pairs)
+        if total == 0:
+            self.send(empty)
+            return
+        dem, mapdata = self.s.dem, self.s.mapdata
+
+        def run():
+            # counted once, up front: an already-cached key is skipped below (has() is re-checked only to
+            # decide what to fetch), never re-counted, or a route with nothing left to do would inflate past
+            # total and spam a push every iteration (push's own throttle only skips while done < total)
+            done = routeaheadmod.done_count(dem, mapdata, dem_keys, cell_layer_pairs)
+            last_push = [0.0]
+
+            def push(active):
+                now = time.monotonic()
+                if active and done < total and now - last_push[0] < 0.25:
+                    return
+                last_push[0] = now
+                self.loop.call_soon_threadsafe(
+                    self.send, {"type": "route_download", "total": total, "done": done, "active": active})
+            if done >= total:           # the whole corridor is already cached: nothing to show a bar for
+                push(False)
+                return
+            push(True)
+            for z, x, y in dem_keys:
+                if self.route_dl_version != version:
+                    return
+                if dem.has(z, x, y):
+                    continue
+                try:
+                    got, deferred = dem.prefetch([(z, x, y)])
+                except Exception as e:
+                    log.debug("route download: %s: %s", type(e).__name__, e)
+                    continue
+                if deferred:             # no spare tokens now: wait rather than give up on the corridor
+                    time.sleep(ROUTE_RETRY_S)
+                    continue
+                done += got
+                push(True)
+            for key, layer in cell_layer_pairs:
+                if self.route_dl_version != version:
+                    return
+                if mapdata.has(key, layer):
+                    continue
+                try:
+                    mapdata.cell(key, layers=(layer,), kind="prefetch")
+                    done += 1
+                    push(True)
+                except mapdatamod.DEFERRED:
+                    time.sleep(ROUTE_RETRY_S)
+                except Exception as e:
+                    log.debug("route download: %s: %s", type(e).__name__, e)
+            push(False)
+        self.s.route_pool.submit(run)
 
     async def server_list(self):
         """The BeamNG.Earth server list (native/serverlist, SERVER_LIST_URL) for the mod's tab in BeamMP's server browser
@@ -2873,7 +2961,8 @@ class Connection:
             cached = getattr(self, "_where_place", None)
             if cached is None or cached[0] != key:
                 try:
-                    place = await loop.run_in_executor(self.s.ui_pool, geocodemod.reverse, lat, lon, self.s.net)
+                    place = await loop.run_in_executor(self.s.ui_pool, geocodemod.reverse, lat, lon, self.s.net,
+                                                       self.s.country_at(lat, lon))
                     self._where_place = (key, place)
                     cached = self._where_place
                 except Exception as e:  # offline, rate limited: the bar shows the street alone
@@ -2888,8 +2977,9 @@ class Connection:
         lat, lon = msg.get("lat"), msg.get("lon")
         out = {"type": "geocode_result", "id": msg.get("id"), "results": []}
         try:
-            out["results"] = await asyncio.get_running_loop().run_in_executor(self.s.ui_pool, geocodemod.search, q, lat,
-                                                                              lon, self.s.net)
+            out["results"] = await asyncio.get_running_loop().run_in_executor(
+                self.s.ui_pool, geocodemod.search, q, lat, lon, self.s.net,
+                self.s.country_at(lat, lon) if lat is not None and lon is not None else None)
         except Exception as e:          # offline, rate limited, a bad answer: the map says so
             out["error"] = f"{type(e).__name__}: {e}"[:200]
         log.debug("geocode %r: %d results%s", q, len(out["results"]), (" (" + out["error"] + ")") if "error" in out else "")
@@ -2979,6 +3069,7 @@ class Connection:
         except (protocol.ProtocolError, ConnectionError) as e:
             log.warning("client %s: %s", self.peer, e)
         finally:
+            self.route_dl_version += 1          # (a running route_download stops: no one to show its bar to)
             self.s.connections.discard(self)
             self.s.slots_let_go(list(self.slot_holds))
             self.slot_holds = {}
@@ -4138,9 +4229,11 @@ async def main_async(args):
     mapdata = (mapdatamod.MapData(args.cache_dir, fetcher=net)
                if "on" in (args.surface, args.roads, args.sea, args.trees) else None)
     pacer.DUTY = args.background_duty
-    global DETAIL_RING_M, AHEAD_ON
+    global DETAIL_RING_M, AHEAD_ON, ROUTE_AHEAD_ON, ROUTE_AHEAD_MAX_M
     DETAIL_RING_M = args.detail_ring
     AHEAD_ON = args.download_ahead == "on"
+    ROUTE_AHEAD_ON = args.route_prefetch == "on" and args.route_prefetch_km > 0
+    ROUTE_AHEAD_MAX_M = args.route_prefetch_km * 1000.0
     block_pools, far_pool = [], None
     plancachemod.start_run(args.cache_dir)      # (before the workers: they inherit the run's id)
     if args.block_process == "on":
@@ -4526,6 +4619,11 @@ def main():
                     help="processes building the road tiles (--block-process on); 0 = threads in the server")
     ap.add_argument("--download-ahead", choices=("on", "off"), default="on",
                     help="fetch the elevation tiles and map cells 10-60 s ahead of a driving player (AHEAD_S)")
+    ap.add_argument("--route-prefetch", choices=("on", "off"), default="on",
+                    help="prefetch a planned GPS route's corridor (elevation tiles and road/building map cells) up "
+                         "to --route-prefetch-km ahead, at the same low priority as --download-ahead")
+    ap.add_argument("--route-prefetch-km", type=float, default=ROUTE_AHEAD_MAX_M / 1000.0,
+                    help="how far along a planned GPS route to prefetch (15-25 km is sane; 0 disables it)")
     ap.add_argument("--detail-ring", type=float, default=DETAIL_RING_M,
                     help="detail mode: metres of L-1 tiles around the drawn block (0 = none)")
     ap.add_argument("--background-duty", type=float, default=pacer.CLI_DUTY,

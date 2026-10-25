@@ -210,6 +210,9 @@ class CoverageTest(unittest.TestCase):
                 self.assertIsNotNone(dem._download(demmod.MAPTERHORN, 12, 12 << 6, 22 << 6), "the planet: every z12")
                 self.assertEqual(len(f.calls), 3)
                 self.assertTrue(os.path.exists(os.path.join(d, "mapterhorn", "download_urls.json")), "kept on disk")
+                # routeahead's progress: a tile Mapterhorn does not list never lands on disk, and counts as done
+                self.assertTrue(dem.has(16, (12 << 10) + 5, 22 << 10), "unlisted: nothing to download")
+                self.assertFalse(dem.has(14, (10 << 8) + 6, 22 << 8), "listed, not fetched yet")
         finally:
             demmod._coverage.clear()
             demmod._coverage.update(saved)
@@ -252,6 +255,17 @@ class DemPrefetchTest(unittest.TestCase):
             f = FakeFetcher(allow=1)
             dem = demmod.Dem(d, fetcher=f)
             self.assertEqual(dem.prefetch([(15, 1, 1), (15, 2, 1), (15, 3, 1)]), (1, True))
+
+    def test_has_is_a_cheap_exists_check(self):
+        with tempfile.TemporaryDirectory() as d:
+            dem = demmod.Dem(d, fetcher=FakeFetcher())
+            self.assertFalse(dem.has(15, 100, 200))
+            dem.prefetch([(15, 100, 200)])
+            self.assertTrue(dem.has(15, 100, 200))
+            miss = os.path.join(d, "mapterhorn", "15", "101", "200.404")
+            os.makedirs(os.path.dirname(miss), exist_ok=True)
+            open(miss, "w").close()
+            self.assertTrue(dem.has(15, 101, 200), "a remembered 404: nothing to download")
 
     def test_keys_around(self):
         with tempfile.TemporaryDirectory() as d:

@@ -898,6 +898,9 @@ local function onMessage(msg)
     end
   elseif t == 'route_result' then
     if msg.id then routeResults[msg.id] = { points = msg.points or {}, dist = msg.dist, dur = msg.dur, error = msg.error } end
+  elseif t == 'route_download' then
+    -- the planned route's corridor prefetch (server routeahead.py): total/done tile+cell count, shown on the map
+    gps.onRouteDownload(msg)
   elseif t == 'geocode_result' then
     if msg.id then geocodeResults[msg.id] = { results = msg.results or {}, error = msg.error } end
   elseif t == 'map_tiles_ready' then

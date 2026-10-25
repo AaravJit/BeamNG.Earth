@@ -332,6 +332,16 @@ class Dem:
                 continue
         return got, False
 
+    def has(self, z, x, y):
+        """True when Mapterhorn tile (z, x, y) needs no download: on disk, a 404 remembered, or not in Mapterhorn's
+        file list (_listed; those never land on disk, and routeahead.py's bar stopped short of its total). For
+        routeahead.py's progress count: no tile fetch (the file list is read once per session)."""
+        if os.path.exists(self._path(MAPTERHORN, z, x, y)):
+            return True
+        if os.path.exists(os.path.join(self.cache_dir, MAPTERHORN["name"], str(z), str(x), f"{y}.404")):
+            return True
+        return z > GLOBAL_ZOOM and not self._listed(z, x, y)
+
     def keys_around(self, lat, lon, radius_m, zoom):
         """The tile keys (z, x, y) of zoom covering radius_m around lat/lon, nearest first; with the ground
         filter also their z12 parents (a z15 tile without lidar is made from z12 ground)."""

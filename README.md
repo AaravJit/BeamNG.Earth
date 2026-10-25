@@ -78,10 +78,12 @@ the mod, report problems, and get an IP to join a BeamMP.Earth server (see [Mult
 **Map and navigation**
 - A level select with famous places and a **Random location** button (it starts you on a road).
 - World map (**M**): pan and zoom the globe, satellite or street map (EOX) with a roads & labels overlay,
-  borders and place names (the **Layers** button), search for addresses and places as you type, teleport
-  anywhere. Works with a controller, laid out like the stock map.
+  borders and place names (the **Layers** button), search for addresses and places as you type (names in the
+  local language in German-, French- and Italian-speaking countries), teleport anywhere. Works with a controller,
+  laid out like the stock map.
 - GPS routes to any destination (OSRM on OpenStreetMap), with the stock route arrows on the road and the route
-  on the game's minimap (bottom left), which shows the roads around you.
+  on the game's minimap (bottom left), which shows the roads around you. The first 20 km (12 miles) of the
+  route's map data and elevation download ahead while you drive, with a progress bar on the map.
 - **Autodrive**: the car drives itself along the GPS route (in lane, legal speed, minding traffic).
 - Saved places and recent places.
 
