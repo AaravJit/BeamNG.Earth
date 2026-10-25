@@ -65,7 +65,7 @@ function toBeamMP(s, i) {
     sortName: (s.official ? "0 " : "1 ") + stripped.toLowerCase(),
     map: "BeamNG.Earth", mapName: "BeamNG.Earth",
     players: s.players, maxplayers: s.maxPlayers, playerslist: "",
-    version: s.version || "", location: "", owner: "",
+    version: s.version || "", location: s.location || "", owner: "",
     sdesc: s.place ? `The world around ${s.place}` : "", tags: "", tagsList: [], modlist: "", modstotalsize: 0,
     endpoint, id: `${endpoint}#bnge${i}`, bngeEarth: true, bngeOfficial: !!s.official,
   }
@@ -169,6 +169,7 @@ function inject() {
   const button = document.createElement("button")
   button.className = "nav-btn bnge-earth-tab"
   button.textContent = "BeamNG.Earth"
+  button.title = "BeamNG.Earth servers. Server countries: IP Geolocation by DB-IP (db-ip.com, CC BY 4.0)"
   // BeamMP's styles are scoped to its own elements (Vue's data-v-* marks): the same marks give ours its look
   const sample = sidebar.querySelector(".nav-btn")
   if (sample) for (const a of sample.attributes) if (a.name.startsWith("data-v-")) button.setAttribute(a.name, "")
