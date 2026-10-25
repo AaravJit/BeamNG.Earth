@@ -120,6 +120,7 @@ import rockface as rockfacemod  # noqa: E402
 import riverlines as riverlinesmod  # noqa: E402
 import groundahead as groundaheadmod  # noqa: E402
 import routeahead as routeaheadmod  # noqa: E402
+import furniture as furnituremod  # noqa: E402
 import heightmap  # noqa: E402
 import staging  # noqa: E402
 import imagery as imagerymod  # noqa: E402
@@ -1059,7 +1060,8 @@ class Server:
         except Exception as e:          # no decks: the graph follows the ground under bridges
             log.debug("navgraph decks: %s: %s", type(e).__name__, e)
         graph = navgraphmod.build(anchor.frame, feats, elev, (x, y), urban, decks=decks, widths=self.road_widths,
-                                  left_hand=self.left_hand(anchor), mph=self.mph(anchor))
+                                  left_hand=self.left_hand(anchor), mph=self.mph(anchor),
+                                  signals=furnituremod.signals_for(self.mapdata, anchor.frame, keys))
         cla, clo, _ = anchor.frame.enu_to_geodetic(x, y, 0.0)
         graph["rules"] = navgraphmod.road_rules(navgraphmod.country_near(self.airports_db, float(cla), float(clo)))
         for old in glob.glob(os.path.join(self.out_dir, f"navgraph_{aid}_*.json")):    # one file at a time
@@ -1231,7 +1233,10 @@ class Server:
                                      tunnels=anchor.tunnels, walls=rwalls,
                                      ground=lambda x, y: roadmeshmod.drawn_ground(anchor.frame, drawn, np.c_[x, y],
                                                                                   self.anchor_q(anchor)),
-                                     terrain_paint=self.surface is not None, cover_out=cover)
+                                     terrain_paint=self.surface is not None, cover_out=cover,
+                                     signals=furnituremod.signals_for(
+                                         self.mapdata, anchor.frame,
+                                         roadsmod.cells_of_tile(anchor.frame, tx, ty, blockworker.SIGNALS_MARGIN_M)))
         chunks += railsmod.tile_chunks(anchor.frame, tx, ty, cells)     # railway and tram tracks on the ground
         if self.airports is not None:   # runway markings, drawn by the road mesh like the lane lines
             chunks += self.airports.tile_chunks(anchor.frame, tx, ty, elev, roadsmod.tile_bbox)
