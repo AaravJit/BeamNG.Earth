@@ -28,7 +28,8 @@
 local M = {}
 -- terrain-follow moves swap in the server's .ter when it sends one (terrain.swap); false: always importMaps
 M.TER_SWAP = true
--- teleports land on an anchor on its grid (geodesy.snapAnchor; teleportTo): the server's revisit cache keys on it
+-- teleports and rebases land on an anchor on its grid (geodesy.snapAnchor; teleportTo, rebaseAnchor): the server's
+-- revisit cache keys on it
 M.SNAP_TELEPORTS = true
 
 -- No terrain change while the window is minimized (canvas client size 0): on 0.40.3 every crash of 2026-10-24
@@ -288,16 +289,36 @@ end
 -- M4 stale-anchor rule (rebase.KEEP_EDGE > 0, the 512² block): at or past the distance (a re-request
 -- after a stale anchor was discarded) the terrain goes where the player will be when the answer
 -- arrives, p + v * (measured anchor latency + 1 s), so a slow server cannot make it stale forever.
-local function rebaseHint(pl)
+-- (dx, dy): the player's spot in the new frame when its anchor is not the player's position (snapped: rebaseAnchor)
+local function rebaseHint(pl, dx, dy)
+  dx, dy = dx or 0, dy or 0
   local rem = math.max(0, rebase.distance - pl.dist)
   if rem <= 0 and rebase.KEEP_EDGE > 0 then
     local lead = rebase.aheadLead(st.anchorLatency)
     local lat = lead - rebase.LEAD_EXTRA_S
-    return follow.centreNear(pl.vx * lead, pl.vy * lead, pl.vx * lat, pl.vy * lat, follow.reachFor(pl.vx, pl.vy))
+    return follow.centreNear(dx + pl.vx * lead, dy + pl.vy * lead, dx + pl.vx * lat, dy + pl.vy * lat,
+      follow.reachFor(pl.vx, pl.vy))
   end
   local px, py = 0, 0
   if pl.speed > 1 then px, py = pl.vx / pl.speed * rem, pl.vy / pl.speed * rem end
-  return follow.target(px, py, pl.vx, pl.vy)
+  return follow.target(dx + px, dy + py, pl.vx, pl.vy)
+end
+
+-- The anchor of a rebase at the player's position (lat, lon): on its grid like a teleport's (geodesy.snapAnchor; the
+-- server's revisit cache keys on it: a road driven again finds what was built along it), with the player's spot in
+-- that frame. -> lat, lon, dx, dy
+local function rebaseAnchor(lat, lon)
+  if not M.SNAP_TELEPORTS then return lat, lon, 0, 0 end
+  local sLat, sLon = geodesy.snapAnchor(lat, lon)
+  local dx, dy = geodesy.newAnchor(sLat, sLon):geodeticToEnu(lat, lon, 0)
+  return sLat, sLon, dx, dy
+end
+
+-- A rebase's request for the player now (pl: st.player): anchor lat, lon and the terrain hint cx, cy in its frame.
+function M._rebaseRequest(pl)
+  local aLat, aLon, dx, dy = rebaseAnchor(pl.lat, pl.lon)
+  local cx, cy = rebaseHint(pl, dx, dy)
+  return aLat, aLon, cx, cy
 end
 
 -- Terrain centre for a resync (same frame): where terrain-follow would put it now.
@@ -1229,7 +1250,10 @@ local function updateWorld(dt)
   end
   if (action == 'commit' or action == 'resync') and st.paused then action = nil end -- vehicles move only with physics running
   if action == 'prefetch' then
-    if net.isConnected() then requestAnchor(pl.lat, pl.lon, 'rebase', rebaseHint(pl)) end
+    if net.isConnected() then
+      local aLat, aLon, cx, cy = M._rebaseRequest(pl)
+      requestAnchor(aLat, aLon, 'rebase', cx, cy)
+    end
   elseif action == 'commit' or action == 'resync' then
     -- a heavy op: it runs once the governor has ramped streaming down (asked again every frame);
     -- terrain-follow waits meanwhile, its state belongs to the frame that is about to change
