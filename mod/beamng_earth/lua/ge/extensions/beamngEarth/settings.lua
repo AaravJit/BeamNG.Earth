@@ -501,7 +501,9 @@ local function otherPlayers()
   return ok and list or nil
 end
 
+local mapPolledAt = nil    -- when the map last asked for its state (MAP_LOST_S)
 function M.uiMapState()
+  mapPolledAt = os.clock()
   local core = ext('beamngEarth_core')
   local st = core and core._state and core._state() or nil
   local pl = st and st.player
@@ -608,6 +610,11 @@ function M.mapBlockedActions(filter, actions)
   return out
 end
 local mapCtl = nil      -- the stock map's functions while ours has its controls
+-- The map asks for its state every second while it is open (uiMapState). With our controls on and no ask for MAP_LOST_S
+-- the map is gone without its close reaching us (a level load, a UI reload): the car's controls are given back. Left
+-- on, every driving action stayed blocked: the car could not drive, steer or be recovered while the menus and the free
+-- camera still worked (GitHub #252).
+M.MAP_LOST_S = 5
 
 local function mapInput(kind, a, b)
   local gh = rawget(_G, 'guihooks')
@@ -619,6 +626,7 @@ function M.mapControls(on)
   local filter = rawget(_G, 'core_input_actionFilter')
   if on and not mapCtl and bm then
     mapCtl = { bm = bm }
+    mapPolledAt = os.clock()
     for _, f in ipairs({ 'camMoveController', 'camMoveKey', 'zoomInOut', 'controllerZoom', 'zoom', 'onControllerSelect',
         'onChangeUiFilter' }) do mapCtl[f] = bm[f] end
     bm.camMoveController = function(upDown, v) mapInput(upDown and 'move_ud' or 'move_lr', v) end
@@ -770,8 +778,19 @@ local function keepMapMenuActions()
   end
 end
 
+-- Our map's hold on the controls let go (the map is not open any more, or its close never came: MAP_LOST_S).
+local function releaseMap(why)
+  if not mapCtl then return end
+  log('W', 'beamngEarth', 'map controls given back: ' .. why)
+  mapOpen = false
+  M.mapControls(false)
+end
+
 function M.onUpdate()
   if mapOpen then keepMapMenuActions() end
+  if mapCtl and mapPolledAt and os.clock() - mapPolledAt > M.MAP_LOST_S then
+    releaseMap(string.format('the map has not asked for %.0f s', os.clock() - mapPolledAt))
+  end
   if feedbackQ then
     feedbackQ.frames = feedbackQ.frames - 1
     if feedbackQ.frames <= 0 then
@@ -788,6 +807,7 @@ end
 
 -- other extensions (sky, dev) may load after this one: apply again once the level runs
 function M.onClientPostStartMission()
+  releaseMap('a level started')
   appliedView = nil
   M.applyAll()
   local level = rawget(_G, 'getCurrentLevelIdentifier') and getCurrentLevelIdentifier()
