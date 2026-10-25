@@ -314,7 +314,10 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
         X = np.array([pending[nm][0] for nm in used])
         Y = np.array([pending[nm][1] for nm in used])
         la, lo, _ = frame.enu_to_geodetic(X, Y, 0.0)
-        Z = np.asarray(elev(la, lo), np.float64).copy()
+        # the anchor frame's up, as the ground drawn: raw heights put the AI's nodes and the traffic lights over the
+        # ground by the Earth's curve, ~6 m 10 km from the anchor, ~18 m at the 15 km rebase (PR #112's finding,
+        # measured in game 2026-10-24); the decks' heights (_deck_z) are already in this frame (roads.BridgeProfiles)
+        Z = np.asarray(frame.geodetic_to_enu(la, lo, np.asarray(elev(la, lo), np.float64))[2], np.float64).copy()
         if decks:
             for k, nm in enumerate(used):
                 dz = _deck_z(decks, node_fid.get(nm), X[k], Y[k])
