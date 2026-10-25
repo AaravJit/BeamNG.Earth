@@ -599,19 +599,21 @@ local PRISTINE_VE = [[local n = 0 for _, b in pairs(v.data.beams) do if obj:beam
 -- copies of a car with none, an instability); the rest lengths in one step 159 more; grown in over 60 steps 39 more
 -- (the user chose this: "Breaks + morphed dents"). BeamNG 0.40 renamed beamstate.beamDeformed to onBeamDeformed.
 M.MORPH_STEPS = 60
+-- (its globals by rawset: a plain assignment of a new global in vehicle Lua logs a warning with a stack trace, every
+-- repair on a busy server)
 local APPLY_VE = [[local function applyDamage(d) if type(d) ~= 'table' then return end ]]
   .. [[for cid, n in pairs(d.nodes or {}) do if type(n) == 'table' and #n > 1 then obj:setNodeMass(tonumber(cid) - 1, n[2]) end end ]]
   .. [[local l0 = {} for cid, b in pairs(d.beams or {}) do local c = tonumber(cid) - 1 ]]
   .. [[if b[2] == true then if not obj:beamIsBroken(c) then obj:breakBeam(c) beamstate.beamBroken(c, 1) end ]]
   .. [[elseif not obj:beamIsBroken(c) then l0[c] = obj:getBeamRestLength(c) end end ]]
-  .. [[bngeDmg = { beams = d.beams or {}, l0 = l0 } ]]
+  .. [[rawset(_G, 'bngeDmg', { beams = d.beams or {}, l0 = l0 }) ]]
   .. [[obj:queueGameEngineLua("local m = package.loaded['beamngEarth/mpsession'] if m then m.startMorph(" .. obj:getID() .. ") end") end ]]
-  .. [[function bngeMorph(f) local s = bngeDmg if not s then return end ]]
+  .. [[rawset(_G, 'bngeMorph', function(f) local s = rawget(_G, 'bngeDmg') if not s then return end ]]
   .. [[local deformed = beamstate.onBeamDeformed or beamstate.beamDeformed ]]
   .. [[for cid, b in pairs(s.beams) do local c = tonumber(cid) - 1 local l0 = s.l0[c] ]]
   .. [[if l0 and not obj:beamIsBroken(c) then obj:setBeamLength(c, l0 + (b[1] - l0) * f) ]]
   .. [[if f >= 1 and b[3] > 0 and deformed then deformed(c, b[3]) end end end ]]
-  .. [[if f >= 1 then bngeDmg = nil end end ]]
+  .. [[if f >= 1 then rawset(_G, 'bngeDmg', nil) end end) ]]
 M.APPLY_VE = APPLY_VE        -- (tests)
 local REPAIR_VE = APPLY_VE .. [[local raw, apply = %s, %s local ok, d = pcall(jsonDecode, raw) local extra = 0 ]]
   .. [[if ok and type(d) == 'table' and type(d.beams) == 'table' then for _, b in pairs(v.data.beams) do ]]

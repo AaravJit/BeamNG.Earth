@@ -282,7 +282,7 @@ do
   -- the dents grown in by the morph steps, which M.update sends MORPH_STEPS frames in a row
   do
     local broke, lens, deformedN, morphFrom = {}, { [0] = 1, [1] = 1, [2] = 2 }, 0, nil
-    local env = { type = type, pairs = pairs, tonumber = tonumber, tostring = tostring, pcall = pcall,
+    local env = { type = type, pairs = pairs, tonumber = tonumber, tostring = tostring, pcall = pcall, rawset = rawset, rawget = rawget,
       jsonDecode = function() return { nodes = { { { x = 0, y = 0, z = 0 } } },
         beams = { { 1.5, false, 0.2 }, { 1, true, 0 }, { 2, false, 0 } } } end,
       mime = { unb64 = function(x) return x end },
@@ -293,6 +293,7 @@ do
         setNodePosition = function() error('no node positions') end },
       beamstate = { beamBroken = function() end, onBeamDeformed = function() deformedN = deformedN + 1 end } }
     local fn = assert(loadstring(other.cmds[#other.cmds]))
+    env._G = env
     setfenv(fn, env)
     fn()
     T.check(broke[1] and lens[0] == 1 and deformedN == 0, 'the broken beams at once, the dents not yet')
