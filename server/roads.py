@@ -315,23 +315,14 @@ def _raw_ground_parts(feats, j):
     return out
 
 
-def _seg_hits(m, g):
-    """(arc m along polyline m, sin of the angle) where polyline g (both (k, 2) m) crosses m. Pure."""
-    out = []
-    sm = np.r_[0.0, np.cumsum(np.hypot(*np.diff(m, axis=0).T))]
-    c, d = g[:-1], g[1:]
-    sg = d - c
-    for k, (p, q) in enumerate(zip(m[:-1], m[1:])):
-        r = q - p
-        den = r[0] * sg[:, 1] - r[1] * sg[:, 0]
-        ok = np.abs(den) > 1e-12
-        w = c - p
-        t = np.where(ok, (w[:, 0] * sg[:, 1] - w[:, 1] * sg[:, 0]) / np.where(ok, den, 1.0), -1.0)
-        u = np.where(ok, (w[:, 0] * r[1] - w[:, 1] * r[0]) / np.where(ok, den, 1.0), -1.0)
-        for n in np.flatnonzero(ok & (t >= 0) & (t <= 1) & (u >= 0) & (u <= 1)):
-            sin = abs(float(den[n])) / max(float(np.hypot(*r) * np.hypot(*sg[n])), 1e-12)
-            out.append((float(sm[k] + t[n] * (sm[k + 1] - sm[k])), sin))
-    return out
+def _seg_hits(m, lines):
+    """(line index, arc m along polyline m, sin of the angle) where each of the polylines lines (all (k, 2) m) crosses
+    m (earthfast.seg_hits). Pure."""
+    import fast
+    fast.require(73, "seg_hits")
+    starts = np.r_[0, np.cumsum([len(g) for g in lines])].astype(np.int64)
+    return fast._ef.seg_hits(np.ascontiguousarray(m, np.float64),
+                             np.ascontiguousarray(np.vstack(lines), np.float64), starts)
 
 
 def _bridge_reach(feats, i):
@@ -373,20 +364,24 @@ def _bridge_reach(feats, i):
             bhi = (sub.max(0) + pad) / [kx, ky] + ring[0]
             near = np.flatnonzero((boxes[:, 0] <= bhi[0]) & (boxes[:, 2] >= blo[0]) & (boxes[:, 1] <= bhi[1]) &
                                   (boxes[:, 3] >= blo[1]))
+            gl, gj = [], []
             for j in near:
                 if j == i or specs[j] is None:
                     continue
                 for g in _raw_ground_parts(feats, j):
-                    gm = (np.asarray(g, np.float64) - ring[0]) * [kx, ky]
-                    for sc, sin in _seg_hits(sub, gm):
-                        sc += lo_m
-                        if not lo_m < sc < hi_m:
-                            continue
-                        sin = max(sin, SKEW_MIN_SIN)
-                        cos = math.sqrt(max(0.0, 1.0 - sin * sin))
-                        h = (specs[j].width / 2 + SKEW_MARGIN_M + SKEW_SLOPE_M) / sin + (up.width / 2) * cos / sin
-                        lo_m = min(lo_m, max(a0 * L - SKEW_MAX_M, sc - h))
-                        hi_m = max(hi_m, min(b0 * L + SKEW_MAX_M, sc + h))
+                    gl.append((np.asarray(g, np.float64) - ring[0]) * [kx, ky])
+                    gj.append(j)
+            lo0, hi0 = lo_m, hi_m           # (arcs along sub: from lo0; a crossing at either end of it does not count)
+            for g, sc, sin in (_seg_hits(sub, gl) if gl else ()):
+                sc += lo0
+                if not lo0 < sc < hi0:
+                    continue
+                j = gj[g]
+                sin = max(sin, SKEW_MIN_SIN)
+                cos = math.sqrt(max(0.0, 1.0 - sin * sin))
+                h = (specs[j].width / 2 + SKEW_MARGIN_M + SKEW_SLOPE_M) / sin + (up.width / 2) * cos / sin
+                lo_m = min(lo_m, max(a0 * L - SKEW_MAX_M, sc - h))
+                hi_m = max(hi_m, min(b0 * L + SKEW_MAX_M, sc + h))
             prev = out[-1][1] if out else 0.0   # (never into a neighbouring range; past the feature's ends: "over")
             nxt = rngs[n + 1][0] if n + 1 < len(rngs) else 1.0
             if lo_m < 0 and a0 <= 1e-9:
@@ -981,8 +976,9 @@ def road_specs(feats, urban_fn=None, widths=None, left_hand=False):
     memo = feats.__dict__.setdefault("_road_specs", {})
     k = (urban_fn, widths, bool(left_hand))     # a bound method equals another of the same object and function
     got = memo.get(k)
-    if got is None:
-        got = memo[k] = _road_specs(feats, urban_fn, widths, left_hand)
+    if got is None:             # (the measured widths on the specs without them: those are asked for too, _bridge_reach)
+        got = memo[k] = (_road_specs(feats, urban_fn, left_hand) if widths is None else
+                         _measured_widths(feats, road_specs(feats, urban_fn, None, left_hand), widths))
     return list(got)
 
 
@@ -1006,7 +1002,7 @@ def _osm_sidewalks(feats, specs):
     return out
 
 
-def _road_specs(feats, urban_fn, widths, left_hand):
+def _road_specs(feats, urban_fn, left_hand):
     out = []
     rules = feats.rules
     ask = []                                    # (index in out, cls, kind, rule_w, coordinate range)
@@ -1064,26 +1060,32 @@ def _road_specs(feats, urban_fn, widths, left_hand):
             out[j] = Spec(carriageway(cls, kind, urban, None, ow, lanes), kind, urban, cls, ow, 2.5, *dk, lanes=lanes,
                           surf=token, link=link)
     out = dual_carriageways(feats, out, left_hand)
-    out = _osm_sidewalks(feats, out)
-    if widths is not None:                      # measured between the buildings (roadwidth.py)
-        for j, sp in enumerate(out):
-            if sp is None or sp.kind not in BUILT or sp.cls not in SIDEWALK_CLASSES or sp.cls in MEASURE_SKIP:
-                continue
-            if _rule_value(rules.get("width"), j) is not None:
-                continue
-            if sp.median:       # one carriageway of a divided road: the width between the buildings is both of them
-                continue        # and the median (each took all of it, one wide road over Boston Street's median)
-            a = feats.coord_off[feats.ring_off[feats.part_off[j]]]
-            b = feats.coord_off[feats.ring_off[feats.part_off[j + 1]]]
-            if _osm(feats, "width", j, *OSM_WIDTH_M) is not None:
-                continue        # (OpenStreetMap's own width)
-            m = widths(str(feats.ids[j]), feats.lonlat[a:b]) if b > a else None
-            dflt = carriageway(sp.cls, sp.kind, True, None, sp.oneway, sp.lanes)
-            # Historic streets can be one shared lane between close building fronts. Rejecting these measurements
-            # kept a default carriageway wider than the street itself.
-            minimum = 3.0 if sp.cls in {"residential", "living_street", "unclassified", "tertiary"} else 0.6 * dflt
-            if m is not None and minimum <= m[0] <= MEASURE_MAX * dflt:
-                out[j] = sp._replace(width=m[0], walk=m[1])
+    return _osm_sidewalks(feats, out)
+
+
+def _measured_widths(feats, specs, widths):
+    """specs with the widths measured between the buildings (roadwidth.py: widths(id, lonlat) -> (carriageway m,
+    sidewalk m) or None) where the map gives none. Pure given widths."""
+    rules = feats.rules
+    out = list(specs)
+    for j, sp in enumerate(out):
+        if sp is None or sp.kind not in BUILT or sp.cls not in SIDEWALK_CLASSES or sp.cls in MEASURE_SKIP:
+            continue
+        if _rule_value(rules.get("width"), j) is not None:
+            continue
+        if sp.median:       # one carriageway of a divided road: the width between the buildings is both of them
+            continue        # and the median (each took all of it, one wide road over Boston Street's median)
+        a = feats.coord_off[feats.ring_off[feats.part_off[j]]]
+        b = feats.coord_off[feats.ring_off[feats.part_off[j + 1]]]
+        if _osm(feats, "width", j, *OSM_WIDTH_M) is not None:
+            continue        # (OpenStreetMap's own width)
+        m = widths(str(feats.ids[j]), feats.lonlat[a:b]) if b > a else None
+        dflt = carriageway(sp.cls, sp.kind, True, None, sp.oneway, sp.lanes)
+        # Historic streets can be one shared lane between close building fronts. Rejecting these measurements
+        # kept a default carriageway wider than the street itself.
+        minimum = 3.0 if sp.cls in {"residential", "living_street", "unclassified", "tertiary"} else 0.6 * dflt
+        if m is not None and minimum <= m[0] <= MEASURE_MAX * dflt:
+            out[j] = sp._replace(width=m[0], walk=m[1])
     return out
 
 
@@ -3372,43 +3374,60 @@ def _taper(xy, run):
     return f
 
 
-def _on_carriageways(pts, others, gap):
-    """Which points (k, 2) lie on a carriageway of others {fid: (centreline (m, 2), half width)} (+ gap). Pure."""
-    import fast
-    pts = np.ascontiguousarray(np.asarray(pts, np.float64))
-    hit = np.zeros(len(pts), bool)
-    if not len(pts):
-        return hit
-    lo, hi = pts.min(0), pts.max(0)
-    for ln, h in others.values():
-        if len(ln) < 2 or (ln.max(0) + h + gap < lo).any() or (ln.min(0) - h - gap > hi).any():
-            continue
+class _Segs:
+    """others {fid: (centreline (m, 2), half width)} as one table of segments (a, b, half width, its road's fid), with
+    each segment's box: the carriageway tests below in one Rust call each (one per road cost retaining_walls ~2 s of
+    a Canton tile set, 2026-10-25)."""
+
+    def __init__(self, others):
+        rows = [(f, np.asarray(ln, np.float64), h) for f, (ln, h) in others.items() if len(ln) >= 2]
+        f64 = np.float64
+        self.a = np.concatenate([ln[:-1, :2] for _f, ln, _h in rows]) if rows else np.zeros((0, 2), f64)
+        self.b = np.concatenate([ln[1:, :2] for _f, ln, _h in rows]) if rows else np.zeros((0, 2), f64)
+        self.h = np.concatenate([np.full(len(ln) - 1, h, f64) for _f, ln, h in rows]) if rows else np.zeros(0, f64)
+        self.road = np.concatenate([np.full(len(ln) - 1, n) for n, (_f, ln, _h) in enumerate(rows)]) if rows else \
+            np.zeros(0, np.int64)
+        self.fids = [f for f, _ln, _h in rows]
+        self.lo = np.minimum(self.a, self.b)
+        self.hi = np.maximum(self.a, self.b)
+
+    def near(self, pts, gap, skip=None):
+        """Which points (k, 2) lie within a segment's half width + gap (its road's fid not skip). Pure."""
+        import fast
+        pts = np.ascontiguousarray(np.asarray(pts, np.float64))
+        if not len(pts) or not len(self.h):
+            return np.zeros(len(pts), bool)
+        lo, hi = pts.min(0), pts.max(0)
+        r = self.h + gap
+        keep = (self.hi[:, 0] + r >= lo[0]) & (self.hi[:, 1] + r >= lo[1]) & (self.lo[:, 0] - r <= hi[0]) & \
+            (self.lo[:, 1] - r <= hi[1])
+        if skip is not None and skip in self.fids:
+            keep &= self.road != self.fids.index(skip)
+        if not keep.any():
+            return np.zeros(len(pts), bool)
         fast.require(0, "points_near_segments")
-        hit |= np.asarray(fast._ef.points_near_segments(pts, np.ascontiguousarray(ln[:-1]), np.ascontiguousarray(ln[1:]),
-                                                        np.full(len(ln) - 1, h + gap)))
-    return hit
+        return np.asarray(fast._ef.points_near_segments(pts, np.ascontiguousarray(self.a[keep]),
+                                                        np.ascontiguousarray(self.b[keep]),
+                                                        np.ascontiguousarray(r[keep])), bool)
+
+
+def _on_carriageways(pts, others, gap):
+    """Which points (k, 2) lie on a carriageway of others {fid: (centreline (m, 2), half width)} or a _Segs of them
+    (+ gap). Pure."""
+    segs = others if isinstance(others, _Segs) else _Segs(others)
+    return segs.near(pts, gap)
 
 
 def _clear_depth(base, out, depth, others, own):
     """Per point of a wall's face line base (k, 2): how far (up to depth (k,)) out from it along out (k, 2) stays off
-    every other road's carriageway in others {fid: (centreline (m, 2), half width)} (less WALL_OTHER_GAP_M). Pure."""
-    import fast
+    every other road's carriageway in others {fid: (centreline (m, 2), half width)} or a _Segs of them (less
+    WALL_OTHER_GAP_M). Pure."""
+    segs = others if isinstance(others, _Segs) else _Segs(others)
     steps = np.arange(0.5, float(np.max(depth)) + 0.51, 0.5)
     q = (base[:, None, :] + out[:, None, :] * steps[None, :, None]).reshape(-1, 2)
-    hit = np.zeros(len(q), bool)
-    lo, hi = q.min(0), q.max(0)
-    for f2, (ln, h) in others.items():
-        # (its own road too: a hairpin's other leg; the face stands past its own carriageway, so the stretch beside it
-        # never hits)
-        if len(ln) < 2:
-            continue
-        if (ln.max(0) + h < lo).any() or (ln.min(0) - h > hi).any():
-            continue
-        fast.require(0, "points_near_segments")
-        hit |= np.asarray(fast._ef.points_near_segments(np.ascontiguousarray(q), np.ascontiguousarray(ln[:-1]),
-                                                        np.ascontiguousarray(ln[1:]),
-                                                        np.full(len(ln) - 1, h + WALL_OTHER_GAP_M)))
-    hit = hit.reshape(len(base), len(steps))
+    # (its own road too: a hairpin's other leg; the face stands past its own carriageway, so the stretch beside it
+    # never hits)
+    hit = segs.near(q, WALL_OTHER_GAP_M).reshape(len(base), len(steps))
     first = np.where(hit.any(axis=1), steps[np.argmax(hit, axis=1)] - 0.5, np.inf)
     return np.minimum(np.asarray(depth, np.float64), np.maximum(first, 0.0))
 
@@ -3444,7 +3463,6 @@ CLIFF_WALLS_ON = os.environ.get("BNE_CLIFF_WALLS", "off") == "on"
 def _parapets(xy, z, out_n, rh, inside, steps, gs, others, own, decks):
     """The stone parapets along one side of a road (see PARAPET_*): wall dicts as retaining_walls' (roadmesh draws them
     with a back face). gs: the graded ground at steps (m off the centre line) per point. Pure but for decks."""
-    import fast
     near = np.flatnonzero((steps >= rh + 0.5) & (steps <= rh + PARAPET_PROBE_M))
     if not len(near):
         return []
@@ -3452,13 +3470,9 @@ def _parapets(xy, z, out_n, rh, inside, steps, gs, others, own, decks):
     base = xy + out_n * (rh + PARAPET_OFF_M)
     ok = drop & inside & ~_under_decks(base, z, decks) & ~_on_carriageways(base, others, 0.0)
     # not across a road joining it (its junctions), nor where another road runs beside
-    for f2, (ln, h) in others.items():
-        if f2 == own or len(ln) < 2 or not ok.any():
-            continue
-        fast.require(0, "points_near_segments")
-        ok &= ~np.asarray(fast._ef.points_near_segments(np.ascontiguousarray(base), np.ascontiguousarray(ln[:-1]),
-                                                        np.ascontiguousarray(ln[1:]),
-                                                        np.full(len(ln) - 1, h + PARAPET_ROAD_GAP_M)))
+    if ok.any():
+        segs = others if isinstance(others, _Segs) else _Segs(others)
+        ok &= ~segs.near(base, PARAPET_ROAD_GAP_M, skip=own)
     out, i = [], 0
     while i < len(ok):
         if not ok[i]:
@@ -3585,31 +3599,44 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
         for side in (1.0, -1.0):
             probe = xy + nl * side * (core + grading.WALL_FLAT_M + grading.WALL_T_M + WALL_PROBE_M)
             pts_all.append(probe)
-            for o in steps:
-                pts_all.append(xy + nl * side * o)
             info.append((xy, z, nl * side, core, inside, width / 2, steps, spec.cls in CONCRETE_WALL_CLASSES,
                          fid, not spec.urban, not spec.urban and spec.cls not in NO_PARAPET_CLASSES,
                          grading.wall_max_h(spec)))
     if not pts_all:
         return []
-    P = np.concatenate(pts_all)
-    la, lo, _ = frame.enu_to_geodetic(P[:, 0], P[:, 1], np.zeros(len(P)))
-    g = np.asarray(frame.geodetic_to_enu(la, lo, np.asarray(elev(la, lo), np.float64))[2], np.float64)
+
+    def ground(P):
+        la, lo, _ = frame.enu_to_geodetic(P[:, 0], P[:, 1], np.zeros(len(P)))
+        return np.asarray(frame.geodetic_to_enu(la, lo, np.asarray(elev(la, lo), np.float64))[2], np.float64)
+    g = ground(np.concatenate(pts_all))
+    # the graded ground at the steps out from the road only where a wall or a parapet can stand: a side whose probe
+    # finds no cutting (_wall_runs) and that gets no parapets has no use for them (most of a town's streets: 8 of 9 of
+    # the ground lookups, 2026-10-25)
+    probes, k = [], 0
+    for xy, z, out_n, core, inside, rh, steps, concrete, fid, rural, parapets, max_h in info:
+        gg = g[k:k + len(xy)]
+        k += len(xy)
+        need = len(steps) and (parapets or _wall_runs(gg - z).any())
+        probes.append((gg, need))
+    sp = []
+    for (xy, z, out_n, core, inside, rh, steps, *_r), (gg, need) in zip(info, probes):
+        if need:
+            sp.extend(xy + out_n * o for o in steps)
+    gsteps = ground(np.concatenate(sp)) if sp else np.zeros(0)
     out, k = [], 0
     others = {fid: (np.asarray(pts, np.float64)[:, :2], spec.width / 2) for fid, spec, pts, _ in roads if len(pts) >= 2}
+    others = _Segs(others)          # (one table for all the carriageway tests below)
     bend_of = {}
-    for xy, z, out_n, core, inside, rh, steps, concrete, fid, rural, parapets, max_h in info:
+    for (xy, z, out_n, core, inside, rh, steps, concrete, fid, rural, parapets, max_h), (gg, need) in zip(info, probes):
         key = (id(xy), len(xy))
         if key not in bend_of:          # (a tight bend: no wall into it, grading.bend_zone)
             bend_of[key] = grading.bend_zone(xy)
         bends = bend_of[key]
-        gg = g[k:k + len(xy)]
-        k += len(xy)
         face = np.full(len(xy), core + 0.1)
         thick = np.full(len(xy), roadmesh.WALL_THICK_M)
         top_g = gg
-        if len(steps):              # the wall where the graded ground starts to climb (a sharp cutting: before the core's edge)
-            gs = g[k:k + len(xy) * len(steps)].reshape(len(steps), len(xy)).T
+        if need:                    # the wall where the graded ground starts to climb (a sharp cutting: before the core's edge)
+            gs = gsteps[k:k + len(xy) * len(steps)].reshape(len(steps), len(xy)).T
             k += len(xy) * len(steps)
             up = gs - z[:, None] > WALL_STEP_UP_M
             first = np.argmax(up, axis=1)
@@ -3632,7 +3659,7 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
             low = (gs < (top_g - WALL_SLAB_DZ)[:, None]) & (steps[None, :] > (face + 1.0)[:, None])
             reach = np.where(low.any(axis=1), steps[np.argmax(low, axis=1)] - face, np.inf)
             thick = np.minimum(thick, np.maximum(reach - 0.5, WALL_COPING_MIN_M))
-        if parapets and len(steps):
+        if parapets and need:
             out.extend(_parapets(xy, z, out_n, rh, inside, steps, gs, others, fid, decks))
         full = _wall_runs(gg - z) & ~_under_decks(xy + out_n * core, z, decks) & ~bends
         # (no face standing on a carriageway: a hairpin's other leg, the same road, the Stelvio Pass 2026-10-21)

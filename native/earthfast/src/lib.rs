@@ -349,6 +349,60 @@ fn segment_crossings(
     })
 }
 
+/// roads._seg_hits for many ground lines: (line index, arc m along m, sin of the angle) where each of the polylines
+/// (pts (n, 2), starts (L + 1,), the last: n) crosses polyline m (k, 2); per line, per segment of m, per segment of the
+/// line in order: numpy's float64 arithmetic of the Python it replaces (_bridge_reach's loop, 2026-10-25).
+#[pyfunction]
+fn seg_hits(py: Python<'_>, m: PyReadonlyArray2<f64>, pts: PyReadonlyArray2<f64>, starts: PyReadonlyArray1<i64>)
+            -> Vec<(usize, f64, f64)> {
+    let ma = m.as_array();
+    let ga = pts.as_array();
+    let gs = starts.as_array();
+    let nm = ma.nrows();
+    let ng = gs.len().saturating_sub(1);
+    py.allow_threads(|| {
+        let mut out = Vec::new();
+        if nm < 2 { return out; }
+        let mut sm = vec![0.0f64; nm];
+        for k in 1..nm {
+            sm[k] = sm[k - 1] + (ma[[k, 0]] - ma[[k - 1, 0]]).hypot(ma[[k, 1]] - ma[[k - 1, 1]]);
+        }
+        let (mut mx0, mut my0, mut mx1, mut my1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for k in 0..nm {
+            mx0 = mx0.min(ma[[k, 0]]); mx1 = mx1.max(ma[[k, 0]]);
+            my0 = my0.min(ma[[k, 1]]); my1 = my1.max(ma[[k, 1]]);
+        }
+        for g in 0..ng {
+            let (j0, j1) = (gs[g] as usize, gs[g + 1] as usize);
+            if j1 < j0 + 2 { continue; }
+            let (mut gx0, mut gy0, mut gx1, mut gy1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+            for k in j0..j1 {
+                gx0 = gx0.min(ga[[k, 0]]); gx1 = gx1.max(ga[[k, 0]]);
+                gy0 = gy0.min(ga[[k, 1]]); gy1 = gy1.max(ga[[k, 1]]);
+            }
+            if gx1 < mx0 || gx0 > mx1 || gy1 < my0 || gy0 > my1 { continue; }
+            for k in 0..nm - 1 {
+                let (px, py_) = (ma[[k, 0]], ma[[k, 1]]);
+                let (rx, ry) = (ma[[k + 1, 0]] - px, ma[[k + 1, 1]] - py_);
+                for n in j0..j1 - 1 {
+                    let (cx, cy) = (ga[[n, 0]], ga[[n, 1]]);
+                    let (sx, sy) = (ga[[n + 1, 0]] - cx, ga[[n + 1, 1]] - cy);
+                    let den = rx * sy - ry * sx;
+                    if !(den.abs() > 1e-12) { continue; }
+                    let (wx, wy) = (cx - px, cy - py_);
+                    let t = (wx * sy - wy * sx) / den;
+                    let u = (wx * ry - wy * rx) / den;
+                    if t >= 0.0 && t <= 1.0 && u >= 0.0 && u <= 1.0 {
+                        let sin = den.abs() / (rx.hypot(ry) * sx.hypot(sy)).max(1e-12);
+                        out.push((g, sm[k] + t * (sm[k + 1] - sm[k]), sin));
+                    }
+                }
+            }
+        }
+        out
+    })
+}
+
 /// roads._deck_crossings: (i, j, arc on i, arc on j) where polylines i < j cross away from their end points.
 /// pts (n, 2) all lines one after another, starts (L + 1,) where each begins (the last: n).
 #[pyfunction]
@@ -4041,6 +4095,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bilinear_grid, m)?)?;
     m.add_function(wrap_pyfunction!(float_predictor_f32, m)?)?;
     m.add_function(wrap_pyfunction!(segment_crossings, m)?)?;
+    m.add_function(wrap_pyfunction!(seg_hits, m)?)?;
     m.add_function(wrap_pyfunction!(gpu_name, m)?)?;
     m.add_function(wrap_pyfunction!(seam_detect_gpu, m)?)?;
     m.add_function(wrap_pyfunction!(bc1_encode_gpu, m)?)?;
@@ -4072,6 +4127,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(photofill::fill_photo, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 72)?;
+    m.add("VERSION", 73)?;
     Ok(())
 }

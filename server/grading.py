@@ -54,6 +54,7 @@ SIDEWALK_MARGIN_M = 0.5     # m of flat ground beyond a sidewalk (roads.SIDEWALK
 LONG_PART_M = 3000.0        # a road part longer than this is planned per cell, only within CLIP_MARGIN_M of the cell
 CLIP_MARGIN_M = 400.0
 PLAN_THREADS = 4            # cells planned at once (_plan_missing)
+PLAN_SETS_MAX = 16          # cell sets whose merged plans are kept (Grader._plan_set; ~1 MB each in a town)
 SPREAD_CELLS = 16           # plans(): more map cells in the points' bbox: only the cells around the points
 T_MIN, T_MAX = 5.0, 12.0    # m, transition back to the natural ground (5: roads close together meet gently)
 SLOPE_RUN = 2.0             # transition = SLOPE_RUN x the height difference (1:2 slope)
@@ -752,7 +753,8 @@ class Grader:
         for key in sorted(set(q_cell), key=str):
             cands = self._chain_cands(key)
             qs = [i for i, c in enumerate(q_cell) if c == key]
-            strong = [c for c in cands if c[1] >= min(q_who[i][2] for i in qs)]
+            weakest = min(q_who[i][2] for i in qs)
+            strong = [c for c in cands if c[1] >= weakest]
             if not strong:
                 continue
             cxy = np.concatenate([c[0] for c in strong])
@@ -898,13 +900,14 @@ class Grader:
                 seen.add(k2)
                 uniq.append((b, fixed))
         spans = []
-        for b, fixed in uniq:
+        ue = np.array([[b[0, :2], b[-1, :2]] for b, _f in uniq], np.float64)        # (n, 2 ends, 2)
+        for n, (b, fixed) in enumerate(uniq):
             L = float(np.hypot(*np.diff(b, axis=0).T).sum())
             if L > UNDER_MAX_BRIDGE_M or L < 2 * APPROACH_MIN_CROSS_M:
                 continue
-            joined = any(o is not b and min(np.hypot(*(o[0] - e)), np.hypot(*(o[-1] - e))) < 0.75
-                         for o, _f in uniq for e in (b[0], b[-1]))
-            if not joined:
+            d = np.hypot(ue[:, :, None, 0] - ue[n, None, None, :, 0], ue[:, :, None, 1] - ue[n, None, None, :, 1])
+            d[n] = np.inf                       # (another part's end within 0.75 m of either of its ends: joined)
+            if not (d < 0.75).any():
                 spans.append((b, L, fixed))
         if not spans:
             return
@@ -1273,6 +1276,11 @@ class Grader:
 
     def plans(self, lat, lon, roads_only=False):
         """The Plans touching the points' area (each road once); roads_only: not the tunnels' (TUNNEL_TAG)."""
+        return self._plan_set(self._keys(lat, lon), roads_only)[0]
+
+    @staticmethod
+    def _keys(lat, lon):
+        """The map cells whose plans can reach the points."""
         lat = np.asarray(lat, np.float64)
         lon = np.asarray(lon, np.float64)
         pad = (T_MAX + 40.0) / 111320.0
@@ -1280,7 +1288,19 @@ class Grader:
         keys = mapcells.cells_for_points(lat, lon, pad, padlon)
         if len(keys) > SPREAD_CELLS:        # points far apart: only the cells around them
             keys = mapcells.cells_near_points(lat, lon, pad, padlon)
+        return keys
+
+    def _plan_set(self, keys, roads_only):
+        """(plans, PlanPack of them) of the cells keys: each road once, in the order of their keys. Remembered once all
+        the cells are planned (a road tile asks for the same few cells' plans dozens of times: merging them cost a
+        Canton tile set ~1.6 s, 2026-10-25)."""
         self._plan_missing(keys)
+        mk = (tuple(sorted(str(k) for k in keys)), bool(roads_only))
+        memo = self.__dict__.setdefault("_plan_sets", {})
+        with self.lock:
+            hit = memo.get(mk)
+        if hit is not None:
+            return hit
         got = {}
         for key in keys:
             for fid_part, p in self._cell_plans(key):
@@ -1289,7 +1309,14 @@ class Grader:
                 got.setdefault((fid_part, float(p.xy[0, 0]), float(p.xy[0, 1])), p)
         # in the order of their keys: grade_points' sums run in plan order, so every caller (the block, a road
         # tile, a far tile) gets the same heights at a point whatever other cells its points reached
-        return [got[k] for k in sorted(got)]
+        plans = [got[k] for k in sorted(got)]
+        out = (plans, PlanPack(plans))
+        with self.lock:
+            if all(k in self.cells for k in keys):      # (not while a cell's fetch failed: it is asked again)
+                if len(memo) >= PLAN_SETS_MAX:
+                    memo.pop(next(iter(memo)))
+                memo[mk] = out
+        return out
 
     def apply(self, lat, lon, base, lift=0.0, roads_only=False):
         """base (the ungraded heights at the points) graded under the roads. Same shape as base.
@@ -1303,12 +1330,12 @@ class Grader:
         shape = base.shape
         if base.size == 0:
             return base
-        plans = self.plans(lat, lon, roads_only)
+        plans, pack = self._plan_set(self._keys(lat, lon), roads_only)
         if not plans:
             return base
         e, n, _ = self.frame.geodetic_to_enu(lat.ravel(), lon.ravel(), 0.0)
         e, n = np.asarray(e), np.asarray(n)
-        out = grade_points(e, n, base.ravel(), plans, lift)
+        out = grade_points(e, n, base.ravel(), pack, lift)
         race = self._on_kept(e, n)
         if race is not None:                # (the terrain is a racetrack's surface: GitHub #143)
             out[race] = base.ravel()[race]
@@ -1420,52 +1447,85 @@ def road_id(fid):
     return zlib.crc32(str(fid).encode()) & 0x7FFFFFFF
 
 
+class PlanPack:
+    """Plans (a list, in grade_points' order) as grade_points takes them: every segment's arrays concatenated once, with
+    each plan's box; a call keeps the segments of the plans whose boxes meet its points', in the same order (built per
+    call, the plans' Python loop cost a Canton tile set ~1 s, 2026-10-25)."""
+
+    def __init__(self, plans):
+        rows = [(k, p) for k, p in enumerate(plans) if len(p.xy) >= 2]
+        self.n = len(rows)
+        if not self.n:
+            return
+        f64 = np.float64
+        npts = np.array([len(p.xy) for _k, p in rows], np.int64)
+        nseg = npts - 1
+        xy = np.concatenate([np.asarray(p.xy, f64)[:, :2] for _k, p in rows])
+        z = np.concatenate([np.asarray(p.z, f64) for _k, p in rows])
+        last = np.cumsum(npts) - 1
+        ia = np.delete(np.arange(len(xy)), last)            # each segment's first point (not a plan's last point)
+        self.a, self.b = np.ascontiguousarray(xy[ia]), np.ascontiguousarray(xy[ia + 1])
+        self.za, self.zb = np.ascontiguousarray(z[ia]), np.ascontiguousarray(z[ia + 1])
+        self.h = np.repeat(np.array([p.half for _k, p in rows], f64), nseg)
+        self.rh = np.repeat(np.array([getattr(p, "road_half", p.half) for _k, p in rows], f64), nseg)
+        rids = [getattr(p, "rid", -1) for _k, p in rows]
+        self.rid = np.repeat(np.array([r if r is not None and r >= 0 else 2 ** 40 + k
+                                       for (k, _p), r in zip(rows, rids)], np.int64), nseg)
+        s0 = np.r_[0, np.cumsum(nseg)]
+        ab = np.zeros(int(s0[-1]), bool)
+        cut = np.full((int(s0[-1]), 6), np.nan)
+        for n, (_k, p) in enumerate(rows):
+            abut = getattr(p, "abut", (False, False))
+            if abut[0] or abut[1]:
+                arc = np.r_[0.0, np.cumsum(np.hypot(*np.diff(p.xy[:, :2], axis=0).T))]
+                if abut[0]:
+                    ab[s0[n]:s0[n + 1]] |= arc[:-1] < ABUT_NEAR_M
+                if abut[1]:
+                    ab[s0[n]:s0[n + 1]] |= arc[-1] - arc[1:] < ABUT_NEAR_M
+            c = getattr(p, "cut", None)
+            if c is not None:
+                cut[s0[n]:s0[n + 1]] = c
+        self.ab = ab.astype(np.uint8)
+        self.cut = cut
+        self.box = np.array([p.bbox for _k, p in rows], f64).reshape(-1, 4)
+        self.of = np.repeat(np.arange(self.n), nseg)
+
+    def near(self, x0, y0, x1, y1):
+        """The segment arrays of the plans whose boxes meet (x0, y0, x1, y1), or None."""
+        if not self.n:
+            return None
+        bx = self.box
+        keep = ~((bx[:, 2] < x0) | (bx[:, 0] > x1) | (bx[:, 3] < y0) | (bx[:, 1] > y1))
+        if not keep.any():
+            return None
+        if keep.all():
+            return self.a, self.b, self.za, self.zb, self.h, self.rh, self.rid, self.ab, self.cut
+        sk = keep[self.of]
+        return tuple(np.ascontiguousarray(v[sk]) for v in (self.a, self.b, self.za, self.zb, self.h, self.rh, self.rid,
+                                                           self.ab, self.cut))
+
+
 def grade_points(px, py, base, plans, lift=0.0):
-    """base at the points (px, py) graded under the plans (see the module doc), by the Rust loop (native/earthfast
-    grade_points: a Python loop per segment was the server's largest CPU cost while driving, 2026-10-12). Pure."""
+    """base at the points (px, py) graded under the plans (see the module doc; a list or a PlanPack of them), by the
+    Rust loop (native/earthfast grade_points: a Python loop per segment was the server's largest CPU cost while driving,
+    2026-10-12). Pure."""
     px = np.asarray(px, np.float64)
     py = np.asarray(py, np.float64)
     base = np.asarray(base, np.float64)
     out = base.copy()
     if not len(px):
         return out
-    x0, y0, x1, y1 = px.min(), py.min(), px.max(), py.max()
+    pack = plans if isinstance(plans, PlanPack) else PlanPack(plans)
     # every segment of the plans near the points: ends, end heights, reach (core half width + T_MAX)
-    A, B, ZA, ZB, H, RH, RID, AB, CUT = [], [], [], [], [], [], [], [], []
-    for k, p in enumerate(plans):
-        if p.bbox[2] < x0 or p.bbox[0] > x1 or p.bbox[3] < y0 or p.bbox[1] > y1 or len(p.xy) < 2:
-            continue
-        A.append(p.xy[:-1])
-        B.append(p.xy[1:])
-        ZA.append(p.z[:-1])
-        ZB.append(p.z[1:])
-        H.append(np.full(len(p.xy) - 1, p.half))
-        RH.append(np.full(len(p.xy) - 1, getattr(p, "road_half", p.half)))
-        rid = getattr(p, "rid", -1)
-        RID.append(np.full(len(p.xy) - 1, rid if rid is not None and rid >= 0 else 2 ** 40 + k, np.int64))
-        ab = np.zeros(len(p.xy) - 1, bool)
-        abut = getattr(p, "abut", (False, False))
-        if abut[0] or abut[1]:
-            arc = np.r_[0.0, np.cumsum(np.hypot(*np.diff(p.xy[:, :2], axis=0).T))]
-            if abut[0]:
-                ab |= arc[:-1] < ABUT_NEAR_M
-            if abut[1]:
-                ab |= arc[-1] - arc[1:] < ABUT_NEAR_M
-        AB.append(ab)
-        cut = getattr(p, "cut", None)
-        CUT.append(cut if cut is not None else np.full((len(p.xy) - 1, 6), np.nan))
-    if not A:
+    got = pack.near(px.min(), py.min(), px.max(), py.max())
+    if got is None:
         return out
-    A, B, ZA, ZB, H, RH, RID, AB, CUT = (np.concatenate(v) for v in (A, B, ZA, ZB, H, RH, RID, AB, CUT))
+    A, B, ZA, ZB, H, RH, RID, AB, CUT = got
     import fast
     fast.require(41, "grade_points")         # (the Rust loop: native/earthfast)
     f64 = np.float64
     return fast._ef.grade_points(np.ascontiguousarray(px, f64), np.ascontiguousarray(py, f64),
-                                 np.ascontiguousarray(base, f64), np.ascontiguousarray(A[:, :2], f64),
-                                 np.ascontiguousarray(B[:, :2], f64), np.ascontiguousarray(ZA, f64),
-                                 np.ascontiguousarray(ZB, f64), np.ascontiguousarray(H, f64),
-                                 np.ascontiguousarray(RH, f64), np.ascontiguousarray(RID, np.int64),
-                                 np.ascontiguousarray(AB, np.uint8), np.ascontiguousarray(CUT, f64), float(lift),
+                                 np.ascontiguousarray(base, f64), A, B, ZA, ZB, H, RH, RID, AB, CUT, float(lift),
                                  float(SLOPE_RUN), float(T_MIN), float(T_MAX), float(BLEND_R), float(BUCKET),
                                  float(WALL_CUT_M), float(WALL_T_M), float(WALL_FLAT_M), float(WALL_AHEAD_M),
                                  bool(SEP_ON), float(SEP_FROM_M), float(SEP_FULL_M), float(CORE_FADE_M),
