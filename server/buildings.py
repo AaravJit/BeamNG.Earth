@@ -2026,9 +2026,9 @@ def _ml_false(ring, bridges_xy, water_xy, roads_xy=None):
 ML_STEEP_DEG = 25.0         # a machine-learned footprint on ground this steep ...
 ML_FAR_FROM_WAY_M = 60.0    # ... this far from any mapped way (a road, track or path) is a rock or a shadow, not a hut
 ML_CLIFF_DEG = 36.0         # ... and on ground this steep, wherever it is
-# (GitHub #242: 64 machine-learned outlines (Shi et al.'s East Asia set) on Mount Fuji's slopes, median 34 deg, half over 60 m from a trail; the real
-# huts on 6 deg next to the trail. Steep places with real ones, 2026-10-24: La Paz 0 of 5453, Gorkha (Nepal) 0 of 50,
-# Rwanda's hills 1 of 293, Medellin and Valparaiso 0)
+# (GitHub #242: 64 machine-learned outlines (Shi et al.'s East Asia set) on Mount Fuji's slopes, median 34 deg, half
+# over 60 m from a trail; the real huts on 6 deg next to the trail. Steep places with real ones, 2026-10-24: La Paz 0 of
+# 5453, Gorkha (Nepal) 0 of 50, Rwanda's hills 1 of 293, Medellin and Valparaiso 0)
 
 
 def _ml_steep(ring, g, ways_xy):
