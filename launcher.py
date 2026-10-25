@@ -40,9 +40,10 @@ APP_ID = "284160"
 GAME_EXE_LINUX = os.path.join("BinLinux", "BeamNG.drive.x64")
 GAME_EXE_WIN = "BeamNG.drive.x64.exe"
 GCPATCH_NAME = "libbngearth_gcpatch.so"
-# the recommended server options (start.py's)
+# the recommended server options (start.py's; test_gasstations checks they are the same: PR #220 added gas stations
+# to start.py only, and the app's server never allowed them)
 RECOMMENDED = ["--deshadow", "full", "--near-visual", "detail", "--airports", "on", "--sea", "on", "--trees", "on",
-               "--buildings", "on"]
+               "--buildings", "on", "--gas-stations", "on"]
 SERVER_PORT = 47613         # earthd's default
 GAME_GONE_S = 30            # no game process this long: the game closed (wait_for_game)
 GAME_START_S = 180          # waiting for the game's process after asking Steam

@@ -911,6 +911,7 @@ class TileTest(unittest.TestCase):
         import earthd
         sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
         try:
+            import launcher
             import start
         finally:
             sys.path.pop(0)
@@ -919,6 +920,8 @@ class TileTest(unittest.TestCase):
         self.assertIn('ap.add_argument("--gas-stations", choices=("on", "off"), default="off"',
                       Path(earthd.__file__).read_text(encoding="utf-8"))
         self.assertIn(("--gas-stations", "on"), start.RECOMMENDED)
+        # the app starts the server through launcher.py, with its own copy of the list
+        self.assertEqual([x for pair in start.RECOMMENDED for x in pair], launcher.RECOMMENDED)
 
 
 class _Writer:
