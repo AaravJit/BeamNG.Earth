@@ -749,6 +749,22 @@ class TollBoothTest(unittest.TestCase):
         self.assertIsNone(bld.build([(island, 1.0, 1.2)]), "the island itself not built")
 
 
+
+class RoadLinesTest(unittest.TestCase):
+    def test_a_road_with_a_bridge_in_it_keeps_its_ground_pieces(self):
+        """A motorway segment with a short overpass in it (the A7, GitHub #239): its pieces on the ground are public
+        road lines (they were left out whole, and lorries machine-learned as buildings stood on its lanes)."""
+        from test_roads import FRAME, features
+        f = features([[(-100, 128), (356, 128)]], ["motorway"], levels=[(0, 1.0, 0.45, 0.5)],
+                     flags=[(0, "is_bridge", 0.45, 0.5)])
+        lines = bld.road_lines(FRAME, [f], 0.0, 0.0)
+        self.assertEqual(len(lines), 2, "the two ground pieces either side of the bridge")
+        xs = np.concatenate([ln[:, 0] for ln in lines])
+        self.assertFalse(((xs > 110) & (xs < 120)).any(), "nothing on the bridge's stretch")
+        ring = np.array([[20, 126.8], [35, 126.8], [35, 129.2], [20, 129.2], [20, 126.8]], np.float64)
+        self.assertTrue(bld._ml_false(ring, [], [], lines), "a lorry-sized outline on its lanes: not a building")
+
+
 if __name__ == "__main__":
     unittest.main()
 
