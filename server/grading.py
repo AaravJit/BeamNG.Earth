@@ -149,6 +149,7 @@ UNDER_GRADE = 0.06          # the dip's ramps
 UNDER_MAX_BRIDGE_M = 120.0  # only single short spans (both ends on the ground): a chain's inner ends are no abutments
 UNDER_MAX_DROP_M = 8.0      # never lowered more than this (bad data: rather a low bridge than a pit)
 UNDER_FLAT_M = 12.0         # m either side of the crossing kept at the dip's full depth (under_dip)
+UNDER_MAX_GRADE = 0.10      # a dip's ramp made steeper, up to this, to end inside its road part (under_dip)
 # ... and under any other short overpass, by what its ramps could not raise it (BR-381 near Pouso Alegre: a local
 # road's bridge whose ramps the frontage roads at both ends held down sat ~1 m over the motorway; the 30 m elevation
 # data has no cutting under it, and the AI car drove into its abutment wall, 2026-10-25)
@@ -868,16 +869,20 @@ class Grader:
                 target = max(deck - UNDER_CLEAR_M, zc - UNDER_MAX_DROP_M)
                 if target >= zc - 0.1:
                     continue
-                dip = under_dip(s - sc, zc - target)
-                if dip[0] < -0.1 or dip[-1] < -0.1:
-                    # the dip runs past this part's ends (a junction near the bridge: the next part, not crossing
-                    # under it, stays up, a step where they meet): the old straight ramps under a never-raised bridge,
-                    # none under the others (TODO: carry the dip along the road across its junctions)
-                    if not fixed:
+                room = (sc - float(s[0]), float(s[-1]) - sc)
+                dip = under_dip(s - sc, zc - target, room)
+                if dip is None:
+                    # no room for all of it in this part, even steep (a junction right at the bridge: the next part,
+                    # not crossing under it, stays up): as deep as UNDER_MAX_GRADE ramps reach inside it. The straight
+                    # ramps run on past the part's end and left a step of up to 7 m at that junction (BR-381 near
+                    # Pouso Alegre, 2026-10-25). TODO: carry the dip along the road across its junctions.
+                    fit = min(r - UNDER_FLAT_M for r in room) * 2 * UNDER_MAX_GRADE / math.pi
+                    if fit < 0.3:
                         continue
-                    z = np.minimum(z, target + UNDER_GRADE * np.abs(s - sc))
-                else:
-                    z = np.minimum(z, z + dip)
+                    dip = under_dip(s - sc, min(fit, zc - target), room)
+                    if dip is None:
+                        continue
+                z = np.minimum(z, z + dip)
                 changed = True
             if changed:
                 np_ = Plan(p.xy, z, p.half, p.abut, p.cut, p.road_half)
@@ -1492,13 +1497,26 @@ def fill_abutment(z, at_end, step=PROFILE_STEP):
     return q[::-1] if at_end else q
 
 
-def under_dip(d, depth):
-    """m added (<= 0) to a road's heights d m (along it) from where it crosses under an overpass, for a dip depth m deep:
-    flat under the deck (UNDER_FLAT_M either way), then back up on a cosine ramp whose steepest grade is UNDER_GRADE (a
-    V of straight UNDER_GRADE ramps was a 6 % kink at each end and at the bottom: at motorway speed a jolt). Pure."""
-    d = np.abs(np.asarray(d, np.float64))
+def under_dip(d, depth, room=(math.inf, math.inf)):
+    """m added (<= 0) to a road's heights d m (along it, signed) from where it crosses under an overpass, for a dip
+    depth m deep: flat under the deck (UNDER_FLAT_M either way), then back up on a cosine ramp whose steepest grade is
+    UNDER_GRADE (a V of straight UNDER_GRADE ramps was a 6 % kink at each end and at the bottom: at motorway speed a
+    jolt). room: m from the crossing to the road part's (start, end): a ramp that would run past it is made shorter,
+    up to UNDER_MAX_GRADE, so the dip ends inside the part (its next part, past a junction, is not lowered: a step).
+    None when that is too steep. Pure."""
+    d = np.asarray(d, np.float64)
     run = depth * math.pi / (2 * UNDER_GRADE)
-    u = np.clip((d - UNDER_FLAT_M) / max(run, 1e-9), 0.0, 1.0)
+    runs = []
+    for r in room:
+        avail = r - UNDER_FLAT_M
+        if avail >= run:
+            runs.append(run)
+        elif avail > 0 and depth * math.pi / (2 * avail) <= UNDER_MAX_GRADE:
+            runs.append(avail)
+        else:
+            return None
+    rr = np.where(d < 0, runs[0], runs[1])
+    u = np.clip((np.abs(d) - UNDER_FLAT_M) / np.maximum(rr, 1e-9), 0.0, 1.0)
     return -depth * 0.5 * (1.0 + np.cos(math.pi * u))
 
 
