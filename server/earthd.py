@@ -228,6 +228,8 @@ AHEAD_MOVE_M = 150.0            # m the player moves before the next round
 AHEAD_MARGIN_M = 250.0          # m around the block's half width at each point
 # the road tiles' cells (landcover: surface.prefetch). With roads (surface.prefetch has them within 3 km, with the land
 # cover on) and water, which a road tile otherwise fetched itself when it needed it (from KyzoFox's 1.5.4, PR #64)
+FAR_BLD_HOLD_S = 45.0           # s at most the far buildings wait for the road tiles round the car (far_buildings_go)
+FAR_BLD_HOLD_MPS = 5.0          # m/s: faster, no wait (after a teleport the car stands)
 AHEAD_LAYERS = ("roads", "buildings", "building_parts", "infrastructure", "water", "land_use")
 # route_download: like download_ahead, but along the planned GPS route's own geometry (routeahead.py)
 # instead of the player's current heading, since a road route can wander off that heading entirely.
@@ -3627,7 +3629,7 @@ class Connection:
                 self.s.veg.warm_around(float(la), float(lo))
             self.veg.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_veg_tile,
                              view=self.view_at, foci=[f for f in self.foci if f[3]])
-        if self.s.buildings and aid == self.active:
+        if self.s.buildings and aid == self.active and self.far_buildings_go(aid):
             self.bldfar.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_far_bld_tile,
                                 view=self.view_at)
         if self.s.traffic and aid == self.active:
@@ -3636,6 +3638,20 @@ class Connection:
             self.send_progress(aid)
         self.refresh_status()
         self.credits.poke(self)             # the player moved: the near / far credits may change
+
+    def far_buildings_go(self, aid):
+        """Whether the far buildings' tiles may be built now: once the road tiles round the car are done (they carry
+        the near buildings and props), or FAR_BLD_HOLD_S after the anchor came. The far ones are light and came first,
+        the town round the car after them (the user, 2026-10-25: "buildings and some other props first spawn away from
+        the player and closer spawns later after teleport")."""
+        if getattr(self, "_far_gate", None) is None or self._far_gate[0] != aid:
+            self._far_gate = (aid, time.monotonic())
+        if self.s.mapdata is None:
+            return True
+        if math.hypot(*self.vel) > FAR_BLD_HOLD_MPS:     # (driving: the ring is never all done, as tiles come in at its edge)
+            return True
+        done, wanted = self.roads.progress()
+        return (wanted > 0 and done >= wanted) or time.monotonic() - self._far_gate[1] > FAR_BLD_HOLD_S
 
     def camera_away(self, cam):
         """The camera's (x, y) from a pose's cam when it is more than VIEW_AWAY_M from the car (a free camera, a far
