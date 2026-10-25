@@ -236,6 +236,12 @@ local RANDOM_WAIT_S = 15 -- s for the server's random place (an older server nev
 -- lat / lon live only as long as the game: after a restart, an update's for one, every start went to Mount Whitney,
 -- Discord 2026-10-25), else the default start
 local function defaultStart()
+  -- where the car was last (places.notePosition: while driving, at level end and game close), else the newest recent
+  -- place (a teleport's target), else this run's
+  local okP, pos = pcall(places.lastPosition)
+  if okP and type(pos) == 'table' and tonumber(pos.lat) and tonumber(pos.lon) then
+    return teleportTo(pos.lat, pos.lon, nil, 'start')
+  end
   if not ui.hasLatLon() then
     local okR, recent = pcall(places.recentList)
     local r = okR and type(recent) == 'table' and recent[1] or nil
@@ -1121,6 +1127,14 @@ local function anchorKnown()
   return st.anchorId ~= nil and st.anchorSession == st.sessionId
 end
 
+-- the car's place for "Where you left off" (places.notePosition): force at level end and game close
+local function notePlayerPos(force)
+  local pl = st.player
+  if pl and pl.lat and pl.lon and st.anchorId and not st.pending then
+    pcall(places.notePosition, pl.lat, pl.lon, st.clock, force)
+  end
+end
+
 local function updateWorld(dt)
   if st.floorZ and not st.placeFrames then M.floorCheck() end
   if st.placeFrames then
@@ -1141,6 +1155,7 @@ local function updateWorld(dt)
 
   local pl = st.player
   if not pl then return end
+  notePlayerPos(false)          -- (every places.POS_EVERY_S at most, once moved POS_MOVE_M)
 
   st.poseTimer = st.poseTimer + dt
   -- no pose before the resync with a restarted server commits (anchorKnown; hello named the
@@ -1936,6 +1951,7 @@ local function onClientPreStartMission(levelPath)
 end
 
 local function onClientEndMission()
+  notePlayerPos(true)
   hudapps.unhookCityZone()
   hudapps.unhookMinimapNorth()
   postfx.restore()
@@ -2267,6 +2283,7 @@ M.onClientPreStartMission = onClientPreStartMission
 M.onNavgraphReloaded = function() navgraph.onReloaded() end
 M.onVehicleMapmgrUpdate = function(id) gps.onVehicleMapmgrUpdate(id) end
 M.onClientEndMission = onClientEndMission
+M.onExit = function() notePlayerPos(true) end           -- the game closing (a crash or a kill: the last periodic one)
 M.onClientPostStartMission = onClientPostStartMission
 M.onExtensionLoaded = onExtensionLoaded
 M.onExtensionUnloaded = onExtensionUnloaded
