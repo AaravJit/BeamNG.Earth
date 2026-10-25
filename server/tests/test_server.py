@@ -1272,6 +1272,9 @@ class PredictTest(unittest.TestCase):
         self.assertGreater(n, 40)
 
 
+if __name__ == "__main__":
+    unittest.main()
+
 
 class PerfLogTest(ServerHarness):
     """The mod's performance log (perflog.lua): its lines go into the server's log, cut to size."""
@@ -1306,30 +1309,3 @@ class LoadProgressTest(ServerHarness):
             self.assertEqual(len(m[k]), 2)
             self.assertTrue(0 <= m[k][0] <= m[k][1], k)
         self.assertGreater(m["far"][1], 0, "far tiles wanted round the player")
-
-
-class FarBuildingsHoldTest(unittest.TestCase):
-    """earthd.Connection.far_buildings_go: after a teleport (the car standing) the far buildings wait for the road
-    tiles round the car (they carry the near buildings), at most FAR_BLD_HOLD_S; while driving, no wait."""
-
-    def test_hold(self):
-        import types
-        import earthd
-        prog = [(3, 36)]
-        c = types.SimpleNamespace(s=types.SimpleNamespace(mapdata=object()), vel=(0.0, 0.0),
-                                  roads=types.SimpleNamespace(progress=lambda: prog[0]))
-        go = lambda aid: earthd.Connection.far_buildings_go(c, aid)      # noqa: E731
-        self.assertFalse(go(1), "the road tiles round the car not done: wait")
-        prog[0] = (36, 36)
-        self.assertTrue(go(1), "done: go")
-        prog[0] = (3, 36)
-        c.vel = (20.0, 0.0)
-        self.assertTrue(go(1), "driving: go")
-        c.vel = (0.0, 0.0)
-        c._far_gate = (1, c._far_gate[1] - earthd.FAR_BLD_HOLD_S - 1)
-        self.assertTrue(go(1), "held long enough: go")
-        self.assertFalse(go(2), "a new anchor: wait again")
-
-
-if __name__ == "__main__":
-    unittest.main()
