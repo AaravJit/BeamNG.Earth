@@ -253,11 +253,16 @@ do
   other.cmds = {}
   nodesGE.handle('g:2-0:{"x":1}')
   nodesGE.handle('n:1-0:{"own":1}')
-  T.check(#passed == 2 and #other.cmds == 0, 'break groups and our own cars: as BeamMP does')
+  T.check(#passed == 1 and #other.cmds == 0, 'break groups: as BeamMP does; our own car\'s full damage: never to BeamMP')
   core_camera = { getPosition = function() return vec3(100, 0, 0) end }     -- (our camera at the player)
   other.pos = vec3(150, 0, 0)          -- 50 m from the camera: we see its crash
   nodesGE.handle('n:2-0:{"beams":{}}')
-  T.check(#passed == 2 and #other.cmds == 0, 'another player\'s full damage: kept, nothing put on yet')
+  T.check(#passed == 1 and #other.cmds == 0, 'another player\'s full damage: kept, nothing put on yet')
+  -- a car not known here yet (BeamMP still spawning it): never to BeamMP's applyNodes (BeamNG 0.40: a fatal error in
+  -- the copy's vehicle Lua), kept by its BeamMP id and adopted once known
+  nodesGE.handle('n:3-0:{"beams":{"7":1}}')
+  T.check(#passed == 1, 'an unknown car\'s full damage: not to BeamMP')
+  ms.adoptNodes()           -- (still unknown: kept)
   ms.update(ms.HIDE_S, anchor, { x = 100, y = 0, z = 0 })
   T.check(#other.cmds == 0, 'near our camera: the copy keeps what our game worked out')
   other.pos = vec3(100 + ms.SYNC_RANGE_M + 10, 0, 0)

@@ -569,6 +569,7 @@ end
 -- REPAIR_FRAMES frames later.
 M.REPAIR_FRAMES = 3
 local nodesWrapped = nil   -- the nodesGE table wrapped (BeamMP reloading it makes a new one)
+local nodesBySid = {}       -- BeamMP vehicle id -> a full damage that came before its car was known here
 local pendingNodes = {}     -- game vehicle id -> { raw, frames } (the owner's state, applied after the reset)
 -- Copies checked again after damage of their own (2026-10-24, three players: a copy took 24 broken beams after its
 -- owner's full damage had come, the two cars still pushing into each other; the owner's damage barely moved, so it sent
@@ -642,16 +643,33 @@ function M.wrapNodes()
     if code ~= 'n' then return orig(rawData) end
     local mp = rawget(_G, 'MPVehicleGE')
     local v = mp and mp.getVehicles and mp.getVehicles()[sid]
-    if not v or v.isLocal then return orig(rawData) end
-    local gid = mp.getGameVehicleID(sid) or -1
-    local veh = vehicle(gid)
-    if not veh then return orig(rawData) end
+    if v and v.isLocal then return end          -- (our own car's: nothing to put on)
+    -- never BeamMP's own applyNodes: on BeamNG 0.40 it calls beamstate.beamDeformed, renamed, and the copy's vehicle Lua
+    -- stopped with a fatal error (a player's log, 2026-10-24: the message came as a far car came back on, before it
+    -- could be told apart here); a car not known yet keeps its state by its BeamMP id till it is (adoptNodes)
+    local gid = v and mp.getGameVehicleID and mp.getGameVehicleID(sid) or -1
+    if not vehicle(gid) then nodesBySid[sid] = data return end
     lastNodes[gid], stale[gid] = data, true   -- (put on once it is in range: checkCopies; nothing done with it till then)
     witnessed[gid] = within(gid, M.SYNC_FAR_M, camPos()) or nil
   end
   nodesWrapped = ng
   return true
 end
+
+-- The full damages that came before their cars were known here, put with their cars once they are (each frame).
+local function adoptNodes()
+  if not next(nodesBySid) then return end
+  local mp = rawget(_G, 'MPVehicleGE')
+  if not (mp and mp.getGameVehicleID) then return end
+  for sid, data in pairs(nodesBySid) do
+    local gid = mp.getGameVehicleID(sid) or -1
+    if vehicle(gid) then
+      nodesBySid[sid] = nil
+      lastNodes[gid], stale[gid] = data, true
+    end
+  end
+end
+M.adoptNodes = adoptNodes       -- (tests)
 
 -- (the copy's vehicle Lua) gid was reset for a repair: its owner's state goes on REPAIR_FRAMES frames later
 function M.afterRepairReset(gid, extra)
@@ -805,6 +823,7 @@ function M.update(dt, anchor, player)
   local mpanchor = require('beamngEarth/mpanchor')
   mpanchor.install()            -- (a no-op once installed, and until BeamMP's positionGE has loaded)
   M.wrapNodes()
+  adoptNodes()
   applyPendingNodes()
   stepMorphs()
   clock = clock + (dt or 0)
@@ -1065,6 +1084,7 @@ function M.reset()
   end
   floating = {}
   pendingNodes, lastNodes, copyBase, copySince, copyQuiet, stale, morphs, applied, witnessed = {}, {}, {}, {}, {}, {}, {}, {}, {}
+  nodesBySid = {}
   M.applyServerSky(nil)       -- (the real time and weather again after a session with the server's)
   deactivated, anchors, poseIn, hideIn, joined, wentTo, camPlaced, lastPlayers = {}, {}, 0, 0, false, false, false, -1
   waitGround = {}
