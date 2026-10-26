@@ -2600,6 +2600,79 @@ fn bilinear_grid<'py>(
     Ok(out.into_pyarray(py))
 }
 
+/// Python's math.hypot(x, y), exactly (CPython's vector_norm: the squares summed losslessly after scaling by a power of
+/// two, one differential correction): libm's hypot differs from it in the last bit for ~13 % of inputs, enough to change
+/// a building's oriented box (2026-10-26). For ports of Python code that calls math.hypot.
+pub fn py_hypot(x: f64, y: f64) -> f64 {
+    let (ax, ay) = (x.abs(), y.abs());
+    if ax.is_infinite() || ay.is_infinite() {
+        return f64::INFINITY;
+    }
+    if ax.is_nan() || ay.is_nan() {
+        return f64::NAN;
+    }
+    let max = ax.max(ay);
+    if max == 0.0 {
+        return max;
+    }
+    let max_e = frexp_exp(max);
+    if max_e < -1023 {
+        return f64::MIN_POSITIVE * py_hypot(ax / f64::MIN_POSITIVE, ay / f64::MIN_POSITIVE);
+    }
+    let scale = ldexp1(-max_e);
+    let dl_mul = |a: f64, b: f64| { let z = a * b; (z, a.mul_add(b, -z)) };
+    let dl_fast_sum = |a: f64, b: f64| { let s = a + b; let z = s - a; (s, b - z) };
+    let (mut csum, mut frac1, mut frac2) = (1.0f64, 0.0f64, 0.0f64);
+    for v in [ax, ay] {
+        let x = v * scale;
+        let (hi, lo) = dl_mul(x, x);
+        let (s, e) = dl_fast_sum(csum, hi);
+        csum = s;
+        frac1 += lo;
+        frac2 += e;
+    }
+    let mut h = (csum - 1.0 + (frac1 + frac2)).sqrt();
+    let (hi, lo) = dl_mul(-h, h);
+    let (s, e) = dl_fast_sum(csum, hi);
+    csum = s;
+    frac1 += lo;
+    frac2 += e;
+    let x = csum - 1.0 + (frac1 + frac2);
+    h += x / (2.0 * h);
+    h / scale
+}
+
+/// frexp's exponent: x = m * 2^e with 0.5 <= m < 1 (x finite, > 0).
+fn frexp_exp(x: f64) -> i32 {
+    let bits = x.to_bits();
+    let e = ((bits >> 52) & 0x7ff) as i32;
+    if e == 0 {
+        // subnormal: normalise first
+        let y = x * f64::from_bits(0x4350000000000000);  // 2^54
+        return frexp_exp(y) - 54;
+    }
+    e - 1022
+}
+
+/// ldexp(1.0, e) for the exponents vector_norm uses (-1022 ..= 1024).
+fn ldexp1(e: i32) -> f64 {
+    if e >= -1022 && e <= 1023 {
+        f64::from_bits(((e + 1023) as u64) << 52)
+    } else if e > 1023 {
+        f64::INFINITY
+    } else if e >= -1074 {
+        f64::from_bits(1u64 << (e + 1074))          // (subnormal: 2^-1024 for a max near f64::MAX)
+    } else {
+        0.0
+    }
+}
+
+#[pyfunction]
+fn py_hypot_test<'py>(py: Python<'py>, x: PyReadonlyArray1<'py, f64>, y: PyReadonlyArray1<'py, f64>) -> Bound<'py, PyArray1<f64>> {
+    let (x, y) = (x.as_array(), y.as_array());
+    numpy::ndarray::Array1::from_shape_fn(x.len(), |i| py_hypot(x[i], y[i])).into_pyarray(py)
+}
+
 /// buildings.triangulate: ear clipping of the counter-clockwise simple ring p (n, 2), (n - 2, 3) indices into p (fewer if
 /// the ring is not simple: the rest is left out); the Python's order, tests and float arithmetic exactly (its loops were
 /// a large part of a far buildings tile's roofs and floors, 2026-10-26).
@@ -2713,6 +2786,44 @@ fn clean_ring_core<'py>(py: Python<'py>, p: PyReadonlyArray2<'py, f64>, tol: f64
     got.map(|v| {
         let flat: Vec<f64> = v.iter().flat_map(|&(x, y)| [x, y]).collect();
         numpy::ndarray::Array2::from_shape_vec((v.len(), 2), flat).unwrap().into_pyarray(py)
+    })
+}
+
+/// buildings.oriented_box's search: along which edge of ring p (n, 2) the rectangle around it is smallest, the first
+/// such edge: (ux, uy, vx, vy, amin, amax, bmin, bmax) in the Python's float arithmetic (math.hypot: py_hypot), or None
+/// when every edge is shorter than 1e-6.
+#[pyfunction]
+fn oriented_box_core(py: Python<'_>, p: PyReadonlyArray2<'_, f64>) -> Option<(f64, f64, f64, f64, f64, f64, f64, f64)> {
+    let a = p.as_array();
+    let pts: Vec<(f64, f64)> = (0..a.nrows()).map(|i| (a[[i, 0]], a[[i, 1]])).collect();
+    py.allow_threads(|| {
+        let n = pts.len();
+        let mut best: Option<(f64, (f64, f64, f64, f64, f64, f64, f64, f64))> = None;
+        for i in 0..n {
+            let (x0, y0) = pts[i];
+            let (x1, y1) = pts[(i + 1) % n];
+            let (ex, ey) = (x1 - x0, y1 - y0);
+            let l = py_hypot(ex, ey);
+            if l < 1e-6 {
+                continue;
+            }
+            let (ux, uy) = (ex / l, ey / l);
+            let (vx, vy) = (-uy, ux);
+            let (mut amin, mut amax, mut bmin, mut bmax) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+            for &(x, y) in &pts {
+                let av = x * ux + y * uy;
+                let bv = x * vx + y * vy;
+                if av < amin { amin = av; }
+                if av > amax { amax = av; }
+                if bv < bmin { bmin = bv; }
+                if bv > bmax { bmax = bv; }
+            }
+            let area = (amax - amin) * (bmax - bmin);
+            if best.map_or(true, |b| area < b.0) {
+                best = Some((area, (ux, uy, vx, vy, amin, amax, bmin, bmax)));
+            }
+        }
+        best.map(|b| b.1)
     })
 }
 
@@ -4603,6 +4714,8 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(segment_crossings_g, m)?)?;
     m.add_function(wrap_pyfunction!(triangulate, m)?)?;
     m.add_function(wrap_pyfunction!(clean_ring_core, m)?)?;
+    m.add_function(wrap_pyfunction!(py_hypot_test, m)?)?;
+    m.add_function(wrap_pyfunction!(oriented_box_core, m)?)?;
     m.add_function(wrap_pyfunction!(float_predictor_f32, m)?)?;
     m.add_function(wrap_pyfunction!(segment_crossings, m)?)?;
     m.add_function(wrap_pyfunction!(seg_hits, m)?)?;

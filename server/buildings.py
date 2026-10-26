@@ -234,28 +234,13 @@ def triangulate(p):
 
 def oriented_box(p):
     """The minimum-area rectangle around ring p along one of its edges: (centre (2,), axis u (2,) along the
-    long side, half length, half width)."""
-    # in plain floats (numpy's per-edge calls on a handful of points were ~8 % of a far buildings tile); the same
-    # products and sums as p @ u, bit for bit (checked on Baltimore's 17.5k building rings, 2026-10-20)
-    pts = np.asarray(p, np.float64).tolist()
-    n = len(pts)
-    best = None
-    for i in range(n):
-        x0, y0 = pts[i]
-        x1, y1 = pts[(i + 1) % n]
-        ex, ey = x1 - x0, y1 - y0
-        L = math.hypot(ex, ey)
-        if L < 1e-6:
-            continue
-        ux, uy = ex / L, ey / L
-        vx, vy = -uy, ux
-        a = [x * ux + y * uy for x, y in pts]
-        b = [x * vx + y * vy for x, y in pts]
-        amin, amax, bmin, bmax = min(a), max(a), min(b), max(b)
-        area = (amax - amin) * (bmax - bmin)
-        if best is None or area < best[0]:
-            best = (area, ux, uy, vx, vy, amin, amax, bmin, bmax)
-    _, ux, uy, vx, vy, amin, amax, bmin, bmax = best
+    long side, half length, half width). The edge search in Rust (earthfast.oriented_box_core: the same products and
+    sums, math.hypot's own rounding), the rest here as before."""
+    fast.require(76, "oriented_box_core")
+    best = fast._ef.oriented_box_core(np.ascontiguousarray(np.asarray(p, np.float64)[:, :2]))
+    if best is None:
+        raise ValueError("oriented_box: a ring without an edge")
+    ux, uy, vx, vy, amin, amax, bmin, bmax = best
     sa, sb = amax + amin, bmax + bmin
     c = np.array([ux * sa / 2 + vx * sb / 2, uy * sa / 2 + vy * sb / 2])
     hl, hw = np.float64((amax - amin) / 2), np.float64((bmax - bmin) / 2)     # (numpy scalars, as before)
