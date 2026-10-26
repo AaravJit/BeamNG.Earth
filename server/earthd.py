@@ -706,6 +706,7 @@ class Server:
         self.ter_serial = itertools.count()
         self.base_stale = set()         # blocks whose base photo lacks lazy imagery (NAIP) still to come
         self.pads_rebuild = set()       # blocks built without gas station pads that lie on them (pads_stale)
+        self.roads_rebuild = set()      # blocks built before every road cell under them was on disk (roads_refresh)
         self.pads_changed_at = 0.0      # (time.monotonic) the last new pad: Connection.pads_refresh waits a little
         self.fast = False               # the player faster than FAST_BASE_V (the latest pose): photos follow blocks
         self.base_pending = {}          # block -> the analysis regions its base photo was rendered without
@@ -1601,6 +1602,7 @@ class Server:
             complete = complete and roads_complete
             info["layers"] = surfacemod.write_masks(idx[::-1], self.out_dir, self.hm_name((anchor.id, cx, cy))[:-4])
             info["surfaceComplete"] = complete
+            info["roadsComplete"] = roads_complete
         if not provisional:
             idx = self._tunnel_holes(anchor, elev, keep, cx, cy, idx, info)
         info["ter"], mats = surfacemod.write_ter(self.out_dir, self.ter_name((anchor.id, cx, cy)), keep["qgrid"], idx)
@@ -1906,6 +1908,10 @@ class Server:
                  info["seconds"], " ".join(f"{k} {v:.2f}" for k, v in info.get("stages", {}).items()),
                  info["zBase"], info["maxHeight"], round(1 / info["q"]))
         self.hm[key] = info
+        if info.get("roadsComplete") is False:
+            self.roads_rebuild.add(key)     # (its roads painted once their cells are here: Connection.roads_refresh)
+        else:
+            self.roads_rebuild.discard(key)
         self.evict_heightmaps(fresh=key)
 
     def evict_heightmaps(self, fresh=None):
@@ -2801,6 +2807,7 @@ class Connection:
         self.sea_sent = None                    # (anchor id, tiles) of the last "sea" message
         self.base_busy = False                  # a base photo refresh is running (base_refresh)
         self.pads_busy = False                  # a block is being built again with its new pads (pads_refresh)
+        self.roads_busy = False                 # ... with the roads of map cells that came after it (roads_refresh)
         self.ground_sent = None                 # (anchor id, z, monotonic) of the last ground_ahead sent
         self.following = True                   # the mod moves its block (pose "follow"; false high up)
 
@@ -3715,6 +3722,7 @@ class Connection:
             self.s.download_ahead(self.s.anchors[aid], *self.focus, *self.vel)
             self.base_refresh(aid)
             self.pads_refresh(aid)
+            self.roads_refresh(aid)
         if self.s.mapdata is not None and aid == self.active:
             self.roads.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_roads_tile,
                                vel=self.vel, ground_busy=self.terrain_wait > 0, view=self.view_at,
@@ -3804,6 +3812,47 @@ class Connection:
                 s.base_stale.discard(key)
             finally:
                 self.base_busy = False
+        self.spawn(run())
+
+    def roads_refresh(self, aid):
+        """The block in use built again (terrain_refresh) when it was built before every road cell under it was on disk
+        (Server.roads_rebuild: surface.Surface.roads leaves a missing cell's roads out and fetches it; the block kept
+        grass and gravel on those roads, and their grip, until it was built again: a fast first visit's mountain roads,
+        Discord 2026-10-26), once those cells are here. One at a time, at any speed (the car is on it)."""
+        s = self.s
+        if self.roads_busy or not s.roads_rebuild or s.mapdata is None:
+            return
+        key = next((k for k in list(s.hm_committed)[-1:] if k in s.roads_rebuild and k[0] == aid), None)
+        anchor = s.anchors.get(aid)
+        if key is None or anchor is None:
+            return
+        half = s.layout.block * heightmap.SQUARE / 2
+        la, lo, _ = anchor.frame.enu_to_geodetic(np.array([key[1] - half, key[1] + half]),
+                                                 np.array([key[2] - half, key[2] + half]), 0.0)
+        cells = mapcells.cells_for_bbox(float(np.min(la)), float(np.min(lo)), float(np.max(la)), float(np.max(lo)))
+        if not all(s.mapdata.has(k, "roads") for k in cells):
+            return                          # (not here yet: asked again at the next pose)
+        self.roads_busy = True
+        s.roads_rebuild.discard(key)
+
+        async def run():
+            old = s.hm.pop(key, None)
+            try:
+                info = await s.terrain(anchor, key[1], key[2])
+            except Exception:
+                log.exception("block %s again with its roads (the old one stays)", key)
+                if old is not None:
+                    s.hm[key] = old
+                return
+            finally:
+                self.roads_busy = False
+            s.hm_sent.append(key)
+            log.info("block %s built again with its roads (their map cells came after it was built)", key)
+            self.send({"type": "terrain_refresh", "anchorId": key[0], **self.terrain_msg(key, info)})
+            old_ter = (old or {}).get("ter")
+            if old_ter and old_ter != info.get("ter"):
+                await asyncio.sleep(PROVISIONAL_KEEP_S)
+                s._remove(os.path.join(s.out_dir, old_ter))
         self.spawn(run())
 
     def pads_refresh(self, aid, now=None):

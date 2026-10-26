@@ -283,6 +283,7 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None,
         stages["roadPaint"] = time.perf_counter() - t1
         info["layers"] = surfacemod.write_masks(idx[::-1], out_dir, name[:-4])
         info["surfaceComplete"] = complete and roads_complete
+        info["roadsComplete"] = roads_complete
     if ter_name is not None:
         t1 = time.perf_counter()
         idx = _tunnel_holes(aid, frame, elev, keep, cx, cy, idx, info, g)
