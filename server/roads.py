@@ -302,6 +302,33 @@ def _facts_load(feats, kind, extra):
         return None
 
 
+FACTS_WAIT_S = 30.0     # the longest a process waits for another one making a cell's facts (then makes them itself)
+
+
+def _facts_claim(feats, kind, extra):
+    """Before making a cell's facts: (the facts, None) when they are shared already, or once another process made them
+    while this one waited (one process makes a cell's facts at a time: on a first visit every process made each cell's
+    for itself, xproc.once); (None, lock) when this process makes them (_facts_release(lock) after _facts_store, even
+    when nothing was kept); (None, None): made here without the lock. The lock order: a cell's ranges, then its specs
+    (the ranges read the specs; the specs read only the raw ranges, which never wait)."""
+    k = _facts_key(feats, kind, extra)
+    if k is None:
+        return None, None
+    import revisit
+    import xproc
+    if not revisit.ON or "cellfacts" in revisit.SKIP:
+        return _facts_load(feats, kind, extra), None
+    lock = revisit._path(revisit.CACHE_DIR, "cellfacts", k) + ".lock"
+    got, mine = xproc.once(lock, lambda: _facts_load(feats, kind, extra), FACTS_WAIT_S)
+    return got, (lock if mine else None)
+
+
+def _facts_release(lock):
+    if lock is not None:
+        import xproc
+        xproc.release(lock)
+
+
 def _facts_store(feats, kind, extra, data):
     k = _facts_key(feats, kind, extra)
     if k is None:
@@ -320,8 +347,9 @@ def _cell_ranges(feats, load_only=False):
                 return
         tried = st.get("_ranges_state")
         st["_ranges_state"] = "busy"
+    lock = None
     if tried is None:
-        got = _facts_load(feats, "ranges", None)
+        got, lock = (_facts_load(feats, "ranges", None), None) if load_only else _facts_claim(feats, "ranges", None)
         if got is not None and len(got.get("raw", ())) == len(feats) and len(got.get("lvl", ())) == len(feats):
             raw, lvl = st.setdefault("_raw_level_ranges", {}), st.setdefault("_level_ranges", {})
             for i in range(len(feats)):
@@ -332,14 +360,27 @@ def _cell_ranges(feats, load_only=False):
     if load_only:
         st["_ranges_state"] = "loadable"        # (the eager build waits for level_ranges: road_specs reads the raw)
         return
+    if tried is not None:                       # (loadable: a load_only call found none; now made here, one at a time)
+        got, lock = _facts_claim(feats, "ranges", None)
+        if got is not None and len(got.get("raw", ())) == len(feats) and len(got.get("lvl", ())) == len(feats):
+            raw, lvl = st.setdefault("_raw_level_ranges", {}), st.setdefault("_level_ranges", {})
+            for i in range(len(feats)):
+                raw.setdefault(i, [tuple(r) for r in got["raw"][i]])
+                lvl.setdefault(i, [tuple(r) for r in got["lvl"][i]])
+            st["_ranges_state"] = "done"
+            _facts_release(lock)
+            return
     import revisit
-    f0 = revisit.faults()
-    raw = [raw_level_ranges(feats, i) for i in range(len(feats))]
-    lvl = [level_ranges(feats, i) for i in range(len(feats))]
-    st["_ranges_state"] = "done"
-    if revisit.faults() == f0:
-        _facts_store(feats, "ranges", None, {"raw": [[[float(a), float(b), k] for a, b, k in r] for r in raw],
-                                             "lvl": [[[float(a), float(b), k] for a, b, k in r] for r in lvl]})
+    try:
+        f0 = revisit.faults()
+        raw = [raw_level_ranges(feats, i) for i in range(len(feats))]
+        lvl = [level_ranges(feats, i) for i in range(len(feats))]
+        st["_ranges_state"] = "done"
+        if revisit.faults() == f0:
+            _facts_store(feats, "ranges", None, {"raw": [[[float(a), float(b), k] for a, b, k in r] for r in raw],
+                                                 "lvl": [[[float(a), float(b), k] for a, b, k in r] for r in lvl]})
+    finally:
+        _facts_release(lock)
 
 
 # A bridge over a road spans more than its carriageway: the road's shoulders and the abutments' slopes stand under it.
@@ -1098,15 +1139,22 @@ def road_specs(feats, urban_fn=None, widths=None, left_hand=False):
     got = memo.get(k)
     if got is None:             # (the measured widths on the specs without them: those are asked for too, _bridge_reach)
         extra = (widths is not None, bool(left_hand))
+        lock = None
         if urban_fn is None:    # (the land cover's are the server's own: not shared, cell_facts)
-            got = _specs_from(_facts_load(feats, "specs", extra), len(feats))
+            data, lock = _facts_claim(feats, "specs", extra)
+            got = _specs_from(data, len(feats))
         if got is None:
             import revisit
-            f0 = revisit.faults()
-            got = (_road_specs(feats, urban_fn, left_hand) if widths is None else
-                   _measured_widths(feats, road_specs(feats, urban_fn, None, left_hand), widths))
-            if urban_fn is None and revisit.faults() == f0:
-                _facts_store(feats, "specs", extra, [None if sp is None else _spec_json(sp) for sp in got])
+            try:
+                f0 = revisit.faults()
+                got = (_road_specs(feats, urban_fn, left_hand) if widths is None else
+                       _measured_widths(feats, road_specs(feats, urban_fn, None, left_hand), widths))
+                if urban_fn is None and revisit.faults() == f0:
+                    _facts_store(feats, "specs", extra, [None if sp is None else _spec_json(sp) for sp in got])
+            finally:
+                _facts_release(lock)
+        else:
+            _facts_release(lock)
         got = memo.setdefault(k, got)
     return list(got)
 

@@ -693,8 +693,10 @@ class Grader:
                 q_class.append(int(round(sg * 1000)))
                 q_road.append(road_id(fid))
                 q_reach.append(3.0 * sg + PROFILE_STEP)
-                ll = lonlat[0] if end == 0 else lonlat[-1]
-                q_cell.append(mapcells.cell_of(float(ll[1]), float(ll[0])))
+                q_cell.append(lonlat[0] if end == 0 else lonlat[-1])
+        if q_cell:                  # (the ends' cells at once)
+            qll = np.asarray(q_cell, np.float64).reshape(-1, 2)
+            q_cell = mapcells.cells_of(qll[:, 1], qll[:, 0])
         out = [[None, None] for _ in parts]
         for key in sorted(set(q_cell), key=str):
             cands = self._chain_cands(key)
@@ -744,10 +746,10 @@ class Grader:
                     continue
                 ll = lonlat[-1] if end else lonlat[0]
                 q_node.append((float(ll[1]), float(ll[0])))         # (lat, lon: converted below, all at once)
-                q_cell.append(mapcells.cell_of(float(ll[1]), float(ll[0])))
                 q_who.append((j, end, profile_sigma(spec), road_id(fid)))
         if q_node:
             qa = np.asarray(q_node, f64)
+            q_cell = mapcells.cells_of(qa[:, 0], qa[:, 1])
             qe, qn, _ = self.frame.geodetic_to_enu(qa[:, 0], qa[:, 1], 0.0)
             q_node = list(zip(np.asarray(qe, f64).tolist(), np.asarray(qn, f64).tolist()))
         out = [[None, None] for _ in parts]
@@ -1032,8 +1034,9 @@ class Grader:
         if ok is not None:
             touch &= ok
         homes = {}
-        for j in np.flatnonzero(touch):
-            homes.setdefault(mapcells.cell_of(float(la[j]), float(lo[j])), []).append(j)
+        tj = np.flatnonzero(touch)
+        for j, home in zip(tj.tolist(), mapcells.cells_of(la[tj], lo[tj])):
+            homes.setdefault(home, []).append(j)
         for home, js in homes.items():
             ends = self._cell_enu(home, ground=False)["ends"]
             js = np.asarray(js)
