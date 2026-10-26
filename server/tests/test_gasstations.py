@@ -251,6 +251,41 @@ class LayoutTest(unittest.TestCase):
         for p in site.props + site.areas:
             self.assertTrue(inside_box(roof, p["x"], p["y"], pad=1.5), p)
 
+    def test_platform_roof_beside_the_shop_is_no_canopy(self):
+        # (GitHub #308, Rio de Janeiro: a train station's 1355 m2 platform roof beside a station's lot took its pumps,
+        # on the tracks) a tagged roof only in a canopy's shape
+        platform = rect("platform", 0.0, 80.0, 120.0, 30.0, cls="roof")
+        self.assertIsNone(gs.find_canopy(STATION, SHOP, [SHOP, platform], ROAD))
+
+    def test_lot_named_like_the_station_gets_a_canopy_in_it(self):
+        # (GitHub #308: Rio's Posto Ipiranga, its whole 2323 m2 lot mapped as one building named "Ipiranga", was drawn as
+        # a big block, its pumps elsewhere) the lot's box dropped, a canopy-sized roof in its middle, the pumps under it
+        st = gs.Station("st", 0.0, 40.0, "Posto Ipiranga", "Ipiranga", ("p",), True)
+        lot = rect("lot", 0.0, 40.0, 54.0, 43.0, name="Ipiranga")
+        site = gs.layout(st, [lot], ROAD)
+        self.assertIsNotNone(site)
+        self.assertEqual(site.drop_ids, ("lot",))
+        for p in site.areas:
+            self.assertTrue(inside_box(lot, p["x"], p["y"]), p)
+            self.assertLessEqual(abs(p["x"]), 0.5 * 54.0 * (gs.LOT_CANOPY_M2 / (54.0 * 43.0)) ** 0.5 + 1.5)
+        # a big building not named like the station stays a building (a supermarket's pumps, a shop of its own)
+        self.assertFalse(gs._is_lot(rect("mkt", 0.0, 40.0, 54.0, 43.0, name="Supermercado"), st))
+
+    def test_lot_named_as_a_fuel_station(self):
+        # (GitHub #308: a BR station's lot mapped as "Auto Posto Jari LTDA", 1661 m2, drawn four storeys high)
+        st = gs.Station("st", 0.0, 40.0, "BR", "BR", ("p",), True)
+        self.assertTrue(gs._is_lot(rect("lot", 0.0, 40.0, 41.0, 41.0, cls="commercial", name="Auto Posto Jari LTDA"), st))
+        self.assertTrue(gs._is_lot(rect("lot", 0.0, 40.0, 41.0, 41.0, name="Tankstelle Meier"), st))
+        self.assertFalse(gs._is_lot(rect("lot", 0.0, 40.0, 41.0, 41.0, name="Postal Office"), st))
+
+    def test_canopy_never_across_the_street(self):
+        # (GitHub #308: an imagery outline on the other corner took the station) the shop north of the street, a
+        # canopy-sized imagery outline south of it: none
+        across = rect("ml", 0.0, -20.0, 16.0, 10.0, src=ML)
+        self.assertIsNone(gs.find_canopy(STATION, SHOP, [SHOP, across], ROAD))
+        roof = rect("roof", 0.0, -22.0, 30.0, 21.0, cls="roof")
+        self.assertIsNone(gs.find_canopy(STATION, SHOP, [SHOP, roof], ROAD))
+
     def test_long_canopy_one_roof(self):
         roof = rect("roof", 0.0, 22.0, 46.0, 18.0, cls="roof")
         site = gs.layout(STATION, [SHOP, roof], ROAD)
