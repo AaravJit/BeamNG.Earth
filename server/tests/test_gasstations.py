@@ -225,6 +225,38 @@ class CanopyTest(unittest.TestCase):
     def test_no_shop_far(self):
         self.assertIsNone(gs.find_shop(STATION, [rect("far", 300.0, 300.0, 20.0, 20.0)]))
 
+    def test_home_shop_beside_a_canopy(self):
+        # (a player's report, Nagambie, Victoria: United Petroleum's shop mapped as a residential building, its canopy
+        # a mapped roof beside it; the shop never found, the roof drawn as a solid block, the pumps bare at the pin)
+        home = rect("home", 0.0, 45.0, 20.0, 18.0, cls="residential", height=3.0)
+        roof = rect("roof", 0.0, 24.0, 15.0, 10.0, cls="roof")
+        self.assertIsNone(gs.find_shop(STATION, [home, roof]))
+        self.assertIs(gs._home_shop(STATION, [home, roof], ROAD), home)
+        for cls in ("house", "detached", "bungalow"):
+            h = rect("h", 0.0, 45.0, 20.0, 18.0, cls=cls)
+            self.assertIs(gs._home_shop(STATION, [h, roof], ROAD), h, cls)
+
+    def test_home_shop_needs_a_canopy(self):
+        home = rect("home", 0.0, 45.0, 20.0, 18.0, cls="residential")
+        self.assertIsNone(gs._home_shop(STATION, [home], ROAD))
+        # a carport is no canopy
+        self.assertIsNone(gs._home_shop(STATION, [home, rect("carport", 0.0, 32.0, 7.0, 6.0, cls="roof")], ROAD))
+        # nor a roof across the street
+        self.assertIsNone(gs._home_shop(STATION, [home, rect("roof", 0.0, -12.0, 15.0, 10.0, cls="roof")], ROAD))
+        # nor a platform roof
+        self.assertIsNone(gs._home_shop(STATION, [home, rect("roof", 0.0, 24.0, 120.0, 30.0, cls="roof")], ROAD))
+
+    def test_home_shop_only_a_low_home(self):
+        roof = rect("roof", 0.0, 24.0, 15.0, 10.0, cls="roof")
+        for b in (rect("flats", 0.0, 45.0, 20.0, 18.0, cls="apartments"),
+                  rect("hosp", 0.0, 45.0, 20.0, 18.0, cls="hospital"),
+                  rect("church", 0.0, 45.0, 20.0, 18.0, cls="church"),
+                  rect("tall", 0.0, 45.0, 20.0, 18.0, cls="residential", height=12.0)):
+            self.assertIsNone(gs._home_shop(STATION, [b, roof], ROAD), b.cls)
+        # a convenience brand alone (no gas station pin) gets none
+        wawa = gs.Station("wawa", 0.0, 45.0, "Wawa", "Wawa", ("p",), False)
+        self.assertIsNone(gs._home_shop(wawa, [rect("home", 0.0, 45.0, 20.0, 18.0, cls="residential"), roof], ROAD))
+
 
 def inside_box(bld, x, y, pad=0.5):
     c, u, hl, hw = gs._obox(bld.ring)
@@ -390,6 +422,19 @@ class LayoutTest(unittest.TestCase):
         for p in site.props:
             self.assertLess(np.hypot(p["x"] - st.x, p["y"] - st.y), 30.0, p)
             self.assertGreater(road_gap(p["x"], p["y"]), gs.ROAD_CLEAR_M, p)
+
+    def test_home_shop_canopy_layout(self):
+        # (Nagambie) the canopy beside a residential shop is the canopy: left out of the buildings, the pumps under it
+        home = rect("home", 0.0, 45.0, 20.0, 18.0, cls="residential", height=3.0)
+        roof = rect("roof", 0.0, 24.0, 15.0, 10.0, cls="roof")
+        site = gs.layout(STATION, [home, roof], ROAD)
+        self.assertIsNotNone(site)
+        self.assertEqual(site.drop_ids, ("roof",))
+        self.assertEqual(site.shop_id, "home")
+        for a in site.areas:
+            self.assertTrue(inside_box(roof, a["x"], a["y"], pad=1.5), a)
+        # without the roof: the pumps at the pin, as before
+        self.assertEqual(gs.layout(gs.Station("st", 0.0, 22.0, "Speedway", "", ("p",), True), [home], ROAD).drop_ids, ())
 
     def test_no_shop_no_site(self):
         st = gs.Station("st", 0.0, 200.0, "Shell", "Shell", ("p",), True)
@@ -1140,6 +1185,13 @@ class RealSpotsTest(unittest.TestCase):
         # a Sunoco in Pittsburgh: its pin 2.4 m from the road; its two mapped canopies (two islands: West Coast's)
         rec, skip = self.site(40.465627, -79.955447)
         self.assertEqual(len(skip), 2, "both mapped canopies left out")
+        self.assertTrue(any("s_fuel_structure_06" in p["shape"] for p in rec["props"]))
+
+    def test_home_shop(self):
+        # United Petroleum in Nagambie, Victoria (a player's report): its shop mapped as a residential building, its
+        # canopy a mapped roof beside it (_home_shop); the Astron pin 40 m away is the same station (one per shop)
+        rec, skip = self.site(-36.79432, 145.15094)
+        self.assertEqual(len(skip), 1, "the OSM roof left out")
         self.assertTrue(any("s_fuel_structure_06" in p["shape"] for p in rec["props"]))
 
 
