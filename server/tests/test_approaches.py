@@ -62,6 +62,20 @@ class BridgeLiftsTest(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertAlmostEqual(float(out[0][0][0]), 0.0)
 
+    def test_short_part_of_a_chain_raises_its_free_end(self):
+        # (GitHub #306, BR-343 at Teresina: the deck carried 5 m onto the road joined at its end; that short part no
+        # road crosses under must still raise its free end for the carriageways under the rest of the chain, or the
+        # whole deck sat ~4.5 m low)
+        deck = np.c_[np.linspace(0, 34, 18), np.zeros(18)]
+        stub = np.c_[np.linspace(-5, 0, 3), np.zeros(3)]            # joined at x = 0, free at x = -5
+        under = [np.array([[8.0, -50], [8, 50]]), np.array([[14.0, 50], [14, -50]])]
+        out = grading.bridge_lifts(stub, [deck, stub], under, lambda xy: np.full(len(xy), FLAT), chain=[deck])
+        self.assertEqual(len(out), 1)
+        self.assertAlmostEqual(float(out[0][0][0]), -5.0)
+        self.assertGreaterEqual(out[0][1], roads.DECK_ROAD_CLEAR)
+        # alone (no chain), a short part is no abutment of a span
+        self.assertEqual(grading.bridge_lifts(stub, [stub], under, lambda xy: np.full(len(xy), FLAT)), [])
+
     def test_long_viaduct_not_raised(self):
         line = np.c_[np.linspace(-400, 400, 201), np.zeros(201)]
         ground = [np.array([[0.0, -50], [0, 50]])]               # a street under the middle of an 800 m viaduct

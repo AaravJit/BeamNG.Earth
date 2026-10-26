@@ -1667,12 +1667,15 @@ def bridge_lifts(line, all_bridges, ground_lines, z_at, chain=None):
     if len(line) < 2:
         return []
     s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(line, axis=0).T))]
-    if s[-1] < 2 * APPROACH_MIN_CROSS_M:
+    # (a short part, or one no road crosses under, still raises its free end for the roads under the rest of its chain:
+    # the deck carried a few metres onto the road joined at its end (roads._skew_decks) left that end unraised and the
+    # whole deck ~4.5 m low over BR-343 at Teresina, GitHub #306)
+    if s[-1] < 2 * APPROACH_MIN_CROSS_M and not chain:
         return []
     cr = roadsmod._crossings([line], ground_lines)
-    if not cr:
+    if not cr and not chain:
         return []
-    zu = z_at(np.array([c[2] for c in cr], np.float64))
+    zu = z_at(np.array([c[2] for c in cr], np.float64).reshape(-1, 2)) if cr else np.zeros(0)
     arcs = np.array([c[1] for c in cr], np.float64)
 
     def joined_at(end):

@@ -1259,7 +1259,10 @@ def _bridge_specs(feats, want="bridge"):
         if str(feats.attrs.get("subtype", ["road"] * len(feats))[i]) != "road" or cls not in STYLE:
             out.append(None)
             continue
-        if not any(k == want for _, _, k in raw_level_ranges(feats, i)):
+        # (the lengthened ranges: a bridge's range carried onto the road joined at its end (_skew_decks) is a deck
+        # too; with the raw ranges that stretch was neither deck nor ground, the deck's end lost its approach ramp
+        # and sat ~4.5 m low over BR-343 at Teresina, GitHub #306)
+        if not any(k == want for _, _, k in (level_ranges(feats, i) if want == "bridge" else raw_level_ranges(feats, i))):
             out.append(None)
             continue
         width = _rule_value(rules.get("width"), i)
