@@ -39,6 +39,7 @@ local function patch(o)
   function o:setTransform(m) self.xf = m end
   function o:getId() return self.id end
   function o:play() self.playing = true end
+  function o:setVolumePitchCT(v) self.vol = v end
   return o
 end
 local newObject = S.newObject
@@ -154,6 +155,27 @@ T.check(math.abs(sp[1].xf.pos.x + 20) < 1e-9 and math.abs(sp[1].xf.pos.y - 10) <
   and math.abs(sp[1].xf.yaw + 0.5 + math.pi / 2) < 1e-9, 'a rebase turns and moves them')
 amb.dropSpaces('1:3_4')
 T.check(#S.liveOf('SFXSpace') == 0, 'the tile goes: its spaces with it')
+
+-- rain: the loop fades in with the weather's rain, out inside a tunnel's space, and goes when the rain stops
+local function rainEm()
+  for _, o in ipairs(S.liveOf('SFXEmitter')) do if o.name == 'bngEarthRain' then return o end end
+end
+beamngEarth_weather = { rainNow = 1 }
+clock = 400; amb.update(3, seaV)
+clock = 401; amb.update(3, seaV)
+local re = rainEm()
+T.check(re and re.fields.track == amb.RAIN_TRACK and math.abs(re.vol - amb.RAIN_GAIN / amb.RAIN_FADE_S) < 1e-9,
+  'rain: the loop, fading in')
+for i = 1, 8 do clock = 401 + i * 0.5; amb.update(3, seaV) end
+T.check(math.abs(re.vol - amb.RAIN_GAIN) < 1e-9, 'full rain: RAIN_GAIN')
+amb.onSpaces('3:0_0', { 0, lx, 0, 0, 40, 10, 10, 0 })
+clock = 405.5; amb.update(3, seaV)
+T.check(amb.inTunnel(lx, 0, 0) and re.vol < amb.RAIN_GAIN, 'in a tunnel: fading out')
+amb.dropSpaces('3:0_0')
+beamngEarth_weather.rainNow = 0
+for i = 1, 12 do clock = 405.5 + i * 0.5; amb.update(3, seaV) end
+T.check(rainEm() == nil, 'the rain stopped: the loop gone')
+beamngEarth_weather = nil
 
 amb.clear()
 T.check(#S.liveOf('SFXEmitter') == 0 and af.enabled == false, 'clear: the room tone goes')

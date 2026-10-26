@@ -345,11 +345,75 @@ moveSpaces = function(xf)
   end
 end
 
+-- Rain: no stock level ties a sound to its rain; the stock rain loop (SFXProfile amb_rain_medium,
+-- art/sound/environment/amb_rain_medium.ogg; it plays in the "Other" sound group, its volume set by setVolumePitchCT)
+-- at the listener while it rains (weather.lua's rain share, none above the cloud base), louder with more rain, fading
+-- in and out, quiet inside a tunnel's space. At 1 the loop is as loud as an idling engine (-35 dBFS on the Steam Deck,
+-- its forest -63; recorded 2026-10-26).
+M.RAIN_TRACK = 'amb_rain_medium'
+M.RAIN_GAIN = 0.5       -- the loop's volume at full rain ...
+M.RAIN_FADE_S = 2       -- ... reached (or left) over this long
+local rainEm, rainVol, rainAt = nil, 0, nil
+M.rainVol = 0
+
+-- Is (x, y, z) inside one of the road tiles' tunnel spaces?
+local function inTunnel(x, y, z)
+  for _, list in pairs(spaces) do
+    for _, sp in ipairs(list) do
+      local r = sp.row
+      if r[1] == 0 then
+        local dx, dy = x - r[2], y - r[3]
+        local c, s = math.cos(r[8]), math.sin(r[8])
+        if math.abs(dx * c + dy * s) <= r[5] / 2 and math.abs(-dx * s + dy * c) <= r[6] / 2
+            and math.abs(z - r[4]) <= r[7] / 2 then
+          return true
+        end
+      end
+    end
+  end
+  return false
+end
+M.inTunnel = inTunnel
+
+local function updateRain()
+  local now = os.clockhp()
+  local dt = rainAt and math.min(now - rainAt, 0.5) or 0
+  rainAt = now
+  local w = rawget(_G, 'beamngEarth_weather')
+  local want = M.RAIN_GAIN * math.max(0, math.min(1, w and tonumber(w.rainNow) or 0))
+  if want > 0 and inTunnel(listener.x, listener.y, listener.z) then want = 0 end
+  local step = math.max(M.RAIN_GAIN, rainVol) * dt / M.RAIN_FADE_S   -- (the full range in RAIN_FADE_S)
+  rainVol = rainVol < want and math.min(want, rainVol + step) or math.max(want, rainVol - step)
+  M.rainVol = rainVol
+  if rainEm and not simObjectExists(rainEm) then rainEm = nil end
+  if rainVol > 0.001 and not rainEm then
+    local e = Sim.upcast(createObject('SFXEmitter'))
+    if e then
+      e:setTransform(MatrixF(true))
+      e:setField('track', 0, M.RAIN_TRACK)
+      e.canSave = false
+      e:registerObject('bngEarthRain')
+      e:play()
+      rainEm = e
+    end
+  end
+  if rainEm then
+    if rainVol <= 0.001 and want <= 0 then
+      rainEm:delete()
+      rainEm = nil
+    else
+      rainEm:setPosition(listener)
+      rainEm:setVolumePitchCT(rainVol, 1, 0, 0)
+    end
+  end
+end
+
 -- Every frame (core.lua): the cloud made again when the listener has moved or the tiles near it changed; the room
 -- tone follows the listener. Another anchor's tiles go (a teleport), but a rebase's ghosts. sea: sea.lua (the rivers).
 function M.update(anchorId, sea)
   listener.x, listener.y, listener.z = SFXSystem.getPositionXYZ()
   updateRivers(anchorId, sea, listener.x, listener.y)
+  updateRain()
   if not next(tiles) and not current then return end
   local now = os.clockhp()
   for k, t in pairs(tiles) do
@@ -372,6 +436,8 @@ end
 -- The server's tiles go (disconnect): the ambience with them.
 function M.clear()
   for key in pairs(spaces) do M.dropSpaces(key) end
+  if rainEm and simObjectExists(rainEm) then rainEm:delete() end
+  rainEm, rainVol, rainAt = nil, 0, nil
   tiles, dirty, builtAt, biome, current = {}, false, nil, nil, nil
   setRoomtone(nil)
   local af = forest()
@@ -392,7 +458,8 @@ function M.status()
   for _ in pairs(tiles) do n = n + 1 end
   return { tiles = n, nodes = M.nodes, builds = M.builds, buildMs = M.buildMs, wind = current and current[1],
     roomtone = current and current[2], ribbons = M.ribbons,
-    ribbonMs = M.ribbonMs, ribbonBuilds = M.ribbonBuilds, spacesMade = M.spacesMade }
+    ribbonMs = M.ribbonMs, ribbonBuilds = M.ribbonBuilds, spacesMade = M.spacesMade,
+    rain = M.rainVol }
 end
 
 return M
