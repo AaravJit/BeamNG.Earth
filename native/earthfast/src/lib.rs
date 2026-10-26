@@ -1319,6 +1319,11 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by_key(|&i| keys[i]);                    // stable, as argsort(kind="stable")
     let sk: Vec<i64> = order.iter().map(|&i| keys[i]).collect();
+    // the points and their state in that order (the pairs loop reads them in runs: px[order[j]] and the state arrays
+    // indexed at random were most of its time, 2026-10-26); each point's sums in the same segment order as before
+    let xs: Vec<f64> = order.iter().map(|&i| px[i]).collect();
+    let ys: Vec<f64> = order.iter().map(|&i| pyy[i]).collect();
+    let bs: Vec<f64> = order.iter().map(|&i| base[i]).collect();
     let mut num = vec![0.0f64; n];
     let mut den = vec![0.0f64; n];
     let mut wmax = vec![0.0f64; n];
@@ -1330,7 +1335,7 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
     let mut csum = vec![0.0f64; n];
     let mut cz = vec![0.0f64; n];
     let mut raised = vec![f64::NEG_INFINITY; n];    // (sharp) the cuttings' tops over the points beside them
-    let mut beff: Vec<f64> = base.iter().copied().collect();
+    let mut beff: Vec<f64> = bs.clone();
     // the carriageway each point is deepest in (d - rh, most negative) and its height there
     let mut cdeep = vec![0.0f64; n];
     let mut carz = vec![f64::NAN; n];
@@ -1340,10 +1345,13 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
     let mut bz = vec![f64::NAN; n];
     let mut bid = vec![-1i64; n];
     let smooth = |v: f64| { let v = v.clamp(0.0, 1.0); v * v * (3.0 - 2.0 * v) };
+    // pass 1: a pair with d - h past this has u >= 1 (its core hs <= h, its ramp tt <= t_max, a wall's flat and ramp
+    // wall_flat + wall_t), so w = 0: skipped (a margin for the rounding)
+    let far1 = t_max.max(wall_flat + wall_t) + 1e-6;
     for pass in 0..2 {
         if pass == 1 && sharp {
             for i in 0..n {
-                beff[i] = base[i].max(raised[i]);
+                beff[i] = bs[i].max(raised[i]);
             }
         }
         for s in 0..h.len() {
@@ -1362,12 +1370,15 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
             let cy1 = ((hi_y - y0) / bucket).floor() as i64;
             let (abx, aby) = (bx - ax, by - ay);
             let l2 = abx * abx + aby * aby;
+            // pass 0's farthest effect: a carriageway (rh), an abutment (h), a cutting's band (h + wall_flat) and top
+            // (cut_reach: its side and ahead limits), a core (h + core_fade); a margin for the rounding
+            let far0 = rh[s].max(h[s] + if has_cut[s] { wall_flat.max(0.0) } else { 0.0 }).max(cut_reach[s])
+                .max(h[s] + if sep { core_fade } else { 0.0 }) + 1e-6;
             for row in cy0..=cy1 {
                 let i0 = sk.partition_point(|&k| k < row * nbx + cx0);
                 let i1 = sk.partition_point(|&k| k <= row * nbx + cx1);
-                for j in i0..i1.max(i0) {
-                    let idx = order[j];
-                    let (qx, qy) = (px[idx] - ax, pyy[idx] - ay);
+                for idx in i0..i1.max(i0) {
+                    let (qx, qy) = (xs[idx] - ax, ys[idx] - ay);
                     let t = if l2 > 1e-12 { ((qx * abx + qy * aby) / l2).clamp(0.0, 1.0) } else { 0.0 };
                     let (ddx, ddy) = (qx - t * abx, qy - t * aby);
                     let d = (ddx * ddx + ddy * ddy).sqrt();       // (not hypot: libm's is ~5x dearer, the pairs loop's main cost)
@@ -1376,6 +1387,9 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
                     let co = if left { 0 } else { 3 };
                     let (cwall, ctop, creach) = (cut[[s, co]], cut[[s, co + 1]], cut[[s, co + 2]]);
                     if pass == 0 {
+                        if d > far0 {
+                            continue;       // (nothing below reaches this far: the box's corners)
+                        }
                         if d - rh[s] < cdeep[idx] || (d <= rh[s] && carz[idx].is_nan()) {
                             cdeep[idx] = d - rh[s];
                             carz[idx] = target;
@@ -1409,6 +1423,10 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
                                 cz[idx] += cn * target;
                             }
                         }
+                        continue;
+                    }
+                    // (past every blend's reach: no weight, nothing changes; the box's corners, ~half the pairs)
+                    if d - h[s] > far1 {
                         continue;
                     }
                     // a cut deeper than wall_cut: a retaining wall at the core's edge, the ground right behind it
@@ -1457,10 +1475,11 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
             }
         }
     }
-    for i in 0..n {
-        out[i] = beff[i];
-        if den[i] > 0.0 {
-            out[i] = beff[i] + wmax[i] * (num[i] / den[i] - beff[i] + lift);
+    for j in 0..n {
+        let i = order[j];
+        out[i] = beff[j];
+        if den[j] > 0.0 {
+            out[i] = beff[j] + wmax[j] * (num[j] / den[j] - beff[j] + lift);
         }
     }
     out.into_pyarray(py)
