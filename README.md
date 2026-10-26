@@ -104,6 +104,8 @@ You can help support development by reporting [issues](https://github.com/TecnaG
   move or resize them in the UI apps editor), and a one-time welcome page about the project.
 - Settings in the pause menu, keybinds, in-game reports (notes and performance recordings to share), and a
   wireframe view (Ctrl+Alt+W) that shows how the ground, the distant terrain and the roads are built.
+  When the GPU is identified but the engine cannot provide a positive memory capacity, reports say
+  "VRAM capacity unavailable" instead of treating zero as the installed memory.
 - A diagnostic log to send when something is slow: the world server's `logs/server.log` (in
   `%LOCALAPPDATA%\beamng-earth` on Windows, `~/.cache/beamng-earth` on Linux) records your hardware and settings, every
   hitch and frame-rate drop with where it happened and what was loading, and a summary every minute

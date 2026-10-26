@@ -2,6 +2,12 @@
 
 What changed in each release of BeamNG.Earth, newest first.
 
+## Unreleased
+
+### Fixed
+- Hardware reports distinguish unavailable GPU memory capacity from a real capacity of zero. Positive native
+  `memoryMB` values are retained; missing, zero or negative values are labelled "VRAM capacity unavailable".
+
 ## 1.6.3 beta (2026-10-25)
 
 Works with BeamNG.drive 0.40.3.
