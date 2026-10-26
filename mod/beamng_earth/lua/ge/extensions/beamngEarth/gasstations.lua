@@ -202,6 +202,15 @@ function M.onRows(aid, key, recs)
             deleteObjs(st)
           end
           queue[#queue + 1] = r.id
+        elseif st.cursor then       -- still spawning (spawnStep), still queued: a record in this frame
+          -- (with another layout: started again from it, not carried on into it; final review)
+          local a, b = st.rec.props or {}, r.props or {}
+          local same = #a == #b and #(st.rec.areas or {}) == #(r.areas or {})
+          for i = 1, math.min(st.cursor, #a) do
+            if not same then break end
+            same = propKey(a[i]) == propKey(b[i])
+          end
+          if not same then deleteObjs(st) end
         end
         st.rec, st.stale = r, nil
       end

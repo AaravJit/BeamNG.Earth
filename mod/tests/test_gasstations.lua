@@ -206,6 +206,20 @@ for _ = 1, 5 do frame() end
 T.check(count('TSStatic') == 40 and G.count() == 1, 'finished from the new record')
 G.reset()
 
+-- (final review) a road tile sent again while a big station is still spawning, with another layout: started again
+-- from the new record, not carried on into it (no prop doubled or missing)
+G.onRows(1, '1:5_5', { big('mid', 0) })
+frame()
+local shifted = big('mid', 100); table.remove(shifted.props)            -- 39 props, all elsewhere
+G.onRows(1, '1:5_6', { shifted })
+for _ = 1, 6 do frame() end
+local wrong = 0
+for _, o in ipairs(S.liveOf('TSStatic')) do
+  if o.pos.x < 100 then wrong = wrong + 1 end
+end
+T.check(count('TSStatic') == 39 and wrong == 0, 'all 39 from the new record, none left from the old: ' .. wrong)
+G.reset()
+
 -- a re-sent road tile whose record has a prop more or fewer (its neighbour's buildings arrived): the props kept by
 -- shape and place, only the difference made or deleted, so nothing blinks; the refuel areas (invisible) made again
 -- when they change
