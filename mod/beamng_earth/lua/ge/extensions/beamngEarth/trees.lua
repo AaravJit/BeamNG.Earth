@@ -295,25 +295,24 @@ local groupBand
 -- decoded; rows ({ item }, ...: an older server's vegetation tiles, roads.py's street furniture) are packed into one
 -- (M.flatten).
 M.STRIDE = 8
-local F_GROUP, F_X, F_Y, F_Z, F_YAW, F_HEIGHT, F_RANK = 1, 2, 3, 4, 5, 7, 8      -- (offsets in an item; scale is 6)
+local F_GROUP, F_X, F_Y, F_Z, F_YAW, F_SCALE, F_HEIGHT, F_RANK = 1, 2, 3, 4, 5, 6, 7, 8      -- (offsets in an item)
+local HIDDEN = { 0, 0, 0, 0, 0, 1, 10, 2 }     -- an item never shown (rank 2): what a broken row becomes
 local newTable = (function()
   local ok, f = pcall(require, 'table.new')
   return ok and f or function() return {} end
 end)()
 
--- Pure: rows packed into a flat array (STRIDE numbers a row). A missing yaw, height or rank is 0, 10, 0 (as the rows were
--- read); a row that is not a table or has no position is never shown (rank 2).
+-- Pure: rows packed into a flat array (STRIDE numbers a row). A missing yaw, scale, height or rank is 0, 1, 10, 0 (as
+-- the rows were read); a row that is not a table or has no position is never shown (HIDDEN).
 function M.flatten(rows)
-  local n = type(rows) == 'table' and #rows or 0
-  local f, s = newTable(n * M.STRIDE, 0), M.STRIDE
+  local n, s = type(rows) == 'table' and #rows or 0, M.STRIDE
+  local f = newTable(n * s, 0)
   for i = 1, n do
     local r, b = rows[i], (i - 1) * s
-    if type(r) == 'table' and r[F_X] and r[F_Y] and r[F_Z] then
-      f[b + 1], f[b + 2], f[b + 3], f[b + 4] = r[F_GROUP] or 0, r[F_X], r[F_Y], r[F_Z]
-      f[b + 5], f[b + 6], f[b + 7], f[b + 8] = r[F_YAW] or 0, r[6] or 1, r[F_HEIGHT] or 10, r[F_RANK] or 0
-    else
-      f[b + 1], f[b + 2], f[b + 3], f[b + 4], f[b + 5], f[b + 6], f[b + 7], f[b + 8] = 0, 0, 0, 0, 0, 1, 10, 2
-    end
+    if type(r) ~= 'table' or not (r[F_X] and r[F_Y] and r[F_Z]) then r = HIDDEN end
+    f[b + F_GROUP], f[b + F_X], f[b + F_Y], f[b + F_Z] = r[F_GROUP] or 0, r[F_X], r[F_Y], r[F_Z]
+    f[b + F_YAW], f[b + F_SCALE], f[b + F_HEIGHT], f[b + F_RANK] = r[F_YAW] or 0, r[F_SCALE] or 1, r[F_HEIGHT] or 10,
+      r[F_RANK] or 0
   end
   return f
 end
