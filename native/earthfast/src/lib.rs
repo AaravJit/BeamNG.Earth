@@ -2600,6 +2600,122 @@ fn bilinear_grid<'py>(
     Ok(out.into_pyarray(py))
 }
 
+/// buildings.triangulate: ear clipping of the counter-clockwise simple ring p (n, 2), (n - 2, 3) indices into p (fewer if
+/// the ring is not simple: the rest is left out); the Python's order, tests and float arithmetic exactly (its loops were
+/// a large part of a far buildings tile's roofs and floors, 2026-10-26).
+#[pyfunction]
+fn triangulate<'py>(py: Python<'py>, p: PyReadonlyArray2<'py, f64>) -> Bound<'py, PyArray2<i64>> {
+    let a = p.as_array();
+    let n = a.nrows();
+    let pts: Vec<(f64, f64)> = (0..n).map(|i| (a[[i, 0]], a[[i, 1]])).collect();
+    let out = py.allow_threads(|| {
+        let cross = |a: (f64, f64), b: (f64, f64), c: (f64, f64)| (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
+        let mut idx: Vec<usize> = (0..n).collect();
+        let mut out: Vec<[i64; 3]> = Vec::new();
+        let mut guard = 0usize;
+        while idx.len() > 3 && guard < 4 * n * n {
+            guard += 1;
+            let m = idx.len();
+            let mut found = false;
+            for k in 0..m {
+                let (i0, i1, i2) = (idx[(k + m - 1) % m], idx[k], idx[(k + 1) % m]);
+                let (pa, pb, pc) = (pts[i0], pts[i1], pts[i2]);
+                if cross(pa, pb, pc) <= 1e-12 {
+                    continue;
+                }
+                let mut ear = true;
+                for &j in &idx {
+                    if j == i0 || j == i1 || j == i2 {
+                        continue;
+                    }
+                    let q = pts[j];
+                    if cross(pa, pb, q) >= 0.0 && cross(pb, pc, q) >= 0.0 && cross(pc, pa, q) >= 0.0 {
+                        ear = false;
+                        break;
+                    }
+                }
+                if ear {
+                    out.push([i0 as i64, i1 as i64, i2 as i64]);
+                    idx.remove(k);
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                break;
+            }
+        }
+        if idx.len() == 3 {
+            out.push([idx[0] as i64, idx[1] as i64, idx[2] as i64]);
+        }
+        out
+    });
+    let flat: Vec<i64> = out.iter().flat_map(|t| t.iter().copied()).collect();
+    numpy::ndarray::Array2::from_shape_vec((out.len(), 3), flat).unwrap().into_pyarray(py)
+}
+
+/// buildings.clean_ring's simplification: the ring (n, 2) without its closing point (np.allclose), its nearly collinear
+/// or duplicate vertices dropped (every other candidate per round, up to 8 rounds; tol x 1.6 while more than
+/// max_verts are left), in numpy's float arithmetic; None when fewer than 3 are left. (Its orientation stays in Python.)
+#[pyfunction]
+fn clean_ring_core<'py>(py: Python<'py>, p: PyReadonlyArray2<'py, f64>, tol: f64, max_verts: usize)
+                        -> Option<Bound<'py, PyArray2<f64>>> {
+    let a = p.as_array();
+    let mut pts: Vec<(f64, f64)> = (0..a.nrows()).map(|i| (a[[i, 0]], a[[i, 1]])).collect();
+    let got = py.allow_threads(|| {
+        if pts.len() > 1 {
+            let ((ax, ay), (bx, by)) = (pts[0], pts[pts.len() - 1]);
+            if (ax - bx).abs() <= 1e-08 + 1e-05 * bx.abs() && (ay - by).abs() <= 1e-08 + 1e-05 * by.abs() {
+                pts.pop();
+            }
+        }
+        let mut tol = tol;
+        for _ in 0..8 {
+            let n = pts.len();
+            if n < 3 {
+                return None;
+            }
+            let mut drop = vec![false; n];
+            let mut any = false;
+            for i in 0..n {
+                let prev = pts[(i + n - 1) % n];
+                let nxt = pts[(i + 1) % n];
+                let (dx, dy) = (nxt.0 - prev.0, nxt.1 - prev.1);
+                let l = dx.hypot(dy);
+                let off = (dx * (pts[i].1 - prev.1) - dy * (pts[i].0 - prev.0)).abs() / l.max(1e-9);
+                let near = (pts[i].0 - prev.0).hypot(pts[i].1 - prev.1) < 1e-3;
+                if off < tol || near {
+                    drop[i] = true;
+                    any = true;
+                }
+            }
+            if !any {
+                if n <= max_verts {
+                    break;
+                }
+                tol *= 1.6;
+                continue;
+            }
+            let mut k = 0usize;             // every other candidate (idx[::2]) goes
+            let mut keep = Vec::with_capacity(n);
+            for i in 0..n {
+                if drop[i] {
+                    if k % 2 == 1 { keep.push(pts[i]); }
+                    k += 1;
+                } else {
+                    keep.push(pts[i]);
+                }
+            }
+            pts = keep;
+        }
+        if pts.len() < 3 { None } else { Some(pts) }
+    });
+    got.map(|v| {
+        let flat: Vec<f64> = v.iter().flat_map(|&(x, y)| [x, y]).collect();
+        numpy::ndarray::Array2::from_shape_vec((v.len(), 2), flat).unwrap().into_pyarray(py)
+    })
+}
+
 /// bilinear_grid on the mosaic of tiles (ny x nx tiles of tile x tile pixels, row-major: tiles[r * nx + c] is the
 /// mosaic's block at row r, column c) without building it: each corner pixel read from its own tile (dem.sample copied
 /// every call's tiles into a new mosaic, ~2 s per 16 city road tiles, 2026-10-26). The same clamps and arithmetic.
@@ -4485,6 +4601,8 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bilinear_grid, m)?)?;
     m.add_function(wrap_pyfunction!(bilinear_tiles, m)?)?;
     m.add_function(wrap_pyfunction!(segment_crossings_g, m)?)?;
+    m.add_function(wrap_pyfunction!(triangulate, m)?)?;
+    m.add_function(wrap_pyfunction!(clean_ring_core, m)?)?;
     m.add_function(wrap_pyfunction!(float_predictor_f32, m)?)?;
     m.add_function(wrap_pyfunction!(segment_crossings, m)?)?;
     m.add_function(wrap_pyfunction!(seg_hits, m)?)?;

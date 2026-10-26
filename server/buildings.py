@@ -212,39 +212,14 @@ def _area2(p):
     return float(np.dot(x, np.concatenate((y[1:], y[:1]))) - np.dot(np.concatenate((x[1:], x[:1])), y))
 
 
-def _close2(a, b):
-    """np.allclose(a, b) of two 2-vectors (rtol 1e-5, atol 1e-8; NaN never close) without its per-call cost."""
-    ax, ay, bx, by = float(a[0]), float(a[1]), float(b[0]), float(b[1])
-    return abs(ax - bx) <= 1e-08 + 1e-05 * abs(bx) and abs(ay - by) <= 1e-08 + 1e-05 * abs(by)
-
-
 def clean_ring(p):
     """The ring (n, 2) without its closing point, duplicate and nearly collinear vertices, counter-clockwise;
-    None if fewer than 3 are left."""
-    p = np.asarray(p, np.float64)[:, :2]
-    if len(p) > 1 and _close2(p[0], p[-1]):
-        p = p[:-1]
-    tol = SIMPLIFY_M
-    for _ in range(8):
-        if len(p) < 3:
-            return None
-        prev, nxt = np.concatenate((p[-1:], p[:-1])), np.concatenate((p[1:], p[:1]))     # np.roll by hand
-        d = nxt - prev
-        L = np.hypot(d[:, 0], d[:, 1])
-        off = np.abs(d[:, 0] * (p[:, 1] - prev[:, 1]) - d[:, 1] * (p[:, 0] - prev[:, 0])) / np.maximum(L, 1e-9)
-        drop = (off < tol) | (np.hypot(*(p - prev).T) < 1e-3)
-        if not drop.any():
-            if len(p) <= MAX_VERTS:
-                break
-            tol *= 1.6
-            continue
-        # drop every other candidate at most, so a run of near-collinear points is not removed whole
-        idx = np.nonzero(drop)[0]
-        keep = np.ones(len(p), bool)
-        keep[idx[::2]] = False
-        p = p[keep]
-    if len(p) < 3:
+    None if fewer than 3 are left. The simplification in Rust (earthfast.clean_ring_core: numpy's arithmetic)."""
+    fast.require(76, "clean_ring_core")
+    p = fast._ef.clean_ring_core(np.ascontiguousarray(np.asarray(p, np.float64)[:, :2]), float(SIMPLIFY_M), int(MAX_VERTS))
+    if p is None:
         return None
+    p = np.asarray(p, np.float64)
     if _area2(p) < 0:
         p = p[::-1]
     return p
@@ -252,43 +227,9 @@ def clean_ring(p):
 
 def triangulate(p):
     """Ear clipping of the counter-clockwise simple ring p (n, 2): (n-2, 3) indices into p (fewer if the
-    ring is not simple: the rest is left out)."""
-    n = len(p)
-    p = np.asarray(p, np.float64)[:, :2].tolist()      # plain floats: the same products, without numpy's per-scalar cost
-    idx = list(range(n))
-    out = []
-
-    def cross(a, b, c):
-        return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
-
-    guard = 0
-    while len(idx) > 3 and guard < 4 * n * n:
-        guard += 1
-        m = len(idx)
-        found = False
-        for k in range(m):
-            i0, i1, i2 = idx[k - 1], idx[k], idx[(k + 1) % m]
-            a, b, c = p[i0], p[i1], p[i2]
-            if cross(a, b, c) <= 1e-12:
-                continue
-            ear = True
-            for j in idx:
-                if j in (i0, i1, i2):
-                    continue
-                q = p[j]
-                if cross(a, b, q) >= 0 and cross(b, c, q) >= 0 and cross(c, a, q) >= 0:
-                    ear = False
-                    break
-            if ear:
-                out.append((i0, i1, i2))
-                del idx[k]
-                found = True
-                break
-        if not found:
-            break
-    if len(idx) == 3:
-        out.append(tuple(idx))
-    return np.array(out, np.int64).reshape(-1, 3)
+    ring is not simple: the rest is left out). The Rust loop (earthfast.triangulate)."""
+    fast.require(76, "triangulate")
+    return np.asarray(fast._ef.triangulate(np.ascontiguousarray(np.asarray(p, np.float64)[:, :2])), np.int64)
 
 
 def oriented_box(p):
