@@ -111,9 +111,11 @@ def wire_mesh(lines, origin):
             if L < 1e-6:
                 continue
             d /= L
-            side = np.cross(d, [0.0, 0.0, 1.0])
+            # (np.cross written out: the same products and differences, without its per-call cost)
+            side = np.array([d[1] * 1.0 - d[2] * 0.0, d[2] * 0.0 - d[0] * 1.0, d[0] * 0.0 - d[1] * 0.0])
             side = side / (np.linalg.norm(side) or 1.0) * WIRE_R
-            up = np.cross(side, d)
+            up = np.array([side[1] * d[2] - side[2] * d[1], side[2] * d[0] - side[0] * d[2],
+                           side[0] * d[1] - side[1] * d[0]])
             up = up / (np.linalg.norm(up) or 1.0) * WIRE_R
             for v in (side, up):
                 i = len(P)
