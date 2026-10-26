@@ -111,6 +111,11 @@ The map's road data downloads again once after the update.
 - **Linux: the setting "Start BeamMP with BeamNG.Earth" is now followed** (the app always started BeamMP).
 - **Reduced the chance of map data being downloaded again on Windows** when another part of the app was saving the
   same file at that moment.
+- **Linux, a laptop with two GPUs (an integrated and a dedicated one): the game now renders on the dedicated GPU**
+  (started directly it used to land on the integrated one, where a start through Steam used the dedicated one).
+  `--gpu off` leaves the GPUs alone, `--gpu discrete` forces it. The direct start also adopts the launch options
+  set for the game in Steam (their variables, a wrapper command like `gamemoderun`, the options after
+  `%command%`; Steam applies them itself when the game starts through Steam).
 
 ### Other
 - **The map download cache can go on another drive** (GitHub #254): settings page > Download cache > **Cache folder**

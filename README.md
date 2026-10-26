@@ -149,6 +149,10 @@ connection (the map is downloaded while you play).
      protontricks' launcher).
    - **Linux, Steam as a Flatpak (or snap):** the mod goes into the game's folder inside the Flatpak
      (`~/.var/app/com.valvesoftware.Steam/...`) and the game starts through Steam (without the grass patch).
+   - **Linux, hybrid graphics (an integrated and a dedicated GPU):** the game is put on the dedicated GPU when the
+     default would be the integrated one (`--gpu off` leaves the GPUs alone, `--gpu discrete` forces it). The
+     direct start also adopts the launch options you set for the game in Steam (their variables, a wrapper
+     command like `gamemoderun`, the options after `%command%`).
    - The Windows build shows BeamNG's launch options dialog (renderer, safe mode) as usual; `--gfx dx11` /
      `--gfx vk` / `--gfx dx12` skip it with that renderer.
 3. **Play:** in the game, go to **Freeroam** and pick the **BeamNG.Earth** level. A welcome page explains the

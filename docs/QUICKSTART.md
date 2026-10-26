@@ -106,6 +106,10 @@ graphics settings (`game: machine:` lines) and the game's own performance lines:
   `python install.py --user-dir "<that folder>"`.
 - **After an update**: unzip the new version and start its `run_server.bat` / `./run_server.sh`: it copies the new
   mod into the game and updates the server's packages by itself (`--keep-mod` leaves the game's copy alone).
+- **Linux, a laptop with two GPUs: the game runs on the integrated one**: the launcher starts the game directly and
+  puts it on the dedicated GPU when it can tell which that is (`--gpu auto`, the default). Start with `--gpu
+  discrete` to force it, `--gpu off` to leave the GPUs alone, or set the variable yourself (`DRI_PRIME=1` on
+  AMD/Intel, `__NV_PRIME_RENDER_OFFLOAD=1` on NVIDIA) — Steam's launch options for the game are adopted too.
 
 ## Credits
 The map comes from free and open data sources (USGS, Sentinel-2 by EOX, Mapterhorn, OpenStreetMap
