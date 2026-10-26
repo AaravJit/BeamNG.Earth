@@ -1188,7 +1188,103 @@ def _hits(ring, pts):
     return bool(polygon.contains_points(ring, pts).any())
 
 
+# --- a station mapped as one building around its pin (Japan: Tokyo and Osaka laid out 0 of 20 stations, 2026-10-26: the
+# whole station, canopy and office, is one unclassed outline of 120-900 m2 around the pin, on a lot too tight for a
+# pump pair; the user, 2026-10-26: "let's start writing the plan for phase 2 including the Japan coverage gap") ------
+ONE_BLD_PIN_M = 2.0                         # the pin inside the outline, or this near it
+ONE_BLD_CLASSES = {"", "roof", "commercial"}    # (retail, apartments, homes, warehouses around a pin: real buildings)
+ONE_BLD_MAX_H_M = 9.0                       # Japanese canopies to 8.3 m; the next real building in the sample 10.8 m
+ONE_BLD_MIN_H_M = 4.5                       # (where a height is mapped) a canopy's clearance; a kiosk is lower (3.1 m)
+ONE_BLD_FILL = 0.6                          # area / its oriented box's (not an L: the roof slab would cut the rest)
+
+# a fuel station's name (as well as STATION_WORDS): its brands and words in the map data's languages, whole words; a
+# Japanese service station's "SS" after its place name (南森町SS); never a bare "gas" (a union of gas fitters is no station)
+FUEL_WORDS = re.compile(r"\b(oil|petrol\w*|petro|gasolina|gasoline|service[- ]station|pemex|ipiranga|petrobras|br|ypf|"
+                        r"repsol|galp|cepsa|moeve|q8|omv|lukoil|petronas|caltex|ampol|engen|sasol|puma|kobil|hidrosina|"
+                        r"cosmo|idemitsu|apollostation|eneos|ptt)\b|石油|日石|ガソリン|スタンド|エネオス|コスモ|出光|ปตท",
+                        re.IGNORECASE)
+SS_WORD = re.compile(r"(?<![A-Za-z])(SS|Ss|ＳＳ)(?![A-Za-z])")
+
+
+def _fuel_named(text):
+    """Whether a name says fuel station: STATION_WORDS, FUEL_WORDS, a Japanese service station's SS, or a fuel brand's
+    name (FUEL_BRANDS) as a whole word."""
+    if not text:
+        return False
+    if STATION_WORDS.search(text) or FUEL_WORDS.search(text) or SS_WORD.search(text):
+        return True
+    t = text.lower()
+    return any(re.search(r"(?<!\w)" + re.escape(b) + r"(?!\w)", t) for b in _FUEL_NAMES)
+
+
+def _pin_building(st, blds):
+    """The building that is the whole station around its pin (inside it or within ONE_BLD_PIN_M): unclassed or a roof
+    or commercial (ONE_BLD_CLASSES), of a canopy's area (CANOPY_AREA_M2), a canopy's height where one is mapped
+    (ONE_BLD_MIN_H_M to ONE_BLD_MAX_H_M: not a kiosk, not a block with a station at its foot), not an L
+    (ONE_BLD_FILL), unnamed or named like the station or as a fuel station (not the McDonald's, hotel or bank a
+    station stands at the foot of); else None."""
+    import polygon
+    p = np.array([[st.x, st.y]])
+    best = None
+    for b in blds:
+        if (b.cls or "") not in ONE_BLD_CLASSES:
+            continue
+        d = 0.0 if polygon.contains_points(b.ring, p)[0] else float(_seg_dist(p, b.ring[:-1], b.ring[1:]).min())
+        if d > ONE_BLD_PIN_M or (best is not None and d >= best[0]):
+            continue
+        a = _area(b.ring)
+        _, _, hl, hw = _obox(b.ring)
+        if not CANOPY_AREA_M2[0] <= a <= CANOPY_AREA_M2[1] or a < ONE_BLD_FILL * 4 * hl * hw:
+            continue
+        if b.height is not None and np.isfinite(b.height) and not ONE_BLD_MIN_H_M <= b.height <= ONE_BLD_MAX_H_M:
+            continue
+        if b.name and not (_named(b, st) or _fuel_named(b.name)):
+            continue
+        best = (d, b)
+    return best[1] if best else None
+
+
+def _one_building_site(st, blds, roads, service=(), style="default"):
+    """The forecourt of a station mapped as one building around its pin (_pin_building), or None: a gas station (not a
+    convenience brand alone) whose name or brand says fuel (_fuel_named: not an office in the gas station category);
+    the building is its canopy (left out of the buildings, the islands under it as under a mapped canopy); its shop
+    the nearest other building within SHOP_SEARCH_M (not a home, a roof or across a public road), if any."""
+    if not st.confirmed or not (_fuel_named(st.name) or _fuel_named(st.brand)):
+        return None
+    b = _pin_building(st, blds)
+    if b is None:
+        return None
+    canopy = Bld(b.id, b.ring, "roof", b.name, b.src, b.height)
+    others = [o for o in blds if o.id != b.id]
+    c = _centre(b.ring)
+    shops = [(float(np.hypot(*(_centre(o.ring) - c))), o.id, o) for o in others
+             if o.cls not in ROOF_CLASSES and o.cls not in NOT_SHOP_CLASSES
+             and not _across(c, _centre(o.ring), roads)]
+    shops = [s for s in shops if s[0] <= SHOP_SEARCH_M]
+    shop = min(shops, key=lambda s: s[:2])[2] if shops else None
+    if style == "europe":
+        site = _italy_site(st, [_obox(canopy.ring)], others, roads)
+    elif style == "us_east":
+        site = (_eca_site(st, _outline_lanes(canopy, 3, ECA_ROOF_STEP, ECA_MIN_GAP_M), others, roads)
+                or _lane_site(st, _outline_lanes(canopy), others, roads, PUMP_KIT))
+    else:
+        site = _lane_site(st, _outline_lanes(canopy), others, roads, PUMP_KIT)
+    if site is not None:
+        site.drop_ids = (b.id,)
+        site.shop_id = shop.id if shop is not None else "bld:" + b.id
+    return site
+
+
 def _layout(st, blds, roads, service=(), style="default"):
+    """The station's forecourt (_layout_core); failing that, a station mapped as one building around its pin
+    (_one_building_site): only where nothing else is laid out, so no station that has a forecourt today changes."""
+    site = _layout_core(st, blds, roads, service, style)
+    if site is None:
+        site = _one_building_site(st, blds, roads, service, style)
+    return site
+
+
+def _layout_core(st, blds, roads, service=(), style="default"):
     """The station's forecourt (a Site), or None. The shop (find_shop); then, most exact first: the forecourt's mapped
     drive lanes among the service roads (find_lanes), else lanes made up under its canopy (find_canopy,
     _outline_lanes): islands between them under a roof slab (_lane_site); else a pump pair clear of roads and

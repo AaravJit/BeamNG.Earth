@@ -422,7 +422,8 @@ class LayoutTest(unittest.TestCase):
             self.assertTrue(inside_box(roof, a["x"], a["y"]), a)
 
     def test_no_room_no_site(self):
-        shop = rect("shop", 0.0, 13.0, 20.0, 10.0)          # 3 m between the road's edge and the shop
+        # (a kiosk's height: a canopy is taller, ONE_BLD_MIN_H_M, so the one-building rule leaves it a shop)
+        shop = rect("shop", 0.0, 13.0, 20.0, 10.0, height=3.5)          # 3 m between the road's edge and the shop
         st = gs.Station("st", 0.0, 13.0, "Shell", "Shell", ("p",), True)
         self.assertIsNone(gs.layout(st, [shop], ROAD))
 
@@ -459,6 +460,73 @@ class LayoutTest(unittest.TestCase):
             self.assertTrue(inside_box(roof, a["x"], a["y"], pad=1.5), a)
         # without the roof: the pumps at the pin, as before
         self.assertEqual(gs.layout(gs.Station("st", 0.0, 22.0, "Speedway", "", ("p",), True), [home], ROAD).drop_ids, ())
+
+    def test_station_mapped_as_one_building(self):
+        # (Japan: Tokyo laid out 0 of 20 stations, 2026-10-26) the whole station, canopy and office, mapped as one
+        # unclassed outline around its pin, a tight lot with no room for a pump pair: that outline is its canopy
+        st = gs.Station("en", 0.0, 17.0, "ENEOS", "ENEOS", ("p",), True)
+        bld = rect("bld", 0.0, 17.0, 20.0, 15.0)
+        tight = [rect("w", -16.0, 25.0, 10.0, 30.0, cls="apartments"), rect("e", 16.0, 25.0, 10.0, 30.0, cls="apartments"),
+                 rect("n", 0.0, 35.0, 22.0, 6.0, cls="apartments")]
+        self.assertIsNone(gs._layout_core(st, [bld] + tight, ROAD), "nothing today")
+        site = gs.layout(st, [bld] + tight, ROAD)
+        self.assertIsNotNone(site)
+        self.assertEqual(site.drop_ids, ("bld",))
+        self.assertTrue(site.areas)
+        for a in site.areas:
+            self.assertTrue(inside_box(bld, a["x"], a["y"], pad=1.5), a)
+        # (Japanese names: a service station's SS, 石油; a Spanish one)
+        for name in ("千歳商会西新橋SS", "明光石油", "Gasolineria San Jeronimo"):
+            self.assertIsNotNone(gs.layout(gs.Station("x", 0.0, 17.0, name, "", ("p",), True), [bld] + tight, ROAD), name)
+
+    def test_one_building_with_an_office_beside_it(self):
+        st = gs.Station("en", 0.0, 17.0, "ENEOS", "ENEOS", ("p",), True)
+        bld = rect("bld", 0.0, 17.0, 20.0, 15.0)
+        office = rect("office", 0.0, 30.0, 8.0, 5.0)
+        tight = [rect("w", -16.0, 25.0, 10.0, 30.0, cls="apartments"), rect("e", 16.0, 25.0, 10.0, 30.0, cls="apartments")]
+        self.assertIsNone(gs._layout_core(st, [bld, office] + tight, ROAD), "nothing today")
+        site = gs.layout(st, [bld, office] + tight, ROAD)
+        self.assertEqual(site.drop_ids, ("bld",))
+        self.assertEqual(site.shop_id, "office")
+
+    def test_one_building_never_over_a_working_layout(self):
+        # a pin inside an unclassed shop with a mapped canopy beside it: laid out as before (the shop stays a building)
+        shop = rect("shop", 0.0, 45.0, 20.0, 18.0)
+        roof = rect("roof", 0.0, 22.0, 30.0, 21.0, cls="roof")
+        site = gs.layout(STATION, [shop, roof], ROAD)
+        self.assertEqual(site.drop_ids, ("roof",))
+        self.assertEqual(site.shop_id, "shop")
+
+    def test_one_building_limits(self):
+        st = gs.Station("en", 0.0, 25.0, "ENEOS", "ENEOS", ("p",), True)
+        tight = [rect("w", -26.0, 25.0, 10.0, 30.0, cls="apartments"), rect("e", 26.0, 25.0, 10.0, 30.0, cls="apartments")]
+        ring = np.array([(-10.0, 17.5), (10.0, 17.5), (10.0, 20.0), (-7.5, 20.0), (-7.5, 32.5), (-10.0, 32.5), (-10.0, 17.5)])
+        for why, b in (("too big", rect("b", 0.0, 25.0, 40.0, 30.0)),
+                       ("too tall", rect("b", 0.0, 25.0, 20.0, 15.0, height=18.0)),
+                       ("too low: a kiosk", rect("b", 0.0, 25.0, 20.0, 15.0, height=3.1)),
+                       ("a home", rect("b", 0.0, 25.0, 20.0, 15.0, cls="residential")),
+                       ("a shop class", rect("b", 0.0, 25.0, 20.0, 15.0, cls="retail")),
+                       ("named as something else", rect("b", 0.0, 25.0, 20.0, 15.0, name="McDonald's")),
+                       ("a car wash", rect("b", 0.0, 25.0, 20.0, 15.0, name="Car Wash")),
+                       ("an L, not a canopy", gs.Bld("b", ring, "", "", "OpenStreetMap", None)),
+                       ("the pin 5 m outside", rect("b", 0.0, 37.5, 20.0, 15.0))):
+            self.assertIsNone(gs._one_building_site(st, [b] + tight, ROAD), why)
+        bld = rect("b", 0.0, 25.0, 20.0, 15.0)
+        self.assertIsNotNone(gs._one_building_site(st, [bld] + tight, ROAD), "the control")
+        # a convenience brand alone, and a place wrongly in the gas station category (a post office, a land company)
+        for s in (gs.Station("w", 0.0, 25.0, "7-Eleven", "7-Eleven", ("p",), False),
+                  gs.Station("p", 0.0, 25.0, "Servicio Postal Mexicano", "", ("p",), True),
+                  gs.Station("h", 0.0, 25.0, "H&m Land And Minerals", "", ("p",), True),
+                  gs.Station("u", 0.0, 25.0, "Sind Ofs Elet Trab IND Inst e Manut Elet Gas Hidr", "", ("p",), True)):
+            self.assertIsNone(gs._one_building_site(s, [bld] + tight, ROAD), s.name)
+
+    def test_fuel_named(self):
+        for t in ("Pemex", "BR", "Ipiranga", "Gasolineria San Jeronimo", "ENEOS Dr.Drive 梅田店", "Jx日鉱日石リテールサービス",
+                  "北海道エネルギー 札幌大通Ss", "西新橋SS", "Agip Service-Station", "Esso", "Posto de Gasolina Ruckert"):
+            self.assertTrue(gs._fuel_named(t), t)
+        for t in ("Servicio Postal Mexicano", "H&m Land And Minerals", "fuel2U", "McDonald's", "Business Services",
+                  "Shellfish Bar", "Sind Ofs Elet Trab IND Inst e Manut Elet Gas Hidr", "", None):
+            self.assertFalse(gs._fuel_named(t), t)
 
     def test_no_shop_no_site(self):
         st = gs.Station("st", 0.0, 200.0, "Shell", "Shell", ("p",), True)
