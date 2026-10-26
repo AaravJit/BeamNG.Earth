@@ -1524,6 +1524,53 @@ fn along(x: &[f64], y: &[f64], dist: f64) -> (f64, f64) {
     (x[x.len() - 1], y[y.len() - 1])
 }
 
+/// The candidate lines (points one line after another, offsets (C + 1,)) by the grid cells of their two end points: the
+/// lines with an end within join of a point are among near()'s, in ascending order (the brute-force loop's order).
+struct EndsGrid {
+    cell: f64,
+    map: std::collections::HashMap<(i64, i64), Vec<usize>>,
+    all: Option<usize>,
+}
+
+impl EndsGrid {
+    fn new(cxy: &numpy::ndarray::ArrayView2<f64>, coff: &numpy::ndarray::ArrayView1<i64>, join: f64) -> EndsGrid {
+        let nc = coff.len().saturating_sub(1);
+        // (a non-finite or non-positive join: every line, as before)
+        if !(join.is_finite() && join > 0.0) {
+            return EndsGrid { cell: 1.0, map: Default::default(), all: Some(nc) };
+        }
+        let cell = join;
+        let mut map: std::collections::HashMap<(i64, i64), Vec<usize>> = Default::default();
+        for c in 0..nc {
+            let (a, b) = (coff[c] as usize, coff[c + 1] as usize);
+            if b < a + 2 { continue; }
+            for i in [a, b - 1] {
+                let (x, y) = (cxy[[i, 0]], cxy[[i, 1]]);
+                if !(x.is_finite() && y.is_finite()) { continue; }      // (never within join of anything)
+                let k = ((x / cell).floor() as i64, (y / cell).floor() as i64);
+                let v = map.entry(k).or_default();
+                if v.last() != Some(&c) { v.push(c); }
+            }
+        }
+        EndsGrid { cell, map, all: None }
+    }
+
+    fn near(&self, x: f64, y: f64) -> Vec<usize> {
+        if let Some(n) = self.all { return (0..n).collect(); }
+        if !(x.is_finite() && y.is_finite()) { return Vec::new(); }
+        let (kx, ky) = ((x / self.cell).floor() as i64, (y / self.cell).floor() as i64);
+        let mut out = Vec::new();
+        for gx in kx - 2..=kx + 2 {            // (+-2: an end exactly join away across a cell edge)
+            for gy in ky - 2..=ky + 2 {
+                if let Some(v) = self.map.get(&(gx, gy)) { out.extend_from_slice(v); }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+}
+
 /// grading.chain_extensions: for each query (a road part's end: its node, the way the road goes on through it, its
 /// smoothing class, its road), the straightest candidate line with an end within join m of the node, of the same class
 /// and another road, turning at most turn_deg (directions over look m of each line); its line from the node outward,
@@ -1541,6 +1588,7 @@ fn chain_extensions<'py>(py: Python<'py>, cand_xy: PyReadonlyArray2<'py, f64>, c
     let (qn, qd, qcl, qrd, qr) = (q_node.as_array(), q_dir.as_array(), q_class.as_array(), q_road.as_array(),
                                   q_reach.as_array());
     let cos_max = turn_deg.to_radians().cos();
+    let grid = EndsGrid::new(&cxy, &coff, join);
     let mut out: Vec<f64> = Vec::new();
     let mut off: Vec<i64> = vec![0];
     for q in 0..qn.nrows() {
@@ -1549,7 +1597,7 @@ fn chain_extensions<'py>(py: Python<'py>, cand_xy: PyReadonlyArray2<'py, f64>, c
         let dl = dx.hypot(dy);
         let mut best: Option<(f64, Vec<f64>, Vec<f64>)> = None;
         if dl > 0.0 {
-            for c in 0..ccl.len() {
+            for c in grid.near(nx, ny) {
                 if ccl[c] != qcl[q] || crd[c] == qrd[q] {
                     continue;
                 }
@@ -1612,11 +1660,12 @@ fn node_parts<'py>(py: Python<'py>, cand_xy: PyReadonlyArray2<'py, f64>, cand_of
                    q_node: PyReadonlyArray2<'py, f64>, join: f64)
                    -> (Bound<'py, PyArray1<i64>>, Bound<'py, PyArray1<i64>>) {
     let (cxy, coff, qn) = (cand_xy.as_array(), cand_off.as_array(), q_node.as_array());
+    let grid = EndsGrid::new(&cxy, &coff, join);
     let mut out: Vec<i64> = Vec::new();
     let mut off: Vec<i64> = vec![0];
     for q in 0..qn.nrows() {
         let (nx, ny) = (qn[[q, 0]], qn[[q, 1]]);
-        for c in 0..coff.len().saturating_sub(1) {
+        for c in grid.near(nx, ny) {
             let (a, b) = (coff[c] as usize, coff[c + 1] as usize);
             if b < a + 2 {
                 continue;
