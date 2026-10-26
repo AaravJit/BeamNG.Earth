@@ -318,6 +318,30 @@ class LayoutTest(unittest.TestCase):
         roof = rect("roof", 0.0, -22.0, 30.0, 21.0, cls="roof")
         self.assertIsNone(gs.find_canopy(STATION, SHOP, [SHOP, roof], ROAD))
 
+    def test_canopy_across_the_street_from_a_pin_on_the_road(self):
+        # (a Sunoco in Pittsburgh, BNGE_GAS_REAL: its pin 2.4 m from the road's centre line, the nearest building north
+        # of the road, its two mapped canopies south of it) a pin on the carriageway does not say which side the
+        # station is on: the canopy is taken, as before GitHub #308
+        st = gs.Station("sun", 0.0, 2.4, "Sunoco", "", ("p",), True)
+        shop = rect("shop", 0.0, 20.0, 16.0, 14.0)
+        roof = rect("roof", 0.0, -20.0, 16.0, 10.0, cls="roof")
+        self.assertIs(gs.find_canopy(st, shop, [shop, roof], ROAD), roof)
+        self.assertEqual(gs.find_canopies(st, shop, [shop, roof], ROAD), [roof])
+        site = gs.layout(st, [shop, roof], ROAD)
+        self.assertIsNotNone(site)
+        self.assertEqual(site.drop_ids, ("roof",))
+
+    def test_irregular_roof_beside_the_shop_is_canopy(self):
+        # (a BP in Pittsburgh, BNGE_GAS_REAL: its canopy a mapped roof of 26 x 25 m, 461 m2, not a rectangle, against the
+        # shop) a tagged roof of a canopy's area is the shop's canopy whatever its outline; a bigger one never (#308)
+        ring = np.array([(-13.0, 0.0), (13.0, 0.0), (13.0, 25.0), (0.0, 25.0), (0.0, 12.0), (-13.0, 12.0), (-13.0, 0.0)])
+        roof = gs.Bld("roof", ring + np.array([0.0, 11.0]), "roof", "", "OpenStreetMap", 4.2)
+        self.assertFalse(gs._canopy_shape(roof))
+        st = gs.Station("bp", 0.0, 45.0, "BP", "bp", ("p",), True)
+        self.assertIs(gs.find_canopy(st, SHOP, [SHOP, roof], ROAD), roof)
+        hall = gs.Bld("hall", ring * 1.6 + np.array([0.0, 6.0]), "roof", "", "OpenStreetMap", None)
+        self.assertIsNone(gs.find_canopy(st, SHOP, [SHOP, hall], ROAD))
+
     def test_long_canopy_one_roof(self):
         roof = rect("roof", 0.0, 22.0, 46.0, 18.0, cls="roof")
         site = gs.layout(STATION, [SHOP, roof], ROAD)

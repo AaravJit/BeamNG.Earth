@@ -372,8 +372,9 @@ def find_canopies(st, shop, blds, roads):
     canopy found so far (a big station's rows of them); without any, find_canopy's one untagged imagery outline, if
     any."""
     sc = _centre(shop.ring)
+    sides = not _pin_on_road(st, roads)
     roofs = [b for b in blds if b is not shop and b.cls in ROOF_CLASSES and _canopy_shape(b)
-             and not _across(sc, _centre(b.ring), roads)]
+             and not (sides and _across(sc, _centre(b.ring), roads))]
     found, near = [], [shop]
     grew = True
     while grew:
@@ -398,6 +399,24 @@ def _across(a, b, roads):
     return bool(roadsmod._crossings([seg], [ln for ln, _ in roads]))
 
 
+def _pin_on_road(st, roads):
+    """Whether the station's pin is on a public road's carriageway (roads: drive_lines): then it does not say which
+    side of the road the station is on, and the shop found nearest it may be across the road from its mapped canopies
+    (a Sunoco in Pittsburgh, its pin 2.4 m from the centre line: _across is not asked of a tagged roof)."""
+    p = np.array([[st.x, st.y]])
+    return any(len(ln) >= 2 and _seg_dist(p, ln[:-1], ln[1:])[0] <= hw for ln, hw in roads)
+
+
+def _roof_canopy(b):
+    """Whether a tagged roof can be the shop's own canopy (find_canopy): in a canopy's shape, or of a canopy's area
+    (CANOPY_AREA_M2) and height whatever its outline (a BP in Pittsburgh: 26 x 25 m, 461 m2, not a rectangle); never a
+    platform roof or a hall (Rio de Janeiro's 1355 m2 one, GitHub #308)."""
+    if _canopy_shape(b):
+        return True
+    return (CANOPY_AREA_M2[0] <= _area(b.ring) <= CANOPY_AREA_M2[1]
+            and (b.height is None or not np.isfinite(b.height) or b.height <= ROOF_MAX_H_M))
+
+
 def find_canopy(st, shop, blds, roads):
     """The station's canopy among blds, or None (then no building is touched): the nearest tagged roof within
     CANOPY_GAP_M of the shop's outline; else an untagged imagery outline (ML_SOURCES) that is not the shop, a canopy-sized
@@ -406,12 +425,13 @@ def find_canopy(st, shop, blds, roads):
     that passes (the user, 2026-10-23, on turning a car wash into a
     canopy: "I wouldn't like that")."""
     sc = _centre(shop.ring)
-    # (a tagged roof in a canopy's shape only, as find_canopies: a station beside a train station took its 1355 m2
+    # (a tagged roof in a canopy's shape or of a canopy's area only: a station beside a train station took its 1355 m2
     # platform roof and stood its pumps on the tracks, Rio de Janeiro, GitHub #308)
     roofs = [(_gap(b.ring, shop.ring), b.id, b) for b in blds
-             if b is not shop and b.cls in ROOF_CLASSES and _canopy_shape(b)]
-    # (never across a public road from the shop: the other corner's roof, GitHub #308)
-    roofs = [r for r in roofs if r[0] <= CANOPY_GAP_M and not _across(sc, _centre(r[2].ring), roads)]
+             if b is not shop and b.cls in ROOF_CLASSES and _roof_canopy(b)]
+    # (never across a public road from the shop: the other corner's roof, GitHub #308; unless the pin is on the road)
+    sides = not _pin_on_road(st, roads)
+    roofs = [r for r in roofs if r[0] <= CANOPY_GAP_M and not (sides and _across(sc, _centre(r[2].ring), roads))]
     if roofs:
         return min(roofs, key=lambda r: r[:2])[2]
     fronts = [_nearest_on([rl], sc) for rl in roads]
