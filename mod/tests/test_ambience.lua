@@ -22,7 +22,14 @@ local af = { calls = {} }
 function af.setNodeCloud(c) af.cloud = c end
 function af.setMainEvent(e) af.main = e end
 function af.setEnabled(v) af.enabled = v end
-extensions = { core_audioForest = af }
+local rb = { set = nil, cleared = 0 }
+function rb.createEmitterHost(ev) return { eventNameStr = ev } end
+function rb.updateRibbonData(r) r.numSegs = (#r.nodes - 4) / 2 + 1 end
+function rb.setRibbons(l) rb.set = l end
+function rb.recomputeMap() end
+function rb.clearNearFarLists() end
+function rb.clearAllSFXEmitters() rb.cleared = rb.cleared + 1 end
+extensions = { core_audioForest = af, core_audioRibbon = rb }
 local function patch(o)
   function o:setTransform() end
   function o:play() self.playing = true end
@@ -92,6 +99,40 @@ clock = 210
 amb.update(3)
 local now = S.liveOf('SFXEmitter')
 T.check(#now == 1 and now[1].id ~= old.id, 'a deleted room tone: made again')
+
+-- rivers: bank pairs across the flow at the surface, as wide as the water; made again on a change only
+local bk = amb.banks({ { 0, 0, 5, 10 }, { 10, 0, 5, 10 }, { 20, 0, 4, 6 } })
+T.check(#bk == 6, 'two bank points a node')
+T.check(bk[1][1] == 0 and bk[1][2] == 5 and bk[2][2] == -5 and bk[1][3] == 5, 'left then right of an eastward flow, half the width each')
+T.check(bk[5][2] == 3 and bk[6][2] == -3 and bk[5][3] == 4, 'the last node: its own width and z')
+local seaV = { riversVersion = 1 }
+local riverSet = { Ra = { kind = 'river', flow = 2, nodes = { { 0, 0, 5, 10 }, { 10, 0, 5, 10 } } },
+                   Rb = { kind = 'stream', flow = 1, nodes = { { 0, 50, 6, 4 }, { 0, 60, 6, 4 }, { 0, 70, 6, 4 } } } }
+seaV.rivers = function() return riverSet, 3 end
+amb.update(3, seaV)
+T.check(rb.set and #rb.set == 2 and rb.set[1].persistantId == 'Ra' and #rb.set[2].nodes == 6, 'a ribbon a river, in key order')
+T.check(rb.set[1].emitters[2].eventNameStr == amb.RIVER_EVENT and rb.set[1].depths[1] == 10 and rb.set[1].speed == 1,
+  'the stock river event, depth and speed')
+local first = rb.set
+seaV.riversVersion = 2
+amb.update(3, seaV)
+T.check(rb.set == first, 'the same rivers: not made again')
+amb.update(4, seaV)
+T.check(rb.set ~= first and #rb.set == 0 and rb.cleared == 1, 'another anchor\'s rivers: none, the emitters cleared')
+-- only the rivers near the listener; a river's ribbon made once
+riverSet.Rc = { kind = 'river', flow = 2, nodes = { { 5000, 0, 5, 10 }, { 5010, 0, 5, 10 } } }
+riverSet.Rd = { kind = 'canal', flow = 0.5, nodes = { { 0, 20, 5, 10 }, { 10, 20, 5, 10 } } }   -- (still water: none)
+seaV.riversVersion = 3
+amb.update(3, seaV)
+T.check(#rb.set == 2 and rb.set[1].persistantId == 'Ra', 'the far river left out')
+local ra, made = rb.set[1], amb.ribbonsMade
+lx = 4800
+clock = 300
+amb.update(3, seaV)
+T.check(#rb.set == 1 and rb.set[1].persistantId == 'Rc', 'moved: the river there instead')
+lx = 0
+amb.update(3, seaV)
+T.check(#rb.set == 2 and rb.set[1] == ra and amb.ribbonsMade == made + 1, 'back: the first ribbons reused, only Rc was made')
 
 amb.clear()
 T.check(#S.liveOf('SFXEmitter') == 0 and af.enabled == false, 'clear: the room tone goes')

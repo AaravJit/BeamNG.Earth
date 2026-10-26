@@ -1865,7 +1865,7 @@ local function onUpdate(dtReal, dtSim)
     t = mark('far', t)
     sea.update(st.anchorId, st.player)
     trees.update(st.anchorId, st.player, M.viewAway())
-    pcall(ambience.update, st.anchorId)      -- (sound never stops the world's updates)
+    pcall(ambience.update, st.anchorId, sea)      -- (sound never stops the world's updates)
     t = mark('sea+trees', t)
     local pb = nil
     if st.block then

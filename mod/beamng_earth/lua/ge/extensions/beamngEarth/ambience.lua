@@ -1,4 +1,4 @@
--- Forest wind and room tone (2026-10-26, the user: "Start with 1"): the stock maps' ambience
+-- Forest wind and room tone (2026-10-26, the user: "Start with 1"), and the rivers' sound: the stock maps' ambience
 -- (lua/ge/extensions/core/audioForest.lua: one wind emitter at the trees round the listener, louder and denser with
 -- more and bigger trees, and a room tone everywhere) fed from the vegetation tiles' sound nodes (server
 -- vegetation._ambience: a tile's trees and bushes in ~21 m squares, its ambience set by climate) instead of a
@@ -185,11 +185,110 @@ local function build(x, y)
   M.nodes, M.builds, M.buildMs = n, M.builds + 1, (os.clockhp() - t0) * 1000
 end
 
+-- Rivers: the stock river sound (lua/ge/extensions/core/audioRibbon.lua: of a level's "ribbons", strips along its
+-- rivers, the closest two play the water's sound at the listener's nearest points, louder nearer) fed from the
+-- server's rivers (sea.lua: centrelines with widths, server riverlines.py). A ribbon's nodes are bank pairs across
+-- the flow at the water's surface, as wide as the water; depth and speed as every stock ribbon's (10 and 1: its
+-- volume then hangs on the distance alone). (Wide calm rivers drawn as water tiles, lakes and the sea: none.)
+M.RIVER_EVENT = 'event:>Ambient>Water>River'
+M.RIVER_KINDS = { river = true, stream = true }   -- running water (canals are still: no rushing water there)
+M.RIBBON_DEPTH, M.RIBBON_SPEED = 10, 1
+M.RIBBON_WIDTH_MIN = 0.5
+
+-- Pure: a river's nodes ({x, y, z, width, ...} downstream) as ribbon nodes: { x, y, z } bank pairs, left then right
+-- of the flow, at the node's z.
+function M.banks(nodes)
+  local out, n = {}, #nodes
+  for i = 1, n do
+    local a, b, c = nodes[math.max(i - 1, 1)], nodes[math.min(i + 1, n)], nodes[i]
+    local tx, ty = b[1] - a[1], b[2] - a[2]
+    local l = math.sqrt(tx * tx + ty * ty)
+    if l < 1e-6 then tx, ty, l = 1, 0, 1 end
+    local h = math.max(tonumber(c[4]) or 0, M.RIBBON_WIDTH_MIN) / 2
+    local nx, ny = -ty / l * h, tx / l * h
+    out[#out + 1] = { c[1] + nx, c[2] + ny, c[3] }
+    out[#out + 1] = { c[1] - nx, c[2] - ny, c[3] }
+  end
+  return out
+end
+
+M.RIVER_M = 700         -- ribbons for the rivers this close to the listener (the stock module plays those within 400 m) ...
+M.RIVER_MOVE_M = 300    -- ... chosen again once the listener is this far from where they were chosen
+
+local riverVersion, riverAnchor, riverSig, riverAt = nil, nil, nil, nil
+local ribbonCache, boxes, cacheAnchor = {}, {}, nil     -- key -> ribbon / { x0, y0, x1, y1 } (the anchor's)
+M.ribbons, M.ribbonMs, M.ribbonBuilds, M.ribbonsMade = 0, 0, 0, 0
+
+local function ribbonOf(rb, key, r)
+  local nodes, depths = {}, {}
+  for _, p in ipairs(M.banks(r.nodes)) do
+    nodes[#nodes + 1] = vec3(p[1], p[2], p[3])
+    depths[#depths + 1] = M.RIBBON_DEPTH
+  end
+  local ev = M.RIVER_EVENT
+  local ribbon = { persistantId = key, name = key, isEnabled = true, isAmbient = false, isUpRibbon = false,
+    isTopActive = false, isQuadAndVolume = false, speed = M.RIBBON_SPEED, nodes = nodes, depths = depths,
+    emitters = { rb.createEmitterHost(ev), rb.createEmitterHost(ev), rb.createEmitterHost(ev),
+                 rb.createEmitterHost(ev), rb.createEmitterHost(ev) } }
+  rb.updateRibbonData(ribbon)
+  M.ribbonsMade = M.ribbonsMade + 1
+  return ribbon
+end
+
+local function setRibbons(rb, list)
+  rb.setRibbons(list)
+  rb.recomputeMap()
+  rb.clearNearFarLists()
+  -- no ribbons: the stock update stops at once, its emitters would keep their last volume
+  if #list == 0 then rb.clearAllSFXEmitters() end
+  M.ribbons = #list
+end
+
+-- The ribbons of the rivers near the listener (x, y), chosen again when sea.lua's rivers or the anchor changed or the
+-- listener moved RIVER_MOVE_M; a river's ribbon is made once per anchor (its key names its nodes: server riverlines).
+local function updateRivers(anchorId, sea, x, y)
+  local rb = extensions and extensions.core_audioRibbon
+  if not rb or not sea then return end
+  local moved = not riverAt or math.max(math.abs(x - riverAt[1]), math.abs(y - riverAt[2])) > M.RIVER_MOVE_M
+  if sea.riversVersion == riverVersion and anchorId == riverAnchor and not moved then return end
+  local t0 = os.clockhp()
+  riverVersion, riverAnchor, riverAt = sea.riversVersion, anchorId, { x, y }
+  local rivers, a = sea.rivers()
+  if a ~= anchorId then rivers = nil end
+  rivers = rivers or {}
+  if cacheAnchor ~= a then ribbonCache, boxes, cacheAnchor = {}, {}, a end   -- (a rebase moved their nodes)
+  local keys, r = {}, M.RIVER_M
+  for k, rv in pairs(rivers) do
+    local b = boxes[k]
+    if not b and M.RIVER_KINDS[rv.kind] and type(rv.nodes) == 'table' and #rv.nodes >= 2 then
+      b = { math.huge, math.huge, -math.huge, -math.huge }
+      for _, n in ipairs(rv.nodes) do
+        b[1], b[2], b[3], b[4] = math.min(b[1], n[1]), math.min(b[2], n[2]), math.max(b[3], n[1]), math.max(b[4], n[2])
+      end
+      boxes[k] = b
+    end
+    if b and x > b[1] - r and x < b[3] + r and y > b[2] - r and y < b[4] + r then keys[#keys + 1] = k end
+  end
+  for k in pairs(boxes) do if not rivers[k] then boxes[k], ribbonCache[k] = nil, nil end end
+  table.sort(keys)
+  local sig = tostring(a) .. '|' .. table.concat(keys, '|')
+  if sig == riverSig then return end
+  riverSig = sig
+  local list = {}
+  for _, k in ipairs(keys) do
+    ribbonCache[k] = ribbonCache[k] or ribbonOf(rb, k, rivers[k])
+    list[#list + 1] = ribbonCache[k]
+  end
+  setRibbons(rb, list)
+  M.ribbonMs, M.ribbonBuilds = (os.clockhp() - t0) * 1000, M.ribbonBuilds + 1
+end
+
 -- Every frame (core.lua): the cloud made again when the listener has moved or the tiles near it changed; the room
--- tone follows the listener. Another anchor's tiles go (a teleport), but a rebase's ghosts.
-function M.update(anchorId)
-  if not next(tiles) and not current then return end
+-- tone follows the listener. Another anchor's tiles go (a teleport), but a rebase's ghosts. sea: sea.lua (the rivers).
+function M.update(anchorId, sea)
   listener.x, listener.y, listener.z = SFXSystem.getPositionXYZ()
+  updateRivers(anchorId, sea, listener.x, listener.y)
+  if not next(tiles) and not current then return end
   local now = os.clockhp()
   for k, t in pairs(tiles) do
     if (t.ghost and now - t.ghost > M.GHOST_MAX_S) or (not t.ghost and t.anchor ~= anchorId) then
@@ -214,6 +313,10 @@ function M.clear()
   setRoomtone(nil)
   local af = forest()
   if af then af.setEnabled(false) end
+  local rb = extensions and extensions.core_audioRibbon
+  if rb and riverSig then setRibbons(rb, {}) end
+  riverVersion, riverAnchor, riverSig, riverAt = nil, nil, nil, nil
+  ribbonCache, boxes, cacheAnchor = {}, {}, nil
 end
 
 -- The level goes.
@@ -225,7 +328,8 @@ function M.status()
   local n = 0
   for _ in pairs(tiles) do n = n + 1 end
   return { tiles = n, nodes = M.nodes, builds = M.builds, buildMs = M.buildMs, wind = current and current[1],
-    roomtone = current and current[2] }
+    roomtone = current and current[2], ribbons = M.ribbons,
+    ribbonMs = M.ribbonMs, ribbonBuilds = M.ribbonBuilds }
 end
 
 return M

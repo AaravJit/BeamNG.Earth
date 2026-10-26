@@ -27,8 +27,9 @@ You can help support development by reporting [issues](https://github.com/TecnaG
   lots) with 3D grass and bushes.
 - Trees and forests from a canopy height model, regional species (conifers, broadleaf, palms, desert
   shrubs), autumn colours in season.
-- Forest sounds: the stock maps' wind in the trees (louder and fuller in dense, tall forest) and background sound,
-  the set by climate (temperate, US West Coast, Mediterranean, desert, tropical).
+- Forest and river sounds: the stock maps' wind in the trees (louder and fuller in dense, tall forest) and background
+  sound, the set by climate (temperate, US West Coast, Mediterranean, desert, tropical), and running water along
+  rivers and streams.
 - Buildings from Overture / OpenStreetMap with regional styles (US siding and brick, Alpine chalets, Nordic
   wood, Mediterranean stucco, East Asian and Latin American looks), real heights, roofs, windows, shopfronts,
   porches, churches with steeples, glass towers, far-away buildings drawn as a skyline.
