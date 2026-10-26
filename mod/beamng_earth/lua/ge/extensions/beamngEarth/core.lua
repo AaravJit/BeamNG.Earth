@@ -147,6 +147,8 @@ local bannerInfo = { port = net.PORT } -- banner.update's inputs, filled every f
 local horizonOn = false       -- hello.horizon (M1h); outlives levels like the connection
 local farRadius = nil         -- status.radius: the server's far-field radius (m), horizon mode only
 local cacheInfo = nil         -- the server's last 'cache' message (download cache usage); outlives levels
+local appPaths = nil          -- the server's last 'app_paths' (the cache folder, the BeamMP launcher; apppaths.py)
+local appPathAnswers = 0      -- how many of them answered a choice (the settings page tells a new answer by it)
 local updateInfo = nil       -- a newer version on GitHub: { current, latest, url } (server updates.py)
 local updateHidden = false   -- the notice closed for this session (its releases-page button)
 local cacheClears = 0         -- answers to a clear so far (the settings page waits for the next one)
@@ -957,6 +959,14 @@ local function onMessage(msg)
         done = tonumber(msg.done) or 0, total = tonumber(msg.total) or 0 }
       if msg.state == 'ready' or msg.state == 'error' then updateHidden = false end
     end
+  elseif t == 'app_paths' then
+    -- the settings page's "Cache folder" and "BeamMP launcher": the paths now, and the answer to the last choice
+    local r = type(msg.result) == 'table' and msg.result or nil
+    if r then appPathAnswers = appPathAnswers + 1 end
+    appPaths = { cacheDir = tostring(msg.cacheDir or ''), cacheNext = tostring(msg.cacheNext or ''),
+      beammp = tostring(msg.beammp or ''), answers = appPathAnswers,
+      result = r and { what = tostring(r.what or ''), ok = r.ok == true, text = tostring(r.text or '') }
+        or (appPaths and appPaths.result) }
   elseif t == 'cache' then
     -- the download cache (server cache.py): its usage for the settings page; clearedBytes answers a clear
     local prev = cacheInfo
@@ -2264,6 +2274,18 @@ end
 function M.cacheQuery()
   if not cacheReady() then return false end
   net.send({ type = 'cache' })
+  return true
+end
+
+-- The settings page's paths (server apppaths.py, kept for the app's next start): what = 'cache' (the download cache's
+-- folder) or 'beammp' (the BeamMP launcher), chosen in the system's own window (pick) or typed (path); without what,
+-- the paths only. The answer is an app_paths (appPathState().answers + 1).
+function M.appPathState() return appPaths end
+function M.appPath(what, pick, path)
+  if not cacheReady() then return false, 'server not connected' end
+  if not what then net.send({ type = 'app_path' })
+  elseif pick then net.send({ type = 'app_path', what = what, pick = true })
+  else net.send({ type = 'app_path', what = what, path = tostring(path or '') }) end
   return true
 end
 

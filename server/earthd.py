@@ -651,6 +651,7 @@ class Server:
         self.ui_pool = ThreadPoolExecutor(2, thread_name_prefix="map-ui")
         # (a thread per helper slot too: a far thread waits for its tile's builder, here or on a helper)
         self.cache_dir = cache_dir
+        self.picking = None          # the settings page's file window open (apppaths.pick): for which path
         revisitmod.CACHE_DIR = cache_dir
         self.refetched = 0              # far textures whose missing photo tiles were fetched here (make_tile)
         self.share_lock, self.group_helper = threading.Lock(), None    # (share_start: a BeamMP group's server)
@@ -3266,6 +3267,8 @@ class Connection:
             self.spawn(self.terrain_patch(msg))
         elif kind == "cache":
             self.on_cache(msg)
+        elif kind == "app_path":                # the settings page's folders: the cache's, the BeamMP launcher's
+            self.spawn(self.app_path(msg))
         elif kind == "perf_log":                # the mod's performance log (perflog.lua): its hitches, frame-rate drops,
             # minute lines and the machine, into this log beside the blocks' own timings (the file players send)
             lines = msg.get("lines")
@@ -3305,6 +3308,36 @@ class Connection:
             parts, n = res
             self.send({"type": "terrain_patch", "anchorId": aid, "key": key, "tris": n,
                        "parts": [{"path": p, "x": c[0], "y": c[1]} for p, c in parts]})
+
+    async def app_path(self, msg):
+        """The settings page's "Cache folder" and "BeamMP launcher" (apppaths.py, the user 2026-10-25: "Open the
+        explorer for that operating system but have a text input for the path as fallback"): what ('cache' or
+        'beammp') chosen in the system's window (pick: true) or typed (path), kept for the next start of the app;
+        always answered with app_paths (the paths now, and how the choice went). Without what: the paths only."""
+        what = msg.get("what")
+        pick, path = msg.get("pick") is True, msg.get("path")
+        if what not in ("cache", "beammp") or not (pick or isinstance(path, str)):
+            self.send(await self.loop.run_in_executor(None, app_paths_message, self.s.cache_dir, None))
+            return
+        if pick:
+            if self.s.picking:
+                self.send(await self.loop.run_in_executor(None, app_paths_message, self.s.cache_dir,
+                                                          {"what": what, "ok": False, "text": "a window is already open"}))
+                return
+            self.s.picking = what
+            try:
+                self.send(await self.loop.run_in_executor(None, app_paths_message, self.s.cache_dir, None))
+                state, path = await self.loop.run_in_executor(None, pick_app_path, what)
+            finally:
+                self.s.picking = None
+            if state != "ok":
+                result = {"what": what, "ok": False, "window": state != "none",
+                          "text": "nothing chosen" if state == "cancel" else "no file window here: type the path"}
+                self.send(await self.loop.run_in_executor(None, app_paths_message, self.s.cache_dir, result))
+                return
+        result = await self.loop.run_in_executor(None, set_app_path, what, path[:1000])
+        log.info("app path %s: %s", what, result.get("text"))
+        self.send(await self.loop.run_in_executor(None, app_paths_message, self.s.cache_dir, result))
 
     def on_cache(self, msg):
         """The settings page: capGb sets the cap (0 = unlimited), clear: true empties the cache (but this
@@ -4597,6 +4630,69 @@ def prune_own_caches(cache_dir):
             log.warning("cache: %s not cut back: %s", sub, e)
 
 
+def _app_modules():
+    """apppaths and bmplaunch: beside launcher.py, one folder up (the packaged app: in the bundle)."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if root not in sys.path:
+        sys.path.append(root)
+    import apppaths
+    import bmplaunch
+    return apppaths, bmplaunch
+
+
+def saved_cache_dir():
+    """The cache folder chosen on the settings page or with the app's --cache-dir (apppaths), or None."""
+    try:
+        return _app_modules()[0].saved_cache_dir()
+    except Exception:
+        return None
+
+
+def app_paths_message(cache_dir, result):
+    """app_paths for the settings page: the cache folder in use and the one kept for the next start, the BeamMP
+    launcher (the player's choice, else the one found), whether a window is open (picking), and result: the answer to
+    the last choice ({what, ok, text})."""
+    try:
+        ap, bm = _app_modules()
+        dd = ap.data_dir()
+        saved = ap.saved_cache_dir(dd) or ap.default_cache_dir()
+        launcher = bm.remembered(dd) or bm.find(dd) or ""
+    except Exception as e:          # (a source copy without them: the page shows the folder in use only)
+        log.debug("app paths: %s: %s", type(e).__name__, e)
+        saved, launcher = cache_dir, ""
+    m = {"type": "app_paths", "cacheDir": os.path.abspath(cache_dir), "cacheNext": os.path.abspath(saved),
+         "beammp": launcher}
+    if result:
+        m["result"] = result
+    return m
+
+
+def pick_app_path(what):
+    """The system's window for the cache folder or the BeamMP launcher: apppaths.pick's (state, path)."""
+    ap, bm = _app_modules()
+    if what == "cache":
+        return ap.pick("folder", "BeamNG.Earth: the folder for the download cache",
+                       start=ap.saved_cache_dir() or ap.default_cache_dir())
+    cur = bm.remembered(ap.data_dir()) or bm.find(ap.data_dir())
+    return ap.pick("file", f"BeamNG.Earth: your BeamMP launcher ({bm.EXE})",
+                   start=os.path.dirname(cur) if cur else None, name=bm.EXE)
+
+
+def set_app_path(what, path):
+    """Keep a typed or chosen path for the next start: {what, ok, text}."""
+    ap, bm = _app_modules()
+    if what == "cache":
+        d, err = ap.set_cache_dir(path)
+        if err:
+            return {"what": what, "ok": False, "text": err}
+        return {"what": what, "ok": True,
+                "text": f"{d or ap.default_cache_dir()}: used from the next start of BeamNG.Earth"}
+    exe = bm.remember(ap.data_dir(), path)
+    if not exe:
+        return {"what": what, "ok": False, "text": f"no {bm.EXE} in {ap.clean(path)}"}
+    return {"what": what, "ok": True, "text": f"{exe}: used from the next start of BeamNG.Earth"}
+
+
 def main():
     home = os.path.expanduser("~")
     ap = argparse.ArgumentParser(description="BeamNG.Earth companion server")
@@ -4605,8 +4701,9 @@ def main():
                                                      "current") if sys.platform == "win32"
                                         else os.path.join(home, ".local/share/BeamNG/BeamNG.drive/current")),
                     help="BeamNG user folder; output goes to <user-dir>/temp/beamngEarth/<sessionId>/")
-    ap.add_argument("--cache-dir", default=os.path.join(home, ".cache/beamng-earth"),
-                    help="download cache root (DEM tiles go to <cache-dir>/dem/)")
+    ap.add_argument("--cache-dir", default=saved_cache_dir() or os.path.join(home, ".cache/beamng-earth"),
+                    help="download cache root (DEM tiles go to <cache-dir>/dem/; default: the folder chosen on the "
+                         "settings page or with the app's --cache-dir, else .cache/beamng-earth in the home folder)")
     ap.add_argument("--peers", default=os.environ.get("BNGE_PEERS", ""),
                     help="compute sharing: helpers (HOST[:PORT] ...; peerwork.py serve on them) that build far tiles "
                          "when this server's own workers are busy (default: BNGE_PEERS)")

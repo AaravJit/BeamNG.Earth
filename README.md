@@ -168,9 +168,15 @@ the source: unzip it over the old folder and run the installer again).
 downloaded file (or this folder); the map cache is `.cache/beamng-earth` in your home folder (`~/.cache/beamng-earth` on Linux,
 `C:\Users\<you>\.cache\beamng-earth` on Windows).
 
-**The map cache on another drive:** start the app once with `--cache-dir PATH` (e.g. a shortcut to
-`BeamNG.Earth-<version>.exe --cache-dir "D:\BeamNG.Earth cache"`); it is remembered for the next starts, and
-`--cache-dir default` goes back. Move the old cache folder there first to keep what is already downloaded.
+**The map cache on another drive:** in the game, settings page > Download cache > **Cache folder**: **Change...** opens
+your system's folder window, or type or paste a folder and press **Use**. Or start the app once with `--cache-dir PATH`
+(e.g. a shortcut to `BeamNG.Earth-<version>.exe --cache-dir "D:\BeamNG.Earth cache"`). It is used from the next start
+and remembered; `default` goes back. Move the old cache folder there first to keep what is already downloaded.
+
+**BeamNG.drive installed somewhere else** (not in a Steam library the app finds, e.g. another launcher): the app asks
+where it is the first time (Enter opens your system's folder window, or type or paste the folder) and remembers it;
+`--game-dir PATH` sets it too, `--game-dir default` forgets it. A game folder outside Steam is started directly. On
+Linux, BeamMP's launcher finds the game only in Steam's libraries, so BeamMP isn't started with such a copy.
 
 More detail (traffic, the status bar, reporting problems, troubleshooting): [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
@@ -210,7 +216,8 @@ BeamNG.Earth runs on [BeamMP](https://beammp.com/) servers (in testing): drive t
 1. Start the BeamNG.Earth app (the same version as the server's). It starts BeamMP with the game: the official BeamMP
    launcher, unchanged (BeamMP's code is AGPL-3.0, [github.com/BeamMP](https://github.com/BeamMP)). If BeamMP isn't
    installed, the app asks once: **Yes / No / Don't ask again / Have it already** (the last one asks where your
-   launcher is; `--beammp-launcher PATH` sets it too, and it is kept for the next starts).
+   launcher is: Enter opens your system's file window, or type or paste the path; `--beammp-launcher PATH` sets it
+   too, and it is kept for the next starts). To change it later: settings page > Multiplayer > **BeamMP launcher**.
    - **Windows:** Yes downloads BeamMP's official launcher from BeamMP's GitHub releases (checked against the checksum
      BeamMP publishes; Windows Firewall then asks once whether it may use the network: allow it).
    - **Linux and Steam Deck:** BeamMP publishes no Linux download, so Yes builds its launcher on your computer from

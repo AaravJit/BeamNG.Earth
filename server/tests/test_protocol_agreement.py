@@ -114,6 +114,8 @@ MOD_TO_SERVER = {
     # the download cache (cache.py; additive): the page's size cap (GB, 0 = unlimited), a clear, or
     # neither (fresh usage numbers); always answered with a 'cache'
     "cache": {"capGb": F(NUM, OPT), "clear": F(bool, OPT)},
+    # 2026-10-25: the settings page's cache folder / BeamMP launcher (apppaths.py): chosen in a window or typed
+    "app_path": {"what": F(str, OPT), "pick": F(bool, OPT), "path": F(str, OPT)},
     # the ground's collision patch under another vehicle's collision island off the block (terrainpatch.lua / .py)
     "terrain_patch": {"anchorId": F(int), "key": F(str), "x0": F(NUM), "y0": F(NUM), "x1": F(NUM), "y1": F(NUM)},
     # the performance log (perflog.lua; additive): lines for the server's log (hitches, drops, minutes, the machine)
@@ -239,6 +241,7 @@ SERVER_TO_MOD = {
     # ... its answer: the patch's shape and centre, or an error (the mod asks again later)
     "terrain_patch": {"anchorId": F(int), "key": F(str), "parts": F(list, OPT),     # [{path, x, y}]: small meshes
                       "tris": F(int, OPT), "error": F(str, OPT)},
+    "app_paths": {"cacheDir": F(str), "cacheNext": F(str), "beammp": F(str), "result": F(dict, OPT)},
     "cache": {"v": F(int), "usedBytes": F(int), "capBytes": F(int), "files": F(int), "ready": F(bool),
               "managed": F(bool), "clearedBytes": F(int, OPT)},
 }
@@ -860,6 +863,8 @@ class ServerMessagesTest(test_server.ServerHarness):
         self.assertEqual(until(lambda m: m["type"] == "cache")["capBytes"], 10_000_000_000)
         c.send({"type": "cache", "clear": True})        # ... and "Clear cache"
         self.assertIn("clearedBytes", until(lambda m: m["type"] == "cache"))
+        c.send({"type": "app_path"})                    # the page's cache folder and BeamMP launcher (no choice made)
+        self.assertTrue(until(lambda m: m["type"] == "app_paths")["cacheDir"])
         c.send({"type": "share"})                       # a BeamMP session: our group service's port and code
         self.assertTrue(until(lambda m: m["type"] == "share")["code"])
         c.send({"type": "peers", "me": "1", "members": []})     # (alone: no group; nothing answered)
