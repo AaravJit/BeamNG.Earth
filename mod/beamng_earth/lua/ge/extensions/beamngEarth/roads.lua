@@ -262,6 +262,7 @@ local function dropTile(key)
   if t.props then require('beamngEarth/trees').dropKey((key:gsub(':', ':p', 1))) end
   if t.park then require('beamngEarth/parking').dropKey(key) end
   if t.fuel then require('beamngEarth/gasstations').dropKey(key) end
+  if t.sound then require('beamngEarth/ambience').dropSpaces(key) end
   tiles[key] = nil
 end
 
@@ -443,6 +444,10 @@ function M.onTile(msg, currentAnchor)
   if type(data.fuel) == 'table' and data.fuel[1] then      -- gas stations: pumps, refuel areas (gasstations.lua)
     require('beamngEarth/gasstations').onRows(msg.anchorId, key, data.fuel)
     tiles[key].fuel = true
+  end
+  if type(data.sound) == 'table' and data.sound[1] then    -- tunnels' and bridges' sound spaces (ambience.lua)
+    require('beamngEarth/ambience').onSpaces(key, data.sound)
+    tiles[key].sound = true
   end
   if type(data.wire) == 'table' and data.wire.shape and type(data.wire.pos) == 'table' then    -- pole wires
     walkQ[#walkQ + 1] = { key = key, walk = data.wire, what = 'wire', tile = tiles[key] }

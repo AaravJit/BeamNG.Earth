@@ -14,7 +14,12 @@ local clock = 0
 os.clockhp = function() return clock end
 local lx, ly = 0, 0
 SFXSystem = { getPositionXYZ = function() return lx, ly, 0 end }
-MatrixF = function() return {} end
+MatrixF = function()
+  local m = { yaw = 0, pos = nil }
+  function m:setFromEuler(v) self.yaw = v.z end
+  function m:setPosition(p) self.pos = p end
+  return m
+end
 Sim = { upcast = function(o) return o end }
 Engine = { generateUUID = function() return 'u' end }
 function simObjectExists(o) return S.objects[o.id] ~= nil end
@@ -31,7 +36,8 @@ function rb.clearNearFarLists() end
 function rb.clearAllSFXEmitters() rb.cleared = rb.cleared + 1 end
 extensions = { core_audioForest = af, core_audioRibbon = rb }
 local function patch(o)
-  function o:setTransform() end
+  function o:setTransform(m) self.xf = m end
+  function o:getId() return self.id end
   function o:play() self.playing = true end
   return o
 end
@@ -133,6 +139,21 @@ T.check(#rb.set == 1 and rb.set[1].persistantId == 'Rc', 'moved: the river there
 lx = 0
 amb.update(3, seaV)
 T.check(#rb.set == 2 and rb.set[1] == ra and amb.ribbonsMade == made + 1, 'back: the first ribbons reused, only Rc was made')
+
+-- tunnels' and bridges' sound spaces: a box a row, its ambience by kind, gone with the tile, moved by a rebase
+amb.onSpaces('1:3_4', { 0, 10, 20, 5, 42, 9.4, 8.2, 0.5, 1, 100, 0, 3, 30, 9, 24, 0, 7, 0, 0, 0, 1, 1, 1, 0 })
+local sp = S.liveOf('SFXSpace')
+T.check(#sp == 2, 'a space a known kind (kind 7: none): ' .. #sp)
+table.sort(sp, function(p, q) return p.id < q.id end)
+T.check(sp[1].fields.soundAmbience == 'Level_Tunnel_Closed' and sp[2].fields.soundAmbience == 'Level_Under_Bridge',
+  'the tunnel\'s and the bridge\'s ambience')
+T.check(sp[1].scale.x == 42 and sp[1].scale.y == 9.4 and sp[1].scale.z == 8.2 and sp[1].xf.yaw == -0.5
+  and sp[1].xf.pos.x == 10 and sp[1].xf.pos.z == 5, 'placed: full size, the yaw clockwise')
+amb.transform({ apply = function(_, x, y, z) return -y, x, z end })     -- (a quarter turn)
+T.check(math.abs(sp[1].xf.pos.x + 20) < 1e-9 and math.abs(sp[1].xf.pos.y - 10) < 1e-9
+  and math.abs(sp[1].xf.yaw + 0.5 + math.pi / 2) < 1e-9, 'a rebase turns and moves them')
+amb.dropSpaces('1:3_4')
+T.check(#S.liveOf('SFXSpace') == 0, 'the tile goes: its spaces with it')
 
 amb.clear()
 T.check(#S.liveOf('SFXEmitter') == 0 and af.enabled == false, 'clear: the room tone goes')

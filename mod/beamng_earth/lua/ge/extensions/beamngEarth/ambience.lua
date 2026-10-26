@@ -37,6 +37,7 @@ local lastBuild = -1e9
 local current = nil     -- { wind, roomtone } playing
 local roomtone = nil    -- its SFXEmitter (ours: it follows the listener; the stock one stays at the level's origin)
 local listener = vec3()
+local moveSpaces         -- (the tunnels' and bridges' sound spaces, below)
 M.nodes, M.builds, M.buildMs = 0, 0, 0
 
 -- Pure: the events of a tile's biome { set, variant } (nil for an unknown set).
@@ -78,6 +79,7 @@ function M.transform(xf)
     t.ghost = t.ghost or os.clockhp()
   end
   dirty = true
+  moveSpaces(xf)            -- (the road tiles' sound spaces: their tiles stay as ghosts the same way, roads.lua)
 end
 
 local function covered()
@@ -283,6 +285,64 @@ local function updateRivers(anchorId, sea, x, y)
   M.ribbonMs, M.ribbonBuilds = (os.clockhp() - t0) * 1000, M.ribbonBuilds + 1
 end
 
+-- Tunnels and bridges: the stock maps' sound spaces (SFXSpace boxes with an SFXAmbience: West Coast USA's
+-- Level_Tunnel_Closed in its tunnels, Level_Under_Bridge under its bridges; the engine applies one while the listener
+-- is inside) along a road tile's tunnel tubes and under its bridge decks (server roads.sound_boxes rows [kind, x, y,
+-- z, length, width, height, yaw]; a box's scale is its full size, its length along the yaw).
+M.SPACES = { [0] = 'Level_Tunnel_Closed', [1] = 'Level_Under_Bridge' }
+local spaces = {}       -- road tile key -> { { id, row }, ... }
+M.spacesMade = 0
+
+local function placeSpace(o, r)
+  local m = MatrixF(true)
+  m:setFromEuler(vec3(0, 0, -r[8]))         -- (clockwise: trees.lua)
+  m:setPosition(vec3(r[2], r[3], r[4]))
+  o:setTransform(m)
+  o:setScale(vec3(r[5], r[6], r[7]))
+end
+
+-- A road tile's sound spaces (roads.lua onTile: data.sound, its flat rows).
+function M.onSpaces(key, flat)
+  M.dropSpaces(key)
+  local list = {}
+  for i = 1, #flat - 7, 8 do
+    local r = { flat[i], flat[i + 1], flat[i + 2], flat[i + 3], flat[i + 4], flat[i + 5], flat[i + 6], flat[i + 7] }
+    local amb = M.SPACES[r[1]]
+    local o = amb and Sim.upcast(createObject('SFXSpace'))
+    if o then
+      placeSpace(o, r)
+      o:setField('soundAmbience', 0, amb)
+      o.canSave = false
+      o:registerObject('bngEarthSpace_' .. (M.spacesMade + 1))
+      list[#list + 1] = { id = o:getId(), row = r }
+      M.spacesMade = M.spacesMade + 1
+    end
+  end
+  spaces[key] = list
+end
+
+-- The tile goes (roads.lua dropTile).
+function M.dropSpaces(key)
+  for _, s in ipairs(spaces[key] or {}) do
+    local o = scenetree.findObjectById(s.id)
+    if o then o:delete() end
+  end
+  spaces[key] = nil
+end
+
+moveSpaces = function(xf)
+  for _, list in pairs(spaces) do
+    for _, s in ipairs(list) do
+      local r = s.row
+      local x, y, z = xf:apply(r[2], r[3], r[4])
+      local ax, ay = xf:apply(r[2] + math.cos(r[8]), r[3] + math.sin(r[8]), r[4])
+      r[2], r[3], r[4], r[8] = x, y, z, math.atan2(ay - y, ax - x)
+      local o = scenetree.findObjectById(s.id)
+      if o then placeSpace(o, r) end
+    end
+  end
+end
+
 -- Every frame (core.lua): the cloud made again when the listener has moved or the tiles near it changed; the room
 -- tone follows the listener. Another anchor's tiles go (a teleport), but a rebase's ghosts. sea: sea.lua (the rivers).
 function M.update(anchorId, sea)
@@ -309,6 +369,7 @@ end
 
 -- The server's tiles go (disconnect): the ambience with them.
 function M.clear()
+  for key in pairs(spaces) do M.dropSpaces(key) end
   tiles, dirty, builtAt, biome, current = {}, false, nil, nil, nil
   setRoomtone(nil)
   local af = forest()
@@ -329,7 +390,7 @@ function M.status()
   for _ in pairs(tiles) do n = n + 1 end
   return { tiles = n, nodes = M.nodes, builds = M.builds, buildMs = M.buildMs, wind = current and current[1],
     roomtone = current and current[2], ribbons = M.ribbons,
-    ribbonMs = M.ribbonMs, ribbonBuilds = M.ribbonBuilds }
+    ribbonMs = M.ribbonMs, ribbonBuilds = M.ribbonBuilds, spacesMade = M.spacesMade }
 end
 
 return M

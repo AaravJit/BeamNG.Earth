@@ -5014,6 +5014,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(vegmask::mask_polys, m)?)?;
     m.add_function(wrap_pyfunction!(ambience::audio_nodes, m)?)?;
     m.add_function(wrap_pyfunction!(ambience::audio_biome, m)?)?;
+    m.add_function(wrap_pyfunction!(ambience::sound_boxes, m)?)?;
     m.add_function(wrap_pyfunction!(vegmask::road_segments, m)?)?;
     m.add_function(wrap_pyfunction!(vegmask::disc_max, m)?)?;
     m.add_function(wrap_pyfunction!(vegmask::thin_tops, m)?)?;
@@ -5100,6 +5101,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(photofill::fill_photo, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 77)?;
+    m.add("VERSION", 78)?;
     Ok(())
 }

@@ -4553,6 +4553,39 @@ def shape_files(aid, tx, ty):
     return out
 
 
+# Sound spaces (the mod's ambience.lua makes them SFXSpaces: the stock maps' tunnel reverb in a tube, the one under a
+# bridge below its deck): kinds, and how far a bridge's space reaches under the deck's surface
+SOUND_TUNNEL, SOUND_BRIDGE = 0, 1
+SOUND_UNDER_M = 25.0
+SOUND_BOX_M, SOUND_TURN, SOUND_DZ_M, SOUND_EXTEND_M = 60.0, math.radians(10.0), 1.0, 1.0
+
+
+def sound_boxes(chunks):
+    """The sound spaces of a tile's chunks: along every tunnel tube (its floor to its vault) and under every bridge
+    deck (from its slab down SOUND_UNDER_M), as earthfast.sound_boxes rows [kind, x, y, z, length, width, height, yaw]
+    rounded, one flat list."""
+    import fast
+    import roadmesh
+    lines = []
+    for c in chunks:
+        if c.get("tunnel") and not c.get("no_tube"):
+            h = float(c.get("tunnel_h") or roadmesh.TUNNEL_H)
+            lines.append((SOUND_TUNNEL, c["n"], float(c["w"]) + 2 * roadmesh.TUNNEL_SHOULDER, 0.5, h + 0.5))
+        elif c.get("deck") and not c.get("tunnel"):
+            lines.append((SOUND_BRIDGE, c["n"], float(c["w"]), SOUND_UNDER_M, -roadmesh.DECK_DEPTH))
+    if not lines:
+        return []
+    fast.require(78, "sound_boxes")
+    pts = np.ascontiguousarray(np.concatenate([np.asarray(n, np.float64)[:, :3] for _, n, _, _, _ in lines]))
+    off = np.cumsum([0] + [len(n) for _, n, _, _, _ in lines]).astype(np.int64)
+    col = lambda k: np.ascontiguousarray([ln[k] for ln in lines], np.float64)     # noqa: E731
+    rows = fast._ef.sound_boxes(pts, off, col(0), col(2), col(3), col(4), SOUND_BOX_M, SOUND_TURN, SOUND_DZ_M,
+                                SOUND_EXTEND_M)
+    rows[:, 1:7] = np.round(rows[:, 1:7], 2)
+    rows[:, 7] = np.round(rows[:, 7], 4)
+    return rows.ravel().tolist()
+
+
 def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None, deck_mesh=None, bld=None,
                props=None, wires=None, park=None, tunnel_mesh=None, fuel=None,
                rail_mesh=None):
@@ -4568,6 +4601,9 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
     # (from PR #41, Madderose) with a road mesh the mod makes no DecalRoads: their chunks were ~36 % of the file it
     # parses on its main thread
     data = {"v": VERSION, "chunks": [] if road_mesh is not None else [c for c in chunks if not c.get("tube_only")]}
+    sound = sound_boxes(chunks)
+    if sound:
+        data["sound"] = sound
     if road_mesh is not None:
         x0, y0, _, _ = tile_bbox(tx, ty)
         shape = f"road_{aid}_{tx}_{ty}.cdae"
