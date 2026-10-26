@@ -149,4 +149,61 @@ for _, o in ipairs(S.liveOf('TSStatic')) do o:delete() end             -- (the l
 G.prewarm({ '/x/a.dae' })
 T.check(#S.liveOf('TSStatic') == 1, 'made again after the level went')
 
+-- a big station (the Buc-ee's in New Braunfels: 354 props, 23.8 ms in one frame) spawns over several frames: one
+-- object a governor slot, made (POIs, the collision rebuild) only once all of it is there
+local budget = 0
+local gov10 = { try = function() if budget > 0 then budget = budget - 1 return true end return false end,
+                charge = function() end }
+local function frame() budget = 10; G.update(gov10) end
+local function big(id, x)
+  local r = rec(id, x)
+  local p1 = r.props[1]
+  r.props = {}
+  for i = 1, 40 do
+    r.props[i] = { shape = p1.shape, pos = { (x or 0) + i, 5, 1 }, yaw = 0, scale = { 1, 1, 1 }, collide = (i % 2 == 0) }
+  end
+  return r
+end
+G.reset()
+for _, o in ipairs(S.liveOf('TSStatic')) do o:delete() end             -- (the prewarm's hidden shape above)
+collide = 0
+G.onRows(1, '1:7_7', { big('buc', 0) })
+frame()
+T.check(count('TSStatic') == 10, 'frame 1: 10 objects: ' .. count('TSStatic'))
+T.check(G.count() == 0 and collide == 0, 'not made yet, no collision rebuild yet')
+frame(); frame(); frame()
+T.check(count('TSStatic') == 40 and count('BeamNGGameplayArea') == 0, 'frame 4: the props, no areas yet')
+frame()
+T.check(count('BeamNGGameplayArea') == 2 and count('BeamNGPointOfInterest') == 2, 'frame 5: the areas')
+T.check(G.count() == 1 and collide == 1, 'made once, one collision rebuild: ' .. collide)
+local els5 = {}
+G.pois('beamng_earth', els5)
+T.check(#els5 == 1, 'its POIs once made')
+
+-- dropped mid-spawn: what was made goes, with a collision rebuild (its pumps may be in the collision already)
+G.reset()
+collide = 0
+G.onRows(1, '1:7_8', { big('half', 0) })
+frame()
+G.dropKey('1:7_8')
+T.check(count('TSStatic') == 0, 'the half-made station gone')
+T.check(collide == 1, 'a collision rebuild after deleting it')
+frame()
+T.check(count('TSStatic') == 0, 'nothing more made after the drop')
+
+-- a rebase mid-spawn: the objects made move with the world; the rest wait for the new frame's record
+G.reset()
+G.onRows(1, '1:7_9', { big('reb', 0) })
+frame()
+local first = scenetree.findObject and S.liveOf('TSStatic')[1]
+local y0 = first.pos.y
+G.transform(xf)
+T.near(first.pos.y, y0 - 20, 1e-9, 'a made object moved by the transform')
+frame()
+T.check(count('TSStatic') == 10, 'nothing more from the old frame record')
+G.onRows(2, '2:7_9', { big('reb', 0) })      -- the new anchor's tile
+for _ = 1, 5 do frame() end
+T.check(count('TSStatic') == 40 and G.count() == 1, 'finished from the new record')
+G.reset()
+
 T.done('test_gasstations')

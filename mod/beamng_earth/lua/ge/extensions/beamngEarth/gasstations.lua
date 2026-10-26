@@ -34,54 +34,72 @@ local function place(o, pos, q)
 end
 
 local function deleteObjs(st)
+  local any = #st.objs > 0
   for _, ob in ipairs(st.objs) do
     local o = scenetree.findObjectById(ob.id)
     if o then o:delete() end
   end
-  -- its colliding pumps and canopy out of the collision too (no invisible pump left to crash into)
-  if st.made and M.onCollide then M.onCollide() end
-  st.objs, st.pumps, st.made = {}, {}, false
+  -- its colliding pumps and canopy out of the collision too (no invisible pump left to crash into); a station half
+  -- made (spawnStep) may have some in it already, by another rebuild
+  if any and M.onCollide then M.onCollide() end
+  st.objs, st.pumps, st.made, st.cursor = {}, {}, false, nil
 end
 
-local function spawn(id, st)
+local function makeProp(st, p)
+  local o = createObject('TSStatic')
+  o:setField('shapeName', 0, p.shape)
+  -- the shapes' own collision meshes (West Coast USA leaves its fuel shapes at the default, 'Collision Mesh'), not
+  -- their visible triangles: every collidable triangle costs each global collision rebuild (CLAUDE.md)
+  o:setField('collisionType', 0, p.collide and 'Collision Mesh' or 'None')
+  o:setField('decalType', 0, 'None')
+  o.canSave = false
+  local s = p.scale or { 1, 1, 1 }
+  o:setScale(vec3(s[1], s[2], s[3]))
+  local q = yawQuat(p.yaw)
+  place(o, p.pos, q)
+  o:registerObject('')
+  scenetree.MissionGroup:addObject(o)
+  st.objs[#st.objs + 1] = { id = o:getID(), pos = { p.pos[1], p.pos[2], p.pos[3] }, q = q }
+end
+
+local function makeArea(id, st, i, a)
+  local an, inm = 'bne_fuel_' .. id .. '_a' .. i, 'bne_fuel_' .. id .. '_i' .. i
+  local ar = createObject('BeamNGGameplayArea')
+  ar.canSave = false
+  ar:setScale(vec3(a.half[1], a.half[2], a.half[3]))
+  local q = yawQuat(a.yaw)
+  place(ar, a.pos, q)
+  ar:registerObject(an)
+  scenetree.MissionGroup:addObject(ar)
+  local ic = createObject('BeamNGPointOfInterest')
+  ic.canSave = false
+  place(ic, a.icon, { 0, 0, 0, 1 })
+  ic:registerObject(inm)
+  scenetree.MissionGroup:addObject(ic)
+  st.objs[#st.objs + 1] = { id = ar:getID(), pos = { a.pos[1], a.pos[2], a.pos[3] }, q = q }
+  st.objs[#st.objs + 1] = { id = ic:getID(), pos = { a.icon[1], a.icon[2], a.icon[3] }, q = { 0, 0, 0, 1 } }
+  st.pumps[#st.pumps + 1] = { an, inm }
+end
+
+-- One step of a station's spawn: its next prop, or its next refuel area with its icon (st.cursor: the steps done). A
+-- big station (the Buc-ee's in New Braunfels: 354 props, 23.8 ms in one frame) so spreads over frames within the
+-- governor's budget, a step a slot. Made (its POIs, one collision rebuild) after its last step. True when done.
+local function spawnStep(id, st)
   local r = st.rec
-  for _, p in ipairs(r.props or {}) do
-    local o = createObject('TSStatic')
-    o:setField('shapeName', 0, p.shape)
-    -- the shapes' own collision meshes (West Coast USA leaves its fuel shapes at the default, 'Collision Mesh'), not
-    -- their visible triangles: every collidable triangle costs each global collision rebuild (CLAUDE.md)
-    o:setField('collisionType', 0, p.collide and 'Collision Mesh' or 'None')
-    o:setField('decalType', 0, 'None')
-    o.canSave = false
-    local s = p.scale or { 1, 1, 1 }
-    o:setScale(vec3(s[1], s[2], s[3]))
-    local q = yawQuat(p.yaw)
-    place(o, p.pos, q)
-    o:registerObject('')
-    scenetree.MissionGroup:addObject(o)
-    st.objs[#st.objs + 1] = { id = o:getID(), pos = { p.pos[1], p.pos[2], p.pos[3] }, q = q }
+  local props, areas = r.props or {}, r.areas or {}
+  local k = (st.cursor or 0) + 1
+  if k <= #props then
+    makeProp(st, props[k])
+  elseif k <= #props + #areas then
+    makeArea(id, st, k - #props, areas[k - #props])
   end
-  for i, a in ipairs(r.areas or {}) do
-    local an, inm = 'bne_fuel_' .. id .. '_a' .. i, 'bne_fuel_' .. id .. '_i' .. i
-    local ar = createObject('BeamNGGameplayArea')
-    ar.canSave = false
-    ar:setScale(vec3(a.half[1], a.half[2], a.half[3]))
-    local q = yawQuat(a.yaw)
-    place(ar, a.pos, q)
-    ar:registerObject(an)
-    scenetree.MissionGroup:addObject(ar)
-    local ic = createObject('BeamNGPointOfInterest')
-    ic.canSave = false
-    place(ic, a.icon, { 0, 0, 0, 1 })
-    ic:registerObject(inm)
-    scenetree.MissionGroup:addObject(ic)
-    st.objs[#st.objs + 1] = { id = ar:getID(), pos = { a.pos[1], a.pos[2], a.pos[3] }, q = q }
-    st.objs[#st.objs + 1] = { id = ic:getID(), pos = { a.icon[1], a.icon[2], a.icon[3] }, q = { 0, 0, 0, 1 } }
-    st.pumps[#st.pumps + 1] = { an, inm }
-  end
+  st.cursor = k
+  if k < #props + #areas then return false end
+  st.cursor = nil
   st.made = true
   poisDirty = true
   if M.onCollide then M.onCollide() end
+  return true
 end
 
 -- Re-place a made station's objects from a record of the same station (the same props and areas in the same order,
@@ -123,6 +141,10 @@ function M.onRows(aid, key, recs)
           queue[#queue + 1] = r.id
           poisDirty = true
         elseif st.stale then        -- queued at a rebase: now it has a record in the current frame
+          -- (half made with another layout: made again from this record; with the same, finished from it)
+          if st.cursor and (#(st.rec.props or {}) ~= #(r.props or {}) or #(st.rec.areas or {}) ~= #(r.areas or {})) then
+            deleteObjs(st)
+          end
           queue[#queue + 1] = r.id
         end
         st.rec, st.stale = r, nil
@@ -145,15 +167,25 @@ function M.dropKey(key)
   end
 end
 
--- Once per frame: spawn within the governor's budget, then the POI list gathered again if due.
+-- Once per frame: spawn within the governor's budget, a step a slot (spawnStep; the station at the queue's head until
+-- it is done), then the POI list gathered again if due.
 function M.update(gov)
-  while #queue > 0 and gov:try('fuel') do
-    local id = table.remove(queue, 1)
+  while #queue > 0 do
+    local id = queue[1]
     local st = stations[id]
-    if st and not st.made and not st.stale then
+    if not st or st.made or st.stale then
+      table.remove(queue, 1)              -- (gone, made, or waiting for its record in a new frame: onRows queues it again)
+    else
+      if not gov:try('fuel') then break end
       local t0 = M.now()
-      local ok, err = pcall(spawn, id, st)
-      if not ok then log('W', 'beamngEarth', 'gas station ' .. tostring(id) .. ': ' .. tostring(err)) end
+      local ok, done = pcall(spawnStep, id, st)
+      if not ok then
+        log('W', 'beamngEarth', 'gas station ' .. tostring(id) .. ': ' .. tostring(done))
+        deleteObjs(st)
+        table.remove(queue, 1)
+      elseif done then
+        table.remove(queue, 1)
+      end
       gov:charge('fuel', (M.now() - t0) * 1000)
     end
   end
