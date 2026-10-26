@@ -286,11 +286,12 @@ local function updateRivers(anchorId, sea, x, y)
 end
 
 -- Tunnels, bridges and cities: the stock maps' sound spaces (SFXSpace boxes with an SFXAmbience: West Coast USA's
--- Level_Tunnel_Closed in its tunnels, Level_Under_Bridge under its bridges, Amb_WC_City downtown; the engine applies
--- one while the listener is inside) along a road tile's tunnel tubes, under its bridge decks and over a dense city
+-- Level_Tunnel_Closed in its tunnels, Level_Under_Bridge_A under its bridge, Amb_WC_City downtown; the engine applies
+-- one while the listener is inside; plain Level_Under_Bridge does nothing: a horn under a deck rang the same with it
+-- as without, 45 dB down after 0.05 s, and 25 dB with _A, recorded 2026-10-26) along a road tile's tunnel tubes, under its bridge decks and over a dense city
 -- tile (server roads.sound_boxes rows [kind, x, y, z, length, width, height, yaw]; a box's scale is its full size,
 -- its length along the yaw).
-M.SPACES = { [0] = 'Level_Tunnel_Closed', [1] = 'Level_Under_Bridge', [2] = 'Amb_WC_City' }
+M.SPACES = { [0] = 'Level_Tunnel_Closed', [1] = 'Level_Under_Bridge_A', [2] = 'Amb_WC_City' }
 local spaces = {}       -- road tile key -> { { id, row }, ... }
 M.spacesMade = 0
 

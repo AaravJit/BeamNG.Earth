@@ -145,7 +145,7 @@ amb.onSpaces('1:3_4', { 0, 10, 20, 5, 42, 9.4, 8.2, 0.5, 1, 100, 0, 3, 30, 9, 24
 local sp = S.liveOf('SFXSpace')
 T.check(#sp == 2, 'a space a known kind (kind 7: none): ' .. #sp)
 table.sort(sp, function(p, q) return p.id < q.id end)
-T.check(sp[1].fields.soundAmbience == 'Level_Tunnel_Closed' and sp[2].fields.soundAmbience == 'Level_Under_Bridge',
+T.check(sp[1].fields.soundAmbience == 'Level_Tunnel_Closed' and sp[2].fields.soundAmbience == 'Level_Under_Bridge_A',
   'the tunnel\'s and the bridge\'s ambience')
 T.check(sp[1].scale.x == 42 and sp[1].scale.y == 9.4 and sp[1].scale.z == 8.2 and sp[1].xf.yaw == -0.5
   and sp[1].xf.pos.x == 10 and sp[1].xf.pos.z == 5, 'placed: full size, the yaw clockwise')
