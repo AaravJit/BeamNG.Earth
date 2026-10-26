@@ -38,7 +38,7 @@ You can help support development by reporting [issues](https://github.com/TecnaG
   railway lines as 3D track (ballast, sleepers and rails, rail bridges on piers, the ground cut and filled for the
   line) and tram tracks (street track where trams run on the road).
 - Gas stations with pumps, canopies and forecourts in the region's style, where the stock refuel prompt fills the
-  tank (off by default: **Gas stations** on the settings page).
+  tank.
 - Bridges drawn as their real type (beam, truss, arch, cable-stayed, suspension) with real heights and spans, piers
   that keep clear of the roads under them and 6 m (20 ft) of headroom over roads where the ground allows; a divided
   road's two decks joined across a narrow median; tunnels through hills, with portals, lights and low arches where

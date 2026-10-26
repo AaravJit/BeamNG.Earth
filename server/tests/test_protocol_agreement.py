@@ -94,7 +94,9 @@ MOD_TO_SERVER = {
               "slotSession": F(str, OPT), "slotsHeld": F((list, dict), OPT)},
     "prepare_anchor": {"requestId": F(int), "lat": F(NUM), "lon": F(NUM), "cx": F(NUM, OPT), "cy": F(NUM, OPT),
                        # 2026-10-22: the player's spot when not the origin (BeamMP: onto another player's anchor)
-                       "px": F(NUM, OPT), "py": F(NUM, OPT)},
+                       "px": F(NUM, OPT), "py": F(NUM, OPT),
+                       # 2026-10-25: 'teleport' (a declared teleport: provisional first block, boost) or 'rebase'
+                       "purpose": F(str, OPT)},
     "commit_anchor": {"anchorId": F(int)},
     "prepare_terrain": {"requestId": F(int), "anchorId": F(int), "cx": F(NUM), "cy": F(NUM)},
     "commit_terrain": {"anchorId": F(int), "cx": F(NUM), "cy": F(NUM)},
@@ -122,7 +124,7 @@ MOD_TO_SERVER = {
     "peers": {"me": F(str), "members": F(list)},
     # roads (roads.py; additive): the mod removed its roads (switched off and on again): send them again
     "roads_reset": {},
-    # gas stations (gasstations.py; additive): the settings page's switch, sent after every hello and on change
+    # gas stations (gasstations.py; additive): on, sent after every hello
     "gas_stations": {"on": F(bool)},
     "map_tiles": {"tiles": F(list)},       # the world map's basemap tiles as files (settings.mapTiles)
     "geocode": {"id": F(int), "q": F(str), "lat": F(NUM, OPT), "lon": F(NUM, OPT)},   # the map's search box
