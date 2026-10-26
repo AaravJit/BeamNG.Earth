@@ -309,10 +309,33 @@ def _bridges(aid, frame, elev):
     return bridges
 
 
+NAV_GRADED_M = 900.0        # m (Chebyshev) round the AI graph's centre where its ground is graded in full: the road tiles'
+                            # reach (roads.SEND_M + a tile), whose cells they plan anyway; beyond, only planned cells
+
+
+def _nav_bridges(aid, frame, elev):
+    """The AI graph's roads.BridgeProfiles of an anchor (its own: elev grades only the planned cells), kept per anchor
+    in this process."""
+    import roads as roadsmod
+    with _s.lock:
+        nav = _s.__dict__.setdefault("nav_bridges", {})
+        bridges = nav.get(aid)
+        if bridges is None:
+            bridges = nav[aid] = roadsmod.BridgeProfiles(
+                frame, lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads"), elev)
+            sea = getattr(_s, "sea", None)
+            bridges.wet = sea.depth if sea is not None else None
+            bridges.infra_fn = lambda key: _s.md.cell(key, layers=("infrastructure",), kind="demand").layers.get(
+                "infrastructure")
+            for old in sorted(nav)[:-ANCHORS_KEPT]:
+                del nav[old]
+    return bridges
+
+
 def navgraph(aid, lat, lon, zoom, x, y, out_dir, vfs_dir, serial, left_hand, mph, rules):
     """earthd.Server.build_navgraph here (a road-tile process): the AI road graph around (x, y) written to out_dir;
-    returns (vfs path, nodes, edges). The bridges' deck heights are this process's (the road tiles' own); in the
-    server they were built a second time, in its interpreter (13 s of its CPU in a 4-minute drive, 2026-10-20)."""
+    returns (vfs path, nodes, edges), in a road process (in the server's interpreter it cost 13 s of its CPU in a
+    4-minute drive, 2026-10-20). Past NAV_GRADED_M the ground is graded only under cells planned already."""
     import navgraph as navgraphmod
     import mapcells
     g, _ = _s.anchor(aid, lat, lon)
@@ -322,12 +345,24 @@ def navgraph(aid, lat, lon, zoom, x, y, out_dir, vfs_dir, serial, left_hand, mph
     keys = mapcells.cells_for_bbox(float(la.min()), float(lo.min()), float(la.max()), float(lo.max()))
     feats = [_s.md.cell(k, layers=("roads",), kind="demand").layers.get("roads") for k in keys]
 
-    def elev(la_, lo_):         # the physics ground, lifted under roads (as the road tiles')
-        z = ground(frame, la_, lo_, _s.dem.sample(la_, lo_, zoom))
-        return g.apply(la_, lo_, z, gradingmod.ROAD_LIFT) if g is not None else z
+    def elev(la_, lo_):         # the physics ground, lifted under roads (as the road tiles'); past their reach
+        z = ground(frame, la_, lo_, _s.dem.sample(la_, lo_, zoom))     # (NAV_GRADED_M) only under cells planned already
+        if g is None:
+            return z
+        la_, lo_, z = np.asarray(la_, np.float64), np.asarray(lo_, np.float64), np.asarray(z, np.float64)
+        e, n, _ = frame.geodetic_to_enu(la_.ravel(), lo_.ravel(), 0.0)
+        near = np.maximum(np.abs(np.asarray(e) - x), np.abs(np.asarray(n) - y)).reshape(la_.shape) <= NAV_GRADED_M
+        out = np.array(z, np.float64, copy=True)
+        if near.any():
+            out[near] = g.apply(la_[near], lo_[near], z[near], gradingmod.ROAD_LIFT)
+        if (~near).any():
+            out[~near] = g.apply(la_[~near], lo_[~near], z[~near], gradingmod.ROAD_LIFT, planned_only=True)
+        return out
     decks = {}
     try:
-        for fid, _spec, xy, z, _lon in _bridges(aid, frame, elev).parts(feats, (x - w, y - w, x + w, y + w)):
+        # (its own deck heights, on that ground: the road tiles' profiles plan every cell they touch, and the graph's
+        # 2.2 km window planned ~50 cells, minutes of a road process on a Windows PC, 2026-10-25)
+        for fid, _spec, xy, z, _lon in _nav_bridges(aid, frame, elev).parts(feats, (x - w, y - w, x + w, y + w)):
             decks.setdefault(fid, []).append((np.asarray(xy, np.float64)[:, :2], np.asarray(z, np.float64)))
     except Exception as e:          # no decks: the graph follows the ground under bridges
         log.debug("navgraph decks: %s: %s", type(e).__name__, e)

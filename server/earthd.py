@@ -2680,6 +2680,7 @@ PROVISIONAL_FIRST = os.environ.get("BNGE_PROVISIONAL", "1") != "0"
 PROVISIONAL_KEEP_S = 60.0   # the provisional .ter is deleted this long after its replacement was sent
 PADS_REFRESH_MS = 5.0       # the block in use built again with its gas station pads only below this speed (m/s) ...
 PADS_SETTLE_S = 3.0         # ... and this long after the last new pad (Connection.pads_refresh)
+NAV_WAIT_S = 30.0           # s an anchor's first AI graph waits at most for the road tiles round the car (nav_may_start)
 TELEPORT_PAUSE_M = 20000.0  # an anchor asked this far from the player is a teleport: the old place's work pauses
 TELEPORT_PAUSE_MAX_S = 120.0  # ... at most this long (the mod may never commit it)
 BOOST_MOVE_MS = 3.0         # the loading boost ends when the player moves faster than this (m/s) ...
@@ -2788,6 +2789,7 @@ class Connection:
         self.bldfar = vegetationmod.Tracker(buildingsmod.FAR_SEND_M, buildingsmod.FAR_DROP_M,
                                             buildingsmod.FAR_PER_POSE, "bldfar")
         self.nav = navgraphmod.Tracker()        # the AI road graph around the player (--traffic on)
+        self.nav_wait = {}                      # anchor id -> monotonic time its first AI graph was wanted
         self.gravity = gravitymod.Tracker()     # real gravity: recompute rule, last message sent
         self.credits = creditsmod.Tracker()     # data credits: throttle, last message sent (--credits on)
         self.ground_busy = False                # a groundahead job is running (one at a time)
@@ -3693,12 +3695,26 @@ class Connection:
         if self.s.buildings and aid == self.active:
             self.bldfar.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_far_bld_tile,
                                 view=self.view_at)
-        if self.s.traffic and aid == self.active:
+        if self.s.traffic and aid == self.active and self.nav_may_start(aid):
             self.nav.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_navgraph)
         if aid == self.active:
             self.send_progress(aid)
         self.refresh_status()
         self.credits.poke(self)             # the player moved: the near / far credits may change
+
+    def nav_may_start(self, aid):
+        """May the AI graph of anchor aid be built now? Its first one waits until half the road tiles round the car are
+        made (or NAV_WAIT_S): it takes a road process for its whole build, and on a teleport the road tiles under the
+        car came after it (a Windows PC's two road processes, 2026-10-25)."""
+        if self.nav.aid == aid:
+            return True                     # (a rebuild as the car moves on: the tiles round it are there)
+        t0 = self.nav_wait.get(aid)
+        if t0 is None:
+            t0 = self.nav_wait[aid] = time.monotonic()
+            for k in [k for k in self.nav_wait if k != aid]:
+                del self.nav_wait[k]
+        done, wanted = self.roads.progress() if self.roads is not None else (0, 0)
+        return (wanted > 0 and done * 2 >= wanted) or time.monotonic() - t0 >= NAV_WAIT_S
 
     def camera_away(self, cam):
         """The camera's (x, y) from a pose's cam when it is more than VIEW_AWAY_M from the car (a free camera, a far

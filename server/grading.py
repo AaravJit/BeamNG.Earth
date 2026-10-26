@@ -1318,19 +1318,27 @@ class Grader:
                 memo[mk] = out
         return out
 
-    def apply(self, lat, lon, base, lift=0.0, roads_only=False):
+    def apply(self, lat, lon, base, lift=0.0, roads_only=False, planned_only=False):
         """base (the ungraded heights at the points) graded under the roads. Same shape as base.
         lift: m added under the roads (tapering with the grading's weight): the physics block and the
         road mesh use ROAD_LIFT, the visible ground tiles 0, so the road mesh lies exactly on the
         ground the tyres touch while the visible ground stays a little below it (no z-fighting;
-        2026-10-11 the user saw the tyres sink into a road mesh lifted above the physics ground)."""
+        2026-10-11 the user saw the tyres sink into a road mesh lifted above the physics ground).
+        planned_only: graded only under the cells planned already (none planned here: the AI graph's wide window, whose
+        planning held a Windows PC's road processes for minutes, 2026-10-25)."""
         lat = np.asarray(lat, np.float64)
         lon = np.asarray(lon, np.float64)
         base = np.asarray(base, np.float64)
         shape = base.shape
         if base.size == 0:
             return base
-        plans, pack = self._plan_set(self._keys(lat, lon), roads_only)
+        keys = self._keys(lat, lon)
+        if planned_only:
+            with self.lock:
+                keys = [k for k in keys if k in self.cells]
+            if not keys:
+                return base
+        plans, pack = self._plan_set(keys, roads_only)
         if not plans:
             return base
         e, n, _ = self.frame.geodetic_to_enu(lat.ravel(), lon.ravel(), 0.0)
