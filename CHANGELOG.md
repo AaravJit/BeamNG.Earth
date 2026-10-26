@@ -2,6 +2,13 @@
 
 What changed in each release of BeamNG.Earth, newest first.
 
+## Unreleased
+
+### New
+- **Satellite maps on compatible vehicle dashboards** (GitHub #44), following the car's position and heading. The
+  World setting restores the stock page when disabled; vehicle changes and leaving Earth restore it too. Cached tiles
+  are delivered after the dashboard page loads, including when the setting is quickly switched off and back on.
+
 ## 1.6.3 beta (2026-10-25)
 
 Works with BeamNG.drive 0.40.3.

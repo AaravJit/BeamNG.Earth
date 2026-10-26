@@ -93,6 +93,9 @@ You can help support development by reporting [issues](https://github.com/TecnaG
 - GPS routes to any destination (OSRM on OpenStreetMap), with the stock route arrows on the road and the route
   on the game's minimap (bottom left), which shows the roads around you. The first 20 km (12 miles) of the
   route's map data and elevation download ahead while you drive, with a progress bar on the map.
+- Compatible vehicle dashboard maps show satellite imagery around the car, following its position and heading.
+  **Pause > Mods > BeamNG.Earth > World > Satellite map on dashboard** switches it off or on. Off, changing vehicles,
+  or leaving the Earth level restores the stock screen. It uses the companion's satellite tiles and their attribution.
 - **Autodrive**: the car drives itself along the GPS route (in lane, legal speed, minding traffic).
 - Saved places and recent places; "Where you left off" in the level select puts you back where you last drove (it
   is saved as you drive, at teleports and when the game closes).
