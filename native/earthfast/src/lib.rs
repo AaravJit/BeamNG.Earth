@@ -603,6 +603,36 @@ fn clip_polyline<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>, x0: f64,
     (numpy::ndarray::Array2::from_shape_vec((n, dim), data).unwrap().into_pyarray(py), starts.into_pyarray(py))
 }
 
+/// Which points (n, 2) lie within (tx, ty) of a target (k, 2) along both axes (a box test, through a grid of the
+/// targets): roads._skew_decks' pre-check of the features' ends against the bridges' ends (lon / lat).
+#[pyfunction]
+fn ends_near(py: Python<'_>, pts: PyReadonlyArray2<f64>, targets: PyReadonlyArray2<f64>, tx: f64, ty: f64) -> Vec<bool> {
+    let (p, t) = (pts.as_array(), targets.as_array());
+    py.allow_threads(|| {
+        let n = p.nrows();
+        if t.nrows() == 0 || !(tx > 0.0 && ty > 0.0) { return vec![false; n]; }
+        let mut map: std::collections::HashMap<(i64, i64), Vec<usize>> = Default::default();
+        for j in 0..t.nrows() {
+            let (x, y) = (t[[j, 0]], t[[j, 1]]);
+            if !(x.is_finite() && y.is_finite()) { continue; }
+            map.entry(((x / tx).floor() as i64, (y / ty).floor() as i64)).or_default().push(j);
+        }
+        (0..n).map(|i| {
+            let (x, y) = (p[[i, 0]], p[[i, 1]]);
+            if !(x.is_finite() && y.is_finite()) { return false; }
+            let (kx, ky) = ((x / tx).floor() as i64, (y / ty).floor() as i64);
+            for gx in kx - 1..=kx + 1 {
+                for gy in ky - 1..=ky + 1 {
+                    if let Some(v) = map.get(&(gx, gy)) {
+                        if v.iter().any(|&j| (t[[j, 0]] - x).abs() <= tx && (t[[j, 1]] - y).abs() <= ty) { return true; }
+                    }
+                }
+            }
+            false
+        }).collect()
+    })
+}
+
 /// roads._deck_crossings: (i, j, arc on i, arc on j) where polylines i < j cross away from their end points.
 /// pts (n, 2) all lines one after another, starts (L + 1,) where each begins (the last: n).
 #[pyfunction]
@@ -4383,6 +4413,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(first_use, m)?)?;
     m.add_function(wrap_pyfunction!(near_crossers, m)?)?;
     m.add_function(wrap_pyfunction!(clip_polyline, m)?)?;
+    m.add_function(wrap_pyfunction!(ends_near, m)?)?;
     m.add_function(wrap_pyfunction!(gpu_name, m)?)?;
     m.add_function(wrap_pyfunction!(seam_detect_gpu, m)?)?;
     m.add_function(wrap_pyfunction!(bc1_encode_gpu, m)?)?;
@@ -4414,6 +4445,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(photofill::fill_photo, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 74)?;
+    m.add("VERSION", 75)?;
     Ok(())
 }

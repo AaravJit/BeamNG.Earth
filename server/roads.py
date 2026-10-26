@@ -411,6 +411,41 @@ def _bridge_ends(feats):
     return got
 
 
+def _near_bridge_ends(feats):
+    """Per feature: may an end of its first ring lie within _skew_decks' 0.75 m of a bridge feature's end? A box test
+    in lon / lat, wider than that everywhere (earthfast.ends_near; most features are nowhere near a bridge, and their
+    exact test was most of _skew_decks' time, 2026-10-25). None: no pre-check. Kept on feats."""
+    got = feats.__dict__.get("_near_bridge_ends")
+    if got is not None:
+        return got
+    import fast
+    bidx, bends = _bridge_ends(feats)
+    n = len(feats)
+    ends = np.full((n, 2, 2), np.nan)
+    exact = np.zeros(n, bool)       # (no first ring of 2 points or more: _skew_decks' own test, which finds its ring)
+    for i in range(n):
+        if feats.part_off[i + 1] <= feats.part_off[i]:
+            continue                # (no parts: nothing to lengthen)
+        r = feats.ring_off[feats.part_off[i]]
+        a, b = feats.coord_off[r], feats.coord_off[r + 1]
+        if b - a >= 2:
+            ends[i, 0], ends[i, 1] = feats.lonlat[a], feats.lonlat[b - 1]
+        else:
+            exact[i] = True
+    lat = float(np.nanmax(np.abs(ends[:, :, 1]))) if np.isfinite(ends[:, :, 1]).any() else 0.0
+    if not np.isfinite(lat) or lat > 89.0:
+        feats.__dict__["_near_bridge_ends"] = got = None
+        return got
+    ty = 2.0 / 111320.0                                         # (2 m: 0.75 m and room)
+    tx = ty / max(math.cos(math.radians(min(lat + 0.1, 89.0))), 1e-3)
+    fast.require(75, "ends_near")
+    m = np.asarray(fast._ef.ends_near(np.ascontiguousarray(ends.reshape(-1, 2)),
+                                     np.ascontiguousarray(bends.reshape(-1, 2)), float(tx), float(ty)), bool)
+    got = m.reshape(n, 2).any(axis=1) | exact
+    feats.__dict__["_near_bridge_ends"] = got
+    return got
+
+
 def _skew_decks(feats, i, rngs):
     """rngs (feature i's raw_level_ranges) with its bridge ranges lengthened over the roads crossing under them
     (_bridge_reach), and a bridge range at an end of i where a bridge feature joined there reaches past its own end
@@ -422,6 +457,9 @@ def _skew_decks(feats, i, rngs):
     bidx, bends = _bridge_ends(feats)
     if not len(bidx):
         return rngs
+    near = _near_bridge_ends(feats)
+    if near is not None and not near[i]:
+        return rngs                             # (no end of it near a bridge's end: nothing joins it)
     rings = [np.asarray(r, np.float64) for part in feats.parts(i) for r in part if len(r) >= 2]
     if not rings:
         return rngs

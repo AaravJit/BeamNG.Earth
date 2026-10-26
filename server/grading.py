@@ -750,6 +750,7 @@ class Grader:
             q_node = list(zip(np.asarray(qe, f64).tolist(), np.asarray(qn, f64).tolist()))
         out = [[None, None] for _ in parts]
         held = False
+        todo = []                           # (part, end, candidate, at its last point): heights asked all at once
         for key in sorted(set(q_cell), key=str):
             cands = self._chain_cands(key)
             qs = [i for i, c in enumerate(q_cell) if c == key]
@@ -769,51 +770,97 @@ class Grader:
                     if c[1] >= sg and c[2] != rid and (best is None or c[1] > best[0][1]):
                         best = (c, bool(int(h) % 2))
                 if best is not None:
-                    z = self._stronger_z(best[0], best[1])
-                    if z is not None:
-                        out[j][end] = z
-                        held = True
+                    todo.append((j, end, best[0], best[1]))
+        for (j, end, _c, _l), z in zip(todo, self._stronger_zs([(c, last) for _j, _e, c, last in todo])):
+            if z is not None:
+                out[j][end] = z
+                held = True
         return [tuple(o) for o in out] if held else None
+
+    def _stronger_zs(self, asks):
+        """_stronger_z of each (candidate, at_last) of asks, the ones not kept yet planned in one plan_roads call (the
+        same plans: each part is planned on its own; its cost is per call, ~1 ms, 935 calls in 4 Penn Station cells,
+        2026-10-25)."""
+        memo = self.__dict__.setdefault("_strong_memo", {})
+        keys = [self._strong_key(c, last) for c, last in asks]
+        with self.lock:
+            miss = [n for n, k in enumerate(keys) if k not in memo]
+        jobs, seen = [], set()
+        for n in miss:
+            if keys[n] not in seen:
+                seen.add(keys[n])
+                jobs.append(n)
+        if len(jobs) > 1:
+            try:
+                preps = [self._strong_part(*asks[n]) for n in jobs]
+                parts = [(part, asks[n][0][4]) for n, (part, _last, _whole) in zip(jobs, preps)]
+                ext = self._extensions(parts, [asks[n][0][5] for n in jobs])
+                plans = plan_roads(self.frame, parts, self.elev, None, ext, cuts=False)
+                for n, (part, last, whole), p in zip(jobs, preps, plans):
+                    self._strong_keep(asks[n][0], keys[n], p, last, whole)
+            except Exception as e:      # one at a time, each its own failure (_stronger_z)
+                log.debug("grading: pin heights at once: %s: %s", type(e).__name__, e)
+        return [self._stronger_z(c, last) for c, last in asks]
+
+    @staticmethod
+    def _strong_key(cand, at_last):
+        xy, rid = cand[0], cand[2]
+        e = xy[-1 if at_last else 0]
+        return (rid, round(float(e[0]), 1), round(float(e[1]), 1))
+
+    def _strong_part(self, cand, at_last):
+        """(the lon/lat part planned for _stronger_z, whose end is asked for: its last point?, the whole part?)"""
+        xy, _sg, rid, ring, spec, fid = cand
+        part = ring
+        if float(np.hypot(*np.diff(xy, axis=0).T).sum()) > LONG_PART_M:
+            end = xy[-1] if at_last else xy[0]
+            m = CLIP_MARGIN_M
+            runs = clip_polyline(xy, (end[0] - m, end[1] - m, end[0] + m, end[1] + m))
+            run = min(runs, key=lambda r: min(np.hypot(*(r[0] - end)), np.hypot(*(r[-1] - end)))) if runs else None
+            if run is not None:
+                la, lo, _ = self.frame.enu_to_geodetic(run[:, 0], run[:, 1], 0.0)
+                part = np.stack([np.asarray(lo), np.asarray(la)], axis=1)
+                at_last = bool(np.hypot(*(run[-1] - end)) <= np.hypot(*(run[0] - end)))
+        return part, at_last, part is ring
+
+    def _strong_keep(self, cand, k, p, at_last, whole):
+        """Keep a _stronger_z height (and the other end's, for a part planned whole)."""
+        z, other = None, None
+        if p is not None:
+            z = float(p.z[-1] if at_last else p.z[0])
+            if whole:
+                xy, rid = cand[0], cand[2]
+                e2 = xy[0 if at_last else -1]
+                other = ((rid, round(float(e2[0]), 1), round(float(e2[1]), 1)), float(p.z[0] if at_last else p.z[-1]))
+        memo = self.__dict__.setdefault("_strong_memo", {})
+        with self.lock:
+            if len(memo) > 4096:
+                memo.clear()
+            memo.setdefault(k, z)
+            if other is not None:
+                memo.setdefault(*other)
 
     def _stronger_z(self, cand, at_last):
         """The planned height of a candidate part (_chain_cands') at its first or last point: its own plan (its chains,
-        no pins), within CLIP_MARGIN_M of that point when it is long. Kept per part end."""
-        xy, _sg, rid, ring, spec, fid = cand
-        k = (rid, round(float(xy[-1 if at_last else 0][0]), 1), round(float(xy[-1 if at_last else 0][1]), 1))
+        no pins), within CLIP_MARGIN_M of that point when it is long. Kept per part end (a short part's plan gives both
+        ends' heights: the other kept too)."""
+        k = self._strong_key(cand, at_last)
         memo = self.__dict__.setdefault("_strong_memo", {})
         with self.lock:
             if k in memo:
                 return memo[k]
-        z = None
-        other = None                    # (a short part's plan gives both ends' heights: the other kept too)
         try:
-            part = ring
-            if float(np.hypot(*np.diff(xy, axis=0).T).sum()) > LONG_PART_M:
-                end = xy[-1] if at_last else xy[0]
-                m = CLIP_MARGIN_M
-                runs = clip_polyline(xy, (end[0] - m, end[1] - m, end[0] + m, end[1] + m))
-                run = min(runs, key=lambda r: min(np.hypot(*(r[0] - end)), np.hypot(*(r[-1] - end)))) if runs else None
-                if run is not None:
-                    la, lo, _ = self.frame.enu_to_geodetic(run[:, 0], run[:, 1], 0.0)
-                    part = np.stack([np.asarray(lo), np.asarray(la)], axis=1)
-                    at_last = bool(np.hypot(*(run[-1] - end)) <= np.hypot(*(run[0] - end)))
+            part, last, whole = self._strong_part(cand, at_last)
             # (the profile alone: its cutting's walls cost most of a plan and no height, 2026-10-25)
-            p = plan_roads(self.frame, [(part, spec)], self.elev, None, self._extensions([(part, spec)], [fid]),
-                           cuts=False)[0]
-            if p is not None:
-                z = float(p.z[-1] if at_last else p.z[0])
-                if part is ring:
-                    e2 = xy[0 if at_last else -1]
-                    other = ((rid, round(float(e2[0]), 1), round(float(e2[1]), 1)), float(p.z[0] if at_last else p.z[-1]))
+            p = plan_roads(self.frame, [(part, cand[4])], self.elev, None,
+                           self._extensions([(part, cand[4])], [cand[5]]), cuts=False)[0]
+            self._strong_keep(cand, k, p, last, whole)
         except Exception as e:      # not held rather than no grading
-            log.debug("grading: pin height of %s: %s: %s", fid, type(e).__name__, e)
+            log.debug("grading: pin height of %s: %s: %s", cand[5], type(e).__name__, e)
+            with self.lock:
+                memo[k] = None
         with self.lock:
-            if len(memo) > 4096:
-                memo.clear()
-            memo[k] = z
-            if other is not None:
-                memo.setdefault(*other)
-        return z
+            return memo.get(k)
 
     def _clip_box(self, key, margin=CLIP_MARGIN_M):
         """The cell's box in the frame (east / north), margin wider each side; None for a key without bounds."""
@@ -1052,9 +1099,15 @@ class Grader:
                         if len(ring) >= 2 and (kk not in parts or len(ring) > len(parts[kk][0])):
                             parts[kk] = (ring, sp)
         bridges, ground_l, ends, end_of, bcls = [], [], [], [], []
-        for (fid, kind, j), (ring, sp) in sorted(parts.items()):
-            e, n, _ = self.frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
-            line = np.stack([np.asarray(e), np.asarray(n)], axis=1)
+        items = sorted(parts.items())
+        if items:               # (the frame's conversion once for every part: it is per call)
+            allr = np.concatenate([ring for _k, (ring, _sp) in items])
+            ae, an, _ = self.frame.geodetic_to_enu(allr[:, 1], allr[:, 0], 0.0)
+            axy = np.stack([np.asarray(ae, np.float64), np.asarray(an, np.float64)], axis=1)
+        k0 = 0
+        for (fid, kind, j), (ring, sp) in items:
+            line = axy[k0:k0 + len(ring)]
+            k0 += len(ring)
             if kind == "bridge":
                 end_of += [len(bridges), len(bridges)]
                 ends += [line[0], line[-1]]
