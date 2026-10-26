@@ -12,7 +12,10 @@ createObject = function(class)
     -- a Forest of its own items (trees.lua: one per tile), deleted with them
     local mine = {}
     local fdata = {}
-    function fdata:createNewItem(d, m, sc) local it = { d = d, m = m, sc = sc }; items[it] = true; mine[it] = true; return it end
+    function fdata:createNewItem(d, m, sc)
+      if CREATE_HOOK then CREATE_HOOK() end      -- (the time budget's tests: a fake clock's tick)
+      local it = { d = d, m = m, sc = sc }; items[it] = true; mine[it] = true; return it
+    end
     function fdata:removeItem(it) items[it] = nil; mine[it] = nil end
     function o:getData() return fdata end
     local del = o.delete
@@ -37,6 +40,9 @@ jsonDecode = function(s)
 end
 local trees = require('beamngEarth/trees')
 trees.EVERY_N = 1               -- (every update works here; the batching is tested below)
+-- (no time budget, no spare Forests: both tested at the end)
+local FRAME_MS, POOL_SPARE = trees.FRAME_MS, trees.POOL_SPARE
+trees.FRAME_MS, trees.POOL_SPARE = math.huge, 0
 local function count() local n = 0; for _ in pairs(items) do n = n + 1 end; return n end
 
 -- the variant: a height inside its range, scaled to it
@@ -294,4 +300,107 @@ trees.update(4, { x = 2, y = 10 })
 T.check(count() == 1, 'unknown group: only the bench is made')
 T.check(trees.unknownGroups.nl_unknown_sign == true, 'unknown group: noted')
 trees.clear()
+
+-- the items a run made: shape, position, scale (the same trees in the same places?)
+local function placed()
+  local out = {}
+  for it in pairs(items) do
+    out[#out + 1] = string.format('%s %.2f %.2f %.2f %.3f %s', it.d.fields.shapeFile, it.m.p.x, it.m.p.y, it.m.p.z, it.sc,
+      it.d.fields.collidable)
+  end
+  table.sort(out)
+  return table.concat(out, ';')
+end
+
+-- a tree frame's Lua time (FRAME_MS; a fake clock, 1 ms an item made): the frame stops once it is spent, the next goes
+-- on from the row it stopped at (not the tile's first), and in the end the same items in the same places as without it
+do
+  trees.onTile({ anchorId = 10, key = '0_0', path = '/t/v.json', n = 100 }, 10)
+  trees.update(10, { x = 50, y = 50 })
+  local unbudgeted = placed()
+  trees.clear()
+  local now, clock = 0, trees.clock
+  CREATE_HOOK = function() now = now + 1 end
+  trees.clock = function() local t0 = now; return function() return now - t0 end end
+  trees.FRAME_MS = 10
+  trees.onTile({ anchorId = 10, key = '0_0', path = '/t/v.json', n = 100 }, 10)
+  trees.update(10, { x = 50, y = 50 })
+  T.check(count() == 11, 'a frame stops once its time is spent: ' .. count())
+  trees.update(10, { x = 50, y = 50 })
+  T.check(count() == 22, 'the next frame goes on: ' .. count())
+  T.check(trees.lastRows == 100 - 11, 'from the row it stopped at: ' .. tostring(trees.lastRows))
+  for _ = 1, 10 do trees.update(10, { x = 50, y = 50 }) end
+  T.check(count() == 100 and placed() == unbudgeted, 'in the end the same items in the same places')
+  for _ = 1, 10 do trees.update(10, { x = 50, y = 1900 }) end
+  T.check(count() == 20 and solidCount() == 0, 'far: thinned to the far ring, nothing solid')
+  -- near again: its 20 items re-made solid, as many as the caller's time for the frame allows (frameMs)
+  trees.update(10, { x = 50, y = 50 }, nil, 3)
+  T.check(count() == 20 and solidCount() == 4, "the caller's time for the frame (frameMs): " .. solidCount())
+  CREATE_HOOK, trees.clock, trees.FRAME_MS = nil, clock, math.huge
+  trees.clear()
+end
+
+-- frameMs 0 (core: the governor's heavy frame or its quiet frames): no tree work, and the batch waits for a frame with
+-- time, not the next EVERY_N-th
+do
+  trees.EVERY_N = 3
+  trees.onTile({ anchorId = 11, key = '0_0', path = '/t/v.json', n = 100 }, 11)
+  trees.update(11, { x = 50, y = 50 }, nil, 0)
+  trees.update(11, { x = 50, y = 50 }, nil, 0)
+  trees.update(11, { x = 50, y = 50 })
+  trees.update(11, { x = 50, y = 50 })
+  T.check(count() == 0, 'heavy frames do not count towards the batch')
+  trees.update(11, { x = 50, y = 50 }, nil, 0)
+  T.check(count() == 0, 'none in a heavy frame')
+  trees.update(11, { x = 50, y = 50 })
+  T.check(count() == 100, 'the batch in the next frame with time')
+  trees.EVERY_N = 1
+  trees.clear()
+end
+
+-- a new Forest costs ~9 ms: one a frame at most (two new tiles, no Forest in the pool: the second waits a frame), and
+-- spares made in frames that change nothing, POOL_SPARE at most, taken by the next new tiles
+do
+  trees.reset()                 -- (an empty pool, as a new level)
+  local f0 = forests
+  trees.onTile({ anchorId = 12, key = '0_0', path = '/t/v.json', n = 100 }, 12)
+  trees.onTile({ anchorId = 12, key = '1_0', path = '/t/v.json', n = 100 }, 12)
+  trees.update(12, { x = 256, y = 128 })
+  T.check(forests == f0 + 1 and count() == 100, 'one new Forest a frame: the second tile waits')
+  trees.update(12, { x = 256, y = 128 })
+  T.check(forests == f0 + 2 and count() == 200, 'the next frame: the second tile')
+  trees.POOL_SPARE = 2
+  trees.update(12, { x = 256, y = 128 })
+  T.check(forests == f0 + 3 and count() == 200, 'a frame that changed nothing makes a spare Forest')
+  trees.update(12, { x = 256, y = 128 })
+  trees.update(12, { x = 256, y = 128 })
+  T.check(forests == f0 + 4, 'POOL_SPARE spares at most')
+  trees.onTile({ anchorId = 12, key = '0_1', path = '/t/v.json', n = 100 }, 12)
+  trees.onTile({ anchorId = 12, key = '1_1', path = '/t/v.json', n = 100 }, 12)
+  trees.update(12, { x = 256, y = 128 })
+  T.check(forests == f0 + 4 and count() == 400, 'the next new tiles take the spares: no Forest made in their frame')
+  trees.POOL_SPARE = 0
+  trees.clear()
+end
+
+-- the row cap (ROWS_PER_FRAME) leaves a tile's refresh (navgraph's signal heads: M.suppress) for a later frame; it
+-- dropped it, and the tile kept its static signal under the switchable one
+do
+  files['/t/sig'] = '{ groups = { "signal" }, items = { {0, 10, 10, 0, 0, 1, 9, 0.0} } }'
+  trees.onTile({ anchorId = 13, key = '0_0', path = '/t/sig', n = 1 }, 13)
+  trees.onTile({ anchorId = 13, key = '1_0', path = '/t/sig', n = 1 }, 13)
+  trees.update(13, { x = 256, y = 128 })
+  T.check(count() == 2, 'a signal in each tile')
+  local cap = trees.ROWS_PER_FRAME
+  trees.ROWS_PER_FRAME = 0
+  trees.suppress = function(g) return g == 'signal' end
+  trees.refresh()
+  trees.update(13, { x = 256, y = 128 })
+  T.check(count() == 1, 'the row cap: one tile this frame')
+  trees.update(13, { x = 256, y = 128 })
+  T.check(count() == 0, 'the other tile in the next')
+  trees.suppress, trees.ROWS_PER_FRAME = nil, cap
+  trees.clear()
+end
+trees.FRAME_MS, trees.POOL_SPARE = FRAME_MS, POOL_SPARE
 T.done('test_trees')

@@ -46,6 +46,19 @@ M.NO_COLLIDE = { shrub = true, desert_shrub = true, door = true, wallsign_logist
 -- ~20 shapes among ~130k items cost ~100 ms. A frame touches shapes whose items add up to SHAPE_ITEMS_PER_FRAME at most
 -- (at least one shape), and bushes (half of all items, one shape alone 34k) show near the player only.
 M.SHAPE_ITEMS_PER_FRAME = 4000
+-- A tree frame's Lua time (checked after every item made or removed, and every CHECK_ROWS rows looked at): the item
+-- budget alone let frames run 30-180 ms when their items' shapes loaded for the first time or new Forests were made
+-- (2026-10-26, a Fells Point drive: 119 tree frames of 8 ms or more, 24.8 ms on average, two thirds of it
+-- making Forests). More while the world loads (core: the governor's loading mode, a teleport or the car standing), none
+-- in the governor's heavy frames.
+M.FRAME_MS = 4.0
+M.LOADING_FRAME_MS = 12.0
+local CHECK_ROWS = 256
+-- Registering a new Forest costs ~9 ms (in-game 2026-10-26: 8-10 ms each, named or not, whatever its data file), and
+-- the tiles that came at once made several in one frame: FORESTS_PER_FRAME at most, and POOL_SPARE kept ready in the
+-- pool, made one in a tree frame that changes no item.
+M.FORESTS_PER_FRAME = 1
+M.POOL_SPARE = 4
 -- The engine tells shapes apart by their path, so a tile's items use one of SHAPE_VARIANTS spellings of each shape's
 -- path ('dir/./name', 'dir/././name', ...: the same file, a shape of its own), which splits the big populations (one
 -- beech ~7.7k items: a frame touching it cost ~4-9 ms). A variant's first items cost one ~12 ms frame (its load).
@@ -179,6 +192,7 @@ local MATERIALS = {
 }
 
 local stopwatch = require('beamngEarth/stopwatch')
+M.clock = stopwatch.new      -- the tree frame's clock (FRAME_MS; tests: their own)
 local tiles = {}        -- key "a:tx_ty" -> { anchor, cx, cy, f (flat items), s (stride), n, made = { i -> item }, shown }
 local foci = {}         -- other vehicles' collision foci { x, y, r, trees } (M.setFoci, collisionfoci.lua)
 local ghostSince = nil               -- since the last rebase that left ghost tiles (M.transform)
@@ -190,6 +204,7 @@ M.unknownGroups = {}      -- groups seen without a CATALOG entry (logged once ea
 
 local pool = {}          -- ids of empty Forests to reuse
 local forestCount = 0
+local newForests = 0     -- Forests made this tree frame (FORESTS_PER_FRAME)
 M.forests = 0
 
 -- Pure: the n-th pool Forest's name.
@@ -197,7 +212,17 @@ function M.forestName(n)
   return M.FOREST_NAME .. '_' .. tostring(n)
 end
 
--- The tile's Forest: its own, else one from the pool, else a new one.
+local function newForest()
+  forestCount = forestCount + 1
+  newForests = newForests + 1
+  local f = createObject('Forest')
+  f:registerObject(M.forestName(forestCount))
+  if scenetree.MissionGroup then scenetree.MissionGroup:addObject(f) end
+  M.forests = forestCount
+  return f
+end
+
+-- The tile's Forest: its own, else one from the pool, else a new one; nil when this frame made its new ones already.
 local function forest(t)
   local f = t.forestId and scenetree.findObjectById(t.forestId)
   while not f and #pool > 0 do
@@ -205,11 +230,8 @@ local function forest(t)
     if f then f:setPosRot(0, 0, 0, 0, 0, 0, 1) end       -- a ghost's (M.transform) had the rebase's transform
   end
   if not f then
-    forestCount = forestCount + 1
-    f = createObject('Forest')
-    f:registerObject(M.forestName(forestCount))
-    if scenetree.MissionGroup then scenetree.MissionGroup:addObject(f) end
-    M.forests = forestCount
+    if newForests >= M.FORESTS_PER_FRAME then return nil end
+    f = newForest()
   end
   t.forestId = f:getID()
   return f
@@ -330,13 +352,23 @@ function M.tileVariant(key)
   return (tonumber(tx) * 3 + tonumber(ty) * 5) % math.max(M.SHAPE_VARIANTS, 1)
 end
 
+-- M.variant's spellings, made once (a gsub an item was ~16 % of the tree work's own Lua time, an offline drive)
+local spellings = {}    -- shape -> { variant -> its spelling }
+local function spelled(shape, v)
+  local byV = spellings[shape]
+  if not byV then byV = {}; spellings[shape] = byV end
+  local s = byV[v]
+  if not s then s = M.variant(shape, v); byV[v] = s end
+  return s
+end
+
 -- The shape (the tile's variant) and scale of a tile's row i (cached: M.pick makes tables).
 local function shapeOf(t, i)
   local s = t.shapes[i]
   if s then return s, t.scales[i] end
   local f, b, sc = t.f, (i - 1) * t.s, nil
   s, sc = M.pick((t.groups or GROUPS)[f[b + F_GROUP] + 1] or 'deciduous', f[b + F_HEIGHT], f[b + F_RANK])
-  s = M.variant(s, t.variant)
+  s = spelled(s, t.variant)
   t.shapes[i], t.scales[i] = s, sc
   return s, sc
 end
@@ -358,7 +390,7 @@ local function makeItem(fd, t, i, shape, sc, solid, group, variant)
   if not ok then M.errors = M.errors + 1; return nil end
   local body = vienna.body(group)
   if body then
-    local pair = vienna.addBody(fd, it, M.variant(body, variant), m, sc, solid, itemType)
+    local pair = vienna.addBody(fd, it, spelled(body, variant), m, sc, solid, itemType)
     if pair then it = pair else M.errors = M.errors + 1 end
   end
   M.made = M.made + 1
@@ -465,7 +497,7 @@ M.tileThreshold = tileThreshold
 -- after it changes.
 M.suppress = nil
 function M.refresh()
-  for _, t in pairs(tiles) do t.pending = true end
+  for _, t in pairs(tiles) do t.pending, t.scan = true, nil end      -- (every row again: an interrupted pass too)
 end
 
 -- Which of the capped groups a tile at distance d still shows (changes re-run its rows).
@@ -554,12 +586,17 @@ M.EVERY_N = 3
 local frameN = 0
 -- view: the camera's {x, y} when it is away from the car (core: VIEW_AWAY_M), else nil: what is shown follows what the
 -- player looks at, the colliding items stay round the car (the user, 2026-10-20: "the LODs still all follow the car").
-function M.update(anchorId, player, view)
+-- frameMs: this frame's Lua time for the tree work (default FRAME_MS); 0: none this frame (core: the governor's heavy
+-- frame or the quiet frames round it), the batch waits for the next frame.
+function M.update(anchorId, player, view, frameMs)
   if not next(tiles) then return end
+  if frameMs and frameMs <= 0 then return end
   if not setup() then return end
   frameN = frameN + 1
   if frameN % M.EVERY_N ~= 0 then return end
   local budget = M.PER_FRAME * M.EVERY_N
+  local limit, elapsed = frameMs or M.FRAME_MS, M.clock()
+  newForests = 0
   M.lastShapeItems = touchedItems        -- the previous frame's (diagnostics)
   touched, touchedItems = {}, 0
   releaseGhosts(anchorId, player)
@@ -569,7 +606,7 @@ function M.update(anchorId, player, view)
       local fd = f and f:getData()
       local left = false
       for i, it in pairs(t.made) do
-        if budget <= 0 then return end
+        if budget <= 0 or elapsed() > limit then return end
         local sh = t.madeShape[i]
         if not sh or allow(sh) then
           if fd then removeItem(fd, it, sh) end
@@ -608,24 +645,46 @@ function M.update(anchorId, player, view)
     return false
   end
   local function finish()
+    M.lastRows = rowsScanned                -- (diagnostics)
     if nearMade then
       local ok, roads = pcall(require, 'beamngEarth/roads')
       if ok and roads.requestCollision then roads.requestCollision() end
     end
   end
+  -- a pass over a tile's rows stopped (its frame's time or items, or no Forest yet): the next pass for the same targets
+  -- goes on from row i, or from the first row it left for another frame (skipped: its shapes were full), not from
+  -- the tile's first row (a dense tile's 6000 rows looked at again in every frame of its pass)
+  local function stop(t, i, skipped, want, band, near)
+    t.pending = true
+    t.scan = { from = math.min(i, skipped or i), want = want, band = band, near = near }
+    finish()
+  end
   for _, o in ipairs(order) do
     local t = tiles[o[1]]
     local fd = nil                          -- the tile's Forest data, made when it first needs an item
-    local function data() fd = fd or forest(t):getData(); return fd end
+    local function data()
+      if not fd then
+        local fo = forest(t)
+        fd = fo and fo:getData()
+      end
+      return fd
+    end
     local want = tileThreshold(o[2], t)
     local band = groupBand(t, o[2])
     local near = o[3] <= M.SOLID_M or (t.near and o[3] <= M.SOLID_M + M.SOLID_HYST_M) or nearFocus(t) or false
     if want ~= t.shown or band ~= t.band or near ~= t.near or t.pending then
+      if rowsScanned > M.ROWS_PER_FRAME then finish(); return end      -- (its pass in a later frame: pending kept)
       t.pending = false
-      if rowsScanned > M.ROWS_PER_FRAME then finish(); return end
+      local scan = t.scan
+      local from = scan and scan.want == want and scan.band == band and scan.near == near and scan.from or 1
+      t.scan = nil
       local f, s, names = t.f, t.s, t.groups or GROUPS
-      rowsScanned = rowsScanned + t.n
-      for i = 1, t.n do
+      rowsScanned = rowsScanned + math.max(0, t.n - from + 1)
+      local skipped = nil
+      for i = from, t.n do
+        if (i - from) % CHECK_ROWS == CHECK_ROWS - 1 and elapsed() > limit then
+          stop(t, i, skipped, want, band, near); return
+        end
         local b = (i - 1) * s
         local r = f[b + F_RANK]
         local g = names[f[b + F_GROUP] + 1]
@@ -641,30 +700,41 @@ function M.update(anchorId, player, view)
         local solid = near and not M.NO_COLLIDE[g or '']
         if r < want and (not t.made[i] or (t.solid[i] == true) ~= solid) then
           local sh, sc = shapeOf(t, i)
-          if budget <= 0 then t.pending = true; finish(); return end
+          if budget <= 0 then stop(t, i, skipped, want, band, near); return end
           if allow(sh) then
-            if t.made[i] then removeItem(data(), t.made[i], t.madeShape[i]); budget = budget - 1 end  -- solid <-> not
-            t.made[i] = makeItem(data(), t, i, sh, sc, solid, g, t.variant)
+            local d = data()
+            if not d then stop(t, i, skipped, want, band, near); return end      -- (a new Forest: next frame)
+            if t.made[i] then removeItem(d, t.made[i], t.madeShape[i]); budget = budget - 1 end  -- solid <-> not
+            t.made[i] = makeItem(d, t, i, sh, sc, solid, g, t.variant)
             t.solid[i] = (t.made[i] and solid) or nil      -- true or nil
             t.madeShape[i] = t.made[i] and sh or nil
             if solid then nearMade = true end
             budget = budget - 1
-          else t.pending = true end                -- another frame (this one's shapes are full)
+            if elapsed() > limit then stop(t, i + 1, skipped, want, band, near); return end
+          else skipped = skipped or i end          -- another frame (this one's shapes are full)
         elseif r >= want and t.made[i] then
-          if budget <= 0 then t.pending = true; finish(); return end
+          if budget <= 0 then stop(t, i, skipped, want, band, near); return end
           if allow(t.madeShape[i] or '') then
-            removeItem(data(), t.made[i], t.madeShape[i])
+            local d = data()
+            if not d then stop(t, i, skipped, want, band, near); return end
+            removeItem(d, t.made[i], t.madeShape[i])
             t.made[i], t.solid[i], t.madeShape[i] = nil, nil, nil
             budget = budget - 1
-          else t.pending = true end
+            if elapsed() > limit then stop(t, i + 1, skipped, want, band, near); return end
+          else skipped = skipped or i end
         end
       end
       t.shown = want
       t.band = band
       t.near = near
+      if skipped then t.pending = true; t.scan = { from = skipped, want = want, band = band, near = near } end
     end
   end
   finish()
+  -- nothing changed this frame: a spare Forest made for the pool (its ~9 ms alone, not in a frame of items)
+  if budget == M.PER_FRAME * M.EVERY_N and newForests == 0 and #pool < M.POOL_SPARE then
+    pool[#pool + 1] = newForest():getID()
+  end
 end
 
 -- Disconnect, a new server session, mod unload: every item removed.

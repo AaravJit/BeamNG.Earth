@@ -1860,7 +1860,10 @@ local function onUpdate(dtReal, dtSim)
     farfield.update(gov, (gov.w1 or dtReal * 1000) / 1000, st.cam, st.player)
     t = mark('far', t)
     sea.update(st.anchorId, st.player)
-    trees.update(st.anchorId, st.player, M.viewAway())
+    -- the trees' own Lua time a frame (trees.lua FRAME_MS), more while the world loads, none in a heavy frame or the
+    -- quiet frames round it (governor.lua: a heavy frame stays a lone spike)
+    trees.update(st.anchorId, st.player, M.viewAway(), (gov.blocked or gov:isHeavyFrame()) and 0
+      or (gov.loading and trees.LOADING_FRAME_MS or trees.FRAME_MS))
     t = mark('sea+trees', t)
     local pb = nil
     if st.block then
