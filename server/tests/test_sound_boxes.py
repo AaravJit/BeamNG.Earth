@@ -36,6 +36,14 @@ class SoundBoxesTest(unittest.TestCase):
         self.assertAlmostEqual(z - height / 2, 30.0 - roads.SOUND_UNDER_M, places=2)
         self.assertEqual(width, 9.0)
 
+    def test_city(self):
+        # a city tile: one space over the tile, centred on its roads' heights
+        road = {"w": 5.0, "n": [[0, 0, 10], [10, 0, 14]]}
+        k, x, y, z, length, width, height, yaw = roads.sound_boxes([road], (0.0, 0.0, 256.0, 256.0))
+        self.assertEqual((k, x, y, z, yaw), (roads.SOUND_CITY, 128.0, 128.0, 12.0, 0.0))
+        self.assertEqual((length, width, height), (258.0, 258.0, roads.SOUND_CITY_H))
+        self.assertEqual(roads.sound_boxes([], (0.0, 0.0, 256.0, 256.0)), [])     # (no roads: no heights)
+
     def test_none(self):
         self.assertEqual(roads.sound_boxes([{"w": 5.0, "n": [[0, 0, 0], [10, 0, 0]]}]), [])
         self.assertEqual(roads.sound_boxes([{"tunnel": True, "no_tube": True, "w": 5.0, "n": [[0, 0, 0], [10, 0, 0]]}]), [])

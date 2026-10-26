@@ -1216,11 +1216,13 @@ class Server:
         wires = [] if self.buildings else None
         park = [] if self.buildings else None
         items = town = None
+        cover = 0.0
         if self.buildings:
             # (on the graded ground, as blockworker.roads_tile)
             items = buildingsmod.road_tile_items(anchor.frame, tx, ty, self.mapdata, elev,
                                                  decks=blockworker._tile_decks(anchor.bridges, cells, tx, ty), skip=skip)
-            town = buildingsmod.coverage(items) < buildingsmod.POLES_COVERAGE
+            cover = buildingsmod.coverage(items)
+            town = cover < buildingsmod.POLES_COVERAGE
         rwalls = []
         ctx = []
         box = roadsmod.tile_bbox(tx, ty)
@@ -1279,7 +1281,7 @@ class Server:
             bld = buildingsmod.road_tile(anchor.frame, tx, ty, self.mapdata, elev, None, None, items)
         return roadsmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, chunks, walks if self.sidewalks else None,
                                    mesh, dmesh, bld, props, wires, park, tunnel_mesh=tmesh, fuel=fuel,
-                                   rail_mesh=rmesh)
+                                   rail_mesh=rmesh, cover=cover)
 
     def set_gas_stations(self, on):
         """The settings page's "Gas stations" switch (the mod's gas_stations; the user, 2026-10-23: off saves their
