@@ -364,10 +364,23 @@ def steam_running():
         try:
             with open(pidfile) as f:
                 pid = int(f.read().strip())
-            if os.path.exists(f"/proc/{pid}"):
-                return True
+            with open(f"/proc/{pid}/comm") as f:
+                if f.read().strip() == "steam":
+                    return True
         except (OSError, ValueError):
             pass
+    # (a Flatpak Steam runs in its own PID namespace: its steam.pid names a pid the host cannot see — the user's
+    # report, 2026-10-26: the app then started the game through Steam, where the GPU choice and the grass patch do
+    # not reach the game — so a running client is also recognised by its process)
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        try:
+            with open(f"/proc/{d}/comm") as f:
+                if f.read().strip() == "steam":
+                    return True
+        except OSError:
+            continue
     return False
 
 
@@ -443,6 +456,10 @@ def steam_launch(game_args=()):
         steam = shutil.which("steam")
         cmd = [steam, "-applaunch", APP_ID, *game_args] if steam else \
             ["xdg-open", f"steam://run/{APP_ID}//{' '.join(game_args)}/"]
+        if any(os.environ.get(k) for k in STEER_VARS) and steam_running():
+            say("(a Steam client is already running: it starts the game in its own environment, where the GPU "
+                "variables this app set do not reach it — quit Steam and start again for the direct start, or set "
+                "the variables on Steam itself)")
         subprocess.Popen(cmd, env=clean_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          start_new_session=True)
 
@@ -742,9 +759,17 @@ def start_game(use_gcpatch, build="native", gfx="", user_dir=None, steam_args=({
             row("Game", "starting" + ("  (with the grass patch)" if lib else ""))
             if wrapper or steam_opts:
                 row("Steam options", " ".join(wrapper + ["%command%"] + steam_opts))
+            # -userpath is the folder the game puts its version folder in ("current"): the launcher's user folder is
+            # that version folder, so the game gets its parent (a Flatpak Steam's folder, the user's report
+            # 2026-10-26 — without it the game made a second "current" in it, without the mod). A player's own
+            # folder without the version naming goes as it is.
+            base = os.path.basename(user_dir or "")
+            game_user = os.path.dirname(user_dir) if user_dir and (base == "current" or
+                                                                   base.replace(".", "").isdigit()) else user_dir
             proc = subprocess.Popen(([*wrapper] if wrapper else []) +
                                     ([runtime, "--verb=waitforexitandrun", "--"] if runtime else []) +
-                                    [exe] + extra + list(steam_opts),
+                                    [exe] + (["-userpath", game_user] if game_user else []) + extra +
+                                    list(steam_opts),
                                     cwd=os.path.dirname(os.path.dirname(exe)), env=env,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
             t0 = time.time()

@@ -279,11 +279,55 @@ class SplitLaunchOptionsTest(unittest.TestCase):
         self.assertEqual(launcher.split_launch_options(""), ({}, [], []))
 
 
+class SteamRunningTest(unittest.TestCase):
+    """steam_running sees a Flatpak Steam although its steam.pid names a pid inside its own PID namespace (the
+    user's report, 2026-10-26: the app then started the game through Steam, where the GPU choice is lost)."""
+
+    def fake_proc(self, comms):
+        """comms: {pid: comm text}"""
+        real_open, real_listdir = open, os.listdir
+
+        def listdir(p):
+            return [str(k) for k in comms] if p == "/proc" else real_listdir(p)
+
+        def fopen(p, *a, **k):
+            parts = str(p).split("/")
+            if len(parts) == 4 and parts[1] == "proc" and parts[3] == "comm" and int(parts[2]) in comms:
+                import io
+                return io.StringIO(comms[int(parts[2])])
+            return real_open(p, *a, **k)
+
+        return mock.patch.multiple(launcher.os, listdir=listdir), mock.patch("builtins.open", fopen)
+
+    def run_it(self, home_files, comms):
+        with tempfile.TemporaryDirectory() as d:
+            for name, text in home_files.items():
+                p = os.path.join(d, name)
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                with open(p, "w") as f:
+                    f.write(text)
+            p1, p2 = self.fake_proc(comms)
+            with mock.patch.dict(os.environ, {"HOME": d}), p1, p2:
+                return launcher.steam_running()
+
+    def test_flatpak_pid_namespace(self):
+        self.assertTrue(self.run_it({".var/app/com.valvesoftware.Steam/.steam/steam.pid": "1252\n"}, {500: "steam"}))
+
+    def test_pidfile_pid_alive(self):
+        self.assertTrue(self.run_it({".steam/steam.pid": "500\n"}, {500: "steam"}))
+
+    def test_pidfile_pid_is_not_steam(self):
+        self.assertFalse(self.run_it({".steam/steam.pid": "500\n"}, {500: "bash"}))
+
+    def test_nothing_running(self):
+        self.assertFalse(self.run_it({}, {500: "steamwebhelper", 501: "kwin"}))
+
+
 class DirectStartAdoptsOptionsTest(unittest.TestCase):
     """The direct start applies the launch options' variables to the game's environment and appends their options
     (through Steam, Steam applies them itself: nothing passed on)."""
 
-    def run_start(self, steam_args):
+    def run_start(self, steam_args, user_dir=None):
         calls = []
 
         def popen(argv, **kw):
@@ -298,7 +342,7 @@ class DirectStartAdoptsOptionsTest(unittest.TestCase):
                 mock.patch.object(launcher, "steam_runtime", return_value=None), \
                 mock.patch.object(launcher.subprocess, "Popen", popen), \
                 mock.patch.dict(os.environ, {"BNGE_GAME_ARGS": ""}):
-            launcher.start_game(False, steam_args=steam_args)
+            launcher.start_game(False, user_dir=user_dir, steam_args=steam_args)
         argv, env = calls[0]
         return argv, env
 
@@ -311,6 +355,15 @@ class DirectStartAdoptsOptionsTest(unittest.TestCase):
     def test_wrapper_wraps_the_game(self):
         argv, env = self.run_start(({}, ["gamemoderun"], []))
         self.assertEqual(argv, ["gamemoderun", "/g/BeamNG/BinLinux/BeamNG.drive.x64"])
+
+    def test_userpath_reaches_the_game(self):
+        # the mod and the settings live in the user folder the launcher chose: the game is told the folder its
+        # version folder sits in (a Flatpak Steam's folder, the user's report 2026-10-26)
+        argv, env = self.run_start(({}, [], []), user_dir="/u/flatpak/BeamNG.drive/current")
+        self.assertEqual(argv[:3], ["/g/BeamNG/BinLinux/BeamNG.drive.x64", "-userpath",
+                                    "/u/flatpak/BeamNG.drive"])
+        argv, env = self.run_start(({}, [], []), user_dir="/u/own/folder")
+        self.assertEqual(argv[1:3], ["-userpath", "/u/own/folder"])
 
 
 if __name__ == "__main__":

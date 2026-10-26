@@ -116,6 +116,10 @@ The map's road data downloads again once after the update.
   `--gpu off` leaves the GPUs alone, `--gpu discrete` forces it. The direct start also adopts the launch options
   set for the game in Steam (their variables, a wrapper command like `gamemoderun`, the options after
   `%command%`; Steam applies them itself when the game starts through Steam).
+- **Linux, Steam as a Flatpak: the running client is now seen** (its pid file names a pid inside its own PID
+  namespace, which the host cannot see): the game starts directly — with the grass patch, the GPU choice and in
+  the folder the mod is installed in — instead of through Steam. When the game does go through an already-running
+  Steam, the console says that the GPU variables do not reach it there.
 
 ### Other
 - **The map download cache can go on another drive** (GitHub #254): settings page > Download cache > **Cache folder**
