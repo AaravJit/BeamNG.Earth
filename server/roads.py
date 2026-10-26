@@ -287,12 +287,19 @@ def _feature_boxes(feats):
     if got is None:
         n = len(feats)
         got = np.full((n, 4), np.nan)
-        for i in range(n):
-            a = feats.coord_off[feats.ring_off[feats.part_off[i]]]
-            b = feats.coord_off[feats.ring_off[feats.part_off[i + 1]]]
-            if b > a:
-                ll = feats.lonlat[a:b]
-                got[i] = (ll[:, 0].min(), ll[:, 1].min(), ll[:, 0].max(), ll[:, 1].max())
+        po = np.asarray(feats.part_off, np.int64)
+        co, ro = np.asarray(feats.coord_off, np.int64), np.asarray(feats.ring_off, np.int64)
+        a, b = co[ro[po[:-1]]], co[ro[po[1:]]]
+        ok = b > a
+        ll = np.asarray(feats.lonlat, np.float64)
+        if ok.any() and np.all(a[ok][1:] == b[ok][:-1]) and b[ok][-1] == len(ll):   # (contiguous: one reduce each)
+            st = a[ok]
+            got[ok, 0], got[ok, 1] = np.minimum.reduceat(ll[:, 0], st), np.minimum.reduceat(ll[:, 1], st)
+            got[ok, 2], got[ok, 3] = np.maximum.reduceat(ll[:, 0], st), np.maximum.reduceat(ll[:, 1], st)
+        else:
+            for i in np.flatnonzero(ok):
+                seg = ll[a[i]:b[i]]
+                got[i] = (seg[:, 0].min(), seg[:, 1].min(), seg[:, 0].max(), seg[:, 1].max())
         feats.__dict__["_lonlat_boxes"] = got
     return got
 
@@ -2511,28 +2518,56 @@ class BridgeProfiles:
     levels_of = staticmethod(lambda feats, i: bridge_levels(feats, i))
 
     def _load(self, key, pool, ground):
+        """Cell key's bridge parts into pool and its ground roads into ground (as the chain solves gather them)."""
+        parts, roads_ = self._cell_entries(key)
+        for k, v in parts:
+            # a part in several cells can come clipped differently: the longest (the same part whichever
+            # cell a process loads first: the terrain and the road tiles took different ones, 2026-10-17)
+            old = pool.get(k)
+            if old is None or v[4] > old[4]:
+                pool[k] = v
+        for k, lines in roads_:
+            if k not in ground:
+                ground[k] = lines
+
+    def _cell_entries(self, key):
+        """([((fid, j), (spec, deck line, lon, level, ring points))], [((fid, "g"), [ground lines])]) of cell key, made
+        once (every chain solved gathered its cells again: each a loop over all their roads, 2026-10-25). Not to be
+        changed by the caller."""
+        cache = self.__dict__.setdefault("cell_entries", {})
+        with self.lock:
+            got = cache.get(str(key))
+        if got is not None:
+            return got
+        parts, roads_ = [], []
         feats = self.cell_fn(key)
-        if feats is None or len(feats) == 0:
-            return
-        bs = self.specs_of(feats)
-        rs = road_specs(feats)
-        for i in range(len(feats)):
-            fid = str(feats.ids[i])
-            if bs[i] is not None:
-                lvls = self.levels_of(feats, i)
-                for j, ring in enumerate(self.parts_of(feats, i)):
-                    # a part in several cells can come clipped differently: the longest (the same part whichever
-                    # cell a process loads first: the terrain and the road tiles took different ones, 2026-10-17)
-                    old = pool.get((fid, j))
-                    if old is None or len(ring) > old[4]:
+        if feats is not None and len(feats):
+            bs = self.specs_of(feats)
+            rs = road_specs(feats)
+            for i in range(len(feats)):
+                fid = str(feats.ids[i])
+                if bs[i] is not None:
+                    lvls = self.levels_of(feats, i)
+                    best = {}
+                    for j, ring in enumerate(self.parts_of(feats, i)):
+                        if (fid, j) in best and len(ring) <= best[(fid, j)][4]:
+                            continue
                         e, n = mapgeom.enu_xy(feats, self.frame, ring)
-                        pool[(fid, j)] = (bs[i], densify(_dedupe(np.stack([e, n], axis=1)), DECK_STEP),
+                        best[(fid, j)] = (bs[i], densify(_dedupe(np.stack([e, n], axis=1)), DECK_STEP),
                                           float(np.mean(ring[:, 0])), lvls[j] if j < len(lvls) else 1.0, len(ring))
-            if rs[i] is not None and (fid, "g") not in ground:
-                ground[(fid, "g")] = []
-                for ring in ground_parts(feats, i):
-                    e, n = mapgeom.enu_xy(feats, self.frame, ring)
-                    ground[(fid, "g")].append(np.stack([e, n], axis=1))
+                    parts.extend(best.items())
+                if rs[i] is not None:
+                    lines = []
+                    for ring in ground_parts(feats, i):
+                        e, n = mapgeom.enu_xy(feats, self.frame, ring)
+                        lines.append(np.stack([e, n], axis=1))
+                    roads_.append(((fid, "g"), lines))
+        got = (parts, roads_)
+        with self.lock:
+            if len(cache) > 64:
+                cache.clear()
+            cache.setdefault(str(key), got)
+            return cache[str(key)]
 
     def _resolve(self, start, pool, ground, loaded):
         """The chain of part `start` (keys), loading the cell at each loose end until closed."""
@@ -2952,6 +2987,10 @@ class TunnelProfiles(BridgeProfiles):
 
     def _load(self, key, pool, ground):
         super()._load(key, pool, ground)
+        done = self.__dict__.setdefault("hw_done", set())
+        if str(key) in done:            # (the same half widths each time: once per cell)
+            return
+        done.add(str(key))
         feats = self.cell_fn(key)
         if feats is None or len(feats) == 0:
             return

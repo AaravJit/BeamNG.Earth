@@ -39,7 +39,15 @@ def _chunk(look, w, pts):
 
 def _enu(frame, ll):
     e, n, _ = frame.geodetic_to_enu(ll[:, 1], ll[:, 0], np.zeros(len(ll)))
-    return np.c_[e, n]
+    return np.stack([np.asarray(e, np.float64), np.asarray(n, np.float64)], axis=1)
+
+
+def _lonlat_box(frame, box, m):
+    """(lon0, lat0, lon1, lat1) round the frame box (x0, y0, x1, y1) grown by m, and 100 m more (the frame's axes turn
+    against the meridians away from its origin): every point within m of the box lies inside it."""
+    x0, y0, x1, y1 = box[0] - m - 100.0, box[1] - m - 100.0, box[2] + m + 100.0, box[3] + m + 100.0
+    la, lo, _ = frame.enu_to_geodetic(np.array([x0, x1, x0, x1]), np.array([y0, y0, y1, y1]), 0.0)
+    return float(np.min(lo)), float(np.min(la)), float(np.max(lo)), float(np.max(la))
 
 
 def _near(xy, box, m):
@@ -124,10 +132,13 @@ def tile_chunks(frame, tx, ty, cells):
     box = roads.tile_bbox(tx, ty)
     reach = max(t[0] for t in TRACK.values()) + MARGIN_M
     carriageways, tracks, seen = {}, [], set()
+    llb = _lonlat_box(frame, box, reach + 20.0)
     for feats in cells:
         if feats is None or len(feats) == 0 or "subtype" not in feats.attrs:
             continue
         sub, cls = feats.attrs["subtype"], feats.attrs["class"]
+        fb = roads._feature_boxes(feats)        # (lon0, lat0, lon1, lat1) per feature
+        far = (fb[:, 2] < llb[0]) | (fb[:, 0] > llb[2]) | (fb[:, 3] < llb[1]) | (fb[:, 1] > llb[3])
         specs = None
         for i in range(len(feats)):
             fid = str(feats.ids[i])
@@ -147,6 +158,9 @@ def tile_chunks(frame, tx, ty, cells):
             elif kind is None:
                 continue
             seen.add(fid)
+            if far[i]:
+                continue                        # (no part of it near the tile: converting each to find that out was
+                                                # most of this, 2026-10-25)
             for k, part in enumerate(roads.ground_parts(feats, i)):
                 xy = _enu(frame, np.asarray(part, np.float64))
                 if len(xy) < 2 or not _near(xy, box, reach + 20.0):

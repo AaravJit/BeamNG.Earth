@@ -1354,7 +1354,8 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
                     let idx = order[j];
                     let (qx, qy) = (px[idx] - ax, pyy[idx] - ay);
                     let t = if l2 > 1e-12 { ((qx * abx + qy * aby) / l2).clamp(0.0, 1.0) } else { 0.0 };
-                    let d = (qx - t * abx).hypot(qy - t * aby);
+                    let (ddx, ddy) = (qx - t * abx, qy - t * aby);
+                    let d = (ddx * ddx + ddy * ddy).sqrt();       // (not hypot: libm's is ~5x dearer, the pairs loop's main cost)
                     let target = za[s] + (zb[s] - za[s]) * t;
                     let left = (qx * aby - qy * abx) < 0.0;
                     let co = if left { 0 } else { 3 };
