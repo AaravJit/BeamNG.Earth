@@ -71,7 +71,8 @@ class FastTest(unittest.TestCase):
             with open(os.path.join(tmp, "veg_1_0_0.json")) as fh:
                 got = fh.read()
         self.assertEqual(a, b)
-        self.assertEqual(got, want)
+        # (the JSON rows carry the tile's ambience too: none here)
+        self.assertEqual(got, want.replace('"items":', '"audio":[],"biome":[0,0],"items":', 1))
         self.assertEqual(len(json.loads(got)["items"]), n)
 
 

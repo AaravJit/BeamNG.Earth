@@ -584,8 +584,42 @@ BUILD_PER_POSE = 8
 
 
 class JsonRows(str):
-    """tile_items' rows already as their JSON text (as_json; write_tile writes it as is); n: how many."""
+    """tile_items' rows already as their JSON text (as_json; write_tile writes it as is); n: how many; audio, biome:
+    the tile's forest ambience (_ambience)."""
     n = 0
+    audio = ()
+    biome = (0, 0)
+
+
+# The forest ambience (the mod's ambience.lua feeds the stock core_audioForest): the trees and bushes of a tile in
+# squares of AUDIO_CELL_M (12 a tile; the stock nodes are ~20 m apart), sized by height as the stock classes (a third
+# and two thirds of the 95th percentile's volume: 0.69 and 0.87 of its height, ~22 m)
+AUDIO_CELL_M = 256.0 / 12
+AUDIO_H_MID = 15.0
+AUDIO_H_LARGE = 19.0
+AUDIO_SOUND = [g for g in range(len(GROUPS)) if g not in (G_ROCK, G_DESERT_ROCK)]
+
+
+def _ambience(group, e, n, z, height, lat, lon):
+    """(audio, biome) of a tile's items: audio its sound nodes as one flat list of [x, y, z, depth, size, count] rows
+    (earthfast.audio_nodes), biome its ambience set and variant (earthfast.audio_biome)."""
+    fast.require(77, "audio_nodes")
+    f64 = lambda a: np.ascontiguousarray(a, np.float64)     # noqa: E731
+    g = np.ascontiguousarray(group, np.uint8)
+    nodes = fast._ef.audio_nodes(g, f64(e), f64(n), f64(z), f64(height), AUDIO_SOUND, AUDIO_CELL_M, AUDIO_H_MID,
+                                 AUDIO_H_LARGE)
+    nodes[:, :4] = np.round(nodes[:, :4], 1)
+    nodes[:, 4] = np.round(nodes[:, 4], 2)
+    biome = fast._ef.audio_biome(g, float(lat), float(lon), [G_DESERT_SHRUB, G_DESERT_ROCK, G_JUNIPER])
+    return nodes.ravel().tolist(), list(biome)
+
+
+def _no_items(as_json, lat, lon):
+    if not as_json:
+        return []
+    out = JsonRows("[]")
+    out.audio, out.biome = _ambience([], [], [], [], [], lat, lon)
+    return out
 
 
 def tile_items(frame, tx, ty, veg, cell_ready, elev, sea=None, as_json=False):
@@ -596,6 +630,7 @@ def tile_items(frame, tx, ty, veg, cell_ready, elev, sea=None, as_json=False):
     x0, y0, x1, y1 = roadsmod.tile_bbox(tx, ty)
     la, lo, _ = frame.enu_to_geodetic(np.array([x0, x1, x0, x1]), np.array([y0, y0, y1, y1]), np.zeros(4))
     keys = mapcells.cells_for_bbox(float(la.min()), float(lo.min()), float(la.max()), float(lo.max()))
+    clat, clon = float(la.mean()), float(lo.mean())
     parts = []
     for k in keys:
         if not cell_ready(k):
@@ -603,19 +638,19 @@ def tile_items(frame, tx, ty, veg, cell_ready, elev, sea=None, as_json=False):
         parts.append(veg.cell(k))
     items = parts[0] if len(parts) == 1 else _concat_all(parts)
     if len(items) == 0:
-        return []
+        return _no_items(as_json, clat, clon)
     e, n, _ = frame.geodetic_to_enu(items.lat, items.lon, np.zeros(len(items)))
     e, n = np.asarray(e), np.asarray(n)
     sel = (e >= x0) & (e < x1) & (n >= y0) & (n < y1)
     if not sel.any():
-        return []
+        return _no_items(as_json, clat, clon)
     it = items.take(sel)
     e, n = e[sel], n[sel]
     if sea is not None:                 # nothing in the water (lakes, rivers, sea: their carved beds)
         dry = sea.water(it.lat, it.lon)[0] <= 0
         it, e, n = it.take(dry), e[dry], n[dry]
     if len(it) == 0:
-        return []
+        return _no_items(as_json, clat, clon)
     if len(it) > TILE_ROWS_MAX:         # dense forest: the lowest ranks only (the mod shows no more of a tile)
         keep = np.sort(np.argpartition(it.rank, TILE_ROWS_MAX - 1)[:TILE_ROWS_MAX])
         it, e, n = it.take(keep), e[keep], n[keep]
@@ -629,6 +664,7 @@ def tile_items(frame, tx, ty, veg, cell_ready, elev, sea=None, as_json=False):
         out = JsonRows(fast._ef.veg_rows_json(np.ascontiguousarray(it.group, np.int64), f64(e), f64(n), f64(z),
                                                f64(it.yaw), f64(it.scale), f64(it.height), f64(it.rank)))
         out.n = len(it)
+        out.audio, out.biome = _ambience(it.group, e, n, z, it.height, clat, clon)
         return out
     return [[int(g), round(float(a), 2), round(float(b), 2), round(float(c), 2), round(float(yw), 1),
              round(float(sc), 3), round(float(h), 1), round(float(r), 4)]
@@ -673,7 +709,8 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, rows):
     tmp = staging.tmp_for(path)
     with open(tmp, "w") as f:
         if isinstance(rows, JsonRows):  # (tile_items as_json: the items' text, as json.dumps writes them)
-            f.write(json.dumps({"groups": list(GROUPS), "items": []}, separators=(",", ":"))[:-3] + rows + "}")
+            head = {"groups": list(GROUPS), "audio": rows.audio, "biome": rows.biome, "items": []}
+            f.write(json.dumps(head, separators=(",", ":"))[:-3] + rows + "}")
         else:
             f.write(json.dumps({"groups": list(GROUPS), "items": rows}, separators=(",", ":")))  # the C encoder
     staging.replace(tmp, path)

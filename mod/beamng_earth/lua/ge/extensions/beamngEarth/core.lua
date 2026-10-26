@@ -74,6 +74,7 @@ local groundcover = require('beamngEarth/groundcover') -- grass on the surface l
 local roads = require('beamngEarth/roads') -- DecalRoads from the server's road tiles (docs/ROADMAP.md v1.6)
 local sea = require('beamngEarth/sea') -- the sea's WaterBlock tiles (server seatiles.py)
 local trees = require('beamngEarth/trees') -- trees, bushes, rocks (server vegetation.py)
+local ambience = require('beamngEarth/ambience') -- forest wind and room tone (the stock core_audioForest)
 local parking = require('beamngEarth/parking') -- parked cars on the road tiles' spots (stock gameplay_parking)
 local gasstations = require('beamngEarth/gasstations') -- pumps and the stock refuel prompt (server gasstations.py)
 gasstations.onCollide = roads.markCollisionDirty
@@ -508,6 +509,7 @@ local function finishRebase()
   -- roads, buildings, street furniture and trees move with it and stay until the new anchor's tiles cover them
   roads.transform(xf, geodesy)
   trees.transform(xf, geodesy)
+  ambience.transform(xf)
   gasstations.transform(xf)
   sea.transform(xf, msg.anchorId)
   -- a resync with a restarted server keeps the previous session's tiles the same way (st.sessionId
@@ -722,6 +724,7 @@ local function onMessage(msg)
     if not st.anchor then st.autoTeleportDone = false end
     sea.clear()
     trees.clear()
+    ambience.clear()
     setStatus('Disconnected from companion server: ' .. tostring(msg.error))
   elseif t == 'hello' then
     st.sessionId = msg.sessionId
@@ -909,9 +912,11 @@ local function onMessage(msg)
     if tonumber(msg.z) then st.groundAhead = { anchorId = msg.anchorId, z = tonumber(msg.z), at = st.clock } end
   elseif t == 'veg_tile' then
     -- trees, bushes and rocks of a tile (server vegetation.py, --trees on): Forest items (trees.lua)
-    trees.onTile(msg, st.anchorId)
+    local data = trees.onTile(msg, st.anchorId)
+    if data then ambience.onTile(msg.anchorId, msg.key, data) end
   elseif t == 'veg_drop' then
     trees.onDrop(msg)
+    ambience.onDrop(msg.anchorId, msg.key)
   elseif t == 'bldfar_tile' then
     -- far buildings (server buildings.far_tile, --buildings on): render-only, roads.lua
     roads.onFarTile(msg, st.anchorId)
@@ -1860,6 +1865,7 @@ local function onUpdate(dtReal, dtSim)
     t = mark('far', t)
     sea.update(st.anchorId, st.player)
     trees.update(st.anchorId, st.player, M.viewAway())
+    pcall(ambience.update, st.anchorId)      -- (sound never stops the world's updates)
     t = mark('sea+trees', t)
     local pb = nil
     if st.block then
@@ -2009,6 +2015,7 @@ local function onClientEndMission()
   roads.reset()
   sea.reset()
   trees.reset()
+  ambience.reset()
   parking.reset()
   navgraph.reset()
   local sessionId, nextRequestId, mapPort = st.sessionId, st.nextRequestId, st.mapPort
@@ -2050,6 +2057,7 @@ local function onExtensionUnloaded()
   roads.clear()
   sea.clear()
   trees.clear()
+  ambience.clear()
   terrain.delete()
   -- M1h: the level stays loaded; give it back its sky and view distance
   horizon.restoreSky()
@@ -2223,7 +2231,7 @@ function M.status()
     cells = crossover.cells(), blockSize = blockSize, anchorLatency = st.anchorLatency,
     terrainLatency = st.terrainLatency, horizon = horizonOn, farRadius = farRadius,
     visibleDistance = st.visibleDistance or VISIBLE_DISTANCE, banner = banner.current().id, guard = st.guard.mode,
-    sessions = farfield.heldSessions(), tileSession = farfield.session(), sea = sea.status(), trees = trees.status() })
+    sessions = farfield.heldSessions(), tileSession = farfield.session(), sea = sea.status(), trees = trees.status(), ambience = ambience.status() })
 end
 
 -- The connection state line (the settings page shows it): the banner's { id, level, text } (text

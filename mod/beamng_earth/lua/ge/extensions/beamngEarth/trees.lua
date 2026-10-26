@@ -350,7 +350,7 @@ local function allow(shape)
   return true
 end
 
--- A 'veg_tile' message: { anchorId, key, path, n }.
+-- A 'veg_tile' message: { anchorId, key, path, n }. Returns the tile's data (its ambience: ambience.lua).
 function M.onTile(msg, currentAnchor)
   if msg.anchorId ~= currentAnchor or type(msg.path) ~= 'string' then return end
   -- the file's JSON in the message (server staging.inline_json: Windows' first read of a file the server just wrote took
@@ -362,6 +362,7 @@ function M.onTile(msg, currentAnchor)
     return
   end
   M.onRows(msg.anchorId, msg.key, data.items, data.groups)
+  return data
 end
 
 -- Rows of a tile from elsewhere (a road tile's street furniture: roads.lua, key "p<tx>_<ty>").

@@ -134,6 +134,28 @@ class VegetationTest(unittest.TestCase):
                                delta=0.5)
 
 
+    def test_tile_ambience(self):
+        # the forest ambience (the mod's ambience.lua): the tile's trees and bushes in AUDIO_CELL_M squares, each node
+        # [x, y, z, depth, size, count] inside the tile, every sounding item counted once; Baltimore's set temperate
+        md = FakeMapData()
+        v = veg.Vegetation(md, None)
+        f = geodesy.EnuFrame(LAT, LON)
+        items = v.cell(KEY)
+        e, n, _ = f.geodetic_to_enu(items.lat, items.lon, np.zeros(len(items)))
+        tx, ty = int(np.floor(e[0] / veg.TILE)), int(np.floor(n[0] / veg.TILE))
+        ground = lambda la, lo: np.full(np.shape(la), 12.0)        # noqa: E731
+        js = veg.tile_items(f, tx, ty, v, lambda k: True, ground, as_json=True)
+        rows = veg.tile_items(f, tx, ty, v, lambda k: True, ground)
+        a = np.array(js.audio).reshape(-1, 6)
+        self.assertGreater(len(a), 0)
+        self.assertEqual(int(a[:, 5].sum()), sum(1 for r in rows if r[0] in veg.AUDIO_SOUND))
+        self.assertTrue(((a[:, 0] >= tx * veg.TILE) & (a[:, 0] < (tx + 1) * veg.TILE)).all())
+        self.assertTrue(((a[:, 4] >= 0) & (a[:, 4] <= 1)).all() and (a[:, 3] >= 0).all())
+        self.assertEqual(js.biome, [0, 0])
+        empty = veg.tile_items(f, tx + 40, ty + 40, v, lambda k: True, ground, as_json=True)
+        self.assertEqual((empty, empty.audio), ("[]", []))         # (no items: still its set)
+        self.assertEqual(empty.biome, [0, 0])
+
     def test_dense_tile_sends_its_lowest_ranks(self):
         # GitHub #66: Bodø's forest tiles held 10-20k items each; a tile sends TILE_ROWS_MAX at most, the lowest ranks
         md = FakeMapData()
