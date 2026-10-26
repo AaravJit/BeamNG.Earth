@@ -711,8 +711,9 @@ local function onMessage(msg)
       held = farfield.slotsHeld(farfield.session())
       for _, h in ipairs(roads.slotsHeld(farfield.session())) do held[#held + 1] = h end
     end
+    -- vegFlat: the vegetation tiles may come as one flat array of numbers (trees.lua onTile), no table per tree
     net.send({ type = 'hello', protocol = PROTOCOL, format = FORMAT, modVersion = MOD_VERSION,
-      sessions = farfield.heldSessions(), slotSession = farfield.session(), slotsHeld = held })
+      sessions = farfield.heldSessions(), slotSession = farfield.session(), slotsHeld = held, vegFlat = true })
     setStatus('Connected to companion server')
   elseif t == '_disconnected' then
     st.pending, st.sessionId, st.terrainPending = nil, nil, nil

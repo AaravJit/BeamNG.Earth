@@ -91,7 +91,9 @@ MOD_TO_SERVER = {
     # restarted server keeps an earlier run's folder named here, docs/ROADMAP.md "Robustness" 3)
     "hello": {"protocol": F(int), "format": F(int), "modVersion": F(str), "sessions": F((list, dict), OPT),
               # a reconnect: the pooled far-tile slots [[slot, serial], ...] the mod's objects hold for that session
-              "slotSession": F(str, OPT), "slotsHeld": F((list, dict), OPT)},
+              "slotSession": F(str, OPT), "slotsHeld": F((list, dict), OPT),
+              # the mod reads a vegetation tile as one flat array (veg_tile's data: {groups, stride, flat}; trees.lua)
+              "vegFlat": F(bool, OPT)},
     "prepare_anchor": {"requestId": F(int), "lat": F(NUM), "lon": F(NUM), "cx": F(NUM, OPT), "cy": F(NUM, OPT),
                        # 2026-10-22: the player's spot when not the origin (BeamMP: onto another player's anchor)
                        "px": F(NUM, OPT), "py": F(NUM, OPT),

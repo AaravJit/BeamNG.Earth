@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import geodesy  # noqa: E402
 import mapcells  # noqa: E402
 import vegetation as veg  # noqa: E402
@@ -263,3 +264,61 @@ class RockSinkTest(unittest.TestCase):
         self.assertEqual(z[2], 30.0)
         flat = veg._sink_rocks(f, it, e, n, np.zeros(3), lambda la, lo: np.zeros(np.size(la)))
         self.assertTrue(np.allclose(flat, 0.0, atol=0.02), "no sinking on flat ground")
+
+
+class FlatTileTest(unittest.TestCase):
+    """A vegetation tile as one flat array (the mod's hello.vegFlat): no table per item in the game's Lua (trees.lua)."""
+
+    def test_flat_json(self):
+        import json
+        rows = [[0, 1.5, -2.25, 3.0, 90.0, 1.0, 12.0, 0.5], [3, -0.0, 4.0, 5.5, -45.5, 0.8, 2.0, 0.0001]]
+        js = veg.JsonRows(json.dumps(rows, separators=(",", ":")))
+        js.n = 2
+        self.assertEqual(veg.flat_json(rows), json.dumps([v for r in rows for v in r], separators=(",", ":")))
+        self.assertEqual(veg.flat_json(js), veg.flat_json(rows))
+        self.assertEqual(json.loads(veg.flat_json(js)), [v for r in rows for v in r])
+        one = veg.JsonRows(json.dumps(rows[:1], separators=(",", ":")))
+        self.assertEqual(json.loads(veg.flat_json(one)), rows[0])
+        self.assertEqual(veg.flat_json([]), "[]")
+        self.assertEqual(veg.flat_json(veg.JsonRows("[]")), "[]")
+
+    def test_write_tile_both_formats(self):
+        import json
+        import os
+        import tempfile
+        rows = [[1, 10.0, 20.0, 30.0, 0.0, 1.0, 15.0, 0.25]] * 3
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(veg.write_tile(tmp, "/v", 7, -1, 2, rows), ("/v/veg_7_-1_2.json", 3))
+            self.assertEqual(veg.write_tile(tmp, "/v", 7, -1, 2, rows, flat=True), ("/v/veg_7_-1_2.flat.json", 3))
+            with open(os.path.join(tmp, "veg_7_-1_2.json")) as fh:
+                old = json.load(fh)
+            with open(os.path.join(tmp, "veg_7_-1_2.flat.json")) as fh:
+                new = json.load(fh)
+        self.assertEqual(old, {"groups": list(veg.GROUPS), "items": rows})        # an older mod's: unchanged
+        self.assertEqual(new, {"groups": list(veg.GROUPS), "stride": veg.FLAT_STRIDE, "flat": rows[0] * 3})
+        self.assertEqual(veg.FLAT_STRIDE, len(rows[0]))
+
+
+class FlatHelloTest(unittest.TestCase):
+    """The connection builds its vegetation tiles flat only for a mod whose hello says it reads them (vegFlat)."""
+
+    def run_hello(self, extra):
+        import test_server
+        h = test_server.ServerHarness()
+        h.setUp()
+        try:
+            asked = []
+            h.server.build_veg_tile = lambda aid, tx, ty, flat=False: asked.append(flat)
+            h.c.send(dict({"type": "hello", "protocol": 4, "format": h.MOD_FORMAT, "modVersion": "0.4.0"}, **extra))
+            h.c.until(lambda m: m["type"] == "hello", timeout=10)
+            h.conn().build_veg_tile(1, 0, 0)
+            return h.conn().veg_flat, asked
+        finally:
+            h.tearDown()
+
+    def test_vegflat_hello(self):
+        self.assertEqual(self.run_hello({"vegFlat": True}), (True, [True]))
+
+    def test_older_mod_gets_rows(self):
+        self.assertEqual(self.run_hello({}), (False, [False]))
+        self.assertEqual(self.run_hello({"vegFlat": "yes"}), (False, [False]))      # (only a JSON true)

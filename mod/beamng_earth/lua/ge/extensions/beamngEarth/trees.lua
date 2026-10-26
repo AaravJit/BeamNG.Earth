@@ -179,7 +179,7 @@ local MATERIALS = {
 }
 
 local stopwatch = require('beamngEarth/stopwatch')
-local tiles = {}        -- key "a:tx_ty" -> { anchor, cx, cy, rows, made = { i -> item }, shown = rank }
+local tiles = {}        -- key "a:tx_ty" -> { anchor, cx, cy, f (flat items), s (stride), n, made = { i -> item }, shown }
 local foci = {}         -- other vehicles' collision foci { x, y, r, trees } (M.setFoci, collisionfoci.lua)
 local ghostSince = nil               -- since the last rebase that left ghost tiles (M.transform)
 local types = {}        -- "shape" / "shape#n" (not solid) -> TSForestItemData
@@ -286,6 +286,38 @@ local GROUPS = { 'deciduous', 'conifer', 'shrub', 'rock' }
 local releaseGhosts
 local groupBand
 
+-- A tile's items are one flat array of numbers, STRIDE numbers an item: { group, x, y, z, yaw, scale, height, rank, ... }
+-- (server vegetation.tile_items; scale unused: M.pick scales by height). They were a table per item, and a forest holds
+-- ~300k (Bodø, GitHub #66: 1.66 M before the tile cap): every garbage collection walks each one, and freeing a place's
+-- items held a frame. In-game 2026-10-26, Green Ridge, Maryland (311k items in 138 tiles; same items placed): Lua heap
+-- 176 -> 149 MB, a full collection 92-96 -> 76-78 ms, the longest garbage collection frame of a teleport away
+-- 148-152 -> 37-38 ms. A server that knows the mod reads it (hello.vegFlat) sends the array itself ('flat'), kept as
+-- decoded; rows ({ item }, ...: an older server's vegetation tiles, roads.py's street furniture) are packed into one
+-- (M.flatten).
+M.STRIDE = 8
+local F_GROUP, F_X, F_Y, F_Z, F_YAW, F_HEIGHT, F_RANK = 1, 2, 3, 4, 5, 7, 8      -- (offsets in an item; scale is 6)
+local newTable = (function()
+  local ok, f = pcall(require, 'table.new')
+  return ok and f or function() return {} end
+end)()
+
+-- Pure: rows packed into a flat array (STRIDE numbers a row). A missing yaw, height or rank is 0, 10, 0 (as the rows were
+-- read); a row that is not a table or has no position is never shown (rank 2).
+function M.flatten(rows)
+  local n = type(rows) == 'table' and #rows or 0
+  local f, s = newTable(n * M.STRIDE, 0), M.STRIDE
+  for i = 1, n do
+    local r, b = rows[i], (i - 1) * s
+    if type(r) == 'table' and r[F_X] and r[F_Y] and r[F_Z] then
+      f[b + 1], f[b + 2], f[b + 3], f[b + 4] = r[F_GROUP] or 0, r[F_X], r[F_Y], r[F_Z]
+      f[b + 5], f[b + 6], f[b + 7], f[b + 8] = r[F_YAW] or 0, r[6] or 1, r[F_HEIGHT] or 10, r[F_RANK] or 0
+    else
+      f[b + 1], f[b + 2], f[b + 3], f[b + 4], f[b + 5], f[b + 6], f[b + 7], f[b + 8] = 0, 0, 0, 0, 0, 1, 10, 2
+    end
+  end
+  return f
+end
+
 -- Pure: the variant v's spelling of a shape path (0: itself).
 function M.variant(shape, v)
   if not v or v <= 0 then return shape end
@@ -300,11 +332,11 @@ function M.tileVariant(key)
 end
 
 -- The shape (the tile's variant) and scale of a tile's row i (cached: M.pick makes tables).
-local function shapeOf(t, i, row)
+local function shapeOf(t, i)
   local s = t.shapes[i]
   if s then return s, t.scales[i] end
-  local sc
-  s, sc = M.pick((t.groups or GROUPS)[(row[1] or 0) + 1] or 'deciduous', row[7] or 10, row[8] or 0)
+  local f, b, sc = t.f, (i - 1) * t.s, nil
+  s, sc = M.pick((t.groups or GROUPS)[f[b + F_GROUP] + 1] or 'deciduous', f[b + F_HEIGHT], f[b + F_RANK])
   s = M.variant(s, t.variant)
   t.shapes[i], t.scales[i] = s, sc
   return s, sc
@@ -313,15 +345,16 @@ end
 -- group: a sign's group (vienna_convention_speed_signs.lua) also makes a second item at the same spot and scale, its
 -- body, and takes the collision. Only the first shape is counted in pop (allow's budget): the body is shared by every
 -- sign, spelled in the tile's variant like the rest, so its population is split.
-local function makeItem(fd, row, shape, sc, solid, group, variant)
+local function makeItem(fd, t, i, shape, sc, solid, group, variant)
   local d = itemType(shape, vienna.faceSolid(group, solid))
   if not d then M.errors = M.errors + 1; return nil end
   local m = MatrixF(true)
   -- setFromEuler turns clockwise (the engine's headings): a row's yaw (counter-clockwise from +x, the server's) is
   -- given negated. Positive, every prop was mirrored about the x axis: doors on north-south walls backwards, on
   -- diagonal walls askew, benches and lamps turned (read back in-game 2026-10-17: rows at 141.6 rendered at -141.6)
-  m:setFromEuler(vec3(0, 0, -math.rad(row[5] or 0)))
-  m:setPosition(vec3(row[2], row[3], row[4]))
+  local f, b = t.f, (i - 1) * t.s
+  m:setFromEuler(vec3(0, 0, -math.rad(f[b + F_YAW])))
+  m:setPosition(vec3(f[b + F_X], f[b + F_Y], f[b + F_Z]))
   local ok, it = pcall(function() return fd:createNewItem(d, m, sc) end)
   if not ok then M.errors = M.errors + 1; return nil end
   local body = vienna.body(group)
@@ -350,31 +383,43 @@ local function allow(shape)
   return true
 end
 
+-- A tile's items as a flat array (STRIDE numbers each, or more: stride), shown from the next update on.
+local function addTile(anchorId, tileKey, flat, stride, groups)
+  local key = anchorId .. ':' .. tostring(tileKey)
+  local old = tiles[key]
+  local tx, ty = tostring(tileKey):match('(%-?%d+)_(%-?%d+)$')
+  -- (the shape cache is the items': every message brings items of its own)
+  local t = { anchor = anchorId, f = flat, s = stride, n = math.floor(#flat / stride),
+    groups = type(groups) == 'table' and groups or nil,
+    made = old and old.made or {}, solid = old and old.solid or {}, near = old and old.near,
+    shapes = {}, scales = {},
+    madeShape = old and old.madeShape or {}, shown = old and old.shown or 0, forestId = old and old.forestId or nil,
+    variant = M.tileVariant(key), cx = (tonumber(tx) or 0) * 256 + 128, cy = (tonumber(ty) or 0) * 256 + 128, drop = false }
+  tiles[key] = t
+end
+
 -- A 'veg_tile' message: { anchorId, key, path, n }.
 function M.onTile(msg, currentAnchor)
   if msg.anchorId ~= currentAnchor or type(msg.path) ~= 'string' then return end
   -- the file's JSON in the message (server staging.inline_json: Windows' first read of a file the server just wrote took
-  -- up to 0.5 s in the frame), else the file
+  -- up to 0.5 s in the frame), else the file: { groups, stride, flat } (hello.vegFlat), or { groups, items } (rows)
   local ok, data = true, msg.data
   if type(data) ~= 'table' then ok, data = pcall(jsonDecode, readFile(msg.path) or '') end
-  if not ok or type(data) ~= 'table' or type(data.items) ~= 'table' then
+  local stride = type(data) == 'table' and tonumber(data.stride)
+  if ok and type(data) == 'table' and type(data.flat) == 'table' and stride and stride >= M.STRIDE
+      and stride == math.floor(stride) then
+    addTile(msg.anchorId, msg.key, data.flat, stride, data.groups)
+  elseif ok and type(data) == 'table' and type(data.items) == 'table' then
+    M.onRows(msg.anchorId, msg.key, data.items, data.groups)
+  else
     M.errors = M.errors + 1
-    return
   end
-  M.onRows(msg.anchorId, msg.key, data.items, data.groups)
 end
 
--- Rows of a tile from elsewhere (a road tile's street furniture: roads.lua, key "p<tx>_<ty>").
+-- Rows of a tile ({ { group, x, y, z, yaw, scale, height, rank }, ... }): an older server's vegetation tile, a road
+-- tile's street furniture (roads.lua, key "p<tx>_<ty>").
 function M.onRows(anchorId, tileKey, rows, groups)
-  local key = anchorId .. ':' .. tostring(tileKey)
-  local old = tiles[key]
-  local tx, ty = tostring(tileKey):match('(%-?%d+)_(%-?%d+)$')
-  local t = { anchor = anchorId, rows = rows, groups = type(groups) == 'table' and groups or nil,
-    made = old and old.made or {}, solid = old and old.solid or {}, near = old and old.near,
-    shapes = old and old.rows == rows and old.shapes or {}, scales = old and old.rows == rows and old.scales or {},
-    madeShape = old and old.madeShape or {}, shown = old and old.shown or 0, forestId = old and old.forestId or nil,
-    variant = M.tileVariant(key), cx = (tonumber(tx) or 0) * 256 + 128, cy = (tonumber(ty) or 0) * 256 + 128, drop = false }
-  tiles[key] = t
+  addTile(anchorId, tileKey, M.flatten(rows), M.STRIDE, groups)
 end
 
 -- The tile "anchorId:key" goes (roads.lua's furniture).
@@ -400,13 +445,13 @@ end
 -- of its rows' ranks: exact whatever share of the area's items the server sent, vegetation.TILE_ROWS_MAX).
 local function tileThreshold(d, t)
   local want = threshold(d)
-  local rows = t.rows or {}
+  local n = t.n or 0
   for _, r in ipairs(M.TILE_CAP) do
     if d <= r[1] then
-      if #rows <= r[2] then return want end
+      if n <= r[2] then return want end
       if not t.ranks then
-        local rk = {}
-        for i, row in ipairs(rows) do rk[i] = row[8] or 0 end
+        local rk, f, s = newTable(n, 0), t.f, t.s
+        for i = 1, n do rk[i] = f[(i - 1) * s + F_RANK] end
         table.sort(rk)
         t.ranks = rk
       end
@@ -579,10 +624,12 @@ function M.update(anchorId, player, view)
     if want ~= t.shown or band ~= t.band or near ~= t.near or t.pending then
       t.pending = false
       if rowsScanned > M.ROWS_PER_FRAME then finish(); return end
-      rowsScanned = rowsScanned + #t.rows
-      for i, row in ipairs(t.rows) do
-        local r = row[8] or 0
-        local g = (t.groups or GROUPS)[(row[1] or 0) + 1]
+      local f, s, names = t.f, t.s, t.groups or GROUPS
+      rowsScanned = rowsScanned + t.n
+      for i = 1, t.n do
+        local b = (i - 1) * s
+        local r = f[b + F_RANK]
+        local g = names[f[b + F_GROUP] + 1]
         local cap = g and M.GROUP_MAX_M[g]
         if cap and o[2] > cap then r = 2 end     -- this group is not shown this far out
         -- a group this mod has no shapes for (a newer server's): left out, not drawn as a tree
@@ -591,14 +638,14 @@ function M.update(anchorId, player, view)
           if not M.unknownGroups[g] then M.unknownGroups[g] = true; log('W', 'beamngEarth.trees', 'no shapes for group ' .. g) end
         end
         -- an item something else stands in for (navgraph.lua's switchable signal heads)
-        if g and M.suppress and M.suppress(g, row[2], row[3]) then r = 2 end
+        if g and M.suppress and M.suppress(g, f[b + F_X], f[b + F_Y]) then r = 2 end
         local solid = near and not M.NO_COLLIDE[g or '']
         if r < want and (not t.made[i] or (t.solid[i] == true) ~= solid) then
-          local sh, sc = shapeOf(t, i, row)
+          local sh, sc = shapeOf(t, i)
           if budget <= 0 then t.pending = true; finish(); return end
           if allow(sh) then
             if t.made[i] then removeItem(data(), t.made[i], t.madeShape[i]); budget = budget - 1 end  -- solid <-> not
-            t.made[i] = makeItem(data(), row, sh, sc, solid, g, t.variant)
+            t.made[i] = makeItem(data(), t, i, sh, sc, solid, g, t.variant)
             t.solid[i] = (t.made[i] and solid) or nil      -- true or nil
             t.madeShape[i] = t.made[i] and sh or nil
             if solid then nearMade = true end

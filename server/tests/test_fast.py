@@ -73,6 +73,21 @@ class FastTest(unittest.TestCase):
         self.assertEqual(a, b)
         self.assertEqual(got, want)
         self.assertEqual(len(json.loads(got)["items"]), n)
+        # flat (hello.vegFlat): the Rust text flattened as text is the same file as the Python rows' flattened list, the
+        # same numbers as the rows, in their order
+        with tempfile.TemporaryDirectory() as tmp:
+            fa = veg.write_tile(tmp, "/v", 1, 0, 0, rows, flat=True)
+            with open(os.path.join(tmp, "veg_1_0_0.flat.json")) as fh:
+                flat_want = fh.read()
+            fb = veg.write_tile(tmp, "/v", 1, 0, 0, js, flat=True)
+            with open(os.path.join(tmp, "veg_1_0_0.flat.json")) as fh:
+                flat_got = fh.read()
+        self.assertEqual(fa, ("/v/veg_1_0_0.flat.json", n))
+        self.assertEqual(fb, fa)
+        self.assertEqual(flat_got, flat_want)
+        doc = json.loads(flat_got)
+        self.assertEqual((doc["groups"], doc["stride"]), (list(veg.GROUPS), veg.FLAT_STRIDE))
+        self.assertEqual(doc["flat"], [v for r in json.loads(got)["items"] for v in r])
 
 
     def test_mesh_warp_matches_pillow(self):

@@ -24,10 +24,17 @@ end
 worldEditorCppApi = { createObject = function(class) return createObject(class) end }
 Sim = { getDataBlockSet = function() return { addObject = function() end } end }
 loadJsonMaterialsFile = function() end
-MatrixF = function() return { setFromEuler = function() end, setPosition = function(self, p) self.p = p end } end
+MatrixF = function() return { setFromEuler = function(self, e) self.e = e end, setPosition = function(self, p) self.p = p end } end
 local files = {}
 readFile = function(p) return files[p] end
-jsonDecode = function(s) return assert(load('return ' .. s))() end
+local decoded = setmetatable({}, { __mode = 'k' })    -- every decoded file's rows (weak: what the module still holds)
+jsonDecode = function(s)
+  local d = assert(load('return ' .. s))()
+  if type(d) == 'table' and type(d.items) == 'table' then
+    for _, r in ipairs(d.items) do decoded[r] = true end
+  end
+  return d
+end
 local trees = require('beamngEarth/trees')
 trees.EVERY_N = 1               -- (every update works here; the batching is tested below)
 local function count() local n = 0; for _ in pairs(items) do n = n + 1 end; return n end
@@ -45,6 +52,17 @@ files['/t/v.json'] = '{ groups = {}, items = { ' .. table.concat(rows, ', ') .. 
 trees.onTile({ anchorId = 1, key = '0_0', path = '/t/v.json', n = 100 }, 1)
 trees.update(1, { x = 50, y = 50 })
 T.check(count() == 100 and trees.status().items == 100, 'near: every item')
+do -- an item where its row puts it: position from x, y, z, the heading from yaw (negated: setFromEuler turns clockwise)
+  local ok = 0
+  for it in pairs(items) do
+    if it.m.p.y == 10 and it.m.p.z == 5 and it.m.p.x >= 0 and it.m.p.x <= 99 and it.m.e.z == 0 then ok = ok + 1 end
+  end
+  T.check(ok == 100, 'every item at its row\'s position and heading')
+end
+-- the tile keeps its items as one flat array (trees.flatten), not the decoded rows: a table per item was most of a
+-- forest's Lua heap, walked by every garbage collection (GitHub #66)
+collectgarbage('collect')
+T.check(next(decoded) == nil, 'the decoded rows are not kept')
 trees.update(1, { x = 50, y = 1900 })
 T.check(count() == 20, 'far: the fifth with the lowest ranks, the same trees')
 trees.update(1, { x = 50, y = 1100 })
@@ -200,7 +218,7 @@ trees.clear()
 local function ranked(n, top)
   local rows = {}
   for i = 1, n do rows[i] = { 0, 0, 0, 0, 0, 1, 10, (n - i) / n * top } end    -- (any order)
-  return { rows = rows }
+  return { f = trees.flatten(rows), s = trees.STRIDE, n = n }
 end
 T.check(trees.tileThreshold(0, ranked(500, 1)) == 1.0, 'a sparse tile near the player: all of it')
 T.check(math.abs(trees.tileThreshold(0, ranked(20000, 1)) - 6000 / 20000) < 1e-12, 'a dense one: its 6000 lowest ranks')
@@ -208,7 +226,65 @@ T.check(math.abs(trees.tileThreshold(0, ranked(8000, 0.3)) - 6000 / 8000 * 0.3) 
   'the server sent the lowest 30 % only: still its 6000 lowest')
 T.check(trees.tileThreshold(1000, ranked(800, 1)) == 0.35, 'under the cap: the ring as before')
 T.check(math.abs(trees.tileThreshold(2000, ranked(10000, 1)) - 400 / 10000) < 1e-12, 'far: 400')
-T.check(trees.tileThreshold(0, { rows = {} }) == 1.0, 'no rows')
+T.check(trees.tileThreshold(0, { f = {}, s = trees.STRIDE, n = 0 }) == 1.0, 'no rows')
+
+-- rows packed flat: STRIDE numbers a row in the server's order, the readers' defaults, a broken row never shown
+do
+  local f = trees.flatten({ { 3, 1.5, 2.5, 3.5, 90, 0.8, 14, 0.25 }, { 1, 4, 5, 6 }, 'x', { 0, nil, 1, 1 } })
+  T.check(trees.STRIDE == 8 and #f == 32, 'flatten: 8 numbers a row')
+  T.check(table.concat(f, ',', 1, 8) == '3,1.5,2.5,3.5,90,0.8,14,0.25', 'flatten: a row\'s fields in order')
+  T.check(table.concat(f, ',', 9, 16) == '1,4,5,6,0,1,10,0', 'flatten: missing yaw, scale, height, rank as read before')
+  T.check(f[24] == 2 and f[32] == 2, 'flatten: a row that is no table or has no position is never shown')
+  T.check(#trees.flatten(nil) == 0, 'flatten: no rows')
+end
+
+-- a server that knows the mod reads flat tiles (hello.vegFlat) sends { groups, stride, flat }: kept as decoded (no copy,
+-- no table per item), the same items as the rows of the same tile; a wider stride (a later server's extra fields) reads
+-- the same; a broken one is an error, nothing shown
+do
+  local function made()
+    local out = {}
+    for it in pairs(items) do out[#out + 1] = string.format('%s %.2f %.2f %.2f', it.d.fields.shapeFile, it.m.p.x, it.m.p.y, it.m.p.z) end
+    table.sort(out)
+    return table.concat(out, ';')
+  end
+  local rowsText, flatVals, wide = {}, {}, {}
+  for i = 0, 49 do
+    local r = { i % 4, i * 3.5, 20 + i, 5, i * 7, 1, 4 + i % 9, i / 50 }
+    rowsText[#rowsText + 1] = '{' .. table.concat(r, ', ') .. '}'
+    for _, v in ipairs(r) do flatVals[#flatVals + 1] = v; wide[#wide + 1] = v end
+    wide[#wide + 1] = 99                       -- (a ninth field this mod does not know)
+  end
+  files['/t/rows'] = '{ groups = {}, items = { ' .. table.concat(rowsText, ', ') .. ' } }'
+  files['/t/flat'] = '{ groups = {}, stride = 8, flat = { ' .. table.concat(flatVals, ', ') .. ' } }'
+  files['/t/wide'] = '{ groups = {}, stride = 9, flat = { ' .. table.concat(wide, ', ') .. ' } }'
+  trees.clear()
+  trees.onTile({ anchorId = 8, key = '0_0', path = '/t/rows', n = 50 }, 8)
+  trees.update(8, { x = 50, y = 50 })
+  local fromRows = made()
+  trees.clear()
+  local sent = { groups = {}, stride = 8, flat = assert(load('return { ' .. table.concat(flatVals, ', ') .. ' }'))() }
+  trees.onTile({ anchorId = 8, key = '0_0', path = '/t/none', n = 50, data = sent }, 8)
+  trees.update(8, { x = 50, y = 50 })
+  local kept = false
+  for i = 1, 20 do
+    local name, v = debug.getupvalue(trees.status, i)
+    if name == 'tiles' then kept = v['8:0_0'] and v['8:0_0'].f == sent.flat end
+  end
+  T.check(count() == 50 and made() == fromRows, 'flat: the same items as the rows')
+  T.check(kept, 'flat: the decoded array itself is the tile\'s (no copy)')
+  trees.clear()
+  trees.onTile({ anchorId = 8, key = '0_0', path = '/t/wide', n = 50 }, 8)
+  trees.update(8, { x = 50, y = 50 })
+  T.check(made() == fromRows, 'flat, stride 9: the same items')
+  trees.clear()
+  local errs = trees.errors
+  files['/t/bad'] = '{ groups = {}, stride = 4, flat = { 0, 1, 2, 3 } }'
+  trees.onTile({ anchorId = 8, key = '0_0', path = '/t/bad', n = 1 }, 8)
+  trees.update(8, { x = 50, y = 50 })
+  T.check(count() == 0 and trees.errors == errs + 1, 'flat with a stride under 8: an error, nothing shown')
+  trees.clear()
+end
 
 -- a group the catalog has no shapes for (a newer server's sign, say): left out and logged, never a tree
 trees.clear()
