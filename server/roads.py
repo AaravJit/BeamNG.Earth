@@ -4555,27 +4555,15 @@ def shape_files(aid, tx, ty):
 
 # Sound spaces (the mod's ambience.lua makes them SFXSpaces: the stock maps' tunnel reverb in a tube, the one under a
 # bridge below its deck): kinds, and how far a bridge's space reaches under the deck's surface
-SOUND_TUNNEL, SOUND_BRIDGE, SOUND_CITY = 0, 1, 2
+SOUND_TUNNEL, SOUND_BRIDGE = 0, 1
 SOUND_UNDER_M = 25.0
-# a city's sound (West Coast USA's downtown bed) over a road tile whose building footprints cover this share (as
-# buildings.POLES_COVERAGE: Fells Point's core ~0.45, towns and suburbs below), SOUND_CITY_H m high round its roads
-CITY_COVERAGE = 0.30
-SOUND_CITY_H = 600.0
 SOUND_BOX_M, SOUND_TURN, SOUND_DZ_M, SOUND_EXTEND_M = 60.0, math.radians(10.0), 1.0, 1.0
 
 
-def sound_boxes(chunks, city_box=None):
+def sound_boxes(chunks):
     """The sound spaces of a tile's chunks: along every tunnel tube (its floor to its vault) and under every bridge
     deck (from its slab down SOUND_UNDER_M), as earthfast.sound_boxes rows [kind, x, y, z, length, width, height, yaw]
-    rounded, one flat list; and a city's over the tile box city_box (x0, y0, x1, y1) if given (CITY_COVERAGE),
-    centred on its roads' heights."""
-    out = []
-    if city_box is not None:
-        zs = [float(p[2]) for c in chunks for p in c["n"] if len(p) > 2]
-        if zs:
-            x0, y0, x1, y1 = city_box
-            out = [float(SOUND_CITY), round((x0 + x1) / 2, 2), round((y0 + y1) / 2, 2), round(sum(zs) / len(zs), 2),
-                   x1 - x0 + 2 * SOUND_EXTEND_M, y1 - y0 + 2 * SOUND_EXTEND_M, SOUND_CITY_H, 0.0]
+    rounded, one flat list."""
     import fast
     import roadmesh
     lines = []
@@ -4586,7 +4574,7 @@ def sound_boxes(chunks, city_box=None):
         elif c.get("deck") and not c.get("tunnel"):
             lines.append((SOUND_BRIDGE, c["n"], float(c["w"]), SOUND_UNDER_M, -roadmesh.DECK_DEPTH))
     if not lines:
-        return out
+        return []
     fast.require(78, "sound_boxes")
     pts = np.ascontiguousarray(np.concatenate([np.asarray(n, np.float64)[:, :3] for _, n, _, _, _ in lines]))
     off = np.cumsum([0] + [len(n) for _, n, _, _, _ in lines]).astype(np.int64)
@@ -4595,12 +4583,12 @@ def sound_boxes(chunks, city_box=None):
                                 SOUND_EXTEND_M)
     rows[:, 1:7] = np.round(rows[:, 1:7], 2)
     rows[:, 7] = np.round(rows[:, 7], 4)
-    return out + rows.ravel().tolist()
+    return rows.ravel().tolist()
 
 
 def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None, deck_mesh=None, bld=None,
                props=None, wires=None, park=None, tunnel_mesh=None, fuel=None,
-               rail_mesh=None, cover=0.0):
+               rail_mesh=None):
     """Write a tile's chunks (atomically), its sidewalk mesh (walks: build_tile's runs, if any:
     `walks_<a>_<tx>_<ty>.cdae`, announced in the tile as "walk": {shape, pos}) and its road mesh
     (road_mesh: roadmesh.build's result: `road_<a>_<tx>_<ty>.cdae`, "road": {shape, pos}; the mod then
@@ -4613,7 +4601,7 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
     # (from PR #41, Madderose) with a road mesh the mod makes no DecalRoads: their chunks were ~36 % of the file it
     # parses on its main thread
     data = {"v": VERSION, "chunks": [] if road_mesh is not None else [c for c in chunks if not c.get("tube_only")]}
-    sound = sound_boxes(chunks, tile_bbox(tx, ty) if cover >= CITY_COVERAGE else None)   # (cover: its buildings')
+    sound = sound_boxes(chunks)
     if sound:
         data["sound"] = sound
     if road_mesh is not None:
