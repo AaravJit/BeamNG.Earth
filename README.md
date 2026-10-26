@@ -34,8 +34,11 @@ You can help support development by reporting [issues](https://github.com/TecnaG
   traffic islands, roundabouts, rural motorways with shoulders and toll booths; the ground graded under them, with
   retaining walls where a road is cut into a hill (dry stone in the mountains and towns, concrete along major roads)
   and stone parapets along mountain roads' drops; street lights, utility poles with wires, traffic signals,
-  stop signs and speed-limit signs (mph or km/h by country); railway and tram tracks (ballast, sleepers and rails,
-  street track where trams run on the road).
+  stop signs and speed-limit signs (mph or km/h by country), traffic lights and sidewalks where OpenStreetMap maps them;
+  railway lines as 3D track (ballast, sleepers and rails, rail bridges on piers, the ground cut and filled for the
+  line) and tram tracks (street track where trams run on the road).
+- Gas stations with pumps, canopies and forecourts in the region's style, where the stock refuel prompt fills the
+  tank (off by default: **Gas stations** on the settings page).
 - Bridges drawn as their real type (beam, truss, arch, cable-stayed, suspension) with real heights and spans, piers
   that keep clear of the roads under them and 6 m (20 ft) of headroom over roads where the ground allows; a divided
   road's two decks joined across a narrow median; tunnels through hills, with portals, lights and low arches where
@@ -63,7 +66,11 @@ You can help support development by reporting [issues](https://github.com/TecnaG
 - Buildings, sidewalks, curbs and bridge decks are solid (lean collision meshes near the car keep the
   physics' collision rebuilds cheap).
 - Fast teleports: right after a teleport, while you wait, the world server may borrow some of the game's
-  CPU cores (at idle priority) to build the world faster (Linux; `--load-boost off` turns it off).
+  CPU cores (at idle priority) to build the world faster (Linux; `--load-boost off` turns it off). It builds
+  2 to 4 road pieces at once, by your computer's CPU threads and memory.
+- Places you've been load much faster the next time: what was built around you (roads, buildings, the levelled
+  ground, the distant land) is kept on disk, up to 2 GB (the oldest go first; the environment variable
+  `BNE_REVISIT_MB` sets the size, `BNE_REVISIT=off` turns it off).
 - **AI support**: the mod builds BeamNG's road graph (the AI's map) from the real roads around you, with
   lanes, one-way streets, speed limits (mapped, or the country's defaults), the country's driving side and
   road rules, and traffic signals at real junctions. The stock AI, traffic, police and the AI modes in the
@@ -73,7 +80,7 @@ You can help support development by reporting [issues](https://github.com/TecnaG
 
 **Multiplayer (BeamMP, in testing)**
 - Play the real world together on a BeamMP server (every player runs the BeamNG.Earth app, which starts BeamMP with
-  the game): BeamNG.Earth servers have their own **BeamNG.Earth** tab in BeamMP's server browser, players who join are
+  the game): BeamNG.Earth servers are their own **BeamNG.Earth** category in BeamMP's server browser, players who join are
   sent to the others, cars show in the right place and with their crash damage in everyone's world, and other players
   show on the world map (see "Multiplayer" below).
 
@@ -87,7 +94,8 @@ You can help support development by reporting [issues](https://github.com/TecnaG
   on the game's minimap (bottom left), which shows the roads around you. The first 20 km (12 miles) of the
   route's map data and elevation download ahead while you drive, with a progress bar on the map.
 - **Autodrive**: the car drives itself along the GPS route (in lane, legal speed, minding traffic).
-- Saved places and recent places.
+- Saved places and recent places; "Where you left off" in the level select puts you back where you last drove (it
+  is saved as you drive, at teleports and when the game closes).
 
 **Interface and tools**
 - A slim status bar (street, town, country, and under it the loading progress of the ground, roads & buildings, trees and
@@ -213,8 +221,8 @@ BeamNG.Earth runs on [BeamMP](https://beammp.com/) servers (in testing): drive t
    - The setting **Start BeamMP with BeamNG.Earth** (Pause menu > Mods > BeamNG.Earth, Multiplayer) turns this off or
      back on; `--no-beammp` starts the game without BeamMP once.
 2. In the game: main menu > More > BeamMP, log in (an account or a guest).
-3. Open the **BeamNG.Earth** tab in BeamMP's sidebar: the servers running BeamNG.Earth, with a Join button. They are
-   listed only there, for players who have BeamNG.Earth. A private server: Direct Connect with its address (the
+3. Pick the **BeamNG.Earth** category in BeamMP's server browser: the servers running BeamNG.Earth (search,
+   filters, favorites and details as for the other servers), the official server at the top. They are listed only there, for players who have BeamNG.Earth. A private server: Direct Connect with its address (the
    [Discord server](https://discord.gg/tgf) has some). Every player needs the BeamNG.Earth app running: each builds the
    world on their own computer.
    (Starting the BeamMP launcher yourself first still works: the app then starts just the world server.)
@@ -238,7 +246,7 @@ port in your router, or you simply build everything yourself. A port of your own
 (`BeamNG.Earth-README.md`). In short: unzip it into a BeamMP server's folder, set
 `Map = "/levels/beamng_earth/info.json"` in `ServerConfig.toml`, forward the server's port (TCP and UDP) for players
 over the internet, and start it (its log shows `[BeamNG.Earth] plugin loaded`). Which list it is on:
-`Private = false` with your AuthKey puts it on the BeamNG.Earth list (the in-game tab) and the plugin keeps it off
+`Private = false` with your AuthKey puts it on the BeamNG.Earth list (the in-game category) and the plugin keeps it off
 BeamMP's own public list, so players without BeamNG.Earth never see it; `Private = true`, or no AuthKey: on no list,
 players use Direct Connect. The plugin lists the server once a minute with `curl` (Linux, and Windows 10 and later).
 Update the server zip with every release: it carries the mod the server sends to players. The server's time and weather for everyone
