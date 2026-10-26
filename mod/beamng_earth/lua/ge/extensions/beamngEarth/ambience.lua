@@ -12,9 +12,9 @@ M.MOVE_M = 300        -- ... made again once the listener is this far from where
 M.GAP_S = 1           -- at most this often
 M.VOTE_M = 1000       -- tiles this close choose the ambience set, by their sound items
 M.SWITCH = 1.5        -- another set takes over once it has this many times the current one's items
-M.PITCH_FULL = 45     -- items of a node at full density (pitch 1). Measured 2026-10-26: East Coast USA's own cloud at
-                      -- its forest spots gives volume 0.23, pitch 0.29, colour 0.45; ours in a Pennsylvania forest
-                      -- 0.26, 0.14 at 90 (the stock nodes count a 20 m circle, ours a ~21 m square), 0.43
+M.PITCH_FULL = 20     -- items of a node at full density (pitch 1): the stock nodes count the items within 20 m (1257 m2)
+                      -- and East Coast USA's 95th percentile is 55; ours count a 455 m2 square, 0.36 of that: ~20.
+                      -- (Recorded 2026-10-26: East Coast USA's dense forest gives volume 0.3, pitch 0.6.)
 M.GHOST_MAX_S = 120   -- a rebase's previous tiles stay at most this long (trees.lua GHOST_MAX_S)
 local TILE = 256
 
