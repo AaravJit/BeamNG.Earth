@@ -488,6 +488,11 @@ class LayoutTest(unittest.TestCase):
         site = gs.layout(st, [bld, office] + tight, ROAD)
         self.assertEqual(site.drop_ids, ("bld",))
         self.assertEqual(site.shop_id, "office")
+        # (final review) a building farther off is no office of this station's: the station keyed by its own outline,
+        # so two stations near one block never hide each other (_one_per_shop)
+        far = rect("far", 0.0, 50.0, 8.0, 5.0)
+        site = gs.layout(st, [bld, far] + tight, ROAD)
+        self.assertEqual(site.shop_id, "bld:bld")
 
     def test_one_building_never_over_a_working_layout(self):
         # a pin inside an unclassed shop with a mapped canopy beside it: laid out as before (the shop stays a building)

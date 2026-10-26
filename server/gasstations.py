@@ -1248,7 +1248,9 @@ def _one_building_site(st, blds, roads, service=(), style="default"):
     """The forecourt of a station mapped as one building around its pin (_pin_building), or None: a gas station (not a
     convenience brand alone) whose name or brand says fuel (_fuel_named: not an office in the gas station category);
     the building is its canopy (left out of the buildings, the islands under it as under a mapped canopy); its shop
-    the nearest other building within SHOP_SEARCH_M (not a home, a roof or across a public road), if any."""
+    the nearest other building beside it (within PAD_SHOP_LINK_M: its office, the asphalt reaching it; not a home, a
+    roof or across a public road), else the station is keyed by its own outline (one station per shop, _one_per_shop:
+    a block farther off is no shop of its, and two stations near it must not hide each other)."""
     if not st.confirmed or not (_fuel_named(st.name) or _fuel_named(st.brand)):
         return None
     b = _pin_building(st, blds)
@@ -1257,10 +1259,10 @@ def _one_building_site(st, blds, roads, service=(), style="default"):
     canopy = Bld(b.id, b.ring, "roof", b.name, b.src, b.height)
     others = [o for o in blds if o.id != b.id]
     c = _centre(b.ring)
-    shops = [(float(np.hypot(*(_centre(o.ring) - c))), o.id, o) for o in others
+    shops = [(_gap(o.ring, b.ring), o.id, o) for o in others
              if o.cls not in ROOF_CLASSES and o.cls not in NOT_SHOP_CLASSES
-             and not _across(c, _centre(o.ring), roads)]
-    shops = [s for s in shops if s[0] <= SHOP_SEARCH_M]
+             and float(np.hypot(*(_centre(o.ring) - c))) <= SHOP_SEARCH_M]
+    shops = [s for s in shops if s[0] <= PAD_SHOP_LINK_M and not _across(c, _centre(s[2].ring), roads)]
     shop = min(shops, key=lambda s: s[:2])[2] if shops else None
     if style == "europe":
         site = _italy_site(st, [_obox(canopy.ring)], others, roads)
