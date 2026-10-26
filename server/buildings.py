@@ -683,6 +683,23 @@ class Mesh:
         self.M += (mat[0], mat[0])
         self.n += 4
 
+    def quads(self, P, UV, mid, mats):
+        """Quads from a kernel (earthfast.building_walls): P 12 numbers per quad, UV 8, mid the index into mats (material
+        tokens) per quad; the same lists quad() would make."""
+        q = len(mid)
+        if not q:
+            return
+        i = self.n
+        self.P += P
+        self.UV += UV
+        cols = [tuple(mt[1]) * 4 if mt is not None else None for mt in mats]
+        for k in mid:
+            self.C += cols[k]
+        self.T += (np.arange(q, dtype=np.int64)[:, None] * 4 + np.array([0, 1, 2, 0, 2, 3], np.int64) + i).ravel().tolist()
+        idx = [mt[0] if mt is not None else None for mt in mats]
+        self.M += [idx[k] for k in mid for _ in (0, 1)]
+        self.n += 4 * q
+
     def tri(self, a, b, c, uva, uvb, uvc, mat):
         i = self.n
         self.P += (*a, *b, *c)
@@ -717,12 +734,6 @@ class Mesh:
                 np.array(self.C, np.uint8).reshape(-1, 4))
 
 
-def _band_v(band, k):
-    """v range (bottom, top) of band k (0 = the image top) of a 4-band sheet; a hair inside it."""
-    eps = 1.5 / 1024
-    return 1.0 - (k + 1) / BANDS + eps, 1.0 - k / BANDS - eps
-
-
 # A sash window cut from the plaster sheet (band 2, bay 0, its sill included): u, v ranges (Collada v up)
 WIN_UV = (53 / 1024, 154 / 1024, 1.0 - (512 + 238) / 1024, 1.0 - (512 + 45) / 1024)
 WIN_W, WIN_H, WIN_SILL = 1.05, 1.75, 0.85   # m
@@ -731,154 +742,36 @@ DOOR_GAP_M = 0.75           # m each side of a front door kept free of the groun
 WIN_OUT_M = 0.03            # m the window stands proud of its wall
 
 
-def _plain_wall_with_windows(m, spec, a, b, L, z0, z_eave, wallmat, mat_idx, edge=None):
-    """A wall of a plain tileable material (world-scaled UV) with sash windows laid over it, a whole
-    number per floor centred in their bays."""
-    su = SIDING_UV_M
-    m.quad((a[0], a[1], z0), (b[0], b[1], z0), (b[0], b[1], z_eave), (a[0], a[1], z_eave),
-           (0, z0 / su), (L / su, z0 / su), (L / su, z_eave / su), (0, z_eave / su), wallmat)
-    if spec.windows is False:
-        if spec.front is not None and spec.front == edge and L > 4.0:
-            # a big box's storefront: the shopfront band over the wall, a whole number of its bays
-            d = (b - a) / L
-            out = np.array([d[1], -d[0]]) * WIN_OUT_M
-            base = z_eave - spec.floors * spec.floor_h
-            zt = min(base + GROUND_FLOOR_SHOP_M, z_eave - 0.6)
-            nbs = max(1, int(round(L * 0.7 / (TILE_PX_M / BAND_SHOP[1]))))
-            v0, v1 = _band_v(BAND_SHOP, BAND_SHOP[0])
-            p, q = a + d * (L * 0.15) + out, a + d * (L * 0.85) + out
-            m.quad((p[0], p[1], base), (q[0], q[1], base), (q[0], q[1], zt), (p[0], p[1], zt),
-                   (0, v0), (nbs / BAND_SHOP[1], v0), (nbs / BAND_SHOP[1], v1), (0, v1), mat_idx[SHOP])
-        return
-    nb = int(L // HOUSE_BAY_M)
-    if nb < 1 or L < 2.0:
-        return
-    d = (b - a) / L
-    out = np.array([d[1], -d[0]]) * WIN_OUT_M
-    win = mat_idx["bne_bld_fac_white"]
-    u0, u1, v0, v1 = WIN_UV
-    base = z_eave - spec.floors * spec.floor_h
-    for f in range(spec.floors):
-        zf = base + f * spec.floor_h + WIN_SILL
-        if zf + WIN_H > z_eave - 0.2:
-            continue
-        for k in range(nb):
-            if f == 0 and nb % 2 == 1 and k == nb // 2:
-                continue                                # where a front door may stand (doors(): the middle)
-            c = a + d * (L * (k + 0.5) / nb) + out
-            p, q = c - d * WIN_W / 2, c + d * WIN_W / 2
-            m.quad((p[0], p[1], zf), (q[0], q[1], zf), (q[0], q[1], zf + WIN_H), (p[0], p[1], zf + WIN_H),
-                   (u0, v0), (u1, v0), (u1, v1), (u0, v1), win)
+_WALL_CONSTS = None
 
 
 def _walls(m, spec, ring, z0, z_eave, mat_idx, lite=False):
-    """Each wall of the ring, floor by floor: one band of the window sheet, a whole number of bays."""
-    n = len(ring)
-    fac = mat_idx[spec.facade]
-    pts = np.asarray(ring, np.float64)[:, :2].tolist()     # (plain floats: the arithmetic below, per bay)
-    for i in range(n):
-        a, b = ring[i], ring[(i + 1) % n]
-        L = float(math.hypot(*(b - a)))
-        if L < 0.05:
-            continue
-        if spec.wall:
-            _plain_wall_with_windows(m, spec, a, b, L, z0, z_eave, fac, mat_idx, i)
-            continue
-        (ax, ay), (bx, by) = pts[i], pts[(i + 1) % n]
-        if spec.plain:
-            u1 = L / SIDING_UV_M
-            m.quad((ax, ay, z0), (bx, by, z0), (bx, by, z_eave), (ax, ay, z_eave),
-                   (0, z0 / SIDING_UV_M), (u1, z0 / SIDING_UV_M), (u1, z_eave / SIDING_UV_M), (0, z_eave / SIDING_UV_M),
-                   fac)
-            continue
-        bays_per_tile = spec.band[1]
-        bay = TILE_PX_M / bays_per_tile
-        nb = int(round(L / bay))
-        u1 = (nb / bays_per_tile) if nb >= 1 else 0.02 * L          # a short wall: the plain strip at the sheet's edge
-        # the floors stand on the footprint's highest ground; below it a plain plinth (a slope's basement)
-        base = z_eave - spec.floors * spec.floor_h
-        za = z0
-        if base - z0 > FOUNDATION_M + 0.4:
-            pv0, pv1 = _band_v(spec.band, spec.band[0])
-            hp = (base - 0.3) - z0                      # the plinth: the band's plain strip at its scale
-            _plain_strip(m, a, b, z0, base - 0.3, bays_per_tile, bay, pv0,
-                         pv0 + (pv1 - pv0) * min(1.0, hp / max(spec.floor_h, 1e-3)), fac, whole=lite)
-            za = base - 0.3
-        for f in range(spec.floors):
-            zb = z_eave if f == spec.floors - 1 else base + (f + 1) * spec.floor_h
-            if f == 0 and spec.shop:
-                mat, (_, k_bpt) = mat_idx[SHOP], BAND_SHOP
-                band_k = BAND_SHOP[0]
-                nbs = max(1, int(round(L / (TILE_PX_M / k_bpt))))
-                uu = nbs / k_bpt if L > 2.0 else 0.02 * L
-            else:
-                mat, band_k, uu = fac, spec.band[0], u1
-                if len(spec.band) > 2 and nb >= 1 and not lite:     # the good bays only, one quad each
-                    v0, v1 = _band_v(spec.band, band_k)
-                    good = spec.band[2]
-                    dk = None
-                    if f == 0 and spec.door and spec.door[0] == i and spec.roof == "flat":
-                        dk = min(nb - 1, int(spec.door[1] / L * nb))      # the bay behind the front door
-                    dx, dy = bx - ax, by - ay
-                    for k in range(nb):
-                        g = good[int(_hash01(spec.seed, i, f, k) * len(good))]
-                        t0, t1 = k / nb, (k + 1) / nb
-                        pa, pb = (ax + dx * t0, ay + dy * t0), (ax + dx * t1, ay + dy * t1)
-                        if k == dk:
-                            _plain_strip(m, pa, pb, za, zb, bays_per_tile, bay, v0, v1, mat)
-                            continue
-                        m.quad((pa[0], pa[1], za), (pb[0], pb[1], za), (pb[0], pb[1], zb), (pa[0], pa[1], zb),
-                               (g / bays_per_tile, v0), ((g + 1) / bays_per_tile, v0), ((g + 1) / bays_per_tile, v1),
-                               (g / bays_per_tile, v1), mat)
-                    za = zb
-                    continue
-            v0, v1 = _band_v(spec.band, band_k)
-            door = spec.door if (f == 0 and spec.roof == "flat" and spec.door and spec.door[0] == i) else None
-            if door is not None and DOOR_GAP_M < door[1] < L - DOOR_GAP_M:
-                # the band either side of the door; a plain strip of the sheet's wall behind it, whole bays of the
-                # band (a gap cutting a bay left a sliver of its window beside the door, the user 2026-10-17)
-                s0, s1 = door[1] - DOOR_GAP_M, door[1] + DOOR_GAP_M
-                if nb >= 1:
-                    bw = L / nb
-                    s0, s1 = max(0.0, math.floor(s0 / bw) * bw), min(L, math.ceil(s1 / bw) * bw)
-                for ta, tb in ((0.0, s0), (s1, L)):
-                    if tb - ta < 1e-3:
-                        continue
-                    pa, pb = a + (b - a) * (ta / L), a + (b - a) * (tb / L)
-                    m.quad((pa[0], pa[1], za), (pb[0], pb[1], za), (pb[0], pb[1], zb), (pa[0], pa[1], zb),
-                           (uu * ta / L, v0), (uu * tb / L, v0), (uu * tb / L, v1), (uu * ta / L, v1), mat)
-                pa, pb = a + (b - a) * (s0 / L), a + (b - a) * (s1 / L)
-                _plain_strip(m, pa, pb, za, zb, bays_per_tile, bay, v0, v1, mat, whole=lite)
-                za = zb
-                continue
-            # the foundation and the parapet stretch the band a little; the windows stay a floor's height
-            m.quad((ax, ay, za), (bx, by, za), (bx, by, zb), (ax, ay, zb),
-                   (0, v0), (uu, v0), (uu, v1), (0, v1), mat)
-            za = zb
+    """Each wall of the ring, floor by floor: one band of the window sheet, a whole number of bays; a plain wall with
+    sash windows laid over it for a plain tileable material (spec.wall; a big box's storefront band); a plain plinth
+    under the floors on a slope; a shopfront ground floor; the good bays only where a band has some; the front door's
+    bay as the band's plain strip, at the sheet's scale. The Rust loop (earthfast.building_walls: the quads the Python
+    made, in its order and arithmetic)."""
+    global _WALL_CONSTS
+    if _WALL_CONSTS is None:
+        _WALL_CONSTS = [float(v) for v in (SIDING_UV_M, TILE_PX_M, FOUNDATION_M, BANDS, BAND_SHOP[0], BAND_SHOP[1],
+                                           DOOR_GAP_M, PLAIN_STRIP, GROUND_FLOOR_SHOP_M, WIN_OUT_M, HOUSE_BAY_M,
+                                           *WIN_UV, WIN_W, WIN_H, WIN_SILL)]
+    fast.require(76, "building_walls")
+    band = spec.band or (0, 1)
+    good = list(band[2]) if len(band) > 2 else []
+    door = spec.door
+    P, UV, mid = fast._ef.building_walls(
+        np.ascontiguousarray(np.asarray(ring, np.float64)[:, :2]), float(z0), float(z_eave), bool(spec.wall),
+        bool(spec.plain), int(band[0]), int(band[1]), [int(g) for g in good], int(spec.floors), float(spec.floor_h),
+        bool(spec.shop), int(door[0]) if door else -1, float(door[1]) if door else 0.0, spec.roof == "flat",
+        float(spec.seed) if isinstance(spec.seed, float) else 0.0, spec.windows is False,
+        int(spec.front) if spec.front is not None else -1, bool(lite), _WALL_CONSTS)
+    if mid:
+        m.quads(P, UV, mid, [mat_idx[spec.facade], mat_idx[SHOP] if (spec.shop or spec.wall) else None,
+                             mat_idx["bne_bld_fac_white"] if spec.wall else None])
 
 
 PLAIN_STRIP = 0.3           # of a bay: the plain wall between two windows of a sheet's band (centred on a bay edge)
-
-
-def _plain_strip(m, pa, pb, za, zb, bays_per_tile, bay_w, v0, v1, mat, whole=False):
-    """The wall from pa to pb (za..zb) in slices of the band's plain strip between its first two windows, at the
-    sheet's own scale (a bay of the sheet = bay_w m). The wall behind a front door was one texel of the sheet
-    stretched over it, a blurred smear round every door (the user, 2026-10-17). whole (the lite mesh: far buildings,
-    a near tile's distant detail): one slice stretched over it (the plinths of buildings on a slope were ~78 % of a
-    far buildings tile's quads, ~1 m slices nobody sees from 600 m)."""
-    ax, ay, bx, by = float(pa[0]), float(pa[1]), float(pb[0]), float(pb[1])
-    dx, dy = bx - ax, by - ay
-    L = math.hypot(dx, dy)
-    if L < 1e-3:
-        return
-    c, h = 1.0 / bays_per_tile, 0.5 * PLAIN_STRIP / bays_per_tile
-    sw = max(0.1, PLAIN_STRIP * bay_w)                  # m one slice covers
-    n = 1 if whole else max(1, int(round(L / sw)))
-    uva, uvb, uvc, uvd = (c - h, v0), (c + h, v0), (c + h, v1), (c - h, v1)
-    for j in range(n):
-        t0, t1 = j / n, (j + 1) / n
-        qax, qay, qbx, qby = ax + dx * t0, ay + dy * t0, ax + dx * t1, ay + dy * t1
-        m.quad((qax, qay, za), (qbx, qby, za), (qbx, qby, zb), (qax, qay, zb), uva, uvb, uvc, uvd, mat)
 
 
 def _cornice(m, spec, ring, z_eave, mat_idx):

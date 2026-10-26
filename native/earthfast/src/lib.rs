@@ -2673,6 +2673,344 @@ fn py_hypot_test<'py>(py: Python<'py>, x: PyReadonlyArray1<'py, f64>, y: PyReado
     numpy::ndarray::Array1::from_shape_fn(x.len(), |i| py_hypot(x[i], y[i])).into_pyarray(py)
 }
 
+/// Python's repr() of a finite float (the shortest digits that read back the same; fixed notation for a decimal
+/// exponent from -4 to 15, else d.ddde-XX), for hashes made of repr()s (buildings._hash01).
+pub fn py_float_repr(x: f64) -> String {
+    if x == 0.0 {
+        return if x.is_sign_negative() { "-0.0".into() } else { "0.0".into() };
+    }
+    let s = format!("{:e}", x);                 // shortest round-trip digits: "-1.2345e-7"
+    let (mant, exp) = s.split_once('e').unwrap();
+    let exp: i32 = exp.parse().unwrap();
+    let (neg, mant) = if let Some(m) = mant.strip_prefix('-') { (true, m) } else { (false, mant) };
+    let digits: String = mant.chars().filter(|c| *c != '.').collect();
+    let decpt = exp + 1;                        // digits d1 d2 ... = 0.d1d2... x 10^decpt
+    let mut out = String::new();
+    if neg { out.push('-'); }
+    if decpt > -4 && decpt <= 16 {
+        if decpt <= 0 {
+            out.push_str("0.");
+            for _ in 0..(-decpt) { out.push('0'); }
+            out.push_str(&digits);
+        } else if (decpt as usize) >= digits.len() {
+            out.push_str(&digits);
+            for _ in 0..(decpt as usize - digits.len()) { out.push('0'); }
+            out.push_str(".0");
+        } else {
+            out.push_str(&digits[..decpt as usize]);
+            out.push('.');
+            out.push_str(&digits[decpt as usize..]);
+        }
+    } else {
+        out.push_str(&digits[..1]);
+        if digits.len() > 1 {
+            out.push('.');
+            out.push_str(&digits[1..]);
+        }
+        let e = decpt - 1;
+        out.push('e');
+        out.push(if e < 0 { '-' } else { '+' });
+        out.push_str(&format!("{:02}", e.abs()));
+    }
+    out
+}
+
+/// BLAKE2b (RFC 7693) of data with an 8-byte digest, unkeyed: hashlib.blake2b(data, digest_size=8).digest() as a
+/// little-endian u64.
+pub fn blake2b_8(data: &[u8]) -> u64 {
+    const IV: [u64; 8] = [0x6a09e667f3bcc908, 0xbb67ae8584caa73b, 0x3c6ef372fe94f82b, 0xa54ff53a5f1d36f1,
+                          0x510e527fade682d1, 0x9b05688c2b3e6c1f, 0x1f83d9abfb41bd6b, 0x5be0cd19137e2179];
+    const SIGMA: [[usize; 16]; 12] = [
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], [14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3],
+        [11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4], [7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8],
+        [9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13], [2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9],
+        [12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11], [13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10],
+        [6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5], [10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0],
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], [14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3]];
+    let mut h = IV;
+    h[0] ^= 0x0101_0000 ^ 8;                    // digest length 8, no key, fanout 1, depth 1
+    let compress = |h: &mut [u64; 8], block: &[u8; 128], t: u128, last: bool| {
+        let mut m = [0u64; 16];
+        for i in 0..16 {
+            m[i] = u64::from_le_bytes(block[i * 8..i * 8 + 8].try_into().unwrap());
+        }
+        let mut v = [0u64; 16];
+        v[..8].copy_from_slice(h);
+        v[8..].copy_from_slice(&IV);
+        v[12] ^= t as u64;
+        v[13] ^= (t >> 64) as u64;
+        if last { v[14] = !v[14]; }
+        let g = |v: &mut [u64; 16], a: usize, b: usize, c: usize, d: usize, x: u64, y: u64| {
+            v[a] = v[a].wrapping_add(v[b]).wrapping_add(x); v[d] = (v[d] ^ v[a]).rotate_right(32);
+            v[c] = v[c].wrapping_add(v[d]); v[b] = (v[b] ^ v[c]).rotate_right(24);
+            v[a] = v[a].wrapping_add(v[b]).wrapping_add(y); v[d] = (v[d] ^ v[a]).rotate_right(16);
+            v[c] = v[c].wrapping_add(v[d]); v[b] = (v[b] ^ v[c]).rotate_right(63);
+        };
+        for s in SIGMA.iter() {
+            g(&mut v, 0, 4, 8, 12, m[s[0]], m[s[1]]); g(&mut v, 1, 5, 9, 13, m[s[2]], m[s[3]]);
+            g(&mut v, 2, 6, 10, 14, m[s[4]], m[s[5]]); g(&mut v, 3, 7, 11, 15, m[s[6]], m[s[7]]);
+            g(&mut v, 0, 5, 10, 15, m[s[8]], m[s[9]]); g(&mut v, 1, 6, 11, 12, m[s[10]], m[s[11]]);
+            g(&mut v, 2, 7, 8, 13, m[s[12]], m[s[13]]); g(&mut v, 3, 4, 9, 14, m[s[14]], m[s[15]]);
+        }
+        for i in 0..8 { h[i] ^= v[i] ^ v[i + 8]; }
+    };
+    let n = data.len();
+    let mut off = 0usize;
+    while n - off > 128 {
+        let block: [u8; 128] = data[off..off + 128].try_into().unwrap();
+        off += 128;
+        compress(&mut h, &block, off as u128, false);
+    }
+    let mut block = [0u8; 128];
+    block[..n - off].copy_from_slice(&data[off..]);
+    compress(&mut h, &block, n as u128, true);
+    h[0]
+}
+
+/// buildings._hash01 of a tuple of a float and ints (repr((seed, a, b, ...))): a number in [0, 1).
+pub fn py_hash01_fints(seed: f64, ints: &[i64]) -> f64 {
+    let mut s = String::from("(");
+    s.push_str(&py_float_repr(seed));
+    for v in ints {
+        s.push_str(", ");
+        s.push_str(&v.to_string());
+    }
+    if ints.is_empty() {
+        s.push(',');                            // (a one-element tuple: "(0.5,)")
+    }
+    s.push(')');
+    blake2b_8(s.as_bytes()) as f64 / 18446744073709551616.0
+}
+
+#[pyfunction]
+fn hash01_test(seeds: Vec<f64>, ints: Vec<Vec<i64>>) -> (Vec<f64>, Vec<String>) {
+    (seeds.iter().zip(&ints).map(|(&s, iv)| py_hash01_fints(s, iv)).collect(),
+     seeds.iter().map(|&s| py_float_repr(s)).collect())
+}
+
+/// Python's float floor division x // y for finite y > 0 (CPython's float_floor_div: through fmod, not floor(x / y)).
+fn py_floordiv(x: f64, y: f64) -> f64 {
+    let m = x % y;
+    let mut div = (x - m) / y;
+    if m != 0.0 && ((y < 0.0) != (m < 0.0)) {
+        div -= 1.0;
+    }
+    if div != 0.0 {
+        let fd = div.floor();
+        if div - fd > 0.5 { fd + 1.0 } else { fd }
+    } else {
+        0.0f64.copysign(x / y)
+    }
+}
+
+/// buildings._walls (with _plain_wall_with_windows, _plain_strip, _band_v): each wall of the ring floor by floor as
+/// quads, in the Python's order and float arithmetic (math.hypot: py_hypot, round(): half to even, _hash01: blake2b of
+/// the repr). Returns (positions: 12 per quad, uvs: 8 per quad, material per quad: 0 the facade, 1 the shopfront,
+/// 2 the window white). c: the constants (see buildings._walls). door_edge / front: -1 for none.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn building_walls(py: Python<'_>, ring: PyReadonlyArray2<'_, f64>, z0: f64, z_eave: f64, wall: bool, plain: bool,
+                  band_k: i64, bpt: i64, good: Vec<i64>, floors: i64, floor_h: f64, shop: bool, door_edge: i64,
+                  door_pos: f64, roof_flat: bool, seed: f64, windows_false: bool, front: i64, lite: bool, c: Vec<f64>)
+                  -> PyResult<(Vec<f64>, Vec<f64>, Vec<u8>)> {
+    if c.len() != 18 {
+        return Err(pyo3::exceptions::PyValueError::new_err("building_walls: 18 constants"));
+    }
+    let r = ring.as_array();
+    let pts: Vec<(f64, f64)> = (0..r.nrows()).map(|i| (r[[i, 0]], r[[i, 1]])).collect();
+    let (siding_uv, tile_px, foundation, bands, shop_k, shop_bpt, door_gap, plain_strip) =
+        (c[0], c[1], c[2], c[3], c[4] as i64, c[5] as i64, c[6], c[7]);
+    let (gf_shop, win_out, house_bay) = (c[8], c[9], c[10]);
+    let (wu0, wu1, wv0, wv1, win_w, win_h, win_sill) = (c[11], c[12], c[13], c[14], c[15], c[16], c[17]);
+    Ok(py.allow_threads(|| {
+        let mut pp: Vec<f64> = Vec::new();
+        let mut uv: Vec<f64> = Vec::new();
+        let mut mid: Vec<u8> = Vec::new();
+        let mut quad = |p: [(f64, f64, f64); 4], t: [(f64, f64); 4], m: u8| {
+            for q in p.iter() { pp.push(q.0); pp.push(q.1); pp.push(q.2); }
+            for q in t.iter() { uv.push(q.0); uv.push(q.1); }
+            mid.push(m);
+        };
+        let band_v = |k: i64| {
+            let eps = 1.5 / 1024.0;
+            (1.0 - (k + 1) as f64 / bands + eps, 1.0 - k as f64 / bands - eps)
+        };
+        let rnd = |x: f64| x.round_ties_even() as i64;
+        // _plain_strip
+        let strip = |quad: &mut dyn FnMut([(f64, f64, f64); 4], [(f64, f64); 4], u8), pa: (f64, f64), pb: (f64, f64),
+                     za: f64, zb: f64, bpt: i64, bay_w: f64, v0: f64, v1: f64, m: u8, whole: bool| {
+            let (ax, ay, bx, by) = (pa.0, pa.1, pb.0, pb.1);
+            let (dx, dy) = (bx - ax, by - ay);
+            let l = py_hypot(dx, dy);
+            if l < 1e-3 {
+                return;
+            }
+            let (cc, h) = (1.0 / bpt as f64, 0.5 * plain_strip / bpt as f64);
+            let sw = (plain_strip * bay_w).max(0.1);
+            let sw = if 0.1 > plain_strip * bay_w { 0.1 } else { sw };
+            let n = if whole { 1 } else { rnd(l / sw).max(1) };
+            for j in 0..n {
+                let (t0, t1) = (j as f64 / n as f64, (j + 1) as f64 / n as f64);
+                let (qax, qay, qbx, qby) = (ax + dx * t0, ay + dy * t0, ax + dx * t1, ay + dy * t1);
+                quad([(qax, qay, za), (qbx, qby, za), (qbx, qby, zb), (qax, qay, zb)],
+                     [(cc - h, v0), (cc + h, v0), (cc + h, v1), (cc - h, v1)], m);
+            }
+        };
+        let n = pts.len();
+        for i in 0..n {
+            let (a, b) = (pts[i], pts[(i + 1) % n]);
+            let l = py_hypot(b.0 - a.0, b.1 - a.1);
+            if l < 0.05 {
+                continue;
+            }
+            if wall {
+                // _plain_wall_with_windows
+                let su = siding_uv;
+                quad([(a.0, a.1, z0), (b.0, b.1, z0), (b.0, b.1, z_eave), (a.0, a.1, z_eave)],
+                     [(0.0, z0 / su), (l / su, z0 / su), (l / su, z_eave / su), (0.0, z_eave / su)], 0);
+                if windows_false {
+                    if front >= 0 && front == i as i64 && l > 4.0 {
+                        let d = ((b.0 - a.0) / l, (b.1 - a.1) / l);
+                        let out = (d.1 * win_out, -d.0 * win_out);
+                        let base = z_eave - floors as f64 * floor_h;
+                        let zt = (base + gf_shop).min(z_eave - 0.6);
+                        let zt = if z_eave - 0.6 < base + gf_shop { z_eave - 0.6 } else { base + gf_shop };
+                        let nbs = rnd(l * 0.7 / (tile_px / shop_bpt as f64)).max(1);
+                        let (v0, v1) = band_v(shop_k);
+                        let (s15, s85) = (l * 0.15, l * 0.85);
+                        let p = (a.0 + d.0 * s15 + out.0, a.1 + d.1 * s15 + out.1);
+                        let q = (a.0 + d.0 * s85 + out.0, a.1 + d.1 * s85 + out.1);
+                        let un = nbs as f64 / shop_bpt as f64;
+                        let _ = zt;
+                        let ztop = if z_eave - 0.6 < base + gf_shop { z_eave - 0.6 } else { base + gf_shop };
+                        quad([(p.0, p.1, base), (q.0, q.1, base), (q.0, q.1, ztop), (p.0, p.1, ztop)],
+                             [(0.0, v0), (un, v0), (un, v1), (0.0, v1)], 1);
+                    }
+                    continue;
+                }
+                let nb = py_floordiv(l, house_bay) as i64;
+                if nb < 1 || l < 2.0 {
+                    continue;
+                }
+                let d = ((b.0 - a.0) / l, (b.1 - a.1) / l);
+                let out = (d.1 * win_out, -d.0 * win_out);
+                let base = z_eave - floors as f64 * floor_h;
+                for f in 0..floors {
+                    let zf = base + f as f64 * floor_h + win_sill;
+                    if zf + win_h > z_eave - 0.2 {
+                        continue;
+                    }
+                    for k in 0..nb {
+                        if f == 0 && nb % 2 == 1 && k == nb / 2 {
+                            continue;
+                        }
+                        let s = l * (k as f64 + 0.5) / nb as f64;
+                        let cc = (a.0 + d.0 * s + out.0, a.1 + d.1 * s + out.1);
+                        let hw = (d.0 * win_w / 2.0, d.1 * win_w / 2.0);
+                        let p = (cc.0 - hw.0, cc.1 - hw.1);
+                        let q = (cc.0 + hw.0, cc.1 + hw.1);
+                        quad([(p.0, p.1, zf), (q.0, q.1, zf), (q.0, q.1, zf + win_h), (p.0, p.1, zf + win_h)],
+                             [(wu0, wv0), (wu1, wv0), (wu1, wv1), (wu0, wv1)], 2);
+                    }
+                }
+                continue;
+            }
+            let (ax, ay, bx, by) = (a.0, a.1, b.0, b.1);
+            if plain {
+                let u1 = l / siding_uv;
+                quad([(ax, ay, z0), (bx, by, z0), (bx, by, z_eave), (ax, ay, z_eave)],
+                     [(0.0, z0 / siding_uv), (u1, z0 / siding_uv), (u1, z_eave / siding_uv), (0.0, z_eave / siding_uv)], 0);
+                continue;
+            }
+            let bay = tile_px / bpt as f64;
+            let nb = rnd(l / bay);
+            let u1 = if nb >= 1 { nb as f64 / bpt as f64 } else { 0.02 * l };
+            let base = z_eave - floors as f64 * floor_h;
+            let mut za = z0;
+            if base - z0 > foundation + 0.4 {
+                let (pv0, pv1) = band_v(band_k);
+                let hp = (base - 0.3) - z0;
+                let fh = if floor_h > 1e-3 { floor_h } else { 1e-3 };
+                let fh = if 1e-3 > floor_h { 1e-3 } else { fh };
+                let ratio = hp / fh;
+                let ratio = if ratio < 1.0 { ratio } else { 1.0 };
+                strip(&mut quad, a, b, z0, base - 0.3, bpt, bay, pv0, pv0 + (pv1 - pv0) * ratio, 0, lite);
+                za = base - 0.3;
+            }
+            for f in 0..floors {
+                let zb = if f == floors - 1 { z_eave } else { base + (f + 1) as f64 * floor_h };
+                let (m, bk, uu);
+                if f == 0 && shop {
+                    m = 1u8;
+                    bk = shop_k;
+                    let nbs = rnd(l / (tile_px / shop_bpt as f64)).max(1);
+                    uu = if l > 2.0 { nbs as f64 / shop_bpt as f64 } else { 0.02 * l };
+                } else {
+                    m = 0u8;
+                    bk = band_k;
+                    uu = u1;
+                    if !good.is_empty() && nb >= 1 && !lite {
+                        let (v0, v1) = band_v(bk);
+                        let mut dk: i64 = -1;
+                        if f == 0 && door_edge >= 0 && door_edge == i as i64 && roof_flat {
+                            dk = (nb - 1).min((door_pos / l * nb as f64).trunc() as i64);
+                        }
+                        let (dx, dy) = (bx - ax, by - ay);
+                        for k in 0..nb {
+                            let hsh = py_hash01_fints(seed, &[i as i64, f, k]);
+                            let g = good[(hsh * good.len() as f64).trunc() as usize];
+                            let (t0, t1) = (k as f64 / nb as f64, (k + 1) as f64 / nb as f64);
+                            let (pa, pb) = ((ax + dx * t0, ay + dy * t0), (ax + dx * t1, ay + dy * t1));
+                            if k == dk {
+                                strip(&mut quad, pa, pb, za, zb, bpt, bay, v0, v1, m, false);
+                                continue;
+                            }
+                            let (g0, g1) = (g as f64 / bpt as f64, (g + 1) as f64 / bpt as f64);
+                            quad([(pa.0, pa.1, za), (pb.0, pb.1, za), (pb.0, pb.1, zb), (pa.0, pa.1, zb)],
+                                 [(g0, v0), (g1, v0), (g1, v1), (g0, v1)], m);
+                        }
+                        za = zb;
+                        continue;
+                    }
+                }
+                let (v0, v1) = band_v(bk);
+                let has_door = f == 0 && roof_flat && door_edge >= 0 && door_edge == i as i64;
+                if has_door && door_gap < door_pos && door_pos < l - door_gap {
+                    let (mut s0, mut s1) = (door_pos - door_gap, door_pos + door_gap);
+                    if nb >= 1 {
+                        let bw = l / nb as f64;
+                        let f0 = (s0 / bw).floor() * bw;
+                        let f1 = (s1 / bw).ceil() * bw;
+                        s0 = if f0 > 0.0 { f0 } else { 0.0 };
+                        s1 = if f1 < l { f1 } else { l };
+                    }
+                    for (ta, tb) in [(0.0, s0), (s1, l)] {
+                        if tb - ta < 1e-3 {
+                            continue;
+                        }
+                        let (fa, fb) = (ta / l, tb / l);
+                        let pa = (ax + (bx - ax) * fa, ay + (by - ay) * fa);
+                        let pb = (ax + (bx - ax) * fb, ay + (by - ay) * fb);
+                        quad([(pa.0, pa.1, za), (pb.0, pb.1, za), (pb.0, pb.1, zb), (pa.0, pa.1, zb)],
+                             [(uu * ta / l, v0), (uu * tb / l, v0), (uu * tb / l, v1), (uu * ta / l, v1)], m);
+                    }
+                    let (fa, fb) = (s0 / l, s1 / l);
+                    let pa = (ax + (bx - ax) * fa, ay + (by - ay) * fa);
+                    let pb = (ax + (bx - ax) * fb, ay + (by - ay) * fb);
+                    strip(&mut quad, pa, pb, za, zb, bpt, bay, v0, v1, m, lite);
+                    za = zb;
+                    continue;
+                }
+                quad([(ax, ay, za), (bx, by, za), (bx, by, zb), (ax, ay, zb)],
+                     [(0.0, v0), (uu, v0), (uu, v1), (0.0, v1)], m);
+                za = zb;
+            }
+        }
+        drop(quad);
+        (pp, uv, mid)
+    }))
+}
+
 /// buildings.triangulate: ear clipping of the counter-clockwise simple ring p (n, 2), (n - 2, 3) indices into p (fewer if
 /// the ring is not simple: the rest is left out); the Python's order, tests and float arithmetic exactly (its loops were
 /// a large part of a far buildings tile's roofs and floors, 2026-10-26).
@@ -4716,6 +5054,8 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(clean_ring_core, m)?)?;
     m.add_function(wrap_pyfunction!(py_hypot_test, m)?)?;
     m.add_function(wrap_pyfunction!(oriented_box_core, m)?)?;
+    m.add_function(wrap_pyfunction!(hash01_test, m)?)?;
+    m.add_function(wrap_pyfunction!(building_walls, m)?)?;
     m.add_function(wrap_pyfunction!(float_predictor_f32, m)?)?;
     m.add_function(wrap_pyfunction!(segment_crossings, m)?)?;
     m.add_function(wrap_pyfunction!(seg_hits, m)?)?;
