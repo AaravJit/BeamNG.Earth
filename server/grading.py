@@ -973,11 +973,14 @@ class Grader:
             if not fixed:
                 ez[j, 0] += self._end_raised(b[0])
                 ez[j, 1] += self._end_raised(b[-1])
+        xys = [np.asarray(p.xy, np.float64)[:, :2] for _fid, p in plans]
+        crs = roadsmod._crossings_by([b for b, _L, _f in spans], [xy for xy in xys if len(xy) >= 2])
+        crs = iter(crs)
         for i, (fid, p) in enumerate(plans):
-            xy = np.asarray(p.xy, np.float64)[:, :2]
+            xy = xys[i]
             if len(xy) < 2:
                 continue
-            cr = roadsmod._crossings([b for b, _L, _f in spans], [xy])
+            cr = next(crs)          # (every plan's crossings in one call: one per plan cost ~0.9 s per 6 cells)
             if not cr:
                 continue
             s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
@@ -1187,11 +1190,15 @@ class Grader:
         tch = np.minimum(np.hypot(first[near, 0] - xy[0], first[near, 1] - xy[1]),
                          np.hypot(last[near, 0] - xy[0], last[near, 1] - xy[1])) <= APPROACH_TOUCH_M
         box = ~((hi_l[near] < blo).any(1) | (lo_l[near] > bhi).any(1))
+        inbox = np.flatnonzero(box)     # (which of them cross under the chain: one kernel call for all)
+        crossing = np.zeros(len(near), bool)
+        for n, cr in zip(inbox, roadsmod._crossings_by(spans, [lines[near[n]] for n in inbox])):
+            crossing[n] = bool(cr)
         for n, i in enumerate(near):
             line, half = lines[i], halves[i]
             ground.append(line)
             touches = bool(tch[n])
-            under = bool(box[n]) and bool(roadsmod._crossings(spans, [line]))
+            under = bool(crossing[n])
             if touches:
                 approaches.append((line, half))
             # the roads beside the ramp, which its fill slope must not reach (not the ones the bridge spans: its

@@ -296,6 +296,21 @@ fn segment_crossings(
     ground: PyReadonlyArray2<f64>,
     ground_starts: PyReadonlyArray1<i64>,
 ) -> Vec<(usize, f64, f64, f64)> {
+    segment_crossings_g(py, parts, part_starts, ground, ground_starts)
+        .into_iter().map(|(pi, _g, arc, x, y)| (pi, arc, x, y)).collect()
+}
+
+/// segment_crossings with each crossing's ground line too: (part index, ground line index, arc m, x, y), in the same
+/// order (per part, per ground line, ...): one call for many ground lines, each line's crossings as its own call's
+/// (Grader._lower_underpasses called it once per road plan, ~8600 calls per 16 city road tiles, 2026-10-26).
+#[pyfunction]
+fn segment_crossings_g(
+    py: Python<'_>,
+    parts: PyReadonlyArray2<f64>,
+    part_starts: PyReadonlyArray1<i64>,
+    ground: PyReadonlyArray2<f64>,
+    ground_starts: PyReadonlyArray1<i64>,
+) -> Vec<(usize, usize, f64, f64, f64)> {
     let pa = parts.as_array();
     let ps = part_starts.as_array();
     let ga = ground.as_array();
@@ -339,7 +354,7 @@ fn segment_crossings(
                         let t = (apx * dy - apy * dx) / den;
                         let u = (apx * ry - apy * rx) / den;
                         if t >= 0.0 && t <= 1.0 && u >= 0.0 && u <= 1.0 {
-                            out.push((pi, s[j] + t * (s[j + 1] - s[j]), px + t * rx, py_ + t * ry));
+                            out.push((pi, g, s[j] + t * (s[j + 1] - s[j]), px + t * rx, py_ + t * ry));
                         }
                     }
                 }
@@ -2566,6 +2581,50 @@ fn bilinear_grid<'py>(
     Ok(out.into_pyarray(py))
 }
 
+/// bilinear_grid on the mosaic of tiles (ny x nx tiles of tile x tile pixels, row-major: tiles[r * nx + c] is the
+/// mosaic's block at row r, column c) without building it: each corner pixel read from its own tile (dem.sample copied
+/// every call's tiles into a new mosaic, ~2 s per 16 city road tiles, 2026-10-26). The same clamps and arithmetic.
+#[pyfunction]
+fn bilinear_tiles<'py>(
+    py: Python<'py>,
+    tiles: Vec<PyReadonlyArray2<'py, f32>>,
+    nx: usize,
+    tile: usize,
+    fx: PyReadonlyArray1<'py, f64>,
+    fy: PyReadonlyArray1<'py, f64>,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    if nx == 0 || tile == 0 || tiles.is_empty() || tiles.len() % nx != 0 {
+        return Err(pyo3::exceptions::PyValueError::new_err("bilinear_tiles: tiles must fill ny x nx"));
+    }
+    let ny = tiles.len() / nx;
+    let ts: Vec<_> = tiles.iter().map(|t| t.as_array()).collect();
+    if ts.iter().any(|t| t.shape()[0] != tile || t.shape()[1] != tile) {
+        return Err(pyo3::exceptions::PyValueError::new_err("bilinear_tiles: every tile must be tile x tile"));
+    }
+    let (h, w) = (ny * tile, nx * tile);
+    if h < 2 || w < 2 {
+        return Err(pyo3::exceptions::PyValueError::new_err("bilinear_tiles: the mosaic needs 2 x 2 pixels"));
+    }
+    let (xs, ys) = (fx.as_array(), fy.as_array());
+    if xs.len() != ys.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err("bilinear_tiles: fx and fy differ in length"));
+    }
+    let px = |y: usize, x: usize| ts[(y / tile) * nx + x / tile][[y % tile, x % tile]] as f64;
+    let out = py.allow_threads(|| {
+        numpy::ndarray::Array1::from_shape_fn(xs.len(), |i| {
+            let (x, y) = (xs[i], ys[i]);
+            let ix = (x.floor() as i64).clamp(0, w as i64 - 2) as usize;
+            let iy = (y.floor() as i64).clamp(0, h as i64 - 2) as usize;
+            let wx = (x - ix as f64).clamp(0.0, 1.0);
+            let wy = (y - iy as f64).clamp(0.0, 1.0);
+            let (v00, v10) = (px(iy, ix), px(iy, ix + 1));
+            let (v01, v11) = (px(iy + 1, ix), px(iy + 1, ix + 1));
+            (v00 * (1.0 - wx) + v10 * wx) * (1.0 - wy) + (v01 * (1.0 - wx) + v11 * wx) * wy
+        })
+    });
+    Ok(out.into_pyarray(py))
+}
+
 /// dem.decode_terrarium's arithmetic on the decoded image (h, w, 3|4 uint8): R * 256 + G + B / 256 - 32768 in float32,
 /// in numpy's order, without the RGB conversion and float temporaries.
 #[pyfunction]
@@ -4405,6 +4464,8 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(season_noise, m)?)?;
     m.add_function(wrap_pyfunction!(terrarium_heights, m)?)?;
     m.add_function(wrap_pyfunction!(bilinear_grid, m)?)?;
+    m.add_function(wrap_pyfunction!(bilinear_tiles, m)?)?;
+    m.add_function(wrap_pyfunction!(segment_crossings_g, m)?)?;
     m.add_function(wrap_pyfunction!(float_predictor_f32, m)?)?;
     m.add_function(wrap_pyfunction!(segment_crossings, m)?)?;
     m.add_function(wrap_pyfunction!(seg_hits, m)?)?;
@@ -4446,6 +4507,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(photofill::fill_photo, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 75)?;
+    m.add("VERSION", 76)?;
     Ok(())
 }

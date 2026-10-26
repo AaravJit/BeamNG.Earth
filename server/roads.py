@@ -2464,6 +2464,23 @@ def _crossings(lines, ground_lines):
     return [(pi, arc, np.array([x, y])) for pi, arc, x, y in got]
 
 
+def _crossings_by(lines, ground_lines):
+    """_crossings for each of ground_lines apart, in one kernel call: [[(part index, arc m, point xy)] per ground line],
+    each list as _crossings(lines, [that line]) gives it. Pure."""
+    import fast
+    lp = [np.asarray(ln, np.float64)[:, :2] for ln in lines]
+    gp = [np.asarray(gl, np.float64)[:, :2] for gl in ground_lines]
+    out = [[] for _ in gp]
+    if not lp or not gp:
+        return out
+    fast.require(76, "segment_crossings_g")
+    starts = lambda ps: np.r_[0, np.cumsum([len(p) for p in ps])].astype(np.int64)
+    for pi, g, arc, x, y in fast._ef.segment_crossings_g(np.ascontiguousarray(np.vstack(lp)), starts(lp),
+                                                          np.ascontiguousarray(np.vstack(gp)), starts(gp)):
+        out[g].append((pi, arc, np.array([x, y])))
+    return out
+
+
 def _deck_crossings(lines):
     """(i, j, arc on i, arc on j) where deck parts i < j cross (not at their end points). Pure."""
     import fast
