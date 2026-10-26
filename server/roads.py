@@ -250,11 +250,14 @@ def level_ranges(feats, i):
     """The off-ground ranges of feature i as sorted (start, end, "bridge" | "tunnel") fractions of its
     length, from its flags (is_bridge / is_tunnel) and level (> 0 bridge, < 0 tunnel) rules. Overture
     puts most bridges on a range of a longer segment (2026-10-11: a street with a few metres of bridge
-    was taken whole as a bridge and dropped). Pure."""
+    was taken whole as a bridge and dropped). Pure. A cell's are made all at once and shared (cell_facts)."""
     memo = feats.__dict__.setdefault("_level_ranges", {})
     got = memo.get(i)
     if got is None:
-        got = memo[i] = _skew_decks(feats, i, raw_level_ranges(feats, i))
+        _cell_ranges(feats)
+        got = memo.get(i)
+        if got is None:
+            got = memo[i] = _skew_decks(feats, i, raw_level_ranges(feats, i))
     return list(got)
 
 
@@ -263,8 +266,80 @@ def raw_level_ranges(feats, i):
     memo = feats.__dict__.setdefault("_raw_level_ranges", {})
     got = memo.get(i)
     if got is None:
-        got = memo[i] = _level_ranges(feats, i)
+        _cell_ranges(feats, load_only=True)
+        got = memo.get(i)
+        if got is None:
+            got = memo[i] = _level_ranges(feats, i)
     return list(got)
+
+
+# Per-cell facts shared by the server's processes and kept for the next run (the revisit cache: one file per cell and
+# kind, keyed by the cell, its map data versions and the code): a cell's road specs and level ranges, which every
+# process that draws or grades its roads made for itself (~0.2 s a city cell each; the terrain blocks', the road
+# tiles' and the AI graph's processes, 2026-10-25). Kept only when complete (revisit.faults unchanged).
+_FACTS_LOCK = threading.Lock()
+
+
+def _facts_key(feats, kind, extra):
+    cid = feats.__dict__.get("_bnge_cell")
+    import revisit
+    if cid is None or not revisit.ON or revisit.CACHE_DIR is None:
+        return None
+    return revisit.key("cellfacts", kind, cid, extra)
+
+
+def _facts_load(feats, kind, extra):
+    k = _facts_key(feats, kind, extra)
+    if k is None:
+        return None
+    import revisit
+    got = revisit.load(revisit.CACHE_DIR, "cellfacts", k)
+    if got is None or "facts.json" not in got[0]:
+        return None
+    try:
+        return json.loads(got[0]["facts.json"])
+    except ValueError:
+        return None
+
+
+def _facts_store(feats, kind, extra, data):
+    k = _facts_key(feats, kind, extra)
+    if k is None:
+        return
+    import revisit
+    revisit.store(revisit.CACHE_DIR, "cellfacts", k, {"facts.json": json.dumps(data).encode("utf-8")})
+
+
+def _cell_ranges(feats, load_only=False):
+    """Every feature's raw and lengthened level ranges into feats' memos: from the shared facts, or (not load_only)
+    made here and kept there."""
+    st = feats.__dict__
+    with _FACTS_LOCK:
+        if st.get("_ranges_state") is not None:
+            if load_only or st["_ranges_state"] != "loadable":
+                return
+        tried = st.get("_ranges_state")
+        st["_ranges_state"] = "busy"
+    if tried is None:
+        got = _facts_load(feats, "ranges", None)
+        if got is not None and len(got.get("raw", ())) == len(feats) and len(got.get("lvl", ())) == len(feats):
+            raw, lvl = st.setdefault("_raw_level_ranges", {}), st.setdefault("_level_ranges", {})
+            for i in range(len(feats)):
+                raw.setdefault(i, [tuple(r) for r in got["raw"][i]])
+                lvl.setdefault(i, [tuple(r) for r in got["lvl"][i]])
+            st["_ranges_state"] = "done"
+            return
+    if load_only:
+        st["_ranges_state"] = "loadable"        # (the eager build waits for level_ranges: road_specs reads the raw)
+        return
+    import revisit
+    f0 = revisit.faults()
+    raw = [raw_level_ranges(feats, i) for i in range(len(feats))]
+    lvl = [level_ranges(feats, i) for i in range(len(feats))]
+    st["_ranges_state"] = "done"
+    if revisit.faults() == f0:
+        _facts_store(feats, "ranges", None, {"raw": [[[float(a), float(b), k] for a, b, k in r] for r in raw],
+                                             "lvl": [[[float(a), float(b), k] for a, b, k in r] for r in lvl]})
 
 
 # A bridge over a road spans more than its carriageway: the road's shoulders and the abutments' slopes stand under it.
@@ -1022,9 +1097,34 @@ def road_specs(feats, urban_fn=None, widths=None, left_hand=False):
     k = (urban_fn, widths, bool(left_hand))     # a bound method equals another of the same object and function
     got = memo.get(k)
     if got is None:             # (the measured widths on the specs without them: those are asked for too, _bridge_reach)
-        got = memo[k] = (_road_specs(feats, urban_fn, left_hand) if widths is None else
-                         _measured_widths(feats, road_specs(feats, urban_fn, None, left_hand), widths))
+        extra = (widths is not None, bool(left_hand))
+        if urban_fn is None:    # (the land cover's are the server's own: not shared, cell_facts)
+            got = _specs_from(_facts_load(feats, "specs", extra), len(feats))
+        if got is None:
+            import revisit
+            f0 = revisit.faults()
+            got = (_road_specs(feats, urban_fn, left_hand) if widths is None else
+                   _measured_widths(feats, road_specs(feats, urban_fn, None, left_hand), widths))
+            if urban_fn is None and revisit.faults() == f0:
+                _facts_store(feats, "specs", extra, [None if sp is None else _spec_json(sp) for sp in got])
+        got = memo.setdefault(k, got)
     return list(got)
+
+
+def _spec_json(sp):
+    return {f: (v.item() if hasattr(v, "item") else list(v) if isinstance(v, tuple) else v)
+            for f, v in sp._asdict().items()}
+
+
+def _specs_from(data, n):
+    """road_specs' list from the shared facts (_spec_json), or None."""
+    if not isinstance(data, list) or len(data) != n:
+        return None
+    try:
+        return [None if d is None else Spec(**{**d, "sides": tuple(d["sides"]) if d.get("sides") is not None else None})
+                for d in data]
+    except (TypeError, KeyError):
+        return None
 
 
 # OpenStreetMap's sidewalk tag (osmtags.py) -> walk_sides' sides; "separate" (a footway mapped on its own beside the

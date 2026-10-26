@@ -20,8 +20,10 @@ import threading
 import zipfile
 
 ON = os.environ.get("BNE_REVISIT", "on") != "off"
+SKIP = {k for k in os.environ.get("BNE_REVISIT_SKIP", "").split(",") if k}     # kinds left out (tests: "roads,far")
 MAX_MB = float(os.environ.get("BNE_REVISIT_MB", "2000"))      # the cache's size, cut back at start (earthd)
 SUBDIR = "revisit"
+CACHE_DIR = None            # the server's cache folder (blockworker._State, earthd.Server): stores without one at hand
 
 _faults = [0]
 _code = []
@@ -51,7 +53,7 @@ def code_key():
                     except OSError:
                         pass
             for k in sorted(os.environ):                # (the build switches: BNE_*)
-                if k.startswith("BNE_") and k not in ("BNE_REVISIT", "BNE_REVISIT_MB"):
+                if k.startswith("BNE_") and k not in ("BNE_REVISIT", "BNE_REVISIT_MB", "BNE_REVISIT_SKIP"):
                     h.update(f"{k}={os.environ[k]}".encode())
             _code.append(h.hexdigest()[:16])
         return _code[0]
@@ -69,7 +71,7 @@ def _path(cache_dir, kind, k):
 
 def store(cache_dir, kind, k, blobs, extra=None):
     """Keep an item under key k: blobs {name: bytes}, extra JSON data. Never raises; False when not kept."""
-    if not ON:
+    if not ON or kind in SKIP:
         return False
     path = _path(cache_dir, kind, k)
     tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
@@ -91,7 +93,7 @@ def store(cache_dir, kind, k, blobs, extra=None):
 
 def load(cache_dir, kind, k):
     """({name: bytes}, extra) of the item under key k, or None when there is none (or it cannot be read)."""
-    if not ON:
+    if not ON or kind in SKIP:
         return None
     path = _path(cache_dir, kind, k)
     if not os.path.exists(path):

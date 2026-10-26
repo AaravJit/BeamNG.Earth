@@ -561,6 +561,9 @@ class MapData:
                         cd.layers[layer] = f
                     else:
                         cd.layers[layer] = f.localize(frame)
+                    # (which cell's layer: the per-cell facts the server's processes share, roads.cell_facts)
+                    cd.layers[layer].__dict__["_bnge_cell"] = (str(key), layer, json.dumps(self.versions(),
+                                                                                           sort_keys=True))
                 elif "missing" in arrays:
                     cd.layers[layer] = None
                 else:
