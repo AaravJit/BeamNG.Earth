@@ -45,6 +45,11 @@ local function deleteObjs(st)
   st.objs, st.pumps, st.made, st.cursor = {}, {}, false, nil
 end
 
+-- a prop's identity across records of its station in one frame: its shape and its place to 0.5 m
+local function propKey(p)
+  return string.format('%s|%d|%d', p.shape, math.floor(p.pos[1] * 2 + 0.5), math.floor(p.pos[2] * 2 + 0.5))
+end
+
 local function makeProp(st, p)
   local o = createObject('TSStatic')
   o:setField('shapeName', 0, p.shape)
@@ -59,7 +64,7 @@ local function makeProp(st, p)
   place(o, p.pos, q)
   o:registerObject('')
   scenetree.MissionGroup:addObject(o)
-  st.objs[#st.objs + 1] = { id = o:getID(), pos = { p.pos[1], p.pos[2], p.pos[3] }, q = q }
+  st.objs[#st.objs + 1] = { id = o:getID(), pos = { p.pos[1], p.pos[2], p.pos[3] }, q = q, key = propKey(p) }
 end
 
 local function makeArea(id, st, i, a)
@@ -123,6 +128,56 @@ local function replace(st, r)
   poisDirty = true
 end
 
+-- A made station's new record in the same frame with another layout (a road tile sent again once a neighbour's
+-- buildings arrived: a prop more or fewer): the props kept by shape and place (propKey) and re-placed, the others
+-- deleted and the missing ones made at once, so nothing blinks; the refuel areas and icons (invisible) made again,
+-- named in the record's order. False, touching nothing, when no prop matches (another frame: made again, as before).
+local function relayout(id, st, r)
+  local pool, olds = {}, 0
+  for k, ob in ipairs(st.objs) do
+    if ob.key then
+      olds = olds + 1
+      pool[ob.key] = pool[ob.key] or {}
+      table.insert(pool[ob.key], k)
+    end
+  end
+  local props = r.props or {}
+  local hit = {}
+  for i, p in ipairs(props) do
+    local list = pool[propKey(p)]
+    if list and #list > 0 then hit[i] = table.remove(list, 1) end
+  end
+  if next(hit) == nil and (olds > 0 or #props > 0) then return false end
+  local old, changed = st.objs, false
+  local keep = {}
+  for _, k in pairs(hit) do keep[k] = true end
+  for k, ob in ipairs(old) do
+    if not keep[k] then                   -- (an unmatched prop, and every area and icon)
+      local o = scenetree.findObjectById(ob.id)
+      if o then o:delete() end
+      if ob.key then changed = true end
+    end
+  end
+  st.objs, st.pumps = {}, {}
+  for i, p in ipairs(props) do
+    local k = hit[i]
+    if k then
+      local ob, q = old[k], yawQuat(p.yaw)
+      ob.pos, ob.q = { p.pos[1], p.pos[2], p.pos[3] }, q
+      local o = scenetree.findObjectById(ob.id)
+      if o then place(o, ob.pos, q) end
+      st.objs[#st.objs + 1] = ob
+    else
+      makeProp(st, p)
+      changed = true
+    end
+  end
+  for i, a in ipairs(r.areas or {}) do makeArea(id, st, i, a) end
+  poisDirty = true
+  if changed and M.onCollide then M.onCollide() end
+  return true
+end
+
 -- A road tile's stations (server roads_tile `fuel`).
 function M.onRows(aid, key, recs)
   if type(recs) ~= 'table' or not M.enabled then return end
@@ -136,6 +191,7 @@ function M.onRows(aid, key, recs)
         st.keys[key] = true
         if st.made and #(st.rec.props or {}) == #(r.props or {}) and #(st.rec.areas or {}) == #(r.areas or {}) then
           replace(st, r)
+        elseif st.made and relayout(r.id, st, r) then   -- another layout in this frame: the difference only
         elseif st.made then         -- another layout (the new anchor's frame): made again from this record
           deleteObjs(st)
           queue[#queue + 1] = r.id

@@ -206,4 +206,58 @@ for _ = 1, 5 do frame() end
 T.check(count('TSStatic') == 40 and G.count() == 1, 'finished from the new record')
 G.reset()
 
+-- a re-sent road tile whose record has a prop more or fewer (its neighbour's buildings arrived): the props kept by
+-- shape and place, only the difference made or deleted, so nothing blinks; the refuel areas (invisible) made again
+-- when they change
+local function ids()
+  local out = {}
+  for _, o in ipairs(S.liveOf('TSStatic')) do out[o:getID()] = o.fields.shapeName end
+  return out
+end
+local function same(a, b, except)
+  for id in pairs(a) do if id ~= except and not b[id] then return false end end
+  return true
+end
+G.onRows(1, '1:6_6', { rec('rs', 0) }); G.update(gov)
+local before3 = ids()
+local queued = false
+local fewer = rec('rs', 0); table.remove(fewer.props, 2)
+collide = 0
+G.onRows(1, '1:6_7', { fewer })
+T.check(count('TSStatic') == 1, 'one prop fewer: one object deleted at once: ' .. count('TSStatic'))
+local after = ids()
+local kept = next(after)
+T.check(before3[kept] ~= nil, 'the other prop kept (same object)')
+G.update(gov)
+T.check(count('TSStatic') == 1 and count('BeamNGGameplayArea') == 2, 'nothing respawned')
+T.check(collide == 1, 'one collision rebuild for the deleted prop')
+local more = rec('rs', 0)
+more.props[3] = { shape = '/levels/west_coast_usa/art/shapes/buildings/s_fuel_structure_07.dae', pos = { 6, 0, 1 }, yaw = 90,
+  scale = { 1, 1, 1 }, collide = true }
+G.onRows(1, '1:6_8', { more })
+T.check(count('TSStatic') == 3, 'a prop more (and the one back): made at once: ' .. count('TSStatic'))
+T.check(ids()[kept] ~= nil, 'the kept prop still the same object')
+local areaIds = {}
+for _, o in ipairs(S.liveOf('BeamNGGameplayArea')) do areaIds[o:getID()] = true end
+local moreAreas = rec('rs', 0)
+moreAreas.props[3] = more.props[3]
+moreAreas.areas[3] = { pos = { 6, 0, 2 }, yaw = 90, half = { 1.6, 2.2, 2.75 }, icon = { 6, 0, 4.5 } }
+local propIds = ids()
+local c3 = clears
+G.onRows(1, '1:6_9', { moreAreas })
+T.check(count('BeamNGGameplayArea') == 3 and count('BeamNGPointOfInterest') == 3, 'a pump more: its area and icon')
+T.check(scenetree.findObject('bne_fuel_rs_a3') ~= nil, 'named in order')
+T.check(same(propIds, ids()), 'no prop touched for an area change')
+clock = clock + G.CLEAR_S + 0.01; G.update(gov)
+T.check(clears == c3 + 1, 'the POIs gathered again')
+local els6 = {}
+G.pois('beamng_earth', els6)
+T.check(#els6 == 1 and #els6[1].data.facility.pumps == 3, 'three pumps in the POI')
+-- a record in another frame (nothing matches: the new anchor's tile after a rebase): made again, as before
+local moved = rec('rs', 500)
+G.onRows(2, '2:6_9', { moved }); G.update(gov)
+T.check(count('TSStatic') == 2, 'made again from the new frame: ' .. count('TSStatic'))
+T.near(scenetree.findObject('bne_fuel_rs_a1').pos.x, 502, 1e-9, 'at the new place')
+G.reset()
+
 T.done('test_gasstations')
