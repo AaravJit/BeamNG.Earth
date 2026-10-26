@@ -1238,7 +1238,7 @@ class SwitchTest(unittest.TestCase):
 REAL = __import__("os").environ.get("BNGE_GAS_REAL") == "1"
 
 
-@unittest.skipUnless(REAL, "set BNGE_GAS_REAL=1 to lay out three Pittsburgh-area stations from the real Overture data")
+@unittest.skipUnless(REAL, "set BNGE_GAS_REAL=1 to lay out real stations (Pittsburgh area, Nagambie, Tokyo) from the Overture data")
 class RealSpotsTest(unittest.TestCase):
     """Real stations around Pittsburgh, one per kind of canopy data (picked 2026-10-23 from the stations laid out in
     and around the city)."""
@@ -1285,6 +1285,14 @@ class RealSpotsTest(unittest.TestCase):
         rec, skip = self.site(-36.79432, 145.15094)
         self.assertEqual(len(skip), 1, "the OSM roof left out")
         self.assertTrue(any("s_fuel_structure_06" in p["shape"] for p in rec["props"]))
+
+    def test_one_building_japan(self):
+        # an ENEOS in Tokyo (2026-10-26): the whole station one unclassed 451 m2 outline around its pin
+        # (_one_building_site); before, Tokyo and Osaka laid out 0 of 20 stations
+        rec, skip = self.site(35.678616, 139.777064)
+        self.assertEqual(len(skip), 1, "the station's outline left out")
+        self.assertTrue(any("s_fuel_structure_06" in p["shape"] for p in rec["props"]))
+        self.assertGreaterEqual(len(rec["areas"]), 2)
 
 
 if __name__ == "__main__":
