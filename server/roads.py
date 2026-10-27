@@ -4559,6 +4559,7 @@ def shape_files(aid, tx, ty):
 # Sound spaces (the mod's ambience.lua makes them SFXSpaces: the stock maps' tunnel reverb in a tube, the one under a
 # bridge below its deck): kinds, and how far a bridge's space reaches under the deck's surface
 SOUND_TUNNEL, SOUND_BRIDGE, SOUND_TUNNEL_OPEN, SOUND_GARAGE, SOUND_PORTAL = 0, 1, 2, 3, 4
+SOUND_REFINERY = (5, 6, 7)      # points: West Coast USA's refinery tower engines, large, small (industry.py)
 SOUND_UNDER_M = 25.0
 # a closed tunnel's mouths: the stock portal snapshot event this far inside each (recorded 2026-10-26: the outside cut
 # off within ~10 m of it, 7 dB down at 20 m, untouched from 40 m: a ~25 m fade outside the portal, both ways), its
@@ -4619,7 +4620,7 @@ def sound_boxes(chunks):
 
 def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None, deck_mesh=None, bld=None,
                props=None, wires=None, park=None, tunnel_mesh=None, fuel=None,
-               rail_mesh=None, garage_sound=()):
+               rail_mesh=None, garage_sound=(), wells=()):
     """Write a tile's chunks (atomically), its sidewalk mesh (walks: build_tile's runs, if any:
     `walks_<a>_<tx>_<ty>.cdae`, announced in the tile as "walk": {shape, pos}) and its road mesh
     (road_mesh: roadmesh.build's result: `road_<a>_<tx>_<ty>.cdae`, "road": {shape, pos}; the mod then
@@ -4635,6 +4636,8 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
     sound = sound_boxes(chunks) + list(garage_sound)      # (garage_sound: buildings.garage_sound_boxes)
     if sound:
         data["sound"] = sound
+    if wells:                                               # oil wells' pump jacks (oilwells.tile_wells)
+        data["wells"] = list(wells)
     if road_mesh is not None:
         x0, y0, _, _ = tile_bbox(tx, ty)
         shape = f"road_{aid}_{tx}_{ty}.cdae"

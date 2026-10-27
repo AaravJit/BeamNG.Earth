@@ -263,6 +263,7 @@ local function dropTile(key)
   if t.park then require('beamngEarth/parking').dropKey(key) end
   if t.fuel then require('beamngEarth/gasstations').dropKey(key) end
   if t.sound then require('beamngEarth/ambience').dropSpaces(key) end
+  if t.wells then require('beamngEarth/pumpjacks').dropKey(key) end
   tiles[key] = nil
 end
 
@@ -444,6 +445,10 @@ function M.onTile(msg, currentAnchor)
   if type(data.fuel) == 'table' and data.fuel[1] then      -- gas stations: pumps, refuel areas (gasstations.lua)
     require('beamngEarth/gasstations').onRows(msg.anchorId, key, data.fuel)
     tiles[key].fuel = true
+  end
+  if type(data.wells) == 'table' and data.wells[1] then    -- oil wells' pump jacks (pumpjacks.lua)
+    require('beamngEarth/pumpjacks').onRows(key, data.wells)
+    tiles[key].wells = true
   end
   if type(data.sound) == 'table' and data.sound[1] then    -- tunnels' and bridges' sound spaces (ambience.lua)
     require('beamngEarth/ambience').onSpaces(key, data.sound)

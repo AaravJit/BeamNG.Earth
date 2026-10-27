@@ -316,11 +316,16 @@ M.ROOFED = { [0] = true, [2] = true, [3] = true }   -- the spaces with a roof (n
 -- cut off within ~10 m of it, 7 dB down at 20 m, untouched from 40 m).
 M.PORTAL = 4
 M.PORTAL_EVENT = 'event:>Snapshot Events>Snapshot_WC_Tunnel_Highway_In_01'
+-- The point kinds: an event played there (the portal's; refineries' grid points, server industry.py: West Coast USA's
+-- refinery tower sounds, "fans and monitors" to the user's ear, 2026-10-26)
+local WC = 'event:>Ambient>Maps>West Coast>'
+M.POINTS = { [4] = M.PORTAL_EVENT, [5] = WC .. 'Refinery_Tower_Engines', [6] = WC .. 'Refinery_Tower_Large',
+  [7] = WC .. 'Refinery_Tower_Small' }
 local spaces = {}       -- road tile key -> { { id, row }, ... }
 M.spacesMade = 0
 
 local function placeSpace(o, r)
-  if r[1] == M.PORTAL then o:setPosition(vec3(r[2], r[3], r[4])); return end
+  if M.POINTS[r[1]] then o:setPosition(vec3(r[2], r[3], r[4])); return end
   local m = MatrixF(true)
   m:setFromEuler(vec3(0, 0, -r[8]))         -- (clockwise: trees.lua)
   m:setPosition(vec3(r[2], r[3], r[4]))
@@ -335,19 +340,19 @@ function M.onSpaces(key, flat)
   for i = 1, #flat - 7, 8 do
     local r = { flat[i], flat[i + 1], flat[i + 2], flat[i + 3], flat[i + 4], flat[i + 5], flat[i + 6], flat[i + 7] }
     local amb = M.SPACES[r[1]]
-    local portal = r[1] == M.PORTAL
-    local o = (amb or portal) and Sim.upcast(createObject(portal and 'SFXEmitter' or 'SFXSpace'))
+    local ev = M.POINTS[r[1]]
+    local o = (amb or ev) and Sim.upcast(createObject(ev and 'SFXEmitter' or 'SFXSpace'))
     if o then
-      if portal then
+      if ev then
         o:setTransform(MatrixF(true))
-        o:setField('track', 0, M.PORTAL_EVENT)
+        o:setField('track', 0, ev)
       else
         o:setField('soundAmbience', 0, amb)
       end
       placeSpace(o, r)
       o.canSave = false
       o:registerObject('bngEarthSpace_' .. (M.spacesMade + 1))
-      if portal then o:play() end
+      if ev then o:play() end
       list[#list + 1] = { id = o:getId(), row = r }
       M.spacesMade = M.spacesMade + 1
     end

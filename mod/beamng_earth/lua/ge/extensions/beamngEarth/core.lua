@@ -75,6 +75,8 @@ local roads = require('beamngEarth/roads') -- DecalRoads from the server's road 
 local sea = require('beamngEarth/sea') -- the sea's WaterBlock tiles (server seatiles.py)
 local trees = require('beamngEarth/trees') -- trees, bushes, rocks (server vegetation.py)
 local ambience = require('beamngEarth/ambience') -- forest wind and room tone (the stock core_audioForest)
+local pumpjacks = require('beamngEarth/pumpjacks') -- oil wells' pump jacks (server oilwells.py)
+pumpjacks.onCollide = roads.markCollisionDirty
 local parking = require('beamngEarth/parking') -- parked cars on the road tiles' spots (stock gameplay_parking)
 local gasstations = require('beamngEarth/gasstations') -- pumps and the stock refuel prompt (server gasstations.py)
 gasstations.onCollide = roads.markCollisionDirty
@@ -510,6 +512,7 @@ local function finishRebase()
   roads.transform(xf, geodesy)
   trees.transform(xf, geodesy)
   ambience.transform(xf)
+  pumpjacks.transform(xf)
   gasstations.transform(xf)
   sea.transform(xf, msg.anchorId)
   -- a resync with a restarted server keeps the previous session's tiles the same way (st.sessionId
@@ -1866,6 +1869,7 @@ local function onUpdate(dtReal, dtSim)
     sea.update(st.anchorId, st.player)
     trees.update(st.anchorId, st.player, M.viewAway())
     pcall(ambience.update, st.anchorId, sea)      -- (sound never stops the world's updates)
+    pcall(pumpjacks.update)
     t = mark('sea+trees', t)
     local pb = nil
     if st.block then
@@ -2016,6 +2020,7 @@ local function onClientEndMission()
   sea.reset()
   trees.reset()
   ambience.reset()
+  pumpjacks.reset()
   parking.reset()
   navgraph.reset()
   local sessionId, nextRequestId, mapPort = st.sessionId, st.nextRequestId, st.mapPort

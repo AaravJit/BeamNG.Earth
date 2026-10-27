@@ -1276,13 +1276,18 @@ class Server:
                                        ("raw", aid, anchor.lat, anchor.lon)))
         bld = None
         garage_sound = ()
+        oil_wells = []
         if self.buildings:
+            import oilwells
             bld = buildingsmod.road_tile(anchor.frame, tx, ty, self.mapdata, elev, None, None, items)
             garage_sound = buildingsmod.garage_sound_boxes(items, *roadsmod.tile_bbox(tx, ty)[:2],
                                                            roadsmod.SOUND_GARAGE)
+            oil_wells = oilwells.tile_wells(anchor.frame, tx, ty, elev)     # (the mod's pump jacks)
+            import industry
+            garage_sound = garage_sound + industry.refinery_sound_rows(anchor.frame, tx, ty, self.mapdata, elev)
         return roadsmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, chunks, walks if self.sidewalks else None,
                                    mesh, dmesh, bld, props, wires, park, tunnel_mesh=tmesh, fuel=fuel,
-                                   rail_mesh=rmesh, garage_sound=garage_sound)
+                                   rail_mesh=rmesh, garage_sound=garage_sound, wells=oil_wells)
 
     def set_gas_stations(self, on):
         """The settings page's "Gas stations" switch (the mod's gas_stations; the user, 2026-10-23: off saves their

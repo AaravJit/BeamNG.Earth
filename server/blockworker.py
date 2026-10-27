@@ -536,14 +536,19 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
                                    ("raw", aid, lat, lon)))
     bld = None
     garage_sound = ()
+    oil_wells = []
     if buildings:
         import buildings as buildingsmod
+        import oilwells
         bld = buildingsmod.road_tile(frame, tx, ty, _s.md, elev, None, None, items)
         garage_sound = buildingsmod.garage_sound_boxes(items, *roadsmod.tile_bbox(tx, ty)[:2],
                                                        roadsmod.SOUND_GARAGE)
+        oil_wells = oilwells.tile_wells(frame, tx, ty, elev)     # (the mod's pump jacks)
+        import industry
+        garage_sound = garage_sound + industry.refinery_sound_rows(frame, tx, ty, _s.md, elev)
     return roadsmod.write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks if sidewalks else None, mesh, dmesh,
                                bld, props, wires, park, tunnel_mesh=tmesh, fuel=fuel, rail_mesh=rmesh,
-                               garage_sound=garage_sound) + (fuel_pads,)
+                               garage_sound=garage_sound, wells=oil_wells) + (fuel_pads,)
 
 
 def _with_plazas(mesh, frame, tx, ty, elev, origin, surface):

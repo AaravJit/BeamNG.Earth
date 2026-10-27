@@ -29,7 +29,9 @@ You can help support development by reporting [issues](https://github.com/TecnaG
   shrubs), autumn colours in season.
 - Forest and river sounds: the stock maps' wind in the trees (louder and fuller in dense, tall forest) and background
   sound, the set by climate (Köppen-Geiger zones: temperate, oceanic, Mediterranean, desert, tropical), running water along
-  rivers and streams, waves along coasts and large lakes, the stock tunnel, under-bridge and parking garage echo, and rain you can hear.
+  rivers and streams, waves along coasts and large lakes, the stock tunnel, under-bridge and parking garage echo, refinery
+  machinery, and rain you can hear.
+- Pump jacks at oil wells (OpenStreetMap), animated, with their sounds.
 - Buildings from Overture / OpenStreetMap with regional styles (US siding and brick, Alpine chalets, Nordic
   wood, Mediterranean stucco, East Asian and Latin American looks), real heights, roofs, windows, shopfronts,
   porches, churches with steeples, glass towers, far-away buildings drawn as a skyline.
@@ -277,6 +279,7 @@ The repository contains only code; all map data is downloaded at runtime and cac
   Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA).
 - Roads, buildings, water and places: Overture Maps / OpenStreetMap contributors (lane counts, widths and speed limits from OpenStreetMap via OSM US Layercake); trees from a
   canopy height model; airports from OurAirports.
+- Oil wells and refineries: OpenStreetMap contributors (ODbL; the bundled `oil_wells.npz` and `refineries.npz`).
 - Climate zones (the forest sounds' set): Beck et al. (2023), High-resolution (1 km) Köppen-Geiger maps for
   1901–2099, Scientific Data 10, 724 (CC BY 4.0).
 Each source's terms apply to the downloaded data; the in-game window shows the attribution line.
