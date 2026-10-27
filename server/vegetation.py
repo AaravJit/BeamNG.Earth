@@ -176,6 +176,7 @@ class Vegetation:
         self._mem = OrderedDict()
         self._lock = threading.Lock()
         self._cell_locks = {}
+        self._tl = threading.local()    # per build thread: .dem_failed (the DEM could not answer: _load keeps no cell)
         self._warm, self._warm_thread = [], None
         self._warm_cv = threading.Condition()
 
@@ -248,8 +249,12 @@ class Vegetation:
         if p and os.path.exists(p):
             with np.load(p, allow_pickle=False) as f:
                 return Items(*(f[n] for n in fields))
+        self._tl.dem_failed = False
         items = self._build(x, y)
-        if p:
+        # (a cell built while the DEM could not answer, offline or no tile, lacks its slope rocks: it serves this
+        # session but is not kept, so the next one builds it whole. From cristivasile's PR #295. No DEM at all,
+        # self.dem None, is a setting, not a failure)
+        if p and not self._tl.dem_failed:
             os.makedirs(os.path.dirname(p), exist_ok=True)
             tmp = f"{p}.{os.getpid()}.{threading.get_ident()}.tmp"
             with open(tmp, "wb") as fh:
@@ -429,6 +434,7 @@ class Vegetation:
             z = np.asarray(self.dem.sample(lat, lon, ROCK_SLOPE_ZOOM), np.float64).reshape(4, len(px))
         except Exception as e:          # (offline, no tile): rocks as without a DEM
             log.debug("vegetation: no slope: %s", e)
+            self._tl.dem_failed = True
             return None
         return np.hypot(z[0] - z[1], z[2] - z[3]) / (2 * ROCK_SLOPE_D)
 

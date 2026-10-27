@@ -344,3 +344,25 @@ class FlatHelloTest(unittest.TestCase):
     def test_older_mod_gets_rows(self):
         self.assertEqual(self.run_hello({}), (False, [False]))
         self.assertEqual(self.run_hello({"vegFlat": "yes"}), (False, [False]))      # (only a JSON true)
+
+
+class DemFailedTest(unittest.TestCase):
+    """A cell built while the DEM could not answer is not kept on disk (from PR #295): its slope rocks were missing for
+    good."""
+
+    def test_failed_dem_cell_not_cached(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            v = veg.Vegetation(None, cache_dir=tmp)
+            v._path = lambda x, y: os.path.join(tmp, f"{x}_{y}.npz")
+
+            def build(x, y, fail):
+                v._tl.dem_failed = fail
+                return veg.Items(*(np.zeros(0) for _ in range(9)))
+            v._build = lambda x, y: build(x, y, True)
+            v._load(1, 2)
+            self.assertFalse(os.path.exists(v._path(1, 2)), "a failed DEM: not kept")
+            v._build = lambda x, y: build(x, y, False)
+            v._load(1, 2)
+            self.assertTrue(os.path.exists(v._path(1, 2)), "answered: kept")
