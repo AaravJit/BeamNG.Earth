@@ -67,11 +67,16 @@ class RoadsRefreshTest(unittest.TestCase):
             cached.update((str(k), "roads") for k in cells)
             c.roads_refresh(a.id)
             await asyncio.sleep(0.05)
+            roads_only = list(built)                # (its land cover not here yet either: still nothing)
+            cached.update((str(k), "landcover") for k in cells)
+            c.roads_refresh(a.id)
+            await asyncio.sleep(0.05)
             c.roads_refresh(a.id)                   # (once)
             await asyncio.sleep(0.05)
-            return before, list(built), w.msgs
-        before, done, msgs = asyncio.run(go())
+            return before, roads_only, list(built), w.msgs
+        before, roads_only, done, msgs = asyncio.run(go())
         self.assertEqual(before, [])
+        self.assertEqual(roads_only, [])
         self.assertEqual(done, [(0.0, 0.0)])
         self.assertEqual([m["type"] for m in msgs if m["type"] == "terrain_refresh"], ["terrain_refresh"])
         self.assertNotIn(key, s.roads_rebuild)
@@ -80,9 +85,19 @@ class RoadsRefreshTest(unittest.TestCase):
         s, _ = self.server()
         fut = types.SimpleNamespace(cancelled=lambda: False, exception=lambda: None, result=lambda: {
             "ter": "t.ter", "zoom": 16, "seconds": 1.0, "zBase": 0.0, "maxHeight": 100.0, "q": 1 / 64,
-            "surfaceComplete": False, "roadsComplete": True})      # (land cover missing only: no rebuild loop)
+            "surfaceComplete": True, "roadsComplete": True})
         s._hm_done((1, 0.0, 0.0), fut)
         self.assertEqual(s.roads_rebuild, set())
+
+    def test_block_without_its_land_cover_marked(self):
+        # (a first visit's block before its land cover: bare dirt for good, Harz 2026-10-27, GitHub #316; built again
+        # only once the land cover is on disk, roads_refresh: no rebuild loop)
+        s, _ = self.server()
+        fut = types.SimpleNamespace(cancelled=lambda: False, exception=lambda: None, result=lambda: {
+            "ter": "t.ter", "zoom": 16, "seconds": 1.0, "zBase": 0.0, "maxHeight": 100.0, "q": 1 / 64,
+            "surfaceComplete": False, "roadsComplete": True})
+        s._hm_done((1, 0.0, 0.0), fut)
+        self.assertEqual(s.roads_rebuild, {(1, 0.0, 0.0)})
 
 
 if __name__ == "__main__":

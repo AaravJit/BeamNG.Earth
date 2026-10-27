@@ -1931,8 +1931,13 @@ class Server:
                  info["seconds"], " ".join(f"{k} {v:.2f}" for k, v in info.get("stages", {}).items()),
                  info["zBase"], info["maxHeight"], round(1 / info["q"]))
         self.hm[key] = info
-        if info.get("roadsComplete") is False:
-            self.roads_rebuild.add(key)     # (its roads painted once their cells are here: Connection.roads_refresh)
+        # (its roads and land cover painted once their cells are here: Connection.roads_refresh. A first visit's blocks
+        # came before the land cover and kept bare dirt for good, no grass, Harz 2026-10-27, GitHub #316)
+        if info.get("roadsComplete") is False or info.get("surfaceComplete") is False:
+            if key not in self.roads_rebuild:
+                log.info("block %s built before its map cells were here (roads %s, surface %s): painted again later",
+                         key, info.get("roadsComplete"), info.get("surfaceComplete"))
+            self.roads_rebuild.add(key)
         else:
             self.roads_rebuild.discard(key)
         self.evict_heightmaps(fresh=key)
@@ -3885,7 +3890,7 @@ class Connection:
         la, lo, _ = anchor.frame.enu_to_geodetic(np.array([key[1] - half, key[1] + half]),
                                                  np.array([key[2] - half, key[2] + half]), 0.0)
         cells = mapcells.cells_for_bbox(float(np.min(la)), float(np.min(lo)), float(np.max(la)), float(np.max(lo)))
-        if not all(s.mapdata.has(k, "roads") for k in cells):
+        if not all(s.mapdata.has(k, "roads") and (s.surface is None or s.mapdata.has(k, "landcover")) for k in cells):
             return                          # (not here yet: asked again at the next pose)
         self.roads_busy = True
         s.roads_rebuild.discard(key)
