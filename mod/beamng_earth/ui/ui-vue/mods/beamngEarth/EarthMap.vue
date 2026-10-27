@@ -925,6 +925,11 @@ const gpsScreen = computed(() => {
   return g ? screen(g.lat, g.lon) : null
 })
 function fmtMiles(m) {
+  // (the game's own length unit, Options > Display: gps.lua's metric; GitHub #327)
+  if (state.value.gps && state.value.gps.metric) {
+    const km = m / 1000
+    return km < 1 ? `${Math.round(m / 10) * 10} m` : `${km < 10 ? km.toFixed(1) : Math.round(km)} km`
+  }
   const mi = m / 1609.344
   return mi < 0.1 ? `${Math.round(m * 3.28084)} ft` : `${mi < 10 ? mi.toFixed(1) : Math.round(mi)} mi`
 }

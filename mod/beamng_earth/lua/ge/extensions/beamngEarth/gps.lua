@@ -233,9 +233,18 @@ function M.onRouteDownload(msg)
   downloadProgress = { total = tonumber(msg.total) or 0, done = tonumber(msg.done) or 0, active = msg.active == true }
 end
 
+-- Whether the game shows lengths in metric units (Options > Display, uiUnitLength; GitHub #327: the map said miles)
+local function metric()
+  local st = rawget(_G, 'settings')
+  local ok, v = pcall(function() return st and st.getValue and st.getValue('uiUnitLength') end)
+  return ok and v == 'metric'
+end
+M.metric = metric
+
 function M.status()
   if not dest then return nil end
   return { lat = dest.lat, lon = dest.lon, name = dest.name, dist = info and info.dist, bearing = info and info.bearing,
+           metric = metric(),
            remaining = info and info.remaining, eta = info and info.eta, routeVersion = route and route.version or 0,
            progress = progress, planning = pendingId ~= nil, routeError = routeError, pendingId = pendingId,
            autodrive = auto, autoNodes = autoPath and #autoPath or nil, off = info and info.off, arrows = routedTo,
