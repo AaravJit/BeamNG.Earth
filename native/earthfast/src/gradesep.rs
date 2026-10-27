@@ -9,7 +9,12 @@ use pyo3::prelude::*;
 
 const ROAD: i64 = 0;
 const RAIL: i64 = 1;
-const UNDER: i64 = 2; // a railway's short tunnel: under whatever crosses it
+const UNDER: i64 = 2; // a railway's short tunnel: under the road crossing it
+const UNDER_ROAD: i64 = 3; // a road's underpass mapped as a short tunnel: under the road or railway crossing it
+
+fn under(k: i64) -> bool {
+    k == UNDER || k == UNDER_ROAD
+}
 
 struct Lines<'a> {
     xy: numpy::ndarray::ArrayView2<'a, f64>,
@@ -72,7 +77,7 @@ impl<'a> Lines<'a> {
         let d = if last { d } else { (-d.0, -d.1) }; // the way out of l at that end
         let mut best: Option<(f64, usize, bool)> = None;
         for o in 0..self.n() {
-            if o == l || kind[o] == UNDER || (kind[o] == RAIL) != (kind[l] == RAIL) || self.st[o + 1] < self.st[o] + 2 {
+            if o == l || under(kind[o]) || (kind[o] == RAIL) != (kind[l] == RAIL) || self.st[o + 1] < self.st[o] + 2 {
                 continue;
             }
             for oend in [false, true] {
@@ -112,11 +117,12 @@ impl<'a> Lines<'a> {
     }
 }
 
-/// The crossings of the ground lines (xy, starts; kind 0 road, 1 railway, 2 a railway's short tunnel; half widths m;
+/// The crossings of the ground lines (xy, starts; kind 0 road, 1 railway, 2 a railway's short tunnel, 3 a road's
+/// underpass mapped as a short tunnel; half widths m;
 /// group: the feature, whose pieces never cross each other) that are no junction (no end point of either within prm[0] m), and where to read the ground: rows of cand (i, j, arc
 /// on i, arc on j, sin of the angle, how) and 8 sample points per row in samples (i at -d2, -d1, +d1, +d2 m along it
 /// from the crossing, then j; NaN off a line's end; d1 the other's half width over the sine (at least prm[3]) + prm[1],
-/// d2 = d1 + prm[2]; past a line's end on along the line joined there, as gradesep_spans goes on). how: 0 compare the heights; 1 i passes over j's short tunnel; 2 i is a gap between two decks
+/// d2 = d1 + prm[2]; past a line's end on along the line joined there, as gradesep_spans goes on). how: 0 compare the heights; 1 i passes over j's short tunnel (a railway's: i a road); 2 i is a gap between two decks
 /// (both its ends within prm[4] m of deck_ends (rows x, y, that deck's length m), shorter than prm[5] m) crossing a
 /// ground line, or shorter than prm[7] times the longer deck it joins: a bridge whole. One row per pair of lines and
 /// crossing (a crossing at a shared point of two segments counted once).
@@ -146,7 +152,7 @@ pub fn gradesep_candidates<'py>(
     };
     let gap_end: Vec<(f64, f64)> = (0..n)
         .map(|l| {
-            if kind[l] == UNDER || ln.st[l + 1] < ln.st[l] + 2 || ln.len(l) >= gap_max {
+            if under(kind[l]) || ln.st[l + 1] < ln.st[l] + 2 || ln.len(l) >= gap_max {
                 (0.0, 0.0)
             } else {
                 (deck_at(ln.end(l, false)), deck_at(ln.end(l, true)))
@@ -171,7 +177,7 @@ pub fn gradesep_candidates<'py>(
             continue;
         }
         for b in a + 1..n {
-            if ln.st[b + 1] < ln.st[b] + 2 || group[a] == group[b] || (kind[a] == UNDER && kind[b] == UNDER) {
+            if ln.st[b + 1] < ln.st[b] + 2 || group[a] == group[b] || (under(kind[a]) && under(kind[b])) {
                 continue;
             }
             // over a short tunnel: only a road (a railway's own pieces, or one railway by another, are no overpass)
@@ -207,9 +213,9 @@ pub fn gradesep_candidates<'py>(
                     let sb = ln.arc[m] + u * (ln.arc[m + 1] - ln.arc[m]);
                     let (ra, rb) = (rx.hypot(ry), sx.hypot(sy));
                     let sin = (den / (ra * rb).max(1e-12)).abs();
-                    let (up, lo, su, sl, how) = if kind[b] == UNDER {
+                    let (up, lo, su, sl, how) = if under(kind[b]) {
                         (a, b, sa, sb, 1.0)
-                    } else if kind[a] == UNDER {
+                    } else if under(kind[a]) {
                         (b, a, sb, sa, 1.0)
                     } else {
                         let junction = [ln.end(a, false), ln.end(a, true), ln.end(b, false), ln.end(b, true)]
@@ -326,7 +332,7 @@ pub fn gradesep_spans<'py>(
             }
             (up, lo, s)
         };
-        if kind[up] == UNDER {
+        if under(kind[up]) {
             continue;
         }
         let h = ((half[lo] + clear) / sin.max(min_sin)).max(min_half);

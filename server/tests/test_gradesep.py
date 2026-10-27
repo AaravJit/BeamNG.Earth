@@ -106,6 +106,30 @@ class ShortTunnelTest(unittest.TestCase):
         self.assertEqual(roads.level_ranges(f, 1), [])
 
 
+class UnderpassTest(unittest.TestCase):
+    def test_a_road_over_a_short_road_tunnel_bridges_it(self):
+        # OSM's underpass: the lower road's 40 m "tunnel" under a road on the ground (the A7 at Brackel, #243)
+        f = hooked(cross(("motorway", "secondary"), flags=[(1, "is_tunnel", 0.45, 0.55)]), lambda e, n: np.zeros_like(e))
+        self.assertEqual([k for _, _, k in roads.level_ranges(f, 0)], ["bridge"])
+        self.assertEqual(roads.level_ranges(f, 1), [])          # (its tunnel: ground under the bridge)
+
+    def test_a_long_tunnel_in_short_pieces_stays_a_tunnel(self):
+        # two 50 m tunnel pieces joined end to end (Overture splits a tunnel at its nodes): 100 m, no underpass
+        f = hooked(features([[(-200.0, 0.0), (200.0, 0.0)], [(0.0, -50.0), (0.0, 0.0)], [(0.0, 0.0), (0.0, 50.0)]],
+                            ["motorway", "secondary", "secondary"], flags=[(1, "is_tunnel"), (2, "is_tunnel")]),
+                   lambda e, n: np.zeros_like(e))
+        self.assertEqual(roads.level_ranges(f, 0), [])
+        self.assertEqual([k for _, _, k in roads.level_ranges(f, 1)], ["tunnel"])
+
+    def test_a_short_tunnel_through_a_hill_stays_a_tunnel(self):
+        # 20 m of ground over the road crossing it above the portals' approaches
+        _, n0, _ = FRAME.geodetic_to_enu(np.array([LAT]), np.array([LON]), 0.0)
+        hill = lambda e, n: np.where(np.abs(n - n0[0]) < 15.0, 20.0, 0.0)
+        f = hooked(cross(("residential", "secondary"), flags=[(1, "is_tunnel", 0.45, 0.55)]), hill)
+        self.assertEqual([k for _, _, k in roads.level_ranges(f, 1)], ["tunnel"])
+        self.assertEqual(roads.level_ranges(f, 0), [])
+
+
 class GapTest(unittest.TestCase):
     def test_a_short_stretch_between_decks_over_a_road_is_a_bridge(self):
         # decks over 0-160 m and 240-400 m, the 80 m between them on the ground over the other road

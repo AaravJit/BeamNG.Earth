@@ -44,13 +44,16 @@ GAP_SHARE = 1.0         # one shorter than this times the longer deck it joins (
 # became viaducts.)
 TOUCH_M = 1.0           # m: ends this close are joined
 TURN_COS = 0.7          # a span goes on onto a joined line turning less than ~45 degrees
+SHORT_ROAD_TUNNEL_M = 80.0  # m: a road's tunnel this short crossed by a ground line ...
+UNDERPASS_COVER_M = 12.0    # ... with less ground over it than this (over its approaches PORTAL_OUT_M past its portals)
+PORTAL_OUT_M = 10.0         # is an underpass: ground under the line over it, which gets the bridge (_underpasses)
 NEAR_M = 60.0           # m round the cell's own lines that neighbours' lines are taken from
 RAIL_HALF_M = 2.5       # m: a track's half width (its ballast)
 
 
 def hook(md, key):
-    """The callable a cell's roads layer carries (roads.level_ranges): {feature row: [(from, to) fractions]} of the
-    bridges found, made once per decoded layer."""
+    """The callable a cell's roads layer carries (roads.level_ranges): {feature row: [(from, to, "bridge" | "ground")
+    fractions]} of the bridges found and of the underpasses under them, made once per decoded layer."""
     lock = threading.Lock()
     memo = {}
 
@@ -92,9 +95,10 @@ def _kind_half(feats, i):
 
 def _pieces(feats, i, kind):
     """[(kind, from, to, deck)] of feature i by its map ranges: its ground pieces (kind), a railway's short tunnels
-    (2), and its bridges (deck True: their ends are deck ends)."""
+    (2), a road's (3: an underpass if a line crosses over it close above, _underpasses), and its bridges (deck True:
+    their ends are deck ends)."""
     rngs = roads.tag_level_ranges(feats, i)
-    L = roads._feature_length_m(feats, i) if kind == 1 and rngs else 0.0
+    L = roads._feature_length_m(feats, i) if rngs else 0.0
     out, at = [], 0.0
     for a, b, k in rngs:
         if a - at > roads.MIN_PART:
@@ -103,6 +107,8 @@ def _pieces(feats, i, kind):
             out.append((None, a, b, True))
         elif kind == 1 and (b - a) * L < railways.SHORT_TUNNEL_M:
             out.append((2, a, b, False))
+        elif kind == 0:
+            out.append((3, a, b, False))        # (any length: _underpasses measures the tunnel it is part of)
         at = max(at, b)
     if 1.0 - at > roads.MIN_PART:
         out.append((kind, at, 1.0, False))
@@ -167,6 +173,14 @@ def _spans(md, key, feats):
                     halves.append(half)
                     groups.append(g)
                     owner.append((own.get(fid), a, b))   # (a row of this cell's, or None)
+    try:
+        keep = _underpasses(md, frame, lines, kinds, groups)
+    except Exception as e:
+        log.debug("gradesep %s underpasses: %s: %s", key, type(e).__name__, e)
+        revisit.fault()
+        return {}
+    lines, kinds, halves, groups, owner = ([v[n] for n in range(len(lines)) if keep[n]]
+                                           for v in (lines, kinds, halves, groups, owner))
     if not lines:
         return {}
     de = np.zeros((2 * len(decks), 3))         # (the decks' ends and lengths)
@@ -181,8 +195,14 @@ def _spans(md, key, feats):
     cand, smp = fast._ef.gradesep_candidates(pts, starts, kinds, halves, np.asarray(groups, np.int64),
                                              np.ascontiguousarray(de), np.array(
         [END_M, SAMPLE_GAP_M, SAMPLE_STEP_M, MIN_SIN, TOUCH_M, GAP_MAX_M, TURN_COS, GAP_SHARE], np.float64))
+    out, why = {}, []                   # (why: (row, from, to, how) for probes, feats._gradesep_why)
+    for ln, k in enumerate(kinds):      # the underpasses: ground under the road now bridging them
+        i, a, b = owner[ln]
+        if k == 3 and i is not None:
+            out.setdefault(i, []).append((round(a, 6), round(b, 6), "ground"))
+            why.append((i, round(a, 6), round(b, 6), 3))
     if not len(cand):
-        return {}
+        return _merged(feats, out, why)
     z = np.full(len(smp), np.nan)
     good = np.isfinite(smp).all(axis=1)
     if good.any():
@@ -195,7 +215,6 @@ def _spans(md, key, feats):
             return {}
     sp = fast._ef.gradesep_spans(pts, starts, kinds, halves, cand, np.ascontiguousarray(z.reshape(-1, 8)), np.array(
         [SEP_M, SIDE_M, CLEAR_M, MIN_HALF_M, MIN_SIN, TOUCH_M, TURN_COS], np.float64))
-    out, why = {}, []                   # (why: (row, from, to, how) for probes, feats._gradesep_why)
     for ln, s0, s1, how in sp:
         ln = int(ln)
         i, a, b = owner[ln]
@@ -204,19 +223,86 @@ def _spans(md, key, feats):
             continue
         fa = round(a + (b - a) * float(s0) / L, 6)
         fbb = round(a + (b - a) * float(s1) / L, 6)
-        out.setdefault(i, []).append((fa, fbb))
+        out.setdefault(i, []).append((fa, fbb, "bridge"))
         why.append((i, fa, fbb, int(how)))
+    return _merged(feats, out, why)
+
+
+def _merged(feats, out, why):
+    """out with each row's ranges of one kind sorted and joined where they overlap; why kept for the probes."""
     for i, v in out.items():
-        v.sort()
-        m = [list(v[0])]
-        for a, b in v[1:]:
-            if a <= m[-1][1]:
+        m = []
+        for a, b, k in sorted(v, key=lambda r: (r[2], r[0], r[1])):
+            if m and m[-1][2] == k and a <= m[-1][1]:
                 m[-1][1] = max(m[-1][1], b)
             else:
-                m.append([a, b])
+                m.append([a, b, k])
         out[i] = [tuple(r) for r in m]
     feats.__dict__["_gradesep_why"] = why
     return out
+
+
+def _underpasses(md, frame, lines, kinds, groups):
+    """keep per line: False for a road's short tunnel (kind 3) that is no underpass: none of the other ground lines
+    crosses over it away from their ends, or the ground there stands UNDERPASS_COVER_M or more over the ground
+    PORTAL_OUT_M past its portals (a short tunnel through a hill with a road over it). OSM maps an underpass as the
+    lower road's tunnel under a road on the ground; built as a tunnel, its vault and soil stood over the motorway on
+    top (the A7 at Brackel and at Schuby, GitHub #228 / #243)."""
+    keep = [True] * len(lines)
+    cand = [n for n, k in enumerate(kinds) if k == 3]
+    if not cand:
+        return keep
+    # (the whole tunnel: Overture splits one at every node, a 2.6 km motorway tunnel into 50 m pieces)
+    lens = {c: float(np.hypot(*np.diff(lines[c], axis=0).T).sum()) for c in cand}
+    ends = np.array([[lines[c][0], lines[c][-1]] for c in cand], np.float64)       # (n, 2, 2)
+    parent = list(range(len(cand)))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    for p in range(len(cand)):
+        d = np.hypot(ends[:, :, None, 0] - ends[p, None, None, :, 0], ends[:, :, None, 1] - ends[p, None, None, :, 1])
+        for q in np.flatnonzero((d < TOUCH_M).any(axis=(1, 2))):
+            parent[find(int(q))] = find(p)
+    total = {}
+    for p, c in enumerate(cand):
+        total[find(p)] = total.get(find(p), 0.0) + lens[c]
+    for p, c in enumerate(cand):
+        if total[find(p)] >= SHORT_ROAD_TUNNEL_M:
+            keep[c] = False
+    cand = [c for c in cand if keep[c]]
+    if not cand:
+        return keep
+    over = [n for n, k in enumerate(kinds) if k in (0, 1)]
+    hits = roads._crossings_by([lines[n] for n in over], [lines[c] for c in cand]) if over else [[] for _ in cand]
+    ask, at = [], []                # (DEM points, (candidate, crossings' slice, portals' slice))
+    for c, cr in zip(cand, hits):
+        pts = []
+        for pi, _arc, pt in cr:
+            o = over[pi]
+            ends = (lines[o][0], lines[o][-1])
+            if groups[o] != groups[c] and min(np.hypot(*(e - pt)) for e in ends) >= END_M:
+                pts.append(np.asarray(pt, np.float64))
+        if not pts:
+            keep[c] = False
+            continue
+        xy = lines[c]
+        u0 = xy[0] - xy[1]
+        u1 = xy[-1] - xy[-2]
+        portals = [xy[0] + PORTAL_OUT_M * u0 / max(np.hypot(*u0), 1e-9),
+                   xy[-1] + PORTAL_OUT_M * u1 / max(np.hypot(*u1), 1e-9)]
+        at.append((c, len(ask), len(ask) + len(pts)))
+        ask += pts + portals
+    if ask:
+        P = np.asarray(ask, np.float64)
+        la, lo, _ = frame.enu_to_geodetic(P[:, 0], P[:, 1], 0.0)
+        z = np.asarray(_dem(md).sample(np.asarray(la), np.asarray(lo), DEM_ZOOM), np.float64)
+        for c, i0, i1 in at:
+            if not (np.nanmax(z[i0:i1]) - np.nanmin(z[i1:i1 + 2]) < UNDERPASS_COVER_M):
+                keep[c] = False
+    return keep
 
 
 def _cut(xy, a, b):
