@@ -39,8 +39,9 @@ log = logging.getLogger("earthd.roads")
 
 VERSION = 1
 TILE = 256.0            # m, tile side in the anchor frame
-SEND_M = 640.0          # tiles whose square comes this close to the player (Chebyshev) are sent
-DROP_M = 960.0          # ... and dropped beyond this
+SEND_M = float(os.environ.get("BNE_ROADS_SEND_M", "640"))     # tiles whose square comes this close to the player
+                                                                # (Chebyshev) are sent
+DROP_M = float(os.environ.get("BNE_ROADS_DROP_M", str(SEND_M + 320)))   # ... and dropped beyond this
 OVERLAP = 2.0           # m a road reaches past its tile's edge (no gap at tile seams)
 SIMPLIFY_M = 0.25       # RDP tolerance (Road Spline's layerMgr)
 SIMPLIFY_Z_M = 0.05     # ... and the vertical one of lines drawn at their own heights (decks, tunnels: simplify ztol)
@@ -1291,16 +1292,42 @@ def _bridge_specs(feats, want="bridge"):
     return out
 
 
+class _EndJoin:
+    """Line end points joined into nodes when within tol m of each other (the first point seen names the node; a later
+    one joins the nearest node within tol). Rounding to a 0.5 m grid split ends a few cm apart either side of a grid
+    line and joined ends 0.68 m apart on a diagonal (from cody196's PR #368). A grid of tol cells, the 3 x 3 around a
+    point looked up: as cheap as the rounding. Deterministic for a given order."""
+
+    def __init__(self, tol=0.5):
+        self.tol, self.grid, self.pts = tol, {}, []
+
+    def __call__(self, p):
+        x, y = float(p[0]), float(p[1])
+        gx, gy = math.floor(x / self.tol), math.floor(y / self.tol)
+        best, bd = None, self.tol * self.tol
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for i in self.grid.get((gx + dx, gy + dy), ()):
+                    q = self.pts[i]
+                    d = (q[0] - x) ** 2 + (q[1] - y) ** 2
+                    if d < bd or (d == bd and best is not None and i < best):
+                        best, bd = i, d
+        if best is not None:
+            return best
+        self.pts.append((x, y))
+        self.grid.setdefault((gx, gy), []).append(len(self.pts) - 1)
+        return len(self.pts) - 1
+
+
 def _chain_graph(lines):
     """Nodes (end points within 0.5 m joined) and edges (start node, end node, arc lengths) of parts."""
-    keys, nodes = {}, []
+    join, nodes = _EndJoin(), []
 
     def node(p):
-        k = (round(float(p[0]) * 2), round(float(p[1]) * 2))
-        if k not in keys:
-            keys[k] = len(nodes)
+        k = join(p)
+        if k == len(nodes):
             nodes.append(np.asarray(p[:2], np.float64))
-        return keys[k]
+        return k
     edges = []
     for ln in lines:
         s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(ln[:, :2], axis=0).T))]
@@ -1797,14 +1824,13 @@ def _end_dists(lines, end_z):
     """The chain of lines (joined at end points within 0.5 m): its edges (start node, end node, arc (k,)),
     the heights end_z gives at its ends (points of one line only) and per end the distance along the chain
     to every node. Pure given end_z."""
-    keys, nodes = {}, []
+    join, nodes = _EndJoin(), []
 
     def node(p):
-        k = (round(float(p[0]) * 2), round(float(p[1]) * 2))      # 0.5 m
-        if k not in keys:
-            keys[k] = len(nodes)
+        k = join(p)                                                 # 0.5 m
+        if k == len(nodes):
             nodes.append(np.asarray(p[:2], np.float64))
-        return keys[k]
+        return k
     edges = []
     for ln in lines:
         seg = np.hypot(*np.diff(ln[:, :2], axis=0).T)
@@ -2777,9 +2803,8 @@ class BridgeProfiles:
 
     def _resolve(self, start, pool, ground, loaded):
         """The chain of part `start` (keys), loading the cell at each loose end until closed."""
-        def nk(p):
-            return (round(float(p[0]) * 2), round(float(p[1]) * 2))
         while True:
+            nk = _EndJoin()
             by_node = {}
             for k, (_, xy, *_) in pool.items():
                 by_node.setdefault(nk(xy[0]), []).append(k)
