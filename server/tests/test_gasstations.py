@@ -1244,6 +1244,21 @@ class SwitchTest(unittest.TestCase):
         s.set_gas_stations(False)                                             # the switch: every block's photo again
         self.assertEqual(s.base_stale, {(a.id, 0.0, 0.0), (a.id, 5 * size, 0.0)})
 
+    def test_pads_during_a_block_build_mark_it(self):
+        # (the user, 2026-10-27: "if you teleport to a station with the map, the gas station lot never gets painted")
+        # after a teleport the station's road tile brought its pad 0.1 s before the block under the car finished: that
+        # block's build had taken the pads of its start (none), and it was not in hm yet, so nothing marked it
+        s, sur = self.server(gas_stations=True, near_visual="detail")
+        a = s.new_anchor(40.0, -80.0)
+        s.anchors[a.id] = a
+        key = (a.id, 0.0, 0.0)
+        s.hm_stage[key] = "the block process"                               # (being built)
+        la, lo, _ = a.frame.enu_to_geodetic(np.array([-10.0, 10.0, 10.0, -10.0]), np.array([-5.0, -5.0, 5.0, 5.0]),
+                                            np.zeros(4))
+        s.keep_fuel_pads([("st", [(np.asarray(la), np.asarray(lo))])])
+        self.assertIn(key, s.pads_rebuild, "built again once it is done")
+        self.assertIn(key, s.base_stale)
+
     def test_new_pads_rebuild_the_block_when_slow(self):
         # the photo alone left the forecourt grass and dirt underneath (the user, 2026-10-24: "looks like we painted it
         # but it is still dirt"): the surface layers come with the block, so the block the car is on is built again

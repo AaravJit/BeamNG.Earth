@@ -1358,10 +1358,12 @@ class Server:
         before its road tiles bring their stations' pads (a teleport to a station showed its forecourt bare: the
         user, 2026-10-24, "No asphalt at the station"); in detail mode (the block photo) only. The same blocks are
         marked for building again (pads_rebuild: their surface layers, the asphalt and no grass, come with the block;
-        Connection.pads_refresh)."""
+        Connection.pads_refresh). A block still being built (hm_stage) is marked too: its build took the pads of its
+        start (after a teleport, a station's pad came 0.1 s before the block under the car was done and its lot stayed
+        dirt: the user, 2026-10-27, "the gasstation lot never gets painted")."""
         self.pads_changed_at = time.monotonic()
         h = self.layout.block * heightmap.SQUARE / 2
-        for key in list(self.hm):
+        for key in list(self.hm) + list(self.hm_stage):
             anchor = self.anchors.get(key[0])
             if anchor is None:
                 continue
