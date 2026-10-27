@@ -344,11 +344,16 @@ function M.setEnabled(on)
   return enabled
 end
 
+local ctxAt, ctxCached = -1e9, nil
 function M.onUpdate()
   installNavigationHook()
+  -- (no navigation screen registered, as in most cars: nothing to do, not even the context; else the context at most
+  -- every VIEW_INTERVAL_S: it copies the credits and builds the attribution text)
+  if not next(screens) then return end
   local now = os.clock()
   local restored = processRestores(now)
-  local ctx = coreContext()
+  if now - ctxAt >= M.VIEW_INTERVAL_S then ctxAt, ctxCached = now, coreContext() end
+  local ctx = ctxCached
   local show = shouldDisplay(ctx)
   if show ~= active then
     active = show
