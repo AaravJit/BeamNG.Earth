@@ -82,6 +82,9 @@ local parking = require('beamngEarth/parking') -- parked cars on the road tiles'
 local gasstations = require('beamngEarth/gasstations') -- pumps and the stock refuel prompt (server gasstations.py)
 -- (the stations' pump islands: lit at night)
 nightlights.providers.gas = function() return gasstations.lightPoints() end
+-- (the tunnels' lights at night: by day the engine's sky light is not shut out of our tunnel meshes, so lights there
+-- changed nothing, 2026-10-27)
+nightlights.providers.tunnel = function() return ambience.tunnelLights() end
 gasstations.onCollide = roads.markCollisionDirty
 local navgraph = require('beamngEarth/navgraph')
 local postfx = require('beamngEarth/postfx')       -- no far depth-of-field blur in our level

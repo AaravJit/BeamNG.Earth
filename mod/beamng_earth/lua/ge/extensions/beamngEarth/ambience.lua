@@ -417,6 +417,29 @@ local function inTunnel(x, y, z)
 end
 M.inTunnel = inTunnel
 
+-- The tunnels' lights at night (nightlights.lua's pool): along every tunnel box (kinds 0 and 2),
+-- every TUNNEL_LIGHT_M, TUNNEL_LIGHT_DROP_M under its roof.
+M.TUNNEL_LIGHT_M = 20
+M.TUNNEL_LIGHT_DROP_M = 0.8
+function M.tunnelLights()
+  local out = {}
+  for _, list in pairs(spaces) do
+    for _, sp in ipairs(list) do
+      local r = sp.row
+      if r[1] == 0 or r[1] == 2 then
+        local c, s = math.cos(r[8]), math.sin(r[8])
+        local n = math.max(1, math.floor(r[5] / M.TUNNEL_LIGHT_M + 0.5))
+        local z = r[4] + r[7] / 2 - M.TUNNEL_LIGHT_DROP_M
+        for k = 0, n - 1 do
+          local t = (k + 0.5) / n * r[5] - r[5] / 2
+          out[#out + 1] = { r[2] + c * t, r[3] + s * t, z }
+        end
+      end
+    end
+  end
+  return out
+end
+
 local function updateRain()
   local now = os.clockhp()
   local dt = rainAt and math.min(now - rainAt, 0.5) or 0
