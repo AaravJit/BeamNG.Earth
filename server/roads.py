@@ -408,6 +408,27 @@ def _seg_hits(m, lines):
                              np.ascontiguousarray(np.vstack(lines), np.float64), starts)
 
 
+def _structure_width(feats, i):
+    """m: the carriageway of road feature i as _bridge_specs makes it, without its level ranges (a road bridged along
+    its whole length has no road_specs entry: its ranges were never lengthened over the roads under it; from cody196's
+    PR #368), or None (not a drawn road)."""
+    cls = str(feats.attrs["class"][i]) if "class" in feats.attrs else "unknown"
+    if str(feats.attrs.get("subtype", ["road"] * len(feats))[i]) != "road" or cls not in STYLE or unbuilt(feats, i):
+        return None
+    rules = feats.rules
+    width = _rule_value(rules.get("width"), i)
+    rule_w = float(width) if width is not None and 1.0 <= float(width) <= 40.0 else None
+    if rule_w is None:
+        rule_w = _osm(feats, "width", i, *OSM_WIDTH_M)
+    lanes = _osm(feats, "lanes", i, *OSM_LANES)
+    lanes = int(lanes) if lanes is not None else None
+    kind = surface_kind(cls, _rule_value(rules.get("surface"), i))
+    ow = _rule_value(rules.get("oneway"), i) is not None
+    if rule_w is None and _rule_value(rules.get("subclass"), i) == "link" and lanes is None:
+        rule_w = LINK_M[1] if ow else LINK_M[2]
+    return carriageway(cls, kind, False, rule_w, ow, lanes)
+
+
 def _bridge_reach(feats, i):
     """Bridge feature i's ranges lengthened over the ground roads crossing under them (SKEW_*), and how far past each
     end of the feature they would reach: {"ranges": [...], "over": [m past its start, m past its end]} (_skew_decks
@@ -420,9 +441,9 @@ def _bridge_reach(feats, i):
     got = {"ranges": rngs, "over": [0.0, 0.0]}
     memo[i] = got
     specs = road_specs(feats)
-    up = specs[i]
+    up_w = specs[i].width if specs[i] is not None else _structure_width(feats, i)
     rings = [np.asarray(r, np.float64) for part in feats.parts(i) for r in part if len(r) >= 2]
-    if up is None or not rings or not any(k == "bridge" for _, _, k in rngs):
+    if up_w is None or not rings or not any(k == "bridge" for _, _, k in rngs):
         return got
     ring = rings[0]
     kx, ky = 111320.0 * math.cos(math.radians(float(ring[0, 1]))), 111320.0
@@ -462,7 +483,7 @@ def _bridge_reach(feats, i):
                 j = gj[g]
                 sin = max(sin, SKEW_MIN_SIN)
                 cos = math.sqrt(max(0.0, 1.0 - sin * sin))
-                h = (specs[j].width / 2 + SKEW_MARGIN_M + SKEW_SLOPE_M) / sin + (up.width / 2) * cos / sin
+                h = (specs[j].width / 2 + SKEW_MARGIN_M + SKEW_SLOPE_M) / sin + (up_w / 2) * cos / sin
                 lo_m = min(lo_m, max(a0 * L - SKEW_MAX_M, sc - h))
                 hi_m = max(hi_m, min(b0 * L + SKEW_MAX_M, sc + h))
             prev = out[-1][1] if out else 0.0   # (never into a neighbouring range; past the feature's ends: "over")
