@@ -2900,6 +2900,12 @@ class Connection:
         pts = routingmod.resample([(p[0], p[1]) for p in points])
         lats = np.array([p[0] for p in pts])
         lons = np.array([p[1] for p in pts])
+        # (tiles about 4 steps wide, no finer than the terrain's: at the terrain's zoom a long route's ~120 points
+        # each fetched their own tile before the route reached the map; a 220 px chart needs no more)
+        step = pts[-1][2] / max(len(pts) - 1, 1) if len(pts) > 1 else 0.0
+        if step > 0:
+            tile_m = 40075016.7 * max(math.cos(math.radians(float(np.mean(lats)))), 0.05)
+            zoom = int(min(zoom, max(8, math.floor(math.log2(tile_m / (4 * step))))))
         elev = self.s.dem.sample(lats, lons, zoom)
         return [[round(p[2], 1), round(float(e), 1)] for p, e in zip(pts, elev)]
 
