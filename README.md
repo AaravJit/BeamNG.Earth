@@ -29,7 +29,7 @@ You can help support development by reporting [issues](https://github.com/TecnaG
   shrubs), autumn colours in season.
 - Forest and river sounds: the stock maps' wind in the trees (louder and fuller in dense, tall forest) and background
   sound, the set by climate (temperate, US West Coast, Mediterranean, desert, tropical), running water along
-  rivers and streams, waves along coasts and large lakes, the stock tunnel and under-bridge echo, and rain you can hear.
+  rivers and streams, waves along coasts and large lakes, the stock tunnel, under-bridge and parking garage echo, and rain you can hear.
 - Buildings from Overture / OpenStreetMap with regional styles (US siding and brick, Alpine chalets, Nordic
   wood, Mediterranean stucco, East Asian and Latin American looks), real heights, roofs, windows, shopfronts,
   porches, churches with steeples, glass towers, far-away buildings drawn as a skyline.

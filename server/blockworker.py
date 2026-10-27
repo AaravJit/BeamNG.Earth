@@ -535,11 +535,15 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
                                    frame, lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)),
                                    ("raw", aid, lat, lon)))
     bld = None
+    garage_sound = ()
     if buildings:
         import buildings as buildingsmod
         bld = buildingsmod.road_tile(frame, tx, ty, _s.md, elev, None, None, items)
+        garage_sound = buildingsmod.garage_sound_boxes(items, *roadsmod.tile_bbox(tx, ty)[:2],
+                                                       roadsmod.SOUND_GARAGE)
     return roadsmod.write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks if sidewalks else None, mesh, dmesh,
-                               bld, props, wires, park, tunnel_mesh=tmesh, fuel=fuel, rail_mesh=rmesh) + (fuel_pads,)
+                               bld, props, wires, park, tunnel_mesh=tmesh, fuel=fuel, rail_mesh=rmesh,
+                               garage_sound=garage_sound) + (fuel_pads,)
 
 
 def _with_plazas(mesh, frame, tx, ty, elev, origin, surface):

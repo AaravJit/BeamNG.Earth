@@ -3994,6 +3994,8 @@ def _tunnel_chunks(tunnels, cells, exact, terrain_paint=True):
                 lines.append((look, w, line))
         jobs.append((fid, (pts[0, :2], pts[-1, :2]), lines))
     for fid, ends, lines in jobs:
+        length = max((float(np.hypot(*np.diff(np.asarray(ln)[:, :2], axis=0).T).sum()) for _, _, ln in lines
+                      if len(ln) >= 2), default=0.0)
         for look, w, line in lines:
             for piece in clip_polyline(line, *exact):
                 for c in split(densify(simplify(piece, ztol=SIMPLIFY_Z_M))):
@@ -4003,6 +4005,7 @@ def _tunnel_chunks(tunnels, cells, exact, terrain_paint=True):
                         if look.get("tunnel"):
                             ch["tunnel"] = True
                             ch["deck"] = not look.get("tube_only")      # (a twin's tube: no floor, no road surface)
+                            ch["tunnel_len"] = round(length, 1)             # (the whole sub-part's: sound_boxes)
                             for flag in ("no_tube", "tube_only"):
                                 if look.get(flag):
                                     ch[flag] = True
@@ -4555,8 +4558,11 @@ def shape_files(aid, tx, ty):
 
 # Sound spaces (the mod's ambience.lua makes them SFXSpaces: the stock maps' tunnel reverb in a tube, the one under a
 # bridge below its deck): kinds, and how far a bridge's space reaches under the deck's surface
-SOUND_TUNNEL, SOUND_BRIDGE = 0, 1
+SOUND_TUNNEL, SOUND_BRIDGE, SOUND_TUNNEL_OPEN, SOUND_GARAGE = 0, 1, 2, 3
 SOUND_UNDER_M = 25.0
+# a low arch, or a tube shorter than this, has the open tunnel's (the outside heard, muffled ~5 dB) instead of the
+# closed one's (the outside cut off): recorded 2026-10-26
+SOUND_SHORT_TUNNEL_M = 120.0
 SOUND_BOX_M, SOUND_TURN, SOUND_DZ_M, SOUND_EXTEND_M = 60.0, math.radians(10.0), 1.0, 1.0
 
 
@@ -4570,7 +4576,9 @@ def sound_boxes(chunks):
     for c in chunks:
         if c.get("tunnel") and not c.get("no_tube"):
             h = float(c.get("tunnel_h") or roadmesh.TUNNEL_H)
-            lines.append((SOUND_TUNNEL, c["n"], float(c["w"]) + 2 * roadmesh.TUNNEL_SHOULDER, 0.5, h + 0.5))
+            short = h < roadmesh.TUNNEL_H - 0.01 or float(c.get("tunnel_len") or 1e9) < SOUND_SHORT_TUNNEL_M
+            lines.append((SOUND_TUNNEL_OPEN if short else SOUND_TUNNEL, c["n"],
+                          float(c["w"]) + 2 * roadmesh.TUNNEL_SHOULDER, 0.5, h + 0.5))
         elif c.get("deck") and not c.get("tunnel"):
             lines.append((SOUND_BRIDGE, c["n"], float(c["w"]), SOUND_UNDER_M, -roadmesh.DECK_DEPTH))
     if not lines:
@@ -4588,7 +4596,7 @@ def sound_boxes(chunks):
 
 def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None, deck_mesh=None, bld=None,
                props=None, wires=None, park=None, tunnel_mesh=None, fuel=None,
-               rail_mesh=None):
+               rail_mesh=None, garage_sound=()):
     """Write a tile's chunks (atomically), its sidewalk mesh (walks: build_tile's runs, if any:
     `walks_<a>_<tx>_<ty>.cdae`, announced in the tile as "walk": {shape, pos}) and its road mesh
     (road_mesh: roadmesh.build's result: `road_<a>_<tx>_<ty>.cdae`, "road": {shape, pos}; the mod then
@@ -4601,7 +4609,7 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
     # (from PR #41, Madderose) with a road mesh the mod makes no DecalRoads: their chunks were ~36 % of the file it
     # parses on its main thread
     data = {"v": VERSION, "chunks": [] if road_mesh is not None else [c for c in chunks if not c.get("tube_only")]}
-    sound = sound_boxes(chunks)
+    sound = sound_boxes(chunks) + list(garage_sound)      # (garage_sound: buildings.garage_sound_boxes)
     if sound:
         data["sound"] = sound
     if road_mesh is not None:

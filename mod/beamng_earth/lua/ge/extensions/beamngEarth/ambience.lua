@@ -305,8 +305,12 @@ end
 -- tile's tunnel tubes and under its bridge decks (server roads.sound_boxes rows [kind, x, y, z, length, width, height,
 -- yaw]; a box's scale is its full size, its length along the yaw). Recorded 2026-10-26 (Steam Deck, a horn beep under a
 -- Denver deck): plain Level_Under_Bridge does nothing (the tail 45 dB down, as without), _A 25 dB down. No city bed:
--- Amb_WC_City's event plays nothing (silent even on an emitter of its own; WC_Warehouse plays).
-M.SPACES = { [0] = 'Level_Tunnel_Closed', [1] = 'Level_Under_Bridge_A' }
+-- Amb_WC_City's event plays nothing (silent even on an emitter of its own; WC_Warehouse plays). Low arches and short
+-- tubes get Level_Tunnel_Open (the outside heard ~5 dB down; Closed cuts it off), the parking structures driven into
+-- Level_Parking_House (~6 dB down, a reverb's tail).
+M.SPACES = { [0] = 'Level_Tunnel_Closed', [1] = 'Level_Under_Bridge_A', [2] = 'Level_Tunnel_Open',
+  [3] = 'Level_Parking_House' }
+M.ROOFED = { [0] = true, [2] = true, [3] = true }   -- the spaces with a roof (no rain heard)
 local spaces = {}       -- road tile key -> { { id, row }, ... }
 M.spacesMade = 0
 
@@ -371,12 +375,12 @@ M.RAIN_FADE_S = 2       -- ... reached (or left) over this long
 local rainEm, rainVol, rainAt = nil, 0, nil
 M.rainVol = 0
 
--- Is (x, y, z) inside one of the road tiles' tunnel spaces?
+-- Is (x, y, z) inside one of the road tiles' roofed spaces (tunnels, arches, parking structures: M.ROOFED)?
 local function inTunnel(x, y, z)
   for _, list in pairs(spaces) do
     for _, sp in ipairs(list) do
       local r = sp.row
-      if r[1] == 0 then
+      if M.ROOFED[r[1]] then
         local dx, dy = x - r[2], y - r[3]
         local c, s = math.cos(r[8]), math.sin(r[8])
         if math.abs(dx * c + dy * s) <= r[5] / 2 and math.abs(-dx * s + dy * c) <= r[6] / 2

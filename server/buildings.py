@@ -2406,6 +2406,22 @@ def collider_boxes(items, x0, y0):
     return out
 
 
+def garage_sound_boxes(items, x0, y0, kind):
+    """The sound spaces (roads.sound_boxes rows [kind, x, y, z, length, width, height, yaw], anchor frame) of the
+    tile's parking structures drawn as open decks (deck_plan: the ones driven into): each its footprint's oriented
+    box from its lowest ground to its top."""
+    out = []
+    for spec, gmin, gmax in items:
+        if deck_plan(spec, gmin, gmax) is None:
+            continue
+        c, u, hl, hw = oriented_box(spec.ring)
+        z0, z1 = gmin - 0.5, gmax + spec.height + 1.0
+        out += [float(kind), round(float(c[0]) + x0, 2), round(float(c[1]) + y0, 2), round((z0 + z1) / 2, 2),
+                round(2 * float(hl), 2), round(2 * float(hw), 2), round(z1 - z0, 2),
+                round(math.atan2(float(u[1]), float(u[0])), 4)]
+    return out
+
+
 # The engine's LOD size of a near tile's shape below which its buildings are drawn as the lite mesh (the far tiles' one:
 # no window bays, steps, porches, signs, cornices or roof clutter): the engine's own camera LOD (cdae lods), the tile's
 # whole shape at once. Calibrated in game (2026-10-18, 1440p, the game's mesh detail at its default 2): a 21 m radius

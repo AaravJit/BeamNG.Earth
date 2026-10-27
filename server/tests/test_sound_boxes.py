@@ -36,6 +36,16 @@ class SoundBoxesTest(unittest.TestCase):
         self.assertAlmostEqual(z - height / 2, 30.0 - roads.SOUND_UNDER_M, places=2)
         self.assertEqual(width, 9.0)
 
+    def test_short_tunnel_and_low_arch_are_open(self):
+        n = [[0, 0, 10], [50, 0, 10]]
+        rows = lambda c: roads.sound_boxes([c])[0::8]     # noqa: E731
+        self.assertEqual(rows({"tunnel": True, "w": 7.0, "tunnel_h": 6.8, "tunnel_len": 50.0, "n": n}),
+                         [roads.SOUND_TUNNEL_OPEN])          # (a 50 m tube)
+        self.assertEqual(rows({"tunnel": True, "w": 7.0, "tunnel_h": 4.5, "tunnel_len": 500.0, "n": n}),
+                         [roads.SOUND_TUNNEL_OPEN])          # (a low arch)
+        self.assertEqual(rows({"tunnel": True, "w": 7.0, "tunnel_h": 6.8, "tunnel_len": 500.0, "n": n}),
+                         [roads.SOUND_TUNNEL])
+
     def test_none(self):
         self.assertEqual(roads.sound_boxes([{"w": 5.0, "n": [[0, 0, 0], [10, 0, 0]]}]), [])
         self.assertEqual(roads.sound_boxes([{"tunnel": True, "no_tube": True, "w": 5.0, "n": [[0, 0, 0], [10, 0, 0]]}]), [])
