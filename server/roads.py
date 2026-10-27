@@ -1107,6 +1107,9 @@ def dual_carriageways(feats, specs, left_hand=False):
             if sp.oneway:               # the map's own one-way carriageway: its direction stands
                 out[i] = sp._replace(median=gap, width=_dual_width(sp, sp.width, gap, feats, i))
                 continue
+            if sp.lanes:                # OpenStreetMap counts this way's lanes as a two-way road (a divided road's
+                continue                # carriageways are one-way ways there): Portland's Rosa Parks Way, 1+1 lanes and
+                                        # a turn lane, was drawn as two one-ways of 3 lanes each (2026-10-27)
             d = (1 if best[1] > 0 else -1) * (-1 if left_hand else 1)
             w = sp.width if _rule_value(feats.rules.get("width"), i) is not None else \
                 carriageway(sp.cls, sp.kind, sp.urban, None, True)
@@ -1292,8 +1295,8 @@ def _measured_widths(feats, specs, widths):
             continue        # and the median (each took all of it, one wide road over Boston Street's median)
         a = feats.coord_off[feats.ring_off[feats.part_off[j]]]
         b = feats.coord_off[feats.ring_off[feats.part_off[j + 1]]]
-        if _osm(feats, "width", j, *OSM_WIDTH_M) is not None:
-            continue        # (OpenStreetMap's own width)
+        if _osm(feats, "width", j, *OSM_WIDTH_M) is not None or sp.lanes:
+            continue        # (OpenStreetMap's own width, or its lane count's)
         m = widths(str(feats.ids[j]), feats.lonlat[a:b]) if b > a else None
         dflt = carriageway(sp.cls, sp.kind, True, None, sp.oneway, sp.lanes)
         # Historic streets can be one shared lane between close building fronts. Rejecting these measurements

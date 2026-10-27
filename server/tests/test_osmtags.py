@@ -97,6 +97,68 @@ class SpecTest(unittest.TestCase):
         self.assertEqual(navgraph._lanes(7.0, False), navgraph._lanes(7.0, False, None))
 
 
+
+class OsmAheadOfClassTest(unittest.TestCase):
+    """Lane counts and widths follow OpenStreetMap ahead of the class's defaults (the user, 2026-10-27: "it leans on
+    the road's class definition more than the road's actual metadata")."""
+
+    def box(self, x0, x1, y=0.0):
+        from test_roads import LAT, LON, M_LAT, M_LON
+        return {"bx0": LON + x0 / M_LON, "by0": LAT + (y - 5) / M_LAT, "bx1": LON + x1 / M_LON,
+                "by1": LAT + (y + 5) / M_LAT}
+
+    def test_way_without_lanes_takes_the_same_named_way_going_the_same_way(self):
+        f = features([[(0, 0), (100, 0)], [(100, 0), (200, 0)], [(0, 300), (100, 300)], [(200, 0), (300, 0)]],
+                     ["secondary"] * 4)
+        f.attrs["src_record"] = np.array(["w1@1", "w2@1", "w3@1", "w4@1"])
+        f.attrs["name"] = np.array(["Main"] * 4)
+        tags = {1: dict(self.box(0, 210), name="Main", lanes=4), 2: dict(self.box(100, 200), name="Main"),
+                3: dict(self.box(0, 100, 300), name="Main"),
+                4: dict(self.box(200, 300), name="Main", osm_oneway="yes")}
+        osmtags.join(f, tags)
+        self.assertEqual(f.attrs["osm_lanes"][1], 4, "the untagged way of the street takes its count")
+        self.assertTrue(np.isnan(f.attrs["osm_lanes"][2]), "the same name 300 m off: none")
+        self.assertTrue(np.isnan(f.attrs["osm_lanes"][3]), "a one-way does not take a two-way's count")
+
+    def test_a_two_way_with_lanes_is_not_made_a_divided_carriageway(self):
+        """Portland's Rosa Parks Way: two two-way ways of one name 20 m apart, lanes=3 each (1 + 1 + a turn lane),
+        were made one-way carriageways of 3 lanes each."""
+        f = tagged([[(0, 0), (300, 0)], [(300, 20), (0, 20)]], ["primary"] * 2, ["w1@1", "w2@1"],
+                   {1: {"lanes": 3}, 2: {"lanes": 3}})
+        f.attrs["name"] = np.array(["Rosa Parks Way"] * 2)
+        for sp in roads.road_specs(f):
+            self.assertFalse(sp.oneway)
+            self.assertEqual(navgraph._lanes(navgraph.driving_width(sp), False, sp.lanes), (1, 1))
+
+    def test_driving_width_follows_the_lane_count(self):
+        sp = tagged([[(0, 0), (200, 0)]], ["residential"], ["w1@1"], {1: {"lanes": 4}})
+        sp = roads.road_specs(sp)[0]
+        self.assertAlmostEqual(navgraph.driving_width(sp), 4 * roads.LANE_W_DEFAULT, "not the class's 2 lanes")
+
+    def test_measured_width_does_not_override_the_lane_count(self):
+        f = tagged([[(0, 0), (200, 0)]], ["secondary"], ["w1@1"], {1: {"lanes": 4}})
+        sp = roads.road_specs(f, None, lambda fid, ll: (7.0, 2.0))[0]
+        self.assertGreaterEqual(sp.width, 4 * roads.LANE_W["secondary"])
+
+
+class OnewayJoinTest(unittest.TestCase):
+    def test_one_way_end_moves_to_its_own_lane_of_the_two_way(self):
+        """A one-way (north) ending on a two-way's centre line moves right of its travel by a quarter of the two-way's
+        width, faded along it; its other end, on another one-way, stays."""
+        import oneway_joins
+        from test_roads import M_LON
+        f = features([[(-100, 0), (0, 0), (100, 0)], [(0, -60), (0, -30), (0, 0)], [(0, -60), (40, -60)]],
+                     ["secondary", "residential", "residential"])
+        f.attrs["osm_oneway"] = np.array(["", "yes", "yes"])
+        f.attrs["osm_lanes"] = np.array([4.0, np.nan, np.nan])
+        x0 = f.lonlat[:, 0].copy()
+        self.assertEqual(oneway_joins.apply(f), 1)
+        dx = (f.lonlat[:, 0] - x0) * M_LON
+        self.assertAlmostEqual(dx[5], min(4 * oneway_joins.LANE_M / 4, oneway_joins.MAX_SHIFT_M), places=3)
+        self.assertEqual(dx[4], 0.0, "30 m along: past the fade")
+        self.assertEqual(dx[3], 0.0, "the end on the other one-way stays")
+        self.assertTrue(np.all(dx[:3] == 0.0), "the two-way stays")
+
 class RacewayTest(unittest.TestCase):
     """GitHub #143: OpenStreetMap's raceways appended to Overture's roads (which have none), drawn as 12 m paved
     roads unless mapped wider, never graded flat (an oval's banking is the terrain's)."""

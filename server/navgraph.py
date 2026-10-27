@@ -117,6 +117,8 @@ def driving_width(spec):
         w = roads.ONEWAY_STYLE[spec.cls]
     if roads.rural_motorway(spec):      # two lanes between the shoulders (a ramp: one, roads.motorway_shoulder)
         w = min(roads.MOTORWAY_RURAL_M, spec.width - 2 * roads.motorway_shoulder(spec))
+    if spec.lanes:                      # OpenStreetMap's lane count ahead of the class's width
+        w = spec.lanes * roads.LANE_W.get(spec.cls, roads.LANE_W_DEFAULT)
     return float(min(spec.width, w))
 
 
