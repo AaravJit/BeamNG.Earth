@@ -1274,13 +1274,20 @@ def _bridge_specs(feats, want="bridge"):
             continue
         width = _rule_value(rules.get("width"), i)
         rule_w = float(width) if width is not None and 1.0 <= float(width) <= 40.0 else None
+        # (OpenStreetMap's width and lane count, as _road_specs: a 4-lane bridge was drawn at its class's 8 m, one lane
+        # each way, Kommunalny Bridge in Perm, GitHub #378 by RiDexSS; tunnels too)
+        if rule_w is None:
+            rule_w = _osm(feats, "width", i, *OSM_WIDTH_M)
+        lanes = _osm(feats, "lanes", i, *OSM_LANES)
+        lanes = int(lanes) if lanes is not None else None
         surf = _rule_value(rules.get("surface"), i)
         kind = surface_kind(cls, surf)
         ow = _rule_value(rules.get("oneway"), i) is not None
-        if rule_w is None and _rule_value(rules.get("subclass"), i) == "link":
+        link = _rule_value(rules.get("subclass"), i) == "link"
+        if rule_w is None and link and lanes is None:
             rule_w = LINK_M[1] if ow else LINK_M[2]
-        out.append(Spec(carriageway(cls, kind, False, rule_w, ow), kind, False, cls, ow,
-                        surf=surface_token(surf)))
+        out.append(Spec(carriageway(cls, kind, False, rule_w, ow, lanes), kind, False, cls, ow,
+                        lanes=lanes, surf=surface_token(surf)))
     return out
 
 

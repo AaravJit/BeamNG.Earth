@@ -686,6 +686,13 @@ class BuildTileTest(unittest.TestCase):
         self.assertEqual(len(roads.bridge_parts(f, 0)), 1)
         self.assertIsNotNone(roads.road_specs(f)[0], "a street with a bridge in it stays")
         self.assertIsNotNone(roads.bridge_specs(f)[0])
+        # (OpenStreetMap's lane count makes the deck as wide as the road: a 4-lane bridge drawn at its class's 8 m,
+        # GitHub #378)
+        f4 = features([[(-200, 50), (200, 50)]], ["secondary"], levels=[(0, 1.0, 0.4, 0.6)])
+        f4.attrs["osm_lanes"] = np.array([4.0])
+        self.assertEqual(roads.bridge_specs(f4)[0].lanes, 4)
+        self.assertAlmostEqual(roads.bridge_specs(f4)[0].width, roads.road_specs(f4)[0].width, places=6)
+        self.assertGreater(roads.bridge_specs(f4)[0].width, roads.STYLE["secondary"][0] + 2.0)
 
         def slope(la, lo):
             e, _, _ = FRAME.geodetic_to_enu(np.asarray(la), np.asarray(lo), 0.0)
