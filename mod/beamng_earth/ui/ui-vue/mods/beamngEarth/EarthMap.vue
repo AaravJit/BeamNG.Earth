@@ -135,6 +135,7 @@
 
     <!-- status: tiles unavailable / not connected -->
     <div v-if="notice" class="map-notice">{{ notice }}</div>
+    <div v-if="toast" class="map-toast">{{ toast }}</div>
 
     <!-- right-click menu -->
     <div v-if="ctx" class="ctx-menu" :style="{ left: ctx.x + 'px', top: ctx.y + 'px' }" @mousedown.stop @contextmenu.prevent>
@@ -142,29 +143,41 @@
       <div class="ctx-item" :class="{ disabled: !!state.cannotGo }" @click="ctxTeleport">Teleport here</div>
       <div class="ctx-item" @click="ctxGps">Set GPS destination</div>
       <div class="ctx-item" @click="ctxSave">Save this place</div>
+      <div class="ctx-item" @click="ctxCopy">Copy coordinates</div>
       <div v-if="state.gps" class="ctx-item" @click="clearGps">Clear GPS</div>
     </div>
 
     <!-- the GPS destination -->
     <div v-if="state.gps" class="gps-chip" @mousedown.stop>
-      <span>GPS: {{ state.gps.name || fmtLatLon(state.gps.lat, state.gps.lon) }}</span>
-      <span v-if="state.gps.planning && !routePts.length" class="gps-dist">planning route…</span>
-      <span v-else-if="state.gps.remaining != null" class="gps-dist">{{ fmtMiles(state.gps.remaining) }}<template
-        v-if="state.gps.eta != null">, {{ fmtDur(state.gps.eta) }}</template></span>
-      <span v-if="state.gps.routeError && !routePts.length" class="gps-warn" :title="state.gps.routeError">no road route: heading straight there</span>
-      <span v-if="state.gps.routeDownload && state.gps.routeDownload.active" class="gps-download"
-            title="Downloading the route's road and elevation data ahead of time so driving it is smoother">
-        <span class="gps-download-bar"><span class="gps-download-fill" :style="{ width: (state.gps.routeDownload.total
-          ? (100 * state.gps.routeDownload.done / state.gps.routeDownload.total) : 0) + '%' }"></span></span>
-        {{ state.gps.routeDownload.done }} / {{ state.gps.routeDownload.total }}
-      </span>
-      <button class="map-btn small" @click="showOnMap(state.gps)">Show</button>
-      <button class="map-btn small" :disabled="!!state.cannotGo" @click="teleportNow(state.gps.lat, state.gps.lon, state.gps.name)">Teleport</button>
-      <button class="map-btn small" :class="{ primary: state.gps.autodrive }" @click="setAutodrive(!state.gps.autodrive)"
-              :title="state.gps.autodrive ? 'Stop driving by itself' : 'The car drives itself along the route (in its lane, at the speed limit)'">
-        {{ state.gps.autodrive ? "Autodrive on" : "Autodrive" }}
-      </button>
-      <button class="map-btn small" @click="clearGps">Clear</button>
+      <div class="gps-chip-row">
+        <span>GPS: {{ state.gps.name || fmtLatLon(state.gps.lat, state.gps.lon) }}</span>
+        <span v-if="state.gps.planning && !routePts.length" class="gps-dist">planning route…</span>
+        <span v-else-if="state.gps.remaining != null" class="gps-dist">{{ fmtMiles(state.gps.remaining) }}<template
+          v-if="state.gps.eta != null">, {{ fmtDur(state.gps.eta) }}</template></span>
+        <span v-if="state.gps.routeError && !routePts.length" class="gps-warn" :title="state.gps.routeError">no road route: heading straight there</span>
+        <span v-if="state.gps.routeDownload && state.gps.routeDownload.active" class="gps-download"
+              title="Downloading the route's road and elevation data ahead of time so driving it is smoother">
+          <span class="gps-download-bar"><span class="gps-download-fill" :style="{ width: (state.gps.routeDownload.total
+            ? (100 * state.gps.routeDownload.done / state.gps.routeDownload.total) : 0) + '%' }"></span></span>
+          {{ state.gps.routeDownload.done }} / {{ state.gps.routeDownload.total }}
+        </span>
+        <button class="map-btn small" @click="showOnMap(state.gps)">Show</button>
+        <button class="map-btn small" :disabled="!!state.cannotGo" @click="teleportNow(state.gps.lat, state.gps.lon, state.gps.name)">Teleport</button>
+        <button class="map-btn small" :class="{ primary: state.gps.autodrive }" @click="setAutodrive(!state.gps.autodrive)"
+                :title="state.gps.autodrive ? 'Stop driving by itself' : 'The car drives itself along the route (in its lane, at the speed limit)'">
+          {{ state.gps.autodrive ? "Autodrive on" : "Autodrive" }}
+        </button>
+        <button class="map-btn small" @click="clearGps">Clear</button>
+      </div>
+      <!-- the route's elevation profile (server routing.resample + dem.sample), with where the car is on it -->
+      <div v-if="elevStats" class="elev-profile" title="Elevation along the route">
+        <svg :width="ELEV_W" :height="ELEV_H" class="elev-svg">
+          <polygon :points="elevStats.area" class="elev-area" />
+          <polyline :points="elevStats.line" class="elev-line" />
+          <line :x1="elevStats.markerX" y1="0" :x2="elevStats.markerX" :y2="ELEV_H" class="elev-marker" />
+        </svg>
+        <div class="elev-minmax"><span>{{ Math.round(elevStats.minE) }} m</span><span>{{ Math.round(elevStats.maxE) }} m</span></div>
+      </div>
     </div>
 
     <!-- the confirmation -->
@@ -860,6 +873,43 @@ function ctxSave() {
   panelOpen.value = true
   placesCall(`uiPlaceAdd("", ${luaStr(`${c.lat.toFixed(6)}, ${c.lon.toFixed(6)}`)})`, "Saved")
 }
+// decimal "lat, lon" (pasteable into Google Maps etc.), not the N/S/E/W display format
+const toast = ref("")
+let toastTimer = null
+function showToast(msg) {
+  toast.value = msg
+  clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => { toast.value = "" }, 1500)
+}
+function copyText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => showToast("Copied"), () => copyFallback(text))
+  } else {
+    copyFallback(text)
+  }
+}
+// the CEF UI's clipboard permission can be missing (navigator.clipboard rejects): the old execCommand way instead
+function copyFallback(text) {
+  try {
+    const ta = document.createElement("textarea")
+    ta.value = text
+    ta.style.position = "fixed"
+    ta.style.opacity = "0"
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand("copy")
+    document.body.removeChild(ta)
+    showToast("Copied")
+  } catch (e) {
+    showToast("Copy failed")
+  }
+}
+function ctxCopy() {
+  if (!ctx.value) return
+  const c = ctx.value
+  closeCtx()
+  copyText(`${c.lat.toFixed(6)}, ${c.lon.toFixed(6)}`)
+}
 function ctxGps() {
   if (!ctx.value) return
   const c = ctx.value
@@ -892,18 +942,39 @@ function clearGps() {
 }
 // the planned route (server routing.py), fetched when its version changes; drawn done (grey) / ahead (blue)
 const routePts = ref([])
+const routeElev = ref([])            // [[distM, elevM], ...] along the route (routing.resample, dem.sample)
 let routeVersion = 0
 watch(() => state.value.gps && state.value.gps.routeVersion, v => {
-  if (!v) { routePts.value = []; routeVersion = 0; return }
+  if (!v) { routePts.value = []; routeElev.value = []; routeVersion = 0; return }
   if (v === routeVersion) return
   engineLua("beamngEarth_settings and beamngEarth_settings.uiGpsRoute and beamngEarth_settings.uiGpsRoute() or nil", r => {
     if (!r || !r.points) return
     routeVersion = r.version
-    routePts.value = toArray(r.points).map(p => (Array.isArray(p) ? [Number(p[0]), Number(p[1])] : [Number(p["1"]), Number(p["2"])]))
-      .filter(p => isFinite(p[0]) && isFinite(p[1]))
+    const pair = p => (Array.isArray(p) ? [Number(p[0]), Number(p[1])] : [Number(p["1"]), Number(p["2"])])
+    routePts.value = toArray(r.points).map(pair).filter(p => isFinite(p[0]) && isFinite(p[1]))
+    routeElev.value = toArray(r.elev || []).map(pair).filter(p => isFinite(p[0]) && isFinite(p[1]))
   })
 })
-watch(() => state.value.gps, g => { if (!g) { routePts.value = []; routeVersion = 0 } })
+watch(() => state.value.gps, g => { if (!g) { routePts.value = []; routeElev.value = []; routeVersion = 0 } })
+
+// the elevation chart (a sparkline + fill, under the GPS box): min/max over the whole route, a marker at the
+// car's current distance along it (from the remaining distance, same as the route-ahead/done split above)
+const ELEV_W = 220, ELEV_H = 46
+const elevStats = computed(() => {
+  const pts = routeElev.value
+  if (pts.length < 2) return null
+  const total = pts[pts.length - 1][0]
+  if (!(total > 0)) return null
+  let minE = Infinity, maxE = -Infinity
+  for (const p of pts) { if (p[1] < minE) minE = p[1]; if (p[1] > maxE) maxE = p[1] }
+  const span = Math.max(1, maxE - minE)
+  const xs = d => (d / total) * ELEV_W
+  const ys = e => ELEV_H - ((e - minE) / span) * ELEV_H
+  const line = pts.map(p => `${xs(p[0]).toFixed(1)},${ys(p[1]).toFixed(1)}`).join(" ")
+  const remaining = state.value.gps && state.value.gps.remaining
+  const frac = remaining != null ? Math.max(0, Math.min(1, 1 - remaining / total)) : 0
+  return { line, area: `0,${ELEV_H} ${line} ${ELEV_W},${ELEV_H}`, minE, maxE, markerX: xs(frac * total) }
+})
 function routePath(from, to) {
   const pts = routePts.value.slice(from, to)
   if (pts.length < 2) return ""
@@ -1287,10 +1358,17 @@ const fmtLatLon = mm.fmtLatLon
 .ctx-item.disabled { opacity: 0.45; cursor: default; }
 .ctx-item.disabled:hover { background: none; }
 .gps-chip {
-  position: absolute; left: 10px; top: 56px; z-index: 6; display: flex; gap: 8px; align-items: center;
+  position: absolute; left: 10px; top: 56px; z-index: 6; display: flex; flex-direction: column; gap: 6px;
   padding: 5px 8px 5px 12px; font-size: 13px; background: rgba(15, 18, 22, 0.88); border: 1px solid #36a3ff; border-radius: 5px;
 }
+.gps-chip-row { display: flex; gap: 8px; align-items: center; }
 .gps-dist { color: #9fd3ff; }
+.elev-profile { display: flex; gap: 8px; align-items: flex-end; }
+.elev-svg { display: block; flex-shrink: 0; }
+.elev-area { fill: rgba(54, 163, 255, 0.25); stroke: none; }
+.elev-line { fill: none; stroke: #9fd3ff; stroke-width: 1.5; }
+.elev-marker { stroke: #ff9a3c; stroke-width: 2; }
+.elev-minmax { display: flex; flex-direction: column; justify-content: space-between; height: 46px; font-size: 11px; color: #9aa4ae; }
 .gps-warn { color: #ffb08a; font-size: 12px; }
 .gps-download { display: flex; gap: 6px; align-items: center; color: #9fd3ff; font-size: 12px; }
 .gps-download-bar { width: 60px; height: 5px; border-radius: 3px; background: rgba(255, 255, 255, 0.15); overflow: hidden; }
@@ -1308,6 +1386,10 @@ const fmtLatLon = mm.fmtLatLon
 .map-notice {
   position: absolute; left: 50%; top: 60px; transform: translateX(-50%); z-index: 9;
   padding: 7px 14px; background: rgba(120, 40, 30, 0.85); border-radius: 4px; font-size: 13px;
+}
+.map-toast {
+  position: absolute; left: 50%; bottom: calc(6.5vh + 40px); transform: translateX(-50%); z-index: 13;
+  padding: 6px 14px; background: rgba(20, 22, 26, 0.9); border-radius: 4px; font-size: 13px; pointer-events: none;
 }
 .confirm {
   position: absolute; left: 50%; bottom: 56px; transform: translateX(-50%); z-index: 11; min-width: 300px;
