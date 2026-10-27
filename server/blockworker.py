@@ -680,6 +680,33 @@ def skyline_tile(aid, lat, lon, zoom, ux, uy, out_dir, vfs_dir):
                          lambda path, extra: (path, int(extra.get("n", 0))))
 
 
+def far_bridge_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir):
+    """earthd.Server.build_far_bridge_tile here (the far buildings' pool): buildings.far_bridge_tile, its decks from an
+    anchor's own roads.BridgeProfiles on the raw ground (grading cells kilometres away for them would cost far more
+    than the metre it changes there), kept per anchor in this process; from the revisit cache when seen before."""
+    import buildings as buildingsmod
+    import revisit
+    import roads as roadsmod
+    frame = geodesy.EnuFrame(lat, lon)
+    with _s.lock:
+        far = _s.__dict__.setdefault("far_bridges", {})
+        bridges = far.get(aid)
+        if bridges is None:
+            bridges = far[aid] = roadsmod.BridgeProfiles(
+                frame, lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads"),
+                lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)))
+            sea = getattr(_s, "sea", None)
+            bridges.wet = sea.depth if sea is not None else None
+            for old in sorted(far)[:-ANCHORS_KEPT]:
+                del far[old]
+    k = revisit.key("brfar", round(float(lat), 7), round(float(lon), 7), zoom, tx, ty,
+                    _s.md.versions() if _s.md is not None else None)
+    return _revisit_tile("brfar", k, aid, tx, ty, out_dir, vfs_dir, f"brfar_{aid}_{tx}_{ty}.json",
+                         lambda: buildingsmod.far_bridge_tile(frame, tx, ty, _s.md, bridges, out_dir, vfs_dir, aid),
+                         lambda res: {"n": int(res[1])},
+                         lambda path, extra: (path, int(extra.get("n", 0))))
+
+
 def base_entry(user_dir, base_vfs, ao_vfs, rgb, ao_value):
     """terraincache.base_entry here (its BC7 encode is the base photo's main cost)."""
     return terraincache.base_entry(user_dir, base_vfs, ao_vfs, rgb, ao_value)

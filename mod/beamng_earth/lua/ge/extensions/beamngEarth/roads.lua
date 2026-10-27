@@ -489,15 +489,19 @@ end
 -- skyline tile (server buildings.skyline_tile: SKY_UNIT x SKY_UNIT road tiles, key "ux_uy"), shown only while not all
 -- of its squares' far tiles are here (they come as whole groups: no hole while they arrive, none left over after).
 M.SKY_UNIT = 4
-function M.onFarTile(msg, currentAnchor, sky)
+-- `brfar_tile` (kind 'B'): a far bridge tile's decks (server buildings.far_bridge_tile), shown only while the road
+-- tile of the same square has no deck or road mesh of its own.
+function M.onFarTile(msg, currentAnchor, kind)
+  if kind == true then kind = 'S' end
+  local sky = kind == 'S'
   if not M.enabled then return false end
   switchAnchor(currentAnchor)
   if msg.anchorId ~= currentAnchor then return false end
   local ok, data = true, msg.data              -- (in the message, else the file: as onTile)
   if type(data) ~= 'table' then ok, data = pcall(jsonDecode, readFile(msg.path) or '') end
   if not ok or type(data) ~= 'table' then lastError = 'unreadable far building tile ' .. tostring(msg.path); return false end
-  local key = tileKey(msg.anchorId, (sky and 'S' or '') .. msg.key)
-  if not sky then farSeen[key] = true end
+  local key = tileKey(msg.anchorId, (kind or '') .. msg.key)
+  if not kind then farSeen[key] = true end
   local old = far[key]
   if old and old.id then deleteQ[#deleteQ + 1] = old.id end
   if old then slotDrop(old.slot) end
@@ -507,7 +511,8 @@ function M.onFarTile(msg, currentAnchor, sky)
     local ux, uy = nil, nil
     if sky then ux, uy = string.match(tostring(msg.key), '^(-?%d+)_(-?%d+)$') end
     far[key] = { anchor = msg.anchorId, shape = sl and sl.path or data.shape, pos = data.pos, slot = sl,
-                 sky = sky and { tonumber(ux), tonumber(uy) } or nil }
+                 sky = sky and { tonumber(ux), tonumber(uy) } or nil,
+                 deckOf = kind == 'B' and tileKey(msg.anchorId, msg.key) or nil }
     farQ[#farQ + 1] = key
   else
     slotDrop(sl)
@@ -516,9 +521,10 @@ function M.onFarTile(msg, currentAnchor, sky)
 end
 
 -- Server message `bldfar_drop` {anchorId, key} (`bldsky_drop` with sky).
-function M.onFarDrop(msg, sky)
-  local key = tileKey(msg.anchorId, (sky and 'S' or '') .. msg.key)
-  if not sky then farSeen[key] = nil end
+function M.onFarDrop(msg, kind)
+  if kind == true then kind = 'S' end
+  local key = tileKey(msg.anchorId, (kind or '') .. msg.key)
+  if not kind then farSeen[key] = nil end
   local f = far[key]
   if f and f.ghost then return end
   if f and f.id then deleteQ[#deleteQ + 1] = f.id end
@@ -544,6 +550,9 @@ local function updateFar(gov)
       local hide
       if f.sky then
         hide = M.skyCovered(farSeen, f.anchor, f.sky[1], f.sky[2])
+      elseif f.deckOf then
+        local t = tiles[f.deckOf]
+        hide = t ~= nil and (t.deck ~= nil or t.road ~= nil)
       else
         hide = tiles[key] ~= nil and tiles[key].bld ~= nil
       end

@@ -1005,6 +1005,11 @@ local function onMessage(msg)
     roads.onFarTile(msg, st.anchorId, true)
   elseif t == 'bldsky_drop' then
     roads.onFarDrop(msg, true)
+  elseif t == 'brfar_tile' then
+    -- the bridges past the road tiles (server buildings.far_bridge_tile): render-only, roads.lua
+    roads.onFarTile(msg, st.anchorId, 'B')
+  elseif t == 'brfar_drop' then
+    roads.onFarDrop(msg, 'B')
   elseif t == 'where_result' then
     statusbar.onResult(msg)
   elseif t == 'place_previews_ready' then      -- the level select's place pictures are there (levelinfo.lua)

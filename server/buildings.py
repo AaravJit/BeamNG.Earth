@@ -2921,6 +2921,82 @@ def skyline_tile(frame, ux, uy, md, ground, out_dir, vfs_dir, aid):
     return f"{vfs_dir}/{name}", len(picked) if mesh is not None else 0
 
 
+# ------------------------------------------------------------------------------------------- far bridges
+# The road bridges past the road tiles (their decks only came with the road tiles, ~0.8 km: a city's bridges were
+# gone beyond that): one render-only slab per road tile that has bridge decks, out to BRIDGE_FAR_SEND_M, from the same
+# deck solver as the road tiles (roads.BridgeProfiles), each part's segments in the tile of their midpoint (offsets
+# from the whole part: tiles meet without a gap). A slab: the deck's top, its sides and its underside down to its
+# girders, plain grey (MARBLE at one texel, vertex colours). The mod hides one while its road tile has a deck.
+BRIDGE_FAR_SEND_M = float(os.environ.get("BNE_BRIDGE_FAR_SEND_M", "4800"))
+BRIDGE_FAR_DROP_M = BRIDGE_FAR_SEND_M + 500.0
+BRIDGE_FAR_PER_POSE = 2
+BRIDGE_TOP_RGBA = (92, 92, 94, 255)        # the deck's asphalt from afar
+BRIDGE_SIDE_RGBA = (176, 174, 168, 255)    # its concrete
+
+
+def _bridge_slab(parts, x0, y0, x1, y1):
+    """The slab mesh of the bridge parts [(xy (k, 2), z (k,), width m)] (anchor frame) for the segments whose midpoint
+    is in [x0, x1) x [y0, y1), relative to (x0, y0), or None."""
+    import roadmesh
+    m = Mesh()
+    mi = MATERIALS.index(MARBLE)
+    uv = SKY_UV
+    top, side = (mi, BRIDGE_TOP_RGBA), (mi, BRIDGE_SIDE_RGBA)
+    depth = roadmesh.DECK_DEPTH + roadmesh.GIRDER_D
+    for xy, z, w in parts:
+        xy = np.asarray(xy, np.float64)[:, :2]
+        z = np.asarray(z, np.float64)
+        if len(xy) < 2:
+            continue
+        nrm = roadmesh._normals(xy) * (w / 2.0)
+        L, R = xy + nrm - (x0, y0), xy - nrm - (x0, y0)
+        mid = (xy[:-1] + xy[1:]) / 2.0
+        inside = (mid[:, 0] >= x0) & (mid[:, 0] < x1) & (mid[:, 1] >= y0) & (mid[:, 1] < y1)
+        for i in np.flatnonzero(inside):
+            j = i + 1
+            a, b, zt0, zt1 = L[i], L[j], z[i], z[j]
+            c, d = R[i], R[j]
+            zb0, zb1 = zt0 - depth, zt1 - depth
+            m.quad((a[0], a[1], zt0), (c[0], c[1], zt0), (d[0], d[1], zt1), (b[0], b[1], zt1), uv, uv, uv, uv, top)
+            m.quad((a[0], a[1], zb0), (a[0], a[1], zt0), (b[0], b[1], zt1), (b[0], b[1], zb1), uv, uv, uv, uv, side)
+            m.quad((d[0], d[1], zb1), (d[0], d[1], zt1), (c[0], c[1], zt0), (c[0], c[1], zb0), uv, uv, uv, uv, side)
+            m.quad((c[0], c[1], zb0), (a[0], a[1], zb0), (b[0], b[1], zb1), (d[0], d[1], zb1), uv, uv, uv, uv, side)
+    if not m.n:
+        return None
+    P, UV, T, M, C = m.arrays()
+    return P, UV, T, M, MATERIALS, C
+
+
+def far_bridge_tile(frame, tx, ty, md, bridges, out_dir, vfs_dir, aid):
+    """A far bridge tile (render-only) written to the session folder: (vfs path of its JSON, part count) or None when
+    its road cells are not at hand (fetched in the background: asked again later). bridges: the anchor's
+    roads.BridgeProfiles."""
+    import json
+    import roads
+    x0, y0, x1, y1 = roads.tile_bbox(tx, ty)
+    keys = roads.cells_of_tile(frame, tx, ty, margin=0.0)
+    if not all(md.has(k, "roads") for k in keys):
+        for k in keys:
+            md.prefetch(k, layers=("roads",))
+        return None
+    cells = [md.cell(k, layers=("roads",), kind="background").layers.get("roads") for k in keys]
+    parts = [(xy, z, float(spec.width)) for _fid, spec, xy, z, _lon in bridges.parts(cells, (x0, y0, x1, y1))]
+    mesh = _bridge_slab(parts, x0, y0, x1, y1) if parts else None
+    data = {"v": 1}
+    if mesh is not None:
+        shape = f"brfar_{aid}_{tx}_{ty}.cdae"
+        write(os.path.join(out_dir, shape), mesh)
+        data["shape"] = f"{vfs_dir}/{shape}"
+        data["pos"] = [x0, y0, 0.0]
+    name = f"brfar_{aid}_{tx}_{ty}.json"
+    path = os.path.join(out_dir, name)
+    tmp = staging.tmp_for(path)
+    with open(tmp, "w") as f:
+        f.write(json.dumps(data))
+    staging.replace(tmp, path)
+    return f"{vfs_dir}/{name}", len(parts) if mesh is not None else 0
+
+
 # ------------------------------------------------------------------------------------------- the ground photo
 
 PHOTO_GROW_M = 1.5          # m a footprint is grown on the ground photo (edges, eaves) ...
