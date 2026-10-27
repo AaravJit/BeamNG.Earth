@@ -1008,6 +1008,15 @@ class Server:
             anchor._left_hand = lh
         return lh
 
+    def buried(self, anchor):
+        """The share of low-voltage lines underground in the anchor's country (furniture.buried_share: fewer utility
+        poles)."""
+        v = getattr(anchor, "_buried", None)
+        if v is None:
+            v = furnituremod.buried_share(navgraphmod.country_near(self.airports_db, anchor.lat, anchor.lon))
+            anchor._buried = v
+        return v
+
     def mph(self, anchor):
         """Whether speed limits are posted in mph at the anchor (its country, navgraph.road_rules)."""
         v = getattr(anchor, "_mph", None)
@@ -1177,7 +1186,7 @@ class Server:
                 blockworker.roads_tile, aid, anchor.lat, anchor.lon, anchor.zooms[0], tx, ty, self.out_dir,
                 self.vfs_dir, self.sidewalks, DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0,
                 self.buildings, self.left_hand(anchor), self.mph(anchor), self.anchor_q(anchor),
-                self.gas_stations).result()
+                self.gas_stations, self.buried(anchor)).result()
             log.debug("road tile %d_%d: %.2f s (queue + build)", tx, ty, time.perf_counter() - t0)
             self.keep_fuel_pads(res[2])
             return res[:2]
@@ -1234,7 +1243,7 @@ class Server:
         chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, elev, urban, walks=walks, deck_context=ctx, bridges=anchor.bridges,
                                      walk_cuts=fuel_cuts,    # (the stations' made-up driveways: no sidewalk across them)
                                      widths=self.road_widths, props=props, lines=lines, wires=wires, town=town, park=park,
-                                     left_hand=self.left_hand(anchor), mph=self.mph(anchor),
+                                     left_hand=self.left_hand(anchor), mph=self.mph(anchor), buried=self.buried(anchor),
                                      structures=buildingsmod.centres(items, tx, ty) if items else (),
                                      tunnels=anchor.tunnels, walls=rwalls,
                                      ground=lambda x, y: roadmeshmod.drawn_ground(anchor.frame, drawn, np.c_[x, y],

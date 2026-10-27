@@ -94,6 +94,29 @@ class PoleTest(unittest.TestCase):
     def test_no_poles_in_town(self):
         self.assertEqual(furniture.place([road("d", "tertiary", True)], [], (0, 0, 256, 256)), [])
 
+    def test_buried_lines_no_poles(self):
+        """The country's low-voltage lines underground (furniture.BURIED_LV, the user 2026-10-26: poles "almost
+        everywhere"): that share of the roads (hashed) have no poles; all of them in the Netherlands."""
+        self.assertEqual(furniture.buried_share("nl"), 1.0)
+        self.assertEqual(furniture.buried_share("US"), 0.0)
+        self.assertEqual(furniture.buried_share(None), 0.0)
+        rows = furniture.place([road("c", "tertiary", False)], [], (0, 0, 256, 256), wires=[], buried=1.0)
+        self.assertNotIn(furniture.G_POLE, [x[0] for x in rows])
+        roads_ = [road(f"r{k}", "tertiary", False) for k in range(200)]
+        with_poles = sum(1 for r in roads_
+                         if any(x[0] == furniture.G_POLE for x in furniture.place([r], [], (0, 0, 256, 256), buried=0.5)))
+        self.assertTrue(70 <= with_poles <= 130, with_poles)
+
+    def test_buried_town_street_gets_lamps(self):
+        r = road("t", "residential", True)
+        rows = []
+        for side in (1, -1):
+            rows += furniture.place([r], LampTest.walks(None, r, side), (0, 0, 256, 256), wires=[], town=True, buried=1.0)
+        groups = [x[0] for x in rows]
+        self.assertNotIn(furniture.G_POLE, groups)
+        self.assertIn(furniture.G_LAMP, groups)
+        self.assertIn(furniture.G_LENS, groups)        # (the lamps' lenses: night lighting)
+
 
 class JunctionTest(unittest.TestCase):
     def arm(self, fid, cls, dx, dy, c=(100.0, 100.0)):

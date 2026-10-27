@@ -409,6 +409,18 @@ STREET_TREE_SHARE = 0.5         # streets with a row of trees (hashed per street
 STREET_TREE_SPACING = 11.0
 STREET_TREE_CURB_M = 0.9
 G_POLELAMP = "polelamp"     # a cobra-head arm on a utility pole (East Coast USA's electrical_pole_lamp)
+# The share of a country's low-voltage lines that are underground (the user, 2026-10-26: "Currently we've been placing
+# them almost everywhere"): the European Commission's "Overview of the Potential for Undergrounding the Electricity
+# Networks in Europe" (ICF Consulting, 2003; Europacable / Sycabel km of overhead and underground LV line, ~2000), the
+# underground share of each country's low-voltage km. Countries not listed: mostly overhead (the US, Canada, Japan,
+# Australia, most of the world). Old figures: the shares have only grown since.
+BURIED_LV = {"NL": 1.0, "GB": 0.81, "DE": 0.75, "DK": 0.65, "BE": 0.44, "NO": 0.38, "IT": 0.30, "FR": 0.27,
+             "PT": 0.19, "AT": 0.15, "ES": 0.14}
+
+
+def buried_share(country):
+    """The share of the country's (ISO 3166 alpha-2) low-voltage lines underground (BURIED_LV), else 0."""
+    return BURIED_LV.get(str(country or "").upper(), 0.0)
 # The lamps' lenses (night lighting: nightlights.lua lights their material after dusk and puts its lights at them;
 # tools/build_lamp_lens.py): the stock heads' glass is a material every building's windows share. At each lamp's glass
 # (the centroid of its transparent vertices in the stock mesh, its local frame: x along the row's yaw; measured by
@@ -515,13 +527,18 @@ def under_decks(rows, decks, wires=None):
 
 
 def place(roads, walks, box, curb_h=0.15, wires=None, town=False, left_hand=False, speeds=None, mph=True, decks=(),
-          signals=None):
+          signals=None, buried=0.0):
     """Rows [group, x, y, z, yaw, scale, height, rank] (trees.lua's tile rows) of the lamps and poles of a
     tile box (x0, y0, x1, y1). roads: build_tile's (fid, spec, centreline (k, 3), lon); walks: its sidewalk
     runs (dicts with fid, pts, side, w); decks: the bridge decks over the tile [(centreline (k, 3), half
-    width)]: nothing tall under them (under_decks)."""
+    width)]: nothing tall under them (under_decks). buried: the share of the country's low-voltage lines that are
+    underground (buried_share): that share of the roads (hashed) get no utility poles (a town's street its lamps
+    instead)."""
     x0, y0, x1, y1 = box
     by_fid = {fid: (spec, pts) for fid, spec, pts, _ in roads}
+
+    def overhead(fid):          # does this road's line run on poles (not buried)?
+        return _h01(fid, "buried") >= buried
     import fast
     others = fast.Others([(fid, spec.width / 2, pts) for fid, spec, pts, _ in roads])
     rows = []
@@ -546,7 +563,7 @@ def place(roads, walks, box, curb_h=0.15, wires=None, town=False, left_hand=Fals
                     rows.append([group, round(float(q[0]), 2), round(float(q[1]), 2), round(float(p[2] + curb_h), 2),
                                  round(yaw_fn(out), 1), 1.0, height, 0.0])
         rule = LAMP_SPACING.get(spec.cls)
-        if town and spec.cls in TOWN_POLE_CLASSES:
+        if town and spec.cls in TOWN_POLE_CLASSES and overhead(fid):
             # towns and suburbs: wooden utility poles along one side, wired, a cobra-head lamp on every other
             pole_side = 1 if _h01(fid, "side") < 0.5 else -1
             if side == pole_side:
@@ -598,7 +615,7 @@ def place(roads, walks, box, curb_h=0.15, wires=None, town=False, left_hand=Fals
     if speeds:
         rows.extend(speed_signs(roads, speeds, box, left_hand, mph))
     for fid, spec, line, _ in roads:
-        if spec.urban or fid in lit or spec.cls not in POLE_CLASSES or len(line) < 2:
+        if spec.urban or fid in lit or spec.cls not in POLE_CLASSES or len(line) < 2 or not overhead(fid):
             continue
         side = 1 if _h01(fid, "pside") < 0.5 else -1
         phase = _h01(fid, "pphase") * POLE_SPACING
