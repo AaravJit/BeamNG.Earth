@@ -45,7 +45,9 @@ You can help support development by reporting [issues](https://github.com/TecnaG
   and stone parapets along mountain roads' drops; street lights, utility poles with wires, traffic signals,
   stop signs and speed-limit signs (mph or km/h by country), traffic lights and sidewalks where OpenStreetMap maps them;
   railway lines as 3D track (ballast, sleepers and rails, rail bridges on piers, the ground cut and filled for the
-  line) and tram tracks (street track where trams run on the road).
+  line; abandoned and disused lines overgrown and rusty; lines not built yet left out), level crossings with the rails
+  flush in the road and crossbucks, flashing lights or gates (in the US as the FRA's crossing inventory lists them),
+  and tram tracks (street track where trams run on the road).
 - Gas stations with pumps, canopies and forecourts in the region's style, where the stock refuel prompt fills the
   tank.
 - Bridges drawn as their real type (beam, truss, arch, cable-stayed, suspension) with real heights and spans, piers
