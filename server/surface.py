@@ -505,14 +505,18 @@ PARKING_CLASSES = {"parking"}     # Overture infrastructure (transit) polygons d
 # Squares and pedestrian areas (Overture land_use subtype "pedestrian": Mexico City's Zocalo read as bare dirt,
 # 2026-10-15): paving, under the parking lots and the roads drawn over them
 PLAZA_CLASSES = {"pedestrian", "plaza"}
+# Substations' yards (Overture infrastructure class substation; powerlines.py fills them with switchgear): crushed
+# stone, as West Coast USA's yard (the gravel layer), 2026-10-26
+YARD_CLASSES = {"substation"}
 
 
 def paint_lots(idx, lat, lon, feats_list):
     """idx with the squares and pedestrian areas (land_use polygons of subtype "pedestrian") of feats_list
     drawn in as plain paving (the asphalt layer), then the parking lots (polygons of class "parking") as asphalt (Lancaster County's
-    photos: the grass layer's ground cover grew on lots). Pure."""
+    photos: the grass layer's ground cover grew on lots), the substations' yards as gravel. Pure."""
     # (grey paving: the cobble layer's setts drew big squares and promenades pink, Harbor Point 2026-10-15)
     idx = _paint(idx, lat, lon, feats_list, _plazas, ASPHALT)
+    idx = _paint(idx, lat, lon, feats_list, _yards, LOOSE)
     return _paint(idx, lat, lon, feats_list, _parking, ASPHALT)
 
 
@@ -601,6 +605,11 @@ def pads_mask(frame, x0, y0, size, px, pads):
 def _parking(feats):
     cls = feats.attrs.get("class")
     return None if cls is None else np.isin(cls.astype(str), list(PARKING_CLASSES))
+
+
+def _yards(feats):
+    cls = feats.attrs.get("class")
+    return None if cls is None else np.isin(cls.astype(str), list(YARD_CLASSES))
 
 
 def _plazas(feats):

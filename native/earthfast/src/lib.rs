@@ -7,6 +7,7 @@ mod roadgeom;
 mod shore;
 mod photofill;
 mod ambience;
+mod power;
 
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, IntoPyArray};
 use pyo3::types::PyBytes;
@@ -5016,6 +5017,8 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(ambience::audio_biome, m)?)?;
     m.add_function(wrap_pyfunction!(ambience::sound_boxes, m)?)?;
     m.add_function(wrap_pyfunction!(ambience::shore_lines, m)?)?;
+    m.add_function(wrap_pyfunction!(power::power_line_layout, m)?)?;
+    m.add_function(wrap_pyfunction!(power::substation_yard, m)?)?;
     m.add_function(wrap_pyfunction!(vegmask::road_segments, m)?)?;
     m.add_function(wrap_pyfunction!(vegmask::disc_max, m)?)?;
     m.add_function(wrap_pyfunction!(vegmask::thin_tops, m)?)?;
@@ -5102,6 +5105,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(photofill::fill_photo, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 80)?;
+    m.add("VERSION", 82)?;
     Ok(())
 }

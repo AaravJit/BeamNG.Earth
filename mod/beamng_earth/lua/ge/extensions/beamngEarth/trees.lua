@@ -22,7 +22,8 @@ M.TILE_CAP = { { 300, 6000 }, { 700, 2400 }, { 1500, 900 }, { 1e9, 400 } }
 -- with a door on every house out to 300 m): the tile distance (m) beyond which a group is not shown
 -- rocks only over the fine ground (farfield.NEAR_RADII: L0 within 400 m): beyond it the coarser tiles round off the
 -- ridges and a rock placed on the real ground floated over the drawn one (Stelvio pass, the user's report 2026-10-17)
-M.GROUP_MAX_M = { shrub = 250, desert_shrub = 250, rock = 400, desert_rock = 400, cliff = 1500, door = 120, hydrant = 200, bin = 200, bench = 200, polelamp = 400,
+M.GROUP_MAX_M = { shrub = 250, desert_shrub = 250, rock = 400, desert_rock = 400, cliff = 1500, pylon = 1500, gantry = 800, sub_breaker = 400, sub_mast = 1000, sub_support = 300,
+  sub_transformer = 500, sub_fence = 200, door = 120, hydrant = 200, bin = 200, bench = 200, polelamp = 400,
   stop = 300, giveway = 300, signal = 500, fence = 150, wallsign_logistics = 800, wallsign_rentabox = 800, wallsign_lemon = 800, wallsign_turboburger = 500,
   speed30 = 300, speed40 = 300, speed50 = 300, speed60 = 300, speed70 = 300 }
 M.FOREST_NAME = 'bngEarthForest'      -- a prefix: small Forests from a pool ('bngEarthForest_<n>')
@@ -153,6 +154,16 @@ M.CATALOG = {
   polelamp = { { ECA .. 'buildings/electrical_pole_lamp', 1.1 } },
   streetlight = { { '/art/shapes/garage_and_dealership/Clutter/eca_lamppost', 9.0 } },
   pole = { { '/levels/automation_test_track/art/shapes/objects/s_powerpole_3wire', 9.2 } },
+  -- high-voltage lines' towers (server powerlines.py): the stock lattice tower (West Coast USA's is the same shape)
+  pylon = { { '/levels/automation_test_track/art/shapes/objects/pylon', 35.8 } },
+  -- substations (server powerlines.py): West Coast USA's switchgear (its yard's parts), the gantries the lines end at,
+  -- the chain-link fence around them (2.04 m panels)
+  gantry = { { WCA .. 'objects/substation_truss', 12.73 } },
+  sub_breaker = { { WCA .. 'objects/substation_circuitbreaker', 5.48 } },
+  sub_mast = { { WCA .. 'objects/substation_lightning', 25.29 } },
+  sub_support = { { WCA .. 'objects/substation_support', 4.94 } },
+  sub_transformer = { { WCA .. 'objects/substation_transformer', 6.18 } },
+  sub_fence = { { WCA .. 'objects/s_chainlink_old', 1.76 } },
   tropical = {
     { JRI .. 'trees/bush_tropical_1/tro_bush_huge', 5.5 }, { JRI .. 'trees/bush_tropical_2/tro_bush_2_small', 6.1 },
     { JRI .. 'trees/trees_tropical_2/tro_tree_2_filler', 20.2 }, { JRI .. 'trees/trees_tropical_1/tro_tree_1_huge', 20.6 },

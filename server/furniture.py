@@ -101,10 +101,12 @@ def wire_lines(poles):
 
 
 def wire_mesh(lines, origin):
-    """A mesh of the wires: two crossed ribbons per segment (seen from any side): (positions, tris, uvs)."""
+    """A mesh of the wires (each its points, or (points, half width): WIRE_R when not given): two crossed ribbons per
+    segment (seen from any side): (positions, tris, uvs)."""
     P, T = [], []
     ox, oy, oz = origin
     for line in lines:
+        line, r = line if isinstance(line, tuple) else (line, WIRE_R)
         for a, b in zip(line[:-1], line[1:]):
             d = b - a
             L = float(np.linalg.norm(d))
@@ -113,10 +115,10 @@ def wire_mesh(lines, origin):
             d /= L
             # (np.cross written out: the same products and differences, without its per-call cost)
             side = np.array([d[1] * 1.0 - d[2] * 0.0, d[2] * 0.0 - d[0] * 1.0, d[0] * 0.0 - d[1] * 0.0])
-            side = side / (np.linalg.norm(side) or 1.0) * WIRE_R
+            side = side / (np.linalg.norm(side) or 1.0) * r
             up = np.array([side[1] * d[2] - side[2] * d[1], side[2] * d[0] - side[0] * d[2],
                            side[0] * d[1] - side[1] * d[0]])
-            up = up / (np.linalg.norm(up) or 1.0) * WIRE_R
+            up = up / (np.linalg.norm(up) or 1.0) * r
             for v in (side, up):
                 i = len(P)
                 P += [a - v, b - v, b + v, a + v]
