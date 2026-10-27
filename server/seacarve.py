@@ -80,7 +80,9 @@ RIVER_DEM_STEP = 4          # river levels: the DEM every 4th pixel (~7.5 m), th
                             # samples (the flattened surface, not a bank),
 WIDE_RIVER_M = 120.0        # a flattened river this wide or more is tiles (area water), narrower Rivers
 OUTLINE_PAD_PX = 2          # the river mask spread this far past the river's water
-LINE_CELLS = 2              # stream / river lines from the 5 x 5 cells around (a way is owned by one cell)
+LINE_CELLS = 1              # stream / river lines from the 3 x 3 cells around: a line is in every cell it crosses
+                            # (owned by one); the 5 x 5 around fetched 16 more cells of water per raster on a
+                            # first visit (~50 for one road tile in a Pennsylvania town, 2026-10-27)
 LINE_STEP_PX = 4            # a level every 4 px (~7.5 m) along them
 LINE_PROBE_MAX_M = 15.0     # the level: the lowest DEM within half the width, at most this far
 LINE_DEPTH_M = (0.6, 3.0)   # the bed's depth in the middle: width / 6, clamped
@@ -507,7 +509,7 @@ class SeaCarver:
         held = np.isfinite(level)
         kmax = int(math.ceil(riverlines.WIDTH_MAX_M / 2 / px))
         o_dist = shore_steps(outline, min(kmax, 256)).astype(np.float32) * px if outline.any() else None
-        seen = set()
+        seen, lines = set(), []
         drawn = np.zeros((n, n), bool)
         for dy in range(-LINE_CELLS, LINE_CELLS + 1):
             for dx in range(-LINE_CELLS, LINE_CELLS + 1):
@@ -522,15 +524,17 @@ class SeaCarver:
                     if kind is None or bool(inter[i]) or gid in seen:
                         continue
                     seen.add(gid)
-                    for part in f.parts(i):
-                        for ring in part:
-                            mx, my = _merc(ring[:, 1], ring[:, 0])
-                            self._carve_line(np.stack([mx - ox, my - oy], -1), kind, ox, oy, n, px, depth, level,
-                                             held, drawn, o_dist)
+                    lines.append((gid, kind, [ring for part in f.parts(i) for ring in part]))
+        lines.sort(key=lambda r: r[0])      # (in id order: the same whichever cell met a line first)
+        for _gid, kind, rings in lines:
+            for ring in rings:
+                mx, my = _merc(ring[:, 1], ring[:, 0])
+                self._carve_line(np.stack([mx - ox, my - oy], -1), kind, ox, oy, n, px, depth, level,
+                                 held, drawn, o_dist)
         outline |= drawn
 
     def _river_line_px(self, x, y, ox, oy, n):
-        """The pixels the centrelines of class river (not streams) of the 5 x 5 cells around cross."""
+        """The pixels the centrelines of class river (not streams) of the cells around (LINE_CELLS) cross."""
         import riverlines
         out = np.zeros((n, n), bool)
         seen = set()
