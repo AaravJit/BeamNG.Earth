@@ -584,6 +584,28 @@ def profile(rails, ground, underpasses=()):
     return list(zip(zb, zgs))
 
 
+RAIL_TOP_M = BALLAST_H - SLEEPER_SINK + SLEEPER_H + RAIL_H    # the rails' top over the bed
+FLUSH_LIFT_M = 0.03         # m: the road's surface over the drawn ground (grading.ROAD_LIFT, a little under)
+FLUSH_GRADE = 1.0 / 60.0    # the track's ramp to and from a level crossing (a main line's 1.7 %) ...
+FLUSH_REACH_M = 40.0        # ... steeper when it would run longer than this (inside the 50 m the tiles look for roads)
+
+
+def _flush(s, zb, blk, zroad):
+    """Bed heights zb (at arcs s) lowered or raised so the rails' top meets the road at a level crossing (blk: the
+    points in a road's carriageway, zroad: the drawn ground there), on straight ramps (FLUSH_GRADE, at most
+    FLUSH_REACH_M long) either side: a real crossing's rails lie in the road's surface (the user, 2026-10-27: "make
+    road/rail crossings smooth like real ones"); they stood 0.6 m over the road at its edge. The same in every tile:
+    every crossing within FLUSH_REACH_M of a tile's points is among its crossers."""
+    sb = s[blk]
+    target = zroad + FLUSH_LIFT_M - RAIL_TOP_M
+    delta = target - zb[blk]
+    g = np.maximum(FLUSH_GRADE, np.abs(delta) / FLUSH_REACH_M)
+    d = np.abs(s[:, None] - sb[None, :]) * g[None, :]
+    low = np.min(np.where(delta[None, :] < 0, target[None, :] + d, np.inf), axis=1)
+    high = np.max(np.where(delta[None, :] > 0, target[None, :] - d, -np.inf), axis=1)
+    return np.minimum(np.maximum(zb, high), low)
+
+
 def _blocked(xy, z, crossers):
     """Per point of xy (bed heights z): inside a crossing road's carriageway (+ CROSSING_PAD_M) at grade: its nearest
     segment's start within CROSSING_DZ of the bed (earthfast.near_crossers)."""
@@ -857,7 +879,11 @@ def tile_mesh(frame, tx, ty, cells, ground, sign_style=None, far_ground=None):
         half_g = gauge(cls, sign_style) / 2 + RAIL_HEAD / 2
         top = zb + BALLAST_H
         if kind == "ground":
-            cut = _blocked(xy, zb, crossers) | ~inside
+            blk = _blocked(xy, zb, crossers)
+            if blk.any():           # (its rails flush with the road at a level crossing)
+                zb = _flush(s, zb, blk, np.asarray(ground(xy[blk]), np.float64))
+                top = zb + BALLAST_H
+            cut = blk | ~inside
             # the ballast's sides to the ground beside: wider where the bed stands high (a ramp's embankment)
             near = BALLAST_TOP_M + BALLAST_SLOPE * (BALLAST_H + BALLAST_FOOT_M)
             feet = []

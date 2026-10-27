@@ -128,6 +128,26 @@ class RailwayTest(unittest.TestCase):
         self.assertAlmostEqual([g[2] for g in got if g[0] == "id000"][0], 250.0, 0, "track through the short tunnel")
         self.assertLess(max(g[2] for g in got if g[0] == "id002"), 60.0, "a long tunnel left out")
 
+    def test_level_crossing_rails_meet_the_road_on_gentle_ramps(self):
+        """The rails' top is flush with the road where the track crosses it (they stood 0.6 m over it at its edge), and
+        the track ramps back to its own height at 1.7 %."""
+        s = np.arange(0.0, 200.0, 2.0)
+        zb = np.full(len(s), 10.0)
+        blk = (s >= 96) & (s <= 104)
+        z = railways._flush(s, zb, blk, np.full(int(blk.sum()), 10.0))
+        top = z + railways.RAIL_TOP_M
+        np.testing.assert_allclose(top[blk], 10.0 + railways.FLUSH_LIFT_M)
+        self.assertLessEqual(float(np.abs(np.diff(z) / np.diff(s)).max()), railways.FLUSH_GRADE + 1e-9)
+        self.assertEqual(float(z[0]), 10.0, "its own height away from the road")
+        P, T, UV, mats, M = railways.tile_mesh(FRAME, 0, 0, [features([[(0.0, 100.0), (250.0, 100.0)],
+                                                                       [(120.0, 0.0), (120.0, 250.0)]],
+                                                                      ["standard_gauge", "secondary"],
+                                                                      subtypes=["rail", "road"])], flat)
+        rails = P[np.unique(T[M == mats.index(railways.STEEL)])]
+        edge = rails[np.abs(rails[:, 0] - 120.0) < 8.0]
+        self.assertTrue(len(edge))
+        self.assertLess(float(edge[:, 2].max()), flat(edge[:1, :2])[0] + railways.FLUSH_LIFT_M + 0.08, "flush")
+
     def test_proposed_and_unbuilt_lines_are_not_drawn(self):
         """Overture's "unknown" rail with no abandoned or disused flag is OpenStreetMap's railway=proposed or
         construction (Link Union Station across US-101, 2026-10-27); a line under construction neither."""
