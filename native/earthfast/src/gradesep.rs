@@ -6,6 +6,7 @@
 use numpy::ndarray::Array2;
 use numpy::{IntoPyArray, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
+use std::collections::HashMap;
 
 const ROAD: i64 = 0;
 const RAIL: i64 = 1;
@@ -19,8 +20,11 @@ fn under(k: i64) -> bool {
 struct Lines<'a> {
     xy: numpy::ndarray::ArrayView2<'a, f64>,
     st: Vec<usize>,
-    arc: Vec<f64>, // per point: m along its line
+    arc: Vec<f64>,                               // per point: m along its line
+    ends: HashMap<(i64, i64), Vec<(usize, bool)>>, // (line, its last point) by ENDS_G grid square
 }
+
+const ENDS_G: f64 = 4.0; // m: the end points' grid (next(): tol at most this)
 
 impl<'a> Lines<'a> {
     fn new(xy: numpy::ndarray::ArrayView2<'a, f64>, starts: numpy::ndarray::ArrayView1<'a, i64>) -> Self {
@@ -31,7 +35,19 @@ impl<'a> Lines<'a> {
                 arc[k] = arc[k - 1] + (xy[[k, 0]] - xy[[k - 1, 0]]).hypot(xy[[k, 1]] - xy[[k - 1, 1]]);
             }
         }
-        Lines { xy, st, arc }
+        let mut ends: HashMap<(i64, i64), Vec<(usize, bool)>> = HashMap::new();
+        for l in 0..st.len().saturating_sub(1) {
+            if st[l + 1] < st[l] + 2 {
+                continue;
+            }
+            for last in [false, true] {
+                let k = if last { st[l + 1] - 1 } else { st[l] };
+                ends.entry(((xy[[k, 0]] / ENDS_G).floor() as i64, (xy[[k, 1]] / ENDS_G).floor() as i64))
+                    .or_default()
+                    .push((l, last));
+            }
+        }
+        Lines { xy, st, arc, ends }
     }
     fn n(&self) -> usize {
         self.st.len().saturating_sub(1)
@@ -76,11 +92,21 @@ impl<'a> Lines<'a> {
         let d = self.dir(l, last);
         let d = if last { d } else { (-d.0, -d.1) }; // the way out of l at that end
         let mut best: Option<(f64, usize, bool)> = None;
-        for o in 0..self.n() {
-            if o == l || under(kind[o]) || (kind[o] == RAIL) != (kind[l] == RAIL) || self.st[o + 1] < self.st[o] + 2 {
+        let (gx, gy) = ((p.0 / ENDS_G).floor() as i64, (p.1 / ENDS_G).floor() as i64);
+        let mut near: Vec<(usize, bool)> = Vec::new();
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                if let Some(v) = self.ends.get(&(gx + dx, gy + dy)) {
+                    near.extend(v.iter().copied());
+                }
+            }
+        }
+        near.sort_unstable();       // (in the order a loop over every line took them: ties go the same way)
+        for (o, oend) in near {
+            if o == l || under(kind[o]) || (kind[o] == RAIL) != (kind[l] == RAIL) {
                 continue;
             }
-            for oend in [false, true] {
+            {
                 let q = self.end(o, oend);
                 if (q.0 - p.0).hypot(q.1 - p.1) >= tol {
                     continue;
@@ -144,11 +170,24 @@ pub fn gradesep_candidates<'py>(
     let ln = Lines::new(xy, starts);
     let n = ln.n();
     // the longest deck ending at p (deck_ends rows x, y, its deck's length), 0 none
+    let tg = touch.max(1e-3);
+    let mut ends_grid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for k in 0..de.nrows() {
+        ends_grid.entry(((de[[k, 0]] / tg).floor() as i64, (de[[k, 1]] / tg).floor() as i64)).or_default().push(k);
+    }
     let deck_at = |p: (f64, f64)| {
-        (0..de.nrows())
-            .filter(|&k| (de[[k, 0]] - p.0).hypot(de[[k, 1]] - p.1) < touch)
-            .map(|k| de[[k, 2]])
-            .fold(0.0f64, f64::max)
+        let (gx, gy) = ((p.0 / tg).floor() as i64, (p.1 / tg).floor() as i64);
+        let mut best = 0.0f64;
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for &k in ends_grid.get(&(gx + dx, gy + dy)).map(|v| v.as_slice()).unwrap_or(&[]) {
+                    if (de[[k, 0]] - p.0).hypot(de[[k, 1]] - p.1) < touch {
+                        best = best.max(de[[k, 2]]);
+                    }
+                }
+            }
+        }
+        best
     };
     let gap_end: Vec<(f64, f64)> = (0..n)
         .map(|l| {
@@ -171,12 +210,56 @@ pub fn gradesep_candidates<'py>(
             rows.push([l as f64, l as f64, 0.0, 0.0, 1.0, 2.0]);
         }
     }
+    // the lines whose boxes may overlap, by a grid of their boxes (every pair was tried: 0.13 s a city cell, ~7000 lines)
+    const G: f64 = 128.0;
+    let cell_of = |v: f64| (v / G).floor() as i64;
+    let mut grid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for l in 0..n {
+        let (x0, y0, x1, y1) = boxes[l];
+        if !(x0.is_finite() && y0.is_finite()) || (x1 - x0) / G > 64.0 || (y1 - y0) / G > 64.0 {
+            continue;   // (no points, or a line some km across: in the "wide" list)
+        }
+        for gx in cell_of(x0)..=cell_of(x1) {
+            for gy in cell_of(y0)..=cell_of(y1) {
+                grid.entry((gx, gy)).or_default().push(l);
+            }
+        }
+    }
+    let wide: Vec<usize> = (0..n)
+        .filter(|&l| {
+            let (x0, y0, x1, y1) = boxes[l];
+            x0.is_finite() && y0.is_finite() && ((x1 - x0) / G > 64.0 || (y1 - y0) / G > 64.0)
+        })
+        .collect();
+    let mut stamp = vec![usize::MAX; n];
     for a in 0..n {
         let (ax0, ay0, ax1, ay1) = boxes[a];
         if ln.st[a + 1] < ln.st[a] + 2 {
             continue;
         }
-        for b in a + 1..n {
+        let mut near: Vec<usize> = Vec::new();
+        if (ax1 - ax0) / G > 64.0 || (ay1 - ay0) / G > 64.0 {
+            near.extend(a + 1..n);
+        } else {
+            for gx in cell_of(ax0)..=cell_of(ax1) {
+                for gy in cell_of(ay0)..=cell_of(ay1) {
+                    for &b in grid.get(&(gx, gy)).map(|v| v.as_slice()).unwrap_or(&[]) {
+                        if b > a && stamp[b] != a {
+                            stamp[b] = a;
+                            near.push(b);
+                        }
+                    }
+                }
+            }
+            for &b in &wide {
+                if b > a && stamp[b] != a {
+                    stamp[b] = a;
+                    near.push(b);
+                }
+            }
+            near.sort_unstable();       // (the pairs in the order the full loop took them)
+        }
+        for b in near {
             if ln.st[b + 1] < ln.st[b] + 2 || group[a] == group[b] || (under(kind[a]) && under(kind[b])) {
                 continue;
             }

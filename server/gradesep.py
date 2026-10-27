@@ -93,6 +93,19 @@ def _kind_half(feats, i):
     return 0, st[0] / 2.0
 
 
+def _row(feats, i):
+    """(kind, half width, _pieces) of feature i, (None, None, None) for no crossing line; kept on the decoded layer
+    (a cell's neighbours are read again for each of the nine cells round them)."""
+    memo = feats.__dict__.get("_gs_rows")
+    if memo is None:
+        memo = feats.__dict__.setdefault("_gs_rows", {})
+    got = memo.get(i)
+    if got is None:
+        kh = _kind_half(feats, i)
+        got = memo[i] = (None, None, None) if kh is None else (kh[0], kh[1], _pieces(feats, i, kh[0]))
+    return got
+
+
 def _pieces(feats, i, kind):
     """[(kind, from, to, deck)] of feature i by its map ranges: its ground pieces (kind), a railway's short tunnels
     (2), a road's (3: an underpass if a line crosses over it close above, _underpasses), and its bridges (deck True:
@@ -149,10 +162,9 @@ def _spans(md, key, feats):
     lines, kinds, halves, groups, owner, decks = [], [], [], [], [], []
     enu = {}                        # id(feats) -> its coordinates in frame (one conversion a layer)
     for g, (fid, f, i) in enumerate(rows):
-        kh = _kind_half(f, i)
-        if kh is None:
+        kind, half, pieces = _row(f, i)
+        if kind is None:
             continue
-        kind, half = kh
         allxy = enu.get(id(f))
         if allxy is None:
             e, n, _ = frame.geodetic_to_enu(f.lonlat[:, 1], f.lonlat[:, 0], 0.0)
@@ -161,7 +173,7 @@ def _spans(md, key, feats):
             for ring in part:
                 if len(ring) < 2:
                     continue
-                for k, a, b, deck in _pieces(f, i, kind):
+                for k, a, b, deck in pieces:
                     xy = ring if (a, b) == (0.0, 1.0) else _cut(ring, a, b)
                     if len(xy) < 2:
                         continue
