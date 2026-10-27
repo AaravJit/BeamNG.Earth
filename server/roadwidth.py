@@ -35,6 +35,7 @@ END_SKIP = 10.0         # m kept clear of each end of a road (junctions)
 REACH = 25.0            # m searched each side
 NEAR_M = REACH + 10.0   # m round a road the cells whose buildings it is measured against
 COMBOS = 32             # sets of cells' walls kept (roads near a cell's edge)
+NEAR_STEP_M = 200.0     # m between a road's points its cells are found round
 MIN_SAMPLES = 4
 WALLED = 0.6            # share of cross-sections with a building on both sides
 AGREE = 0.3             # IQR / median at most this
@@ -338,11 +339,14 @@ class RoadWidths:
         or, near a cell's edge, those of the cells there in the first one's frame (kept for the COMBOS last used).
         Each road read the buildings of the 8 cells around its middle's too: ~75 cells of buildings for one road
         tile's planning on a first visit to a Pennsylvania town, 2026-10-27; a width needs the walls within REACH."""
-        lat, lon = ll[:, 1], ll[:, 0]
-        dlat = NEAR_M / 111320.0
+        # (the cells along it: every NEAR_STEP_M of it; its box's cells were a grid of them for a long rural road)
+        seg = np.hypot(np.diff(ll[:, 1]) * 111320.0, np.diff(ll[:, 0]) * 111320.0 * np.cos(np.radians(ll[:-1, 1])))
+        s = np.r_[0.0, np.cumsum(seg)]
+        t = np.r_[np.arange(0.0, s[-1], NEAR_STEP_M), s[-1]] if s[-1] > 0 else np.zeros(1)
+        lat, lon = np.interp(t, s, ll[:, 1]), np.interp(t, s, ll[:, 0])
+        dlat = (NEAR_M + NEAR_STEP_M / 2) / 111320.0
         dlon = dlat / max(0.05, float(np.cos(np.radians(np.mean(lat)))))
-        keys = sorted(mapcells.cells_for_bbox(float(lat.min()) - dlat, float(lon.min()) - dlon,
-                                              float(lat.max()) + dlat, float(lon.max()) + dlon), key=str)
+        keys = sorted(mapcells.cells_near_points(lat, lon, dlat, dlon), key=str)
         if len(keys) == 1:
             return self._walls(keys[0])
         ck = tuple(str(k) for k in keys)
