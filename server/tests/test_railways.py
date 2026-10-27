@@ -200,5 +200,161 @@ class RailwayTest(unittest.TestCase):
             self.assertIn("rail", roads.shape_files(1, 0, 0))
 
 
+
+class RoadUnderpassTest(unittest.TestCase):
+    """A tunnel flag on the lower road must also keep the railway above it open."""
+
+    def setUp(self):
+        railways._GROUND_MEMO.clear()
+
+    def tearDown(self):
+        railways._GROUND_MEMO.clear()
+
+    def features(self, split=False, tunnel=True, parallel=False):
+        track = [[(-200, 100), (120, 100)], [(120, 100), (450, 100)]] if split else [[(-200, 100), (450, 100)]]
+        road = [(110, 90), (130, 90)] if parallel else [(120, 90), (120, 110)]
+        return features(track + [road], ["standard_gauge"] * len(track) + ["secondary"],
+                        subtypes=["rail"] * len(track) + ["road"],
+                        flags=[(len(track), "is_tunnel")] if tunnel else [])
+
+    def test_span_replaces_embankment_and_has_clearance(self):
+        f = self.features()
+        box = roads.tile_bbox(0, 0)
+        tunnels = railways.road_underpasses(FRAME, [f], box)
+        parts = railways.parts(FRAME, [f], box)
+        self.assertTrue(any(p[2] == "bridge" for p in parts))
+        prof = railways.profile(parts, flat, tunnels)
+        for (_, _, kind, xy), (z, _) in zip(parts, prof):
+            self.assertLessEqual(float((np.abs(np.diff(z)) / np.diff(railways._arc(xy))).max()),
+                                 railways.GRADE + 1e-6)
+            if kind == "bridge":
+                self.assertGreaterEqual(float(z.min() + railways.BALLAST_H - railways.DECK_D),
+                                        10 + railways.UNDERPASS_CLEAR_M - 0.5)
+        P, T, _uv, _mats, _M = railways.tile_mesh(FRAME, 0, 0, [f], flat)
+        # Check all vertices belonging to triangles over the actual lower lane,
+        # including ballast skirts, the concrete deck, and support piers.
+        tri = P[T]
+        x = float(tunnels[0][0][:, 0].mean())
+        over = (tri[:, :, 0].min(1) < x + 3) & (tri[:, :, 0].max(1) > x - 3)
+        self.assertTrue(over.any())
+        self.assertGreater(float(tri[over, :, 2].min()), 10 + railways.UNDERPASS_CLEAR_M - 0.1)
+
+    def test_no_bridge_for_level_crossing_or_parallel_track(self):
+        for f in (self.features(tunnel=False), self.features(parallel=True)):
+            self.assertTrue(all(p[2] == "ground" for p in railways.parts(FRAME, [f], roads.tile_bbox(0, 0))))
+
+    def test_tunnel_ending_beside_track_does_not_create_a_bridge(self):
+        f = features([[(-200, 100), (450, 100)], [(120, 80), (120, 94)]],
+                     ["standard_gauge", "secondary"], subtypes=["rail", "road"], flags=[(1, "is_tunnel")])
+        self.assertTrue(all(p[2] == "ground" for p in railways.parts(FRAME, [f], roads.tile_bbox(0, 0))))
+
+    def test_feature_split_and_adjacent_tiles_keep_the_same_span(self):
+        f = self.features(split=True)
+        a = railways.parts(FRAME, [f], (0, 0, 256, 256))
+        b = railways.parts(FRAME, [f, f], (256, 0, 512, 256))
+        spans_a = [(p[0], p[3]) for p in a if p[2] == "bridge"]
+        spans_b = [(p[0], p[3]) for p in b if p[2] == "bridge"]
+        self.assertEqual(len(spans_a), 2)
+        self.assertEqual(len(spans_a), len(spans_b))
+        for (fa, xa), (fb, xb) in zip(spans_a, spans_b):
+            self.assertEqual(fa, fb)
+            np.testing.assert_array_equal(xa, xb)
+        np.testing.assert_allclose(spans_a[0][1][-1], spans_a[1][1][0], atol=1e-8)
+
+    def test_grading_keeps_lower_road_at_its_floor(self):
+        from types import SimpleNamespace
+        import grading
+        f = self.features()
+        md = SimpleNamespace(cell=lambda *a, **kw: SimpleNamespace(layers={"roads": f}))
+        def embankment(la, lo):
+            e, _, _ = FRAME.geodetic_to_enu(np.asarray(la), np.asarray(lo), 0.0)
+            return np.where(np.abs(e - 120.0) < 7.0, 10.0, 15.0)
+        g = grading.Grader(FRAME, md, embankment)
+        ring = f.parts(len(f) - 1)[0][0]
+        e, n, _ = FRAME.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
+        xy = np.c_[e, n]
+        line = railways._resample(xy, 1.0)
+        la, lo, _ = FRAME.enu_to_geodetic(line[:, 0], line[:, 1], 0.0)
+        z = g.apply(la, lo, np.full(len(la), 10.0), grading.ROAD_LIFT)
+        self.assertLess(float(np.abs(z - (10 + grading.ROAD_LIFT)).max()), 0.2,
+                        "rail approach grading must not refill the lower road")
+
+
+
+class UnderpassNeighbourTest(unittest.TestCase):
+    """Only the track actually over the road gets a span and its clearance."""
+
+    def test_non_crossing_neighbour_stays_on_ground(self):
+        for y in (114.0, 122.0):
+            with self.subTest(neighbour_y=y):
+                f = features([[(-200, 100), (450, 100)], [(-200, y), (450, y)],
+                              [(120, 90), (120, 110)]],
+                             ["standard_gauge", "standard_gauge", "secondary"],
+                             subtypes=["rail", "rail", "road"], flags=[(2, "is_tunnel")])
+                box = roads.tile_bbox(0, 0)
+                parts = railways.parts(FRAME, [f], box)
+                neighbour = str(f.ids[1])
+                selected = [p for p in parts if p[0] == neighbour]
+                self.assertTrue(selected)
+                self.assertTrue(all(p[2] == "ground" for p in selected))
+                profiles = railways.profile(parts, flat, railways.road_underpasses(FRAME, [f], box))
+                for part, (bed, _) in zip(parts, profiles):
+                    if part[0] == neighbour:
+                        np.testing.assert_allclose(bed, 10.0, atol=1e-6)
+
+    def test_existing_neighbour_bridge_keeps_its_height(self):
+        f = features([[(-200, 100), (450, 100)], [(-200, 114), (450, 114)],
+                      [(120, 90), (120, 110)]],
+                     ["standard_gauge", "standard_gauge", "secondary"],
+                     subtypes=["rail", "rail", "road"], flags=[(1, "is_bridge"), (2, "is_tunnel")])
+        box = roads.tile_bbox(0, 0)
+        parts = railways.parts(FRAME, [f], box)
+        profiles = railways.profile(parts, flat, railways.road_underpasses(FRAME, [f], box))
+        neighbour = [(part, bed) for part, (bed, _) in zip(parts, profiles) if part[0] == str(f.ids[1])]
+        self.assertTrue(neighbour)
+        for part, bed in neighbour:
+            self.assertEqual(part[2], "bridge")
+            np.testing.assert_allclose(bed, 10.0, atol=1e-6,
+                                       err_msg="a tunnel under a different track must not raise this bridge")
+
+    def test_track_connected_far_away_does_not_get_another_span(self):
+        # Both parallel legs belong to one feature, joined 330 m from the crossing.
+        f = features([[(-200, 100), (450, 100), (450, 122), (-200, 122)],
+                      [(120, 90), (120, 110)]], ["standard_gauge", "secondary"],
+                     subtypes=["rail", "road"], flags=[(1, "is_tunnel")])
+        spans = [p[3] for p in railways.parts(FRAME, [f], roads.tile_bbox(0, 0)) if p[2] == "bridge"]
+        self.assertTrue(spans)
+        self.assertTrue(all(float(xy[:, 1].max()) < 101 for xy in spans),
+                        "the returning leg beside the tunnel is not another crossing")
+
+    def test_span_continues_across_a_feature_split_beside_crossing(self):
+        for split in (110, 114, 120, 126, 130):
+            with self.subTest(split=split):
+                f = features([[(-200, 100), (split, 100)], [(split, 100), (450, 100)],
+                              [(120, 90), (120, 110)]],
+                             ["standard_gauge", "standard_gauge", "secondary"],
+                             subtypes=["rail", "rail", "road"], flags=[(2, "is_tunnel")])
+                a = [p for p in railways.parts(FRAME, [f], roads.tile_bbox(0, 0)) if p[2] == "bridge"]
+                b = [p for p in railways.parts(FRAME, [f, f], roads.tile_bbox(1, 0)) if p[2] == "bridge"]
+                self.assertEqual({p[0] for p in a}, {str(f.ids[0]), str(f.ids[1])})
+                self.assertEqual(len(a), len(b))
+                for pa, pb in zip(a, b):
+                    self.assertEqual(pa[:3], pb[:3])
+                    np.testing.assert_array_equal(pa[3], pb[3])
+                np.testing.assert_allclose(a[0][3][-1], a[1][3][0], atol=1e-6)
+
+    def test_two_tracks_really_crossing_the_tunnel_both_get_clearance(self):
+        f = features([[(-200, 100), (450, 100)], [(-200, 108), (450, 108)],
+                      [(120, 90), (120, 118)]],
+                     ["standard_gauge", "standard_gauge", "secondary"],
+                     subtypes=["rail", "rail", "road"], flags=[(2, "is_tunnel")])
+        box = roads.tile_bbox(0, 0)
+        parts = railways.parts(FRAME, [f], box)
+        profiles = railways.profile(parts, flat, railways.road_underpasses(FRAME, [f], box))
+        raised = {part[0] for part, (bed, _) in zip(parts, profiles)
+                  if part[2] == "bridge" and float(bed.max()) > 14.0}
+        self.assertEqual(raised, {str(f.ids[0]), str(f.ids[1])})
+
+
 if __name__ == "__main__":
     unittest.main()
