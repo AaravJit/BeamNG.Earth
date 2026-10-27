@@ -1,7 +1,7 @@
 """build_night_windows.py: the buildings' lit windows at night (nightlights.lua turns them on after dusk), two emissive
 maps beside the building materials (mod/.../art/shapes/beamngEarth/):
 
-  bne_facade_night_e.png  the plaster window sheet (m_highrise_plaster, bne_bld_facade): about half its windows lit,
+  bne_facade_night_e.png  the plaster window sheet (m_highrise_plaster, bne_bld_facade): about 40 % of its windows lit (West Coast USA at night: most of its windows dark),
                           each a room's light (warm, now and then cool white), brighter toward the ceiling, through
                           the curtains the sheet draws (the stock map lights only one row of it, four windows)
   bne_office_night_e.png  the metal sheet (offices' curtain walls and shopfronts, bne_bld_office / bne_bld_shop): the
@@ -31,9 +31,9 @@ METAL_E = "assets/materials/trim/metal/t_highrise_metal/t_highrise_metal_e.color
 # open (black) windows buildings.py never uses.
 OPENINGS = [
     [((80, 26, 198, 236), 1), ((330, 26, 446, 236), 0), ((578, 26, 988, 236), 1)],
-    [((52, 306, 202, 460), 1), ((308, 306, 458, 460), 0), ((566, 306, 716, 460), 1), ((822, 306, 972, 460), 1)],
+    [((52, 306, 202, 460), 1), ((308, 306, 458, 460), 0), ((566, 306, 716, 460), 0), ((822, 306, 972, 460), 1)],
     [((60, 566, 146, 716), 1), None, ((466, 566, 554, 716), 0), ((670, 566, 756, 716), 1), None],
-    [((46, 814, 154, 946), 0), ((252, 814, 360, 946), 1), ((458, 814, 566, 946), 1), ((662, 814, 770, 946), 0),
+    [((46, 814, 154, 946), 0), ((252, 814, 360, 946), 1), ((458, 814, 566, 946), 0), ((662, 814, 770, 946), 0),
      ((866, 814, 974, 946), 1)],
 ]
 WARM = (1.0, 0.70, 0.38)       # incandescent / warm LED, ~2700 K

@@ -8,23 +8,24 @@ local M = {}
 M.CHECK_S = 1.0
 -- the materials and their night glow (emissive factor, nits: West Coast USA's highrise windows glow at 200)
 M.MATERIALS = {
-  bne_bld_facade = { '1 1 1', 260 },
+  bne_bld_facade = { '1 1 1', 200 },
   bne_bld_office = { '0.95 0.97 1', 150 },
   -- (shopfronts: their whole band lights up; at 320 nits, then 90, a grey-white strip along every street)
   bne_bld_shop = { '1 0.80 0.58', 30 },
   -- the street lamps' lenses (furniture.py G_LENS; tools/build_lamp_lens.py): sodium-warm, bright
-  bne_lamp_lens = { '1 0.78 0.48', 4000 },
+  bne_lamp_lens = { '1 0.66 0.33', 4000 },
 }
 
 -- The street lamps' light: a pool of LIGHTS_MAX spot lights (no shadows), every LIGHTS_S moved to the lamps nearest
 -- the camera within NEAR_M (their lenses: the road tiles' lamplens rows, furniture.py), pointing down. A moved light
 -- costs nothing new: the pool is made once (a few a frame) and only switched off by day. (After MihneaTeodorStoica's
 -- PR #340, which kept 24 point lights within 90 m.)
-M.LIGHTS_MAX = 24
+M.LIGHTS_MAX = 40
 M.LIGHTS_S = 0.25
-M.NEAR_M = 150
+M.NEAR_M = 180
 M.MAKE_PER_STEP = 4
-M.LIGHT = { range = 30, inner = 80, outer = 140, brightness = 6.0, color = '1 0.78 0.5 1', drop = 0.12 }
+-- (sodium orange, as West Coast USA's night streets)
+M.LIGHT = { range = 34, inner = 80, outer = 140, brightness = 8.0, color = '1 0.66 0.33 1', drop = 0.12 }
 
 local lastCheck = -1e9
 local lastLights = -1e9
