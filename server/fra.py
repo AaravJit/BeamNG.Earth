@@ -49,8 +49,32 @@ class Crossings:
         self.fetcher = fetcher
         self.mem = {}
         self.lock = threading.Lock()
+        self.pool = None
+        self.pending = {}                   # cell -> Future of a prefetch in flight
+
+    def prefetch(self, keys):
+        """Start reading cells keys in the background (a road tile's at its start: the request runs alongside the
+        tile's other fetches instead of after them)."""
+        from concurrent.futures import ThreadPoolExecutor
+        with self.lock:
+            if self.pool is None:
+                self.pool = ThreadPoolExecutor(2, thread_name_prefix="fra")
+            for k in keys:
+                if str(k) not in self.mem and str(k) not in self.pending:
+                    self.pending[str(k)] = self.pool.submit(self._cell, k)
 
     def cell(self, key):
+        """[(lat, lon, kit)] of map cell key's at-grade crossings, or None (not the US, or unreachable)."""
+        with self.lock:
+            f = self.pending.get(str(key))
+        if f is not None:
+            try:
+                return f.result()
+            except Exception:
+                return None
+        return self._cell(key)
+
+    def _cell(self, key):
         """[(lat, lon, kit)] of map cell key's at-grade crossings, or None (not the US, or unreachable)."""
         lon0, lat0, lon1, lat1 = (float(v) for v in key.bounds())
         if not in_us(0.5 * (lat0 + lat1), 0.5 * (lon0 + lon1)):
@@ -83,9 +107,12 @@ class Crossings:
                     os.replace(tmp, path)
             except Exception as e:      # unreachable / refused: the road classes' kits for now
                 log.debug("fra: %s: %s: %s", k, type(e).__name__, e)
+                with self.lock:
+                    self.pending.pop(k, None)
                 return None
         with self.lock:
             self.mem[k] = got
+            self.pending.pop(k, None)
         return got
 
     def kits(self, frame, keys):

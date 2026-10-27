@@ -465,6 +465,8 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
     # everything the tile will ask for, fetched at once (one after another, a fresh place's first tile took ~1 min)
     _s.md.warm(roadsmod.tile_needs(frame, tx, ty, buildings, _s.widths is not None,
                                    1 + seacarvemod.LINE_CELLS if _s.sea is not None else 0))
+    if getattr(_s, "fra", None) is not None:       # (the US's level crossings' devices, alongside)
+        _s.fra.prefetch(roadsmod.cells_of_tile(frame, tx, ty))
     g, _ = _s.anchor(aid, lat, lon)
     cells = [_s.md.cell(k, layers=("roads",), kind="demand").layers.get("roads")
              for k in roadsmod.cells_of_tile(frame, tx, ty)]
