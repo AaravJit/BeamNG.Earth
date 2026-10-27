@@ -564,7 +564,11 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
                                                        roadsmod.SOUND_GARAGE)
         oil_wells = oilwells.tile_wells(frame, tx, ty, elev)     # (the mod's pump jacks)
         import powerlines
-        powerlines.tile_lines(frame, tx, ty, _s.md, elev, props, wires)    # high-voltage towers and conductors
+        # high-voltage towers and conductors, on the ground as the DEM has it: graded heights at towers up to a span
+        # past the tile planned the grading of 12 more map cells per road tile (16 cells planned, 40 roads cells read
+        # for one Szeged tile against 1.6.3's 4 and 16; the grading only moves ground near roads, which towers keep off)
+        powerlines.tile_lines(frame, tx, ty, _s.md, lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)),
+                              props, wires)
         import industry
         garage_sound = (garage_sound + industry.refinery_sound_rows(frame, tx, ty, _s.md, elev)
                         + industry.power_plant_sound_rows(frame, tx, ty, _s.md, elev))
