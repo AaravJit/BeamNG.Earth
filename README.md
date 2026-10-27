@@ -288,6 +288,7 @@ The repository contains only code; all map data is downloaded at runtime and cac
 - Roads, buildings, water and places: Overture Maps / OpenStreetMap contributors (lane counts, widths and speed limits from OpenStreetMap via OSM US Layercake); trees from a
   canopy height model; airports from OurAirports.
 - Oil wells and refineries: OpenStreetMap contributors (ODbL; the bundled `oil_wells.npz` and `refineries.npz`).
+- Railways: OpenStreetMap contributors (ODbL; railway tags, rebuilt weekly from the planet by the [BeamNG.Earth-data](https://github.com/TecnaGamer/BeamNG.Earth-data) repo's GitHub Action); US level crossings: the Federal Railroad Administration's Highway-Rail Crossing Inventory (public domain).
 - Climate zones (the forest sounds' set): Beck et al. (2023), High-resolution (1 km) Köppen-Geiger maps for
   1901–2099, Scientific Data 10, 724 (CC BY 4.0).
 Each source's terms apply to the downloaded data; the in-game window shows the attribution line.
