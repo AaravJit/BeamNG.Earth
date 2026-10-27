@@ -76,6 +76,15 @@ class BridgeLiftsTest(unittest.TestCase):
         # alone (no chain), a short part is no abutment of a span
         self.assertEqual(grading.bridge_lifts(stub, [stub], under, lambda xy: np.full(len(xy), FLAT)), [])
 
+    def test_railway_by_the_end_still_counts(self):
+        # (a track 3 m from an abutment is still crossed over: a road deck never meets a railway at grade, GitHub #324)
+        line = np.c_[np.linspace(0, 70, 36), np.zeros(36)]
+        track = [np.array([[3.0, -50], [3, 50]])]
+        out = grading.bridge_lifts(line, [line], [], lambda xy: np.full(len(xy), FLAT), rail_lines=track)
+        self.assertEqual(len(out), 2)
+        near = [lift for end, lift in out if end[0] < 1][0]
+        self.assertAlmostEqual(near, roads.DECK_ROAD_CLEAR + grading.APPROACH_MARGIN_M, places=6)
+
     def test_long_viaduct_not_raised(self):
         line = np.c_[np.linspace(-400, 400, 201), np.zeros(201)]
         ground = [np.array([[0.0, -50], [0, 50]])]               # a street under the middle of an 800 m viaduct

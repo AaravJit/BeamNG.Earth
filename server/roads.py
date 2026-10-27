@@ -2440,6 +2440,16 @@ AT_GRADE_REACH_M = 12.0     # high over it is a junction at grade (the intersect
 CHAIN_CELLS = 12        # map cells read at most to close one bridge chain
 
 
+def _rail_drawn(feats, i):
+    """Is feature i a railway line drawn on the map (railways.DRAWN, not abandoned)?"""
+    sub = feats.attrs.get("subtype")
+    if sub is None or str(sub[i]) != "rail":
+        return False
+    import railways
+    cls = feats.attrs.get("class")
+    return (str(cls[i]) if cls is not None else "unknown") in railways.DRAWN and not railways._gone(feats, i)
+
+
 def _clearance_deficits(lines, zs, crossings):
     """(part, usable m) below the road target in a modelled crossing corridor.
 
@@ -2689,6 +2699,18 @@ class BridgeProfiles:
                         e, n = mapgeom.enu_xy(feats, self.frame, ring)
                         lines.append(np.stack([e, n], axis=1))
                     roads_.append(((fid, "g"), lines))
+                elif _rail_drawn(feats, i):
+                    # a railway on the ground: the decks over it keep their headroom too (GitHub #324: a road bridge
+                    # lay on the tracks; only roads under a deck were counted)
+                    import railways
+                    lines = []
+                    for kind, rings in railways._pieces(feats, i):
+                        if kind == "ground":
+                            for ring in rings:
+                                e, n = mapgeom.enu_xy(feats, self.frame, ring)
+                                lines.append(np.stack([e, n], axis=1))
+                    if lines:
+                        roads_.append(((fid, "r"), lines))
         got = (parts, roads_)
         with self.lock:
             if len(cache) > 64:
@@ -2748,9 +2770,14 @@ class BridgeProfiles:
     def _solve(self, comp, pool, ground):
         """Deck heights of the chain comp (keys of pool)."""
         lines = [pool[k][1] for k in comp]
-        gl = [g for v in ground.values() for g in v]
+        gl = [g for k, v in ground.items() if k[1] == "g" for g in v]
+        rl = [g for k, v in ground.items() if k[1] == "r" for g in v]
         cr = _crossings(lines, gl)
         road_z = self._ground(np.array([c[2] for c in cr])) if cr else []
+        # (the railways under the chain: the same headroom, given as their own clearance, so never a junction at
+        # grade by an abutment as a road can be)
+        rcr = _crossings(lines, rl) if rl else []
+        rail_z = self._ground(np.array([c[2] for c in rcr])) if rcr else []
         import bridgetypes
         try:
             nav = bridgetypes.nav_clearance(self.frame, lines)
@@ -2758,9 +2785,10 @@ class BridgeProfiles:
             log.debug("nav clearance: %s: %s", type(ex).__name__, ex)
             nav = 0.0
         required = [(c[0], c[1], z) for c, z in zip(cr, road_z)]
-        zs = deck_profile(lines, self._ground, required + self._water(lines, nav),
+        rails = [(c[0], c[1], z, DECK_ROAD_CLEAR) for c, z in zip(rcr, rail_z)]
+        zs = deck_profile(lines, self._ground, required + rails + self._water(lines, nav),
                           levels=[pool[k][3] for k in comp], widths=[pool[k][0].width for k in comp])
-        deficits = _clearance_deficits(lines, zs, required)
+        deficits = _clearance_deficits(lines, zs, required + [r[:3] for r in rails])
         if deficits:
             log.warning("bridge clearance below %.1f m target: %s; abutment/grade or map constraints prevent full headroom",
                         MIN_BRIDGE_HEADROOM_M, [(comp[i], round(h, 2)) for i, h in deficits[:3]])
