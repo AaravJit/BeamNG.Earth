@@ -5010,6 +5010,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(dsm::dsm_ground, m)?)?;
     m.add_function(wrap_pyfunction!(dsm::fill_holes, m)?)?;
     m.add_function(wrap_pyfunction!(roadgeom::dedupe_polyline, m)?)?;
+    m.add_function(wrap_pyfunction!(roadgeom::curve_deck, m)?)?;
     m.add_function(wrap_pyfunction!(shore::shore_steps, m)?)?;
     m.add_function(wrap_pyfunction!(shore::carve_segments, m)?)?;
     m.add_function(wrap_pyfunction!(vegmask::mask_polys, m)?)?;
@@ -5105,6 +5106,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(photofill::fill_photo, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 82)?;
+    m.add("VERSION", 83)?;
     Ok(())
 }

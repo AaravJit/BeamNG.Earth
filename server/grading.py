@@ -1714,9 +1714,10 @@ def bridge_lifts(line, all_bridges, ground_lines, z_at, chain=None, rail_lines=(
     zu = z_at(np.array([c[2] for c in cr], np.float64).reshape(-1, 2)) if cr else np.zeros(0)
     arcs = np.array([c[1] for c in cr], np.float64)
 
-    def joined_at(end):
+    def joined_at(end, own=None):
+        own = line if own is None else own
         for other in all_bridges:
-            if other is line or (len(other) == len(line) and np.array_equal(other, line)):
+            if other is own or (len(other) == len(own) and np.array_equal(np.asarray(other)[:, :2], own[:, :2])):
                 continue
             o = np.asarray(other, np.float64)
             if min(np.hypot(*(o[0, :2] - end)), np.hypot(*(o[-1, :2] - end))) < 0.75:
@@ -1731,9 +1732,19 @@ def bridge_lifts(line, all_bridges, ground_lines, z_at, chain=None, rail_lines=(
     pts = np.array([c[2] for c in cr], np.float64)[under].reshape(-1, 2)
     # (the crossings under the rest of its chain, by their distance from the abutment: Overture splits a bridge where
     # other ways meet it, and the road under it may pass under the next part, GitHub #138)
+    # (a road meeting a part's free end is a junction at grade there, as for the line itself: the trunk's own next
+    # carriageway at the far abutment of its chain counted as a road under it and raised a residential bridge joined
+    # to the chain 9.7 m, the trunk deck climbing 10 m in 20 m to it, US-24 near Buena Vista CO, 2026-10-27)
     more = []
     for part in (chain or ()):
-        for c in roadsmod._crossings([part], list(ground_lines) + list(rail_lines)):
+        part = np.asarray(part, np.float64)[:, :2]
+        sp = float(np.hypot(*np.diff(part, axis=0).T).sum())
+        pj = (joined_at(part[0], part), joined_at(part[-1], part))
+        for c in roadsmod._crossings([part], list(ground_lines)):
+            a = float(c[1])
+            if (a >= APPROACH_MIN_CROSS_M or pj[0]) and (a <= sp - APPROACH_MIN_CROSS_M or pj[1]):
+                more.append(np.asarray(c[2], np.float64))
+        for c in roadsmod._crossings([part], list(rail_lines)) if rail_lines else ():
             more.append(np.asarray(c[2], np.float64))
     if more:
         mp = np.array(more, np.float64)
@@ -1796,6 +1807,8 @@ def underpass_offsets(lines, requirements):
         degree[b] += 1
     terminal = roadsmod._dijkstra(adj, {int(i): 0.0 for i in np.flatnonzero(degree == 1)})
     powers = [np.zeros(len(line)) for line in lines]
+    e_a = np.array([e[0] for e in edges], int)
+    e_b = np.array([e[1] for e in edges], int)
     source_distance = np.full(len(nodes), np.inf)
     for part, sc, depth in requirements:
         a, b, arc = edges[part]
@@ -1817,7 +1830,11 @@ def underpass_offsets(lines, requirements):
         # Reserve half the grade allowance for the original road grade and
         # blending at junctions. Connected ramps have room to spread the dip.
         run = depth * math.pi / UNDER_GRADE
-        for i, (ea, eb, s) in enumerate(edges):
+        # (only the edges the dip reaches: past UNDER_FLAT_M + run it adds exactly 0; every edge of the cell set for
+        # every crossing was ~15 s of downtown Los Angeles' 36 road tiles)
+        near = np.flatnonzero(np.minimum(distances[e_a], distances[e_b]) < UNDER_FLAT_M + run + 1.0)
+        for i in sorted(set(near.tolist()) | {part}):
+            ea, eb, s = edges[i]
             d = np.minimum(distances[ea] + s, distances[eb] + s[-1] - s)
             if i == part:
                 d = np.minimum(d, np.abs(s - sc))

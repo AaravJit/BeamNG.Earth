@@ -1401,7 +1401,16 @@ def _merge_overlaps(lines, zs, widths, levels, rounds=3):
             m = cnt[i] > 0
             new[i][m] = (zs[i][m] + acc[i][m]) / (1 + cnt[i][m])
             new[i] = np.maximum(new[i], zs[i] + up[i])
-            a, b, _ = edges[i]
+            a, b, es = edges[i]
+            # never raised faster than DECK_MAX_GRADE from an abutment (a road's bridge forking off uphill near one,
+            # taken for a carriageway beside it, pulled US-24's deck 1.1 m up in the first 3 m off its abutment near
+            # Buena Vista CO, 2026-10-27)
+            rise = np.full(len(es), np.inf)
+            if deg[a] == 1:
+                rise = np.minimum(rise, zs[i][0] + DECK_MAX_GRADE * es)
+            if deg[b] == 1:
+                rise = np.minimum(rise, zs[i][-1] + DECK_MAX_GRADE * (es[-1] - es))
+            new[i] = np.minimum(new[i], np.maximum(zs[i], rise))
             if deg[a] == 1:
                 new[i][0] = zs[i][0]
             if deg[b] == 1:
@@ -1667,43 +1676,14 @@ DECK_SIGMA_MAX = 40.0   # ... at most
 
 
 def _curve_deck(s, z, floor, cap):
-    """Project onto clearance/height bounds and bounded changes of grade.
-
-    Dykstra projections keep the result close to the solved profile. Endpoints
-    remain pinned. Infeasible map constraints retain the original profile.
-    Only bridge decks use this; tunnel and ground-road smoothing is unchanged.
-    """
-    ds = np.diff(s)
-    if len(z) < 3 or np.any(ds <= 0):
-        return z
-    lo, hi = np.minimum(floor, cap).copy(), cap.copy()
-    lo[[0, -1]] = hi[[0, -1]] = z[[0, -1]]
-    # A 300 m vertical radius limits the change of grade per metre.
-    limit = (ds[:-1] + ds[1:]) / 600.0
-    weights = np.c_[1 / ds[:-1], -1 / ds[:-1] - 1 / ds[1:], 1 / ds[1:]]
-    norm = (weights * weights).sum(1)
-    x = z.copy()
-    bound_correction = np.zeros_like(x)
-    corrections = np.zeros((len(limit), 3))
-    indices = np.arange(len(limit))[:, None] + np.arange(3)
-    for _ in range(2000):
-        y = x + bound_correction
-        x = np.clip(y, lo, hi)
-        bound_correction = y - x
-        for colour in range(3):
-            ids = np.arange(colour, len(limit), 3)
-            ix, w = indices[ids], weights[ids]
-            y = x[ix] + corrections[ids]
-            bend = (y * w).sum(1)
-            delta = (bend - np.clip(bend, -limit[ids], limit[ids])) / norm[ids]
-            projected = y - delta[:, None] * w
-            corrections[ids] = y - projected
-            x[ix] = projected
-        if (np.all(x >= lo - 1e-7) and np.all(x <= hi + 1e-7)
-                and np.all(np.abs((x[indices] * weights).sum(1)) <= limit + 1e-7)):
-            x[[0, -1]] = z[[0, -1]]
-            return x
-    return z
+    """The deck profile z (at arcs s) projected onto its bounds [min(floor, cap), cap] and a change of grade of at most
+    1/300 per metre (a 300 m vertical radius), its ends pinned; z itself when the map's constraints cannot all hold.
+    Only bridge decks use this (wyo-backroads, PR #374: I-80 over Otto Road's 6 % crests). Pure."""
+    import fast
+    fast.require(83, "curve_deck")      # (Dykstra's projections, up to 2000 rounds: ~170 ms a deck in Python)
+    f64 = np.float64
+    return fast._ef.curve_deck(np.ascontiguousarray(s, f64), np.ascontiguousarray(z, f64),
+                               np.ascontiguousarray(floor, f64), np.ascontiguousarray(cap, f64))
 
 
 def _no_sag(s, z):
@@ -1761,26 +1741,33 @@ def _smooth_pinned(z, step, sigma):
 def deck_heights(lines, end_z):
     """Deck heights of chained bridge parts. lines: polylines (k, 2) in metres (one per bridge part);
     parts sharing an end point (within 0.5 m) are joined. end_z(xy (m, 2)) -> heights of the ground at
-    the abutments (chain ends: points used by one part only). A point's height is the abutments'
-    heights weighted by 1 / their distance along the chain (between two abutments: a straight line).
-    Returns one height array per line. Pure given end_z."""
+    the abutments (chain ends: points used by one part only). A joint's height is the abutments' heights weighted by
+    1 / their distance along the chain, and each part runs straight between its two ends (between two abutments: a
+    straight line). Weighting every point, a part from an abutment to a joint of three parts rose ~16 % off its
+    abutment and flattened toward the joint, 38 % once smoothed: US-24's deck near Buena Vista CO, 1.1 m up in its
+    first 3 m, 2026-10-27. Returns one height array per line. Pure given end_z."""
     if not lines:
         return []
     edges, ez, dist = _end_dists(lines, end_z)
     out = []
+
+    def weighted(dk):
+        num, den = np.zeros(len(dk[0])), np.zeros(len(dk[0]))
+        for k, d in enumerate(dk):
+            ok = np.isfinite(d)
+            w = np.where(ok, 1.0 / np.maximum(d, 1e-6), 0.0)
+            num += w * np.where(ok, ez[k], 0.0)
+            den += w
+        return np.where(den > 0, num / np.maximum(den, 1e-12), np.nan)
     for a, b, s in edges:
         if not dist:                            # a closed loop: no abutment known
             out.append(np.full(len(s), np.nan))
             continue
-        num = np.zeros(len(s))
-        den = np.zeros(len(s))
-        for k, d in enumerate(dist):
-            dk = np.minimum(d[a] + s, d[b] + (s[-1] - s))
-            ok = np.isfinite(dk)
-            w = np.where(ok, 1.0 / np.maximum(dk, 1e-6), 0.0)
-            num += w * np.where(ok, ez[k], 0.0)
-            den += w
-        out.append(np.where(den > 0, num / np.maximum(den, 1e-12), np.nan))
+        za, zb = weighted([np.array([d[a], d[b]], np.float64) for d in dist])
+        if np.isfinite(za) and np.isfinite(zb) and s[-1] > 0:
+            out.append(za + (zb - za) * (s / s[-1]))
+        else:
+            out.append(weighted([np.minimum(d[a] + s, d[b] + (s[-1] - s)) for d in dist]))
     return out
 
 
