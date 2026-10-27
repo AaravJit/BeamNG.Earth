@@ -580,5 +580,32 @@
     ],
     "groundType": "METAL",
     "translucent": false
+  },
+  "bne_bridge_asphalt": {
+    "name": "bne_bridge_asphalt",
+    "mapTo": "bne_bridge_asphalt",
+    "class": "Material",
+    "version": 1.5,
+    "persistentId": "d364e483-ecf2-50c9-a4a9-b34d7ee84460",
+    "Stages": [
+      {
+        "baseColorMap": "/assets/materials/terrain/asphalt/asphalt/t_asphalt_b.png",
+        "normalMap": "/assets/materials/terrain/asphalt/asphalt/t_asphalt_nm.png",
+        "roughnessMap": "/assets/materials/terrain/asphalt/asphalt/t_asphalt_r.png",
+        "ambientOcclusionMap": "/assets/materials/terrain/asphalt/asphalt/t_asphalt_ao.png",
+        "metallicFactor": 0,
+        "baseColorFactor": [
+          0.52,
+          0.52,
+          0.53,
+          1
+        ]
+      },
+      {},
+      {},
+      {}
+    ],
+    "groundType": "ASPHALT",
+    "translucent": false
   }
 }

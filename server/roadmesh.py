@@ -428,6 +428,9 @@ def build(frame, chunks, elev, origin, lift=0.0, clip=None, follow=False, q=None
 DECK_DEPTH = 1.2        # m of deck slab under the surface
 DECK_SKIN = 0.01        # m the road mesh lies over a deck's top (the decal materials are translucent:
                         # 2026-10-11 a deck topped with road_asphalt_2lane was see-through)
+DECK_TOP = "bne_bridge_asphalt"     # the slab's top: plain opaque asphalt (the stock terrain's), under the road's own
+DECK_TOP_TILE_M = 4.0               # m of asphalt a texture tile covers across ...
+DECK_TOP_V = 10.0 / DECK_TOP_TILE_M  # ... and along (v: the road's, 10 m a tile)
 DECK_SIDE = "bne_bridge_concrete"  # the slab, girders, parapets, piers and tunnel tubes: plain concrete (the stock
                         # concrete_plain textures; West Coast USA's "sidewalk1" had drain covers in it, round marks
                         # along every parapet next to Mapillary's Queensboro Bridge, 2026-10-17)
@@ -489,6 +492,9 @@ def deck(chunks, origin, piers=(), context=(), beams=(), ground=()):
     if DECK_SIDE not in mats:
         mats.append(DECK_SIDE)
     side = mats.index(DECK_SIDE)                # opaque concrete; the asphalt is the road mesh's
+    if DECK_TOP not in mats:
+        mats.append(DECK_TOP)
+    top = mats.index(DECK_TOP)
     cr = [r for r in ribbons(list(context)) if r[5] is not None]
     cov_ctx = [(r, c) for r, c in zip(cr, context)] + _ground_carriageways(list(chunks) + list(ground))
     covered = _parapet_cover([(r, c) for r, c in rb], cov_ctx)
@@ -508,7 +514,11 @@ def deck(chunks, origin, piers=(), context=(), beams=(), ground=()):
         R = np.c_[er, z] - origin
         Lb, Rb = L - [0, 0, DECK_DEPTH], R - [0, 0, DECK_DEPTH]
         out_l = np.c_[u, np.zeros(k)]
-        quads(L, R, 0.0, 1.0, v, v, side, np.array([0.0, 0.0, 1.0]))
+        # (the top plain asphalt, under the road's own surface: where that does not cover it, between decks side by
+        # side, a median, a gore, the slab showed as pale concrete wedges, US-101 over the Los Angeles River)
+        across = float(np.median(np.hypot(*(el - er).T))) / DECK_TOP_TILE_M
+        quads(L, R, 0.0, across, v * DECK_TOP_V, v * DECK_TOP_V, top if not c.get("tunnel") else side,
+              np.array([0.0, 0.0, 1.0]))
         quads(L, Lb, 0.0, 0.1, v, v, side, out_l)
         quads(R, Rb, 0.0, 0.1, v, v, side, -out_l)
         quads(Lb, Rb, 0.0, 1.0, v, v, side, np.array([0.0, 0.0, -1.0]))
@@ -691,8 +701,25 @@ def _median_gaps(rb, context=()):
         both = (gl > 0) & (gr > 0)
         gl = np.where(both & (gl > gr), 0.0, gl)
         gr = np.where(both & (gr >= sides[0]), 0.0, gr)
-        out.append((gl, gr))
+        out.append((_fill_short(gl, MEDIAN_FILL_PTS), _fill_short(gr, MEDIAN_FILL_PTS)))
     return out
+
+
+MEDIAN_FILL_PTS = 8     # a median's run of points missing it between two that face it (this many or fewer) faces it too
+
+
+def _fill_short(g, k):
+    """g (per edge point the median gap, 0 none) with each run of zeros of k points or fewer between two nonzero
+    points filled by the interpolation of its ends: an edge facing a median now and then missed it a point at a time
+    and the slab's edge zigzagged, black teeth of the ground under the Four Level's 110 deck (Los Angeles, 2026-10-27)."""
+    g = np.asarray(g, np.float64).copy()
+    nz = np.flatnonzero(g > 0)
+    if len(nz) < 2:
+        return g
+    for a, b in zip(nz[:-1], nz[1:]):
+        if 1 < b - a <= k + 1:
+            g[a + 1:b] = np.interp(np.arange(a + 1, b), [a, b], [g[a], g[b]])
+    return g
 
 
 def _parapet_cover(rb, context=()):

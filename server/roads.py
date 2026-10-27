@@ -1385,16 +1385,38 @@ MERGE_TOUCH_M = 1.5     # m: decks side by side this close (edge to edge) are pu
                         # Bridge's upper roadway's two directions met at a 0.5-2 m step, a wall and stubs on it)
 
 
-def _merge_overlaps(lines, zs, widths, levels, rounds=3):
+def _ground_pins(lines, ground_lines):
+    """The joints of decks (lines' ends shared by two or more) a ground road of PIN_ROAD_M or more goes on from (an
+    end of it within PIN_M): _pin's points. Pure."""
+    ends = np.array([p[:2] for ln in lines for p in (ln[0], ln[-1])], np.float64).reshape(-1, 2)
+    if not len(ends) or not ground_lines:
+        return []
+    shared = [p for k, p in enumerate(ends) if (np.hypot(*(ends - p).T) < 0.5).sum() > 1]
+    if not shared:
+        return []
+    out = []
+    for gl in ground_lines:
+        gl = np.asarray(gl, np.float64)[:, :2]
+        if len(gl) < 2 or float(np.hypot(*np.diff(gl, axis=0).T).sum()) < PIN_ROAD_M:
+            continue
+        for e in (gl[0], gl[-1]):
+            for p in shared:
+                if np.hypot(*(e - p)) < PIN_M:
+                    out.append(p)
+    return out
+
+
+def _merge_overlaps(lines, zs, widths, levels, rounds=3, pins=None):
     """Heights of decks lying over each other (a ramp leaving the mainline, parallel carriageways of
     one level) pulled to their mean where their surfaces overlap, so a split is one surface until the
     decks part (2026-10-11 the user: exits and splits not clean). Parts are related when they share an
-    end node or a level and run within ~30 degrees of each other. Abutment ends stay. Pure."""
+    end node or a level and run within ~30 degrees of each other. Abutment ends stay (pins: deck_profile's). Pure."""
     nodes, edges, _ = _chain_graph(lines)
     deg = np.zeros(len(nodes), int)
     for a, b, _ in edges:
         deg[a] += 1
         deg[b] += 1
+    deg = _pin(nodes, deg, pins)
     n = len(lines)
     pairs = []
     # the related pairs (i, j), i then j ascending, as a double loop testing each would find them, one line against
@@ -1490,18 +1512,19 @@ def _merge_overlaps(lines, zs, widths, levels, rounds=3):
 DUAL_DECK_M = 30.0      # m: parts of one level parallel within this are one deck's carriageways (_merge_overlaps)
 
 
-def deck_profile(lines, ground_fn, crossings=(), clear=None, grade=None, lift=None, levels=None, widths=None):
+def deck_profile(lines, ground_fn, crossings=(), clear=None, grade=None, lift=None, levels=None, widths=None, pins=None):
     """deck_profile_once, then repeated with the deck-over-deck requirements: where two parts of
     different levels cross, the higher one clears the lower one's deck by `clear` (2026-10-11: crossing
-    decks clipped into each other). Pure given ground_fn."""
-    zs = deck_profile_once(lines, ground_fn, crossings, clear, grade, lift)
+    decks clipped into each other). pins: points where a ground road goes on from a joint of decks (abutments too: _pin).
+    Pure given ground_fn."""
+    zs = deck_profile_once(lines, ground_fn, crossings, clear, grade, lift, pins=pins)
     n_road = len(crossings)
     if levels is None or len(lines) < 2:
         return zs
     over = _deck_crossings(lines)
     stacks = _deck_stacks(lines, levels, widths) if widths is not None else []
     if not over and not stacks:
-        return _merge_overlaps(lines, zs, widths, levels) if widths is not None else zs
+        return _merge_overlaps(lines, zs, widths, levels, pins=pins) if widths is not None else zs
     arcs = [np.r_[0.0, np.cumsum(np.hypot(*np.diff(ln[:, :2], axis=0).T))] for ln in lines]
     for _ in range(4):
         extra = []
@@ -1515,12 +1538,12 @@ def deck_profile(lines, ground_fn, crossings=(), clear=None, grade=None, lift=No
         if not extra:
             break
         new = deck_profile_once(lines, ground_fn, list(crossings) + extra, clear, grade, lift, n_road=n_road,
-                                levels=levels)
+                                levels=levels, pins=pins)
         if all(np.allclose(a, b, atol=0.02, equal_nan=True) for a, b in zip(new, zs)):
             zs = new
             break
         zs = new
-    return _merge_overlaps(lines, zs, widths, levels) if widths is not None else zs
+    return _merge_overlaps(lines, zs, widths, levels, pins=pins) if widths is not None else zs
 
 
 STACK_STEP_M = 16.0     # m between the points where an upper deck must clear the one under it (_deck_stacks)
@@ -1616,7 +1639,8 @@ WATER_STEP_M = 16.0         # m between a wet run's clearance points
 NAV_RUN_M = 100.0           # a wet run this long takes the bridge's navigation clearance (NBI item 39)
 
 
-def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, lift=None, n_road=None, levels=None):
+def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, lift=None, n_road=None, levels=None,
+                      pins=None):
     """Deck heights (one array per part) of a bridge chain: deck_heights between the abutments, at
     least `lift` over the ground under it, and at least `clear` over each crossing road below
     ((part index, arc m, road height)), the requirement falling at `grade` along the chain; then
@@ -1626,7 +1650,7 @@ def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, li
     clear = DECK_ROAD_CLEAR if clear is None else clear
     grade = DECK_GRADE if grade is None else grade
     lift = DECK_CLEAR if lift is None else lift
-    zs = deck_heights(lines, ground_fn)
+    zs = deck_heights(lines, ground_fn, pins)
     if not zs:
         return zs
     nodes, edges, adj = _chain_graph(lines)
@@ -1636,6 +1660,7 @@ def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, li
     for a, b, _ in edges:
         deg[a] += 1
         deg[b] += 1
+    deg = _pin(nodes, deg, pins)
     # no steeper than DECK_MAX_GRADE from an abutment: a short bridge over a road cannot reach full
     # headroom (2026-10-11: such decks became steep wedges, "walls" in the user's screenshot)
     cap = [np.full(len(ln), np.inf) for ln in lines]
@@ -1808,7 +1833,25 @@ def _smooth_pinned(z, step, sigma):
     return out
 
 
-def deck_heights(lines, end_z):
+PIN_M = 1.0             # m: a ground road's end this near a joint of decks makes the joint an abutment (_pin) ...
+PIN_ROAD_M = 20.0       # ... a road at least this long (a shorter piece between decks is a gap in the map's bridge tags)
+
+
+def _pin(nodes, deg, pins):
+    """deg with the joints at pins made ends (1): abutments, held at the ground. Two motorway decks met at a node the
+    motorway went on from on the ground; taken for a joint of decks it stood 3.9 m over the road it ran on to, a wall
+    (the Four Level Interchange, Los Angeles, 2026-10-27). Pure."""
+    if pins is None or not len(pins):
+        return deg
+    P = np.asarray(pins, np.float64).reshape(-1, 2)
+    deg = deg.copy()
+    for i, nd in enumerate(nodes):
+        if deg[i] > 1 and (np.hypot(P[:, 0] - nd[0], P[:, 1] - nd[1]) < PIN_M).any():
+            deg[i] = 1
+    return deg
+
+
+def deck_heights(lines, end_z, pins=None):
     """Deck heights of chained bridge parts. lines: polylines (k, 2) in metres (one per bridge part);
     parts sharing an end point (within 0.5 m) are joined. end_z(xy (m, 2)) -> heights of the ground at
     the abutments (chain ends: points used by one part only). A joint's height is the abutments' heights weighted by
@@ -1818,7 +1861,7 @@ def deck_heights(lines, end_z):
     first 3 m, 2026-10-27. Returns one height array per line. Pure given end_z."""
     if not lines:
         return []
-    edges, ez, dist = _end_dists(lines, end_z)
+    edges, ez, dist = _end_dists(lines, end_z, pins)
     out = []
 
     def weighted(dk):
@@ -1841,7 +1884,7 @@ def deck_heights(lines, end_z):
     return out
 
 
-def _end_dists(lines, end_z):
+def _end_dists(lines, end_z, pins=None):
     """The chain of lines (joined at end points within 0.5 m): its edges (start node, end node, arc (k,)),
     the heights end_z gives at its ends (points of one line only) and per end the distance along the chain
     to every node. Pure given end_z."""
@@ -1864,6 +1907,7 @@ def _end_dists(lines, end_z):
         deg[b] += 1
         adj[a].append((b, s[-1]))
         adj[b].append((a, s[-1]))
+    deg = _pin(nodes, deg, pins)
     ends = [i for i in range(len(nodes)) if deg[i] == 1]
     ez = np.asarray(end_z(np.array([nodes[i] for i in ends]).reshape(-1, 2)), np.float64) if ends else np.zeros(0)
     import heapq
@@ -2886,7 +2930,8 @@ class BridgeProfiles:
         required = [(c[0], c[1], z) for c, z in zip(cr, road_z)]
         rails = [(c[0], c[1], z, DECK_ROAD_CLEAR) for c, z in zip(rcr, rail_z)]
         zs = deck_profile(lines, self._ground, required + rails + self._water(lines, nav),
-                          levels=[pool[k][3] for k in comp], widths=[pool[k][0].width for k in comp])
+                          levels=[pool[k][3] for k in comp], widths=[pool[k][0].width for k in comp],
+                          pins=_ground_pins(lines, gl))
         deficits = _clearance_deficits(lines, zs, required + [r[:3] for r in rails])
         if deficits:
             log.warning("bridge clearance below %.1f m target: %s; abutment/grade or map constraints prevent full headroom",
