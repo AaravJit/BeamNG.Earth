@@ -2545,13 +2545,9 @@ CHAIN_CELLS = 12        # map cells read at most to close one bridge chain
 
 
 def _rail_drawn(feats, i):
-    """Is feature i a railway line drawn on the map (railways.DRAWN, not abandoned)?"""
-    sub = feats.attrs.get("subtype")
-    if sub is None or str(sub[i]) != "rail":
-        return False
+    """Is feature i a railway line drawn on the map (railways.drawn: worn ones too)?"""
     import railways
-    cls = feats.attrs.get("class")
-    return (str(cls[i]) if cls is not None else "unknown") in railways.DRAWN and not railways._gone(feats, i)
+    return railways.drawn(feats, i) is not None
 
 
 def _clearance_deficits(lines, zs, crossings):

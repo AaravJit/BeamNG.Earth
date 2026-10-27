@@ -28,7 +28,7 @@ def rules(entries, kind="text"):
     if not entries:
         return mapgeom.RuleTable(np.zeros(0, np.int32), np.zeros(0, "<U8"), np.zeros(0, np.float32), np.zeros(0, np.float32))
     f = np.array([e[0] for e in entries], np.int32)
-    v = np.array([e[1] for e in entries], np.float32 if kind == "float" else "<U16")
+    v = np.array([e[1] for e in entries], np.float32 if kind == "float" else "<U32")
     a = np.array([e[2] if len(e) > 2 else 0.0 for e in entries], np.float32)
     b = np.array([e[3] if len(e) > 3 else 1.0 for e in entries], np.float32)
     return mapgeom.RuleTable(f, v, a, b)

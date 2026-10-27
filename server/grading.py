@@ -1268,8 +1268,7 @@ class Grader:
             import railways
             sub, rcls = f.attrs["subtype"], f.attrs.get("class")
             for i in range(len(f)):
-                if str(sub[i]) != "rail" or (str(rcls[i]) if rcls is not None else "unknown") not in railways.DRAWN \
-                        or railways._gone(f, i):
+                if str(sub[i]) != "rail" or railways.drawn(f, i) is None:
                     continue
                 for kind, rings in railways._pieces(f, i):
                     if kind == "bridge":

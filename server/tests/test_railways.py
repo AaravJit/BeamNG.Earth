@@ -112,17 +112,44 @@ class RailwayTest(unittest.TestCase):
         hw = roads.road_specs(f)[1].width / 2
         self.assertFalse(((x > 120 - hw) & (x < 120 + hw)).any(), "nothing on the road")
 
-    def test_short_tunnel_under_a_road_is_track_and_abandoned_lines_are_not(self):
+    def test_short_tunnel_under_a_road_is_track_and_abandoned_lines_are_worn(self):
         """The line under a road bridge tagged is_tunnel for 12 m (OSM's habit) is track; a long tunnel is left out;
-        an abandoned line beside it is not drawn (Joensuu, 2026-10-25)."""
+        an abandoned line beside it is drawn worn (Joensuu, 2026-10-25; the user, 2026-10-27: abandoned lines shown,
+        grown over)."""
         f = features([[(0.0, 100.0), (250.0, 100.0)], [(0.0, 110.0), (250.0, 110.0)], [(0.0, 150.0), (250.0, 150.0)]],
                      ["standard_gauge", "unknown", "standard_gauge"], subtypes=["rail"] * 3,
                      flags=[(0, "is_tunnel", 0.46, 0.51), (1, "is_abandoned"), (2, "is_tunnel", 0.2, 0.8)])
-        rails = railways.parts(FRAME, [f], roads.tile_bbox(0, 0))
+        worn = {}
+        rails = railways.parts(FRAME, [f], roads.tile_bbox(0, 0), worn=worn)
         got = [(fid, kind, float(np.ptp(xy[:, 0]))) for fid, _c, kind, xy in rails]
-        self.assertEqual(sorted(g[0] for g in got), ["id000", "id002", "id002"], "no abandoned line")
+        self.assertEqual(sorted(g[0] for g in got), ["id000", "id001", "id002", "id002"])
+        self.assertEqual(worn, {"id001": 2}, "the abandoned line worn")
+        self.assertEqual([c for fid, c, *_ in rails if fid == "id001"], ["standard_gauge"])
         self.assertAlmostEqual([g[2] for g in got if g[0] == "id000"][0], 250.0, 0, "track through the short tunnel")
         self.assertLess(max(g[2] for g in got if g[0] == "id002"), 60.0, "a long tunnel left out")
+
+    def test_proposed_and_unbuilt_lines_are_not_drawn(self):
+        """Overture's "unknown" rail with no abandoned or disused flag is OpenStreetMap's railway=proposed or
+        construction (Link Union Station across US-101, 2026-10-27); a line under construction neither."""
+        f = features([[(0.0, 100.0), (250.0, 100.0)], [(0.0, 120.0), (250.0, 120.0)], [(0.0, 140.0), (250.0, 140.0)],
+                      [(0.0, 160.0), (250.0, 160.0)]],
+                     ["unknown", "standard_gauge", "unknown", "standard_gauge"], subtypes=["rail"] * 4,
+                     flags=[(1, "is_under_construction"), (2, "is_disused"), (3, "is_disused")])
+        worn = {}
+        got = sorted({fid for fid, *_ in railways.parts(FRAME, [f], roads.tile_bbox(0, 0), worn=worn)})
+        self.assertEqual(got, ["id002", "id003"])
+        self.assertEqual(worn, {"id002": 1, "id003": 1})
+
+    def test_abandoned_line_loses_some_sleepers_the_same_in_every_tile(self):
+        xy = np.c_[np.arange(0.0, 60.0, 2.0), np.zeros(30)]
+        s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
+        u = np.tile([0.0, 1.0], (30, 1))
+        top = np.zeros(30)
+        full = railways._sleepers(s, xy, u, top, 0, 29)[0]
+        some = railways._sleepers(s, xy, u, top, 0, 29, railways.SLEEPERS_GONE[2])[0]
+        part = railways._sleepers(s, xy, u, top, 10, 29, railways.SLEEPERS_GONE[2])[0]
+        self.assertTrue(0.55 * len(full) < len(some) < 0.85 * len(full), (len(some), len(full)))
+        np.testing.assert_allclose(some[some[:, 0] >= s[10]], part, err_msg="a tile's run keeps the same ones")
 
     def test_short_piece_on_its_own_is_left_out(self):
         f = features([[(0.0, 100.0), (120.0, 100.0)], [(120.0, 100.0), (250.0, 100.0)], [(50.0, 130.0), (62.0, 130.0)]],

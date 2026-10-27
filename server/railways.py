@@ -17,8 +17,11 @@ import mapgeom
 import roads
 
 # the classes drawn (Overture's rail classes); trams lie in the street, subways underground, monorails and funiculars
-# on their own structures: none of those
-DRAWN = {"standard_gauge", "narrow_gauge", "light_rail", "unknown"}
+# on their own structures: none of those. Nor "unknown": OpenStreetMap's railway=proposed / construction (99 of 101
+# such ways not flagged abandoned or disused, in 3000 cached cells, 2026-10-27; the rest 2 trams and a miniature
+# line): Los Angeles' planned Link Union Station tracks lay across US-101 on the ground and the freeway was dipped
+# under a planned high-speed line's 2.6 km "viaduct", a 38 % step at Union Station
+DRAWN = {"standard_gauge", "narrow_gauge", "light_rail"}
 GAUGE_M = 1.435             # standard gauge between the rails' inner faces ...
 FI_GAUGE_M = 1.524          # ... the Finnish (Russian) broad gauge in the Finnish fork
 NARROW_GAUGE_M = 1.0
@@ -52,6 +55,12 @@ BALLAST = "bne_rail_ballast"
 CONCRETE = "bne_bridge_concrete"    # (roadmesh.DECK_SIDE: the decks and piers)
 SLEEPER = "bne_rail_sleeper"        # weathered concrete sleepers (bne_bridge_concrete stood out near-white, 2026-10-25)
 STEEL = "bne_rail_steel"            # rust-brown rails
+# per wear (wear()): a disused line's ballast weedy, an abandoned one's grown over, their rails and sleepers older, and
+# a share of an abandoned line's sleepers gone (SLEEPERS_GONE)
+BALLAST_WORN = (BALLAST, "bne_rail_ballast_weedy", "bne_rail_ballast_grown")
+STEEL_WORN = (STEEL, "bne_rail_steel_old", "bne_rail_steel_old")
+SLEEPER_WORN = (SLEEPER, "bne_rail_sleeper_old", "bne_rail_sleeper_old")
+SLEEPERS_GONE = (0.0, 0.0, 0.3)
 
 
 _GROUND_MEMO = {}            # anchor key -> {point (cm): z}: point_ground's heights, shared by the tiles of an anchor
@@ -158,8 +167,9 @@ def _box_hit(b, box):
     return not (b[2] < box[0] or b[0] > box[2] or b[3] < box[1] or b[1] > box[3])
 
 
-def parts(frame, cells, box, reach=REACH_M, clip=False):
-    """[(fid, class, kind, xy (k, 2))]: the rail parts ("ground" / "bridge"; tunnels left out) of the drawn classes
+def parts(frame, cells, box, reach=REACH_M, clip=False, worn=None):
+    """[(fid, class, kind, xy (k, 2))]: the rail parts ("ground" / "bridge"; tunnels left out) of the lines drawn
+    (drawn(); worn: a dict given here gets {fid: wear} of the worn ones)
     within reach of box (x0, y0, x1, y1), resampled every STEP_M from each part's start, each feature once (by id).
     Each part must intersect that window: a feature's bbox can cover far-away bridges or a long bend around it.
     clip: the ground parts cut to their points within reach of box (a segment of line runs on for km, and every one of
@@ -171,16 +181,20 @@ def parts(frame, cells, box, reach=REACH_M, clip=False):
         if feats is None or len(feats) == 0 or "subtype" not in feats.attrs:
             continue
         sub = feats.attrs["subtype"]
-        cls = feats.attrs.get("class")
         fb = feats.boxes(frame)
         for i in range(len(feats)):
             if str(sub[i]) != "rail":
                 continue
-            c = str(cls[i]) if cls is not None else "unknown"
             fid = str(feats.ids[i])
-            if c not in DRAWN or fid in seen or not _box_hit(fb[i], near) or _gone(feats, i):
+            if fid in seen or not _box_hit(fb[i], near):
                 continue
+            got = drawn(feats, i)
+            if got is None:
+                continue
+            c = got[0]
             seen.add(fid)
+            if worn is not None and got[1]:
+                worn[fid] = got[1]
             for kind, rings in _pieces(feats, i):
                 for ring in rings:
                     e, n = mapgeom.enu_xy(feats, frame, ring)
@@ -366,18 +380,42 @@ def _drop_stubs(rails):
     return [r for r, (a, _b, _s) in zip(rails, edges) if total[find(a)] >= MIN_LINE_M]
 
 
-GONE_FLAGS = ("is_abandoned", "is_disused")    # lines with no track left (or none in use): not drawn
+WEAR_FLAGS = (("is_abandoned", 2), ("is_disused", 1))    # a line's wear: 1 out of use, 2 abandoned (drawn worn: the
+# user, 2026-10-27, "id still like abandond lines to show. perhapse with some grass on them or sumilate wear")
+UNBUILT_FLAGS = ("is_under_construction",)              # not drawn (no track yet), as OSM's proposed lines
 SHORT_TUNNEL_M = 60.0       # m: a "tunnel" this short is the line passing under a road bridge (OSM tags those
                             # tunnel too): track there (the track stopped either side of an overpass, 2026-10-25)
 
 
-def _gone(feats, i):
-    """Is feature i an abandoned or disused line over most of its length (its flags)?"""
+def wear(feats, i):
+    """Feature i's wear by its flags over most of its length: 0 in use, 1 disused, 2 abandoned; None not built yet."""
     t = feats.rules.get("flags")
     if t is None or len(t.feature) == 0:
-        return False
-    return sum(float(t.end[j]) - float(t.start[j]) for j in t.rows(i)
-               if any(g in str(t.value[j]) for g in GONE_FLAGS)) > 0.5
+        return 0
+    rows = [(float(t.end[j]) - float(t.start[j]), str(t.value[j])) for j in t.rows(i)]
+    if sum(L for L, v in rows if any(g in v for g in UNBUILT_FLAGS)) > 0.5:
+        return None
+    for flag, w in WEAR_FLAGS:
+        if sum(L for L, v in rows if flag in v) > 0.5:
+            return w
+    return 0
+
+
+def drawn(feats, i):
+    """(class, wear) of feature i drawn as a railway track, or None: a rail segment of the DRAWN classes, or an
+    "unknown" one flagged abandoned or disused (an old line, as standard gauge); not one under construction, nor an
+    "unknown" one that is neither (OpenStreetMap's proposed lines: DRAWN)."""
+    sub = feats.attrs.get("subtype")
+    if sub is None or str(sub[i]) != "rail":
+        return None
+    cls = feats.attrs.get("class")
+    c = str(cls[i]) if cls is not None else "standard_gauge"
+    w = wear(feats, i)
+    if w is None:
+        return None
+    if c == "unknown" and w:
+        c = "standard_gauge"
+    return (c, w) if c in DRAWN else None
 
 
 def _pieces(feats, i):
@@ -661,10 +699,15 @@ class _Mesh:
                 np.concatenate(self.M))
 
 
-def _sleepers(s, xy, u, top, i, j):
+def _sleepers(s, xy, u, top, i, j, gone=0.0):
     """The sleepers of a run (i..j of a part): (centres, along, across, z0, z1), every SLEEPER_EVERY from the part's
-    start (the same in the tile beside)."""
+    start (the same in the tile beside); gone: the share of them left out (by a hash of their number: the same ones in
+    every tile)."""
     ss = np.arange(np.ceil(s[i] / SLEEPER_EVERY) * SLEEPER_EVERY, s[j], SLEEPER_EVERY)
+    if gone > 0 and len(ss):
+        k = np.rint(ss / SLEEPER_EVERY).astype(np.uint64)
+        h = ((k * np.uint64(2654435761)) % np.uint64(1 << 32)).astype(np.float64) / float(1 << 32)
+        ss = ss[h >= gone]
     if not len(ss):
         return None
     cx, cy = np.interp(ss, s, xy[:, 0]), np.interp(ss, s, xy[:, 1])
@@ -784,7 +827,8 @@ def tile_mesh(frame, tx, ty, cells, ground, sign_style=None, far_ground=None):
     tunnels = road_underpasses(frame, cells, box)
     ground = _mixed(ground, far_ground, box)
     ex = (box[0] - roads.OVERLAP, box[1] - roads.OVERLAP, box[2] + roads.OVERLAP, box[3] + roads.OVERLAP)
-    rails = parts(frame, cells, box, clip=True)
+    worn = {}
+    rails = parts(frame, cells, box, clip=True, worn=worn)
     if not any(_box_hit((xy[:, 0].min(), xy[:, 1].min(), xy[:, 0].max(), xy[:, 1].max()),
                         (ex[0] - STEP_M, ex[1] - STEP_M, ex[2] + STEP_M, ex[3] + STEP_M)) for *_, xy in rails):
         return None
@@ -808,6 +852,8 @@ def tile_mesh(frame, tx, ty, cells, ground, sign_style=None, far_ground=None):
             continue
         u = _left(xy)
         s = _arc(xy)
+        w = worn.get(fid, 0)
+        ballast_w, steel_w = mesh.mat(BALLAST_WORN[w]), mesh.mat(STEEL_WORN[w])
         half_g = gauge(cls, sign_style) / 2 + RAIL_HEAD / 2
         top = zb + BALLAST_H
         if kind == "ground":
@@ -831,9 +877,9 @@ def tile_mesh(frame, tx, ty, cells, ground, sign_style=None, far_ground=None):
             p, uu, t, v = xy[sl], u[sl], top[sl], s[sl] / 3.0
             if kind == "ground":
                 (fl, zl), (fr, zr) = feet
-                _ballast_bed(mesh, p, uu, t, v, fl[sl], fr[sl], zl[sl], zr[sl], ballast)
+                _ballast_bed(mesh, p, uu, t, v, fl[sl], fr[sl], zl[sl], zr[sl], ballast_w)
             else:
-                _deck(mesh, p, uu, t, v, ballast, concrete)
+                _deck(mesh, p, uu, t, v, ballast_w, concrete)
                 pr = _sited(_piers(s, xy, u, top, zg, i, j), crossers, ground)
                 if pr is not None:
                     small.append((pr, PIER_T / 2, PIER_W / 2, concrete))
@@ -842,12 +888,12 @@ def tile_mesh(frame, tx, ty, cells, ground, sign_style=None, far_ground=None):
             for sg in (1, -1):
                 c = p + uu * sg * half_g
                 a, b = c + uu * RAIL_HEAD / 2, c - uu * RAIL_HEAD / 2
-                mesh.strip(np.c_[a, st + RAIL_H], np.c_[b, st + RAIL_H], 0.0, 0.02, v, steel, up)
-                mesh.strip(np.c_[a, st], np.c_[a, st + RAIL_H], 0.0, 0.05, v, steel, out_l)
-                mesh.strip(np.c_[b, st], np.c_[b, st + RAIL_H], 0.0, 0.05, v, steel, -out_l)
-            sp = _sleepers(s, xy, u, top, i, j)
+                mesh.strip(np.c_[a, st + RAIL_H], np.c_[b, st + RAIL_H], 0.0, 0.02, v, steel_w, up)
+                mesh.strip(np.c_[a, st], np.c_[a, st + RAIL_H], 0.0, 0.05, v, steel_w, out_l)
+                mesh.strip(np.c_[b, st], np.c_[b, st + RAIL_H], 0.0, 0.05, v, steel_w, -out_l)
+            sp = _sleepers(s, xy, u, top, i, j, SLEEPERS_GONE[w])
             if sp is not None:
-                small.append((sp, SLEEPER_W / 2, SLEEPER_L / 2, mesh.mat(SLEEPER)))
+                small.append((sp, SLEEPER_W / 2, SLEEPER_L / 2, mesh.mat(SLEEPER_WORN[w])))
     small.sort(key=lambda e: -e[2])                 # (the piers first: a deck needs them more than its sleepers)
     for (c, along, across, z0, z1), hx, hy, mi in small:
         room = (VERTS_MAX - mesh.nv) // 8
