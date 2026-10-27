@@ -260,6 +260,7 @@ local function dropTile(key)
   end
   parked, walkQ, held, createQ = purge(parked), purge(walkQ), purge(held), purge(createQ)
   if t.props then require('beamngEarth/trees').dropKey((key:gsub(':', ':p', 1))) end
+  if t.props then require('beamngEarth/nightlights').dropKey(key) end
   if t.park then require('beamngEarth/parking').dropKey(key) end
   if t.fuel then require('beamngEarth/gasstations').dropKey(key) end
   if t.sound then require('beamngEarth/ambience').dropSpaces(key) end
@@ -436,6 +437,7 @@ function M.onTile(msg, currentAnchor)
   end
   if type(data.props) == 'table' and type(data.props.items) == 'table' then   -- street lights, poles (trees.lua)
     require('beamngEarth/trees').onRows(msg.anchorId, 'p' .. tostring(msg.key), data.props.items, data.props.groups)
+    require('beamngEarth/nightlights').onRows(key, data.props.items, data.props.groups)   -- (the lamps' light)
     tiles[key].props = true
   end
   if type(data.park) == 'table' and data.park[1] then      -- curbside parking spots (parking.lua)

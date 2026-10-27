@@ -18,8 +18,13 @@
           1,
           1
         ],
-        "emissiveMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_e.color.png",
-        "vertColor": true
+        "emissiveMap": "/levels/beamng_earth/art/shapes/beamngEarth/bne_facade_night_e.png",
+        "vertColor": true,
+        "emissiveFactor": [
+          0,
+          0,
+          0
+        ]
       },
       {},
       {},
@@ -46,7 +51,13 @@
           1,
           1
         ],
-        "vertColor": true
+        "vertColor": true,
+        "emissiveMap": "/levels/beamng_earth/art/shapes/beamngEarth/bne_office_night_e.png",
+        "emissiveFactor": [
+          0,
+          0,
+          0
+        ]
       },
       {},
       {},
@@ -73,7 +84,13 @@
           1,
           1
         ],
-        "vertColor": true
+        "vertColor": true,
+        "emissiveMap": "/levels/beamng_earth/art/shapes/beamngEarth/bne_office_night_e.png",
+        "emissiveFactor": [
+          0,
+          0,
+          0
+        ]
       },
       {},
       {},

@@ -409,6 +409,13 @@ STREET_TREE_SHARE = 0.5         # streets with a row of trees (hashed per street
 STREET_TREE_SPACING = 11.0
 STREET_TREE_CURB_M = 0.9
 G_POLELAMP = "polelamp"     # a cobra-head arm on a utility pole (East Coast USA's electrical_pole_lamp)
+# The lamps' lenses (night lighting: nightlights.lua lights their material after dusk and puts its lights at them;
+# tools/build_lamp_lens.py): the stock heads' glass is a material every building's windows share. At each lamp's glass
+# (the centroid of its transparent vertices in the stock mesh, its local frame: x along the row's yaw; measured by
+# MihneaTeodorStoica for PR #340), LENS_DROP_M under it.
+G_LENS = "lamplens"
+LAMP_HEADS = {G_LAMP: (2.71130, -0.00032, 7.95393), G_POLELAMP: (-2.67592, 0.00012, 0.43511)}
+LENS_DROP_M = 0.03
 TOWN_POLE_CLASSES = {"residential", "tertiary", "unclassified", "secondary", "living_street", "primary", "trunk"}
 TOWN_POLE_SPACING = 40.0
 POLE_LAMP_Z = 7.0           # m above the pole's base
@@ -416,6 +423,21 @@ HYDRANT_SPACING = 120.0
 BENCH_SPACING = 140.0
 BIN_SPACING = 90.0
 BENCH_YAW = 90.0            # the bench model's front is its local +y (the yaw puts +x toward the road)
+
+
+def lamp_lenses(rows):
+    """A lens row [G_LENS, x, y, z, yaw, 1, 1, 0] under the head of every lamp row (LAMP_HEADS; its scale: the row's
+    height over the catalog's, 1 for both)."""
+    out = []
+    for r in rows:
+        head = LAMP_HEADS.get(r[0])
+        if head is None:
+            continue
+        a = math.radians(r[4])
+        c, s_ = math.cos(a), math.sin(a)
+        out.append([G_LENS, round(r[1] + c * head[0] - s_ * head[1], 2), round(r[2] + s_ * head[0] + c * head[1], 2),
+                    round(r[3] + head[2] - LENS_DROP_M, 2), r[4], 1.0, 1.0, r[7]])
+    return out
 
 
 def _stations(run, line, spacing, phase, clear, side):
@@ -603,7 +625,7 @@ def place(roads, walks, box, curb_h=0.15, wires=None, town=False, left_hand=Fals
                              round(yaw, 1), 1.0, 9.2, 0.0])
         if len(run) > 1 and wires is not None:
             wires.extend(_own_spans(run, box))
-    return under_decks(rows, list(decks), wires)
+    return under_decks(rows + lamp_lenses(rows), list(decks), wires)
 
 
 def _own_spans(run, box):

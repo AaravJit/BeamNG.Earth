@@ -76,6 +76,7 @@ local sea = require('beamngEarth/sea') -- the sea's WaterBlock tiles (server sea
 local trees = require('beamngEarth/trees') -- trees, bushes, rocks (server vegetation.py)
 local ambience = require('beamngEarth/ambience') -- forest wind and room tone (the stock core_audioForest)
 local pumpjacks = require('beamngEarth/pumpjacks') -- oil wells' pump jacks (server oilwells.py)
+local nightlights = require('beamngEarth/nightlights') -- the buildings' windows lit at night
 pumpjacks.onCollide = roads.markCollisionDirty
 local parking = require('beamngEarth/parking') -- parked cars on the road tiles' spots (stock gameplay_parking)
 local gasstations = require('beamngEarth/gasstations') -- pumps and the stock refuel prompt (server gasstations.py)
@@ -513,6 +514,7 @@ local function finishRebase()
   trees.transform(xf, geodesy)
   ambience.transform(xf)
   pumpjacks.transform(xf)
+  nightlights.transform(xf)
   gasstations.transform(xf)
   sea.transform(xf, msg.anchorId)
   -- a resync with a restarted server keeps the previous session's tiles the same way (st.sessionId
@@ -1877,6 +1879,7 @@ local function onUpdate(dtReal, dtSim)
       or (gov.loading and trees.LOADING_FRAME_MS or trees.FRAME_MS))
     pcall(ambience.update, st.anchorId, sea)      -- (sound never stops the world's updates)
     pcall(pumpjacks.update)
+    pcall(nightlights.update)
     t = mark('sea+trees', t)
     local pb = nil
     if st.block then
@@ -2028,6 +2031,7 @@ local function onClientEndMission()
   trees.reset()
   ambience.reset()
   pumpjacks.reset()
+  nightlights.reset()
   parking.reset()
   navgraph.reset()
   local sessionId, nextRequestId, mapPort = st.sessionId, st.nextRequestId, st.mapPort
