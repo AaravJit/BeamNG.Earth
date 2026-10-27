@@ -12,6 +12,7 @@ embankment on the flat and a tall one on a ramp. Short mapped road tunnels also 
 Where a road crosses at grade, the track stops either side of the
 carriageway (a level crossing: the road's own surface across it). Tunnels are left out. Pure given its inputs."""
 import math
+import re
 
 import numpy as np
 
@@ -169,9 +170,9 @@ def _box_hit(b, box):
     return not (b[2] < box[0] or b[0] > box[2] or b[3] < box[1] or b[1] > box[3])
 
 
-def parts(frame, cells, box, reach=REACH_M, clip=False, worn=None):
+def parts(frame, cells, box, reach=REACH_M, clip=False, worn=None, gauges=None):
     """[(fid, class, kind, xy (k, 2))]: the rail parts ("ground" / "bridge"; tunnels left out) of the lines drawn
-    (drawn(); worn: a dict given here gets {fid: wear} of the worn ones)
+    (drawn(); worn: a dict given here gets {fid: wear} of the worn ones, gauges {fid: m} OSM's gauge where tagged)
     within reach of box (x0, y0, x1, y1), resampled every STEP_M from each part's start, each feature once (by id).
     Each part must intersect that window: a feature's bbox can cover far-away bridges or a long bend around it.
     clip: the ground parts cut to their points within reach of box (a segment of line runs on for km, and every one of
@@ -197,6 +198,10 @@ def parts(frame, cells, box, reach=REACH_M, clip=False, worn=None):
             seen.add(fid)
             if worn is not None and got[1]:
                 worn[fid] = got[1]
+            if gauges is not None:
+                g = osm_gauge(feats, i)
+                if g:
+                    gauges[fid] = g
             for kind, rings in _pieces(feats, i):
                 for ring in rings:
                     e, n = mapgeom.enu_xy(feats, frame, ring)
@@ -412,12 +417,38 @@ def drawn(feats, i):
         return None
     cls = feats.attrs.get("class")
     c = str(cls[i]) if cls is not None else "standard_gauge"
+    osm = feats.attrs.get("osm_railway")
+    if osm is not None and osm[i]:          # (OSM's own railway value: railtags.py, the weekly rail file)
+        v = str(osm[i])
+        if v in OSM_RAILWAY_WEAR:
+            w = OSM_RAILWAY_WEAR[v]
+            return (c if c in DRAWN else "standard_gauge", w)
+        if v in OSM_RAILWAY_NOT:
+            return None
     w = wear(feats, i)
     if w is None:
         return None
     if c == "unknown" and w:
         c = "standard_gauge"
     return (c, w) if c in DRAWN else None
+
+
+# OpenStreetMap's railway values (railtags.py), when the weekly file has the line: drawn with this wear, or not at all
+OSM_RAILWAY_WEAR = {"rail": 0, "light_rail": 0, "narrow_gauge": 0, "preserved": 0, "disused": 1, "abandoned": 2}
+OSM_RAILWAY_NOT = {"proposed", "construction", "razed", "dismantled", "planned", "subway", "tram", "monorail",
+                   "funicular", "miniature", "platform"}
+
+
+def osm_gauge(feats, i):
+    """m between the rails by OSM's gauge tag (mm, the first of several), or None."""
+    g = feats.attrs.get("osm_gauge")
+    if g is None or not g[i]:
+        return None
+    m = re.match(r"\s*(\d{3,4})", str(g[i]))
+    if not m:
+        return None
+    mm = int(m.group(1))
+    return mm / 1000.0 if 381 <= mm <= 1676 else None
 
 
 def _pieces(feats, i):
@@ -883,6 +914,7 @@ def crossing_props(frame, tx, ty, cells, ground, left_hand=False, kits=None):
     if not roads:
         return []
     americas = float(frame.lon0 if hasattr(frame, "lon0") else 0.0) < AMERICAS_LON
+    osm_kit = _osm_kits(frame, cells)
     rows, done = [], set()
     for (rfid, sp, line), crs in zip(roads, roadsmod._crossings_by([xy for _f, xy in rails], [ln for *_, ln in roads])):
         for ri, _arc_r, pt in crs:
@@ -896,11 +928,46 @@ def crossing_props(frame, tx, ty, cells, ground, left_hand=False, kits=None):
                 continue
             done.add(key)
             kit = kits(pt, sp.cls) if kits is not None else None
+            kit = kit or osm_kit(pt)
             kit = kit or CROSSING_KIT.get(sp.cls, CROSSING_KIT_DEFAULT)
             if w:
                 kit = "cross"
             rows += _crossing_rows(pt, line, rxy, sp, kit, americas, left_hand, ground)
     return rows
+
+
+OSM_KIT_M = 15.0        # m between a crossing and OSM's level crossing node it takes the devices of
+
+
+def osm_kit_of(t):
+    """"gate" / "flash" / "cross" / None of a level crossing node's OSM tags (crossing:barrier, crossing:light ...)."""
+    barrier, light = str(t.get("crossing:barrier") or ""), str(t.get("crossing:light") or "")
+    if barrier and barrier != "no":
+        return "gate"
+    if light and light != "no":
+        return "flash"
+    if barrier == "no" and light == "no":
+        return "cross"
+    return None             # (no word on its devices: the road class's kit)
+
+
+def _osm_kits(frame, cells):
+    """fn(xy) -> the kit of OSM's nearest level crossing node within OSM_KIT_M (railtags' nodes of the cells), or
+    None."""
+    pts = [(lo, la, t) for f in cells if f is not None for lo, la, t in f.__dict__.get("_rail_nodes", ())
+           if t.get("railway") == "level_crossing"]
+    if not pts:
+        return lambda p: None
+    a = np.array([[la, lo] for lo, la, _t in pts], np.float64)
+    e, n, _ = frame.geodetic_to_enu(a[:, 0], a[:, 1], np.zeros(len(a)))
+    xy = np.stack([np.asarray(e), np.asarray(n)], -1)
+    kit = [osm_kit_of(t) for _lo, _la, t in pts]
+
+    def look(p):
+        d = np.hypot(*(xy - np.asarray(p)[:2]).T)
+        j = int(np.argmin(d))
+        return kit[j] if d[j] <= OSM_KIT_M else None
+    return look
 
 
 def _unit_at(line, pt):
@@ -948,8 +1015,8 @@ def tile_mesh(frame, tx, ty, cells, ground, sign_style=None, far_ground=None):
     tunnels = road_underpasses(frame, cells, box)
     ground = _mixed(ground, far_ground, box)
     ex = (box[0] - roads.OVERLAP, box[1] - roads.OVERLAP, box[2] + roads.OVERLAP, box[3] + roads.OVERLAP)
-    worn = {}
-    rails = parts(frame, cells, box, clip=True, worn=worn)
+    worn, gauges = {}, {}
+    rails = parts(frame, cells, box, clip=True, worn=worn, gauges=gauges)
     if not any(_box_hit((xy[:, 0].min(), xy[:, 1].min(), xy[:, 0].max(), xy[:, 1].max()),
                         (ex[0] - STEP_M, ex[1] - STEP_M, ex[2] + STEP_M, ex[3] + STEP_M)) for *_, xy in rails):
         return None
@@ -975,7 +1042,7 @@ def tile_mesh(frame, tx, ty, cells, ground, sign_style=None, far_ground=None):
         s = _arc(xy)
         w = worn.get(fid, 0)
         ballast_w, steel_w = mesh.mat(BALLAST_WORN[w]), mesh.mat(STEEL_WORN[w])
-        half_g = gauge(cls, sign_style) / 2 + RAIL_HEAD / 2
+        half_g = gauges.get(fid, gauge(cls, sign_style)) / 2 + RAIL_HEAD / 2
         top = zb + BALLAST_H
         if kind == "ground":
             blk = _blocked(xy, zb, crossers)

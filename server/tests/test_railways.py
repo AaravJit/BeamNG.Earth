@@ -174,6 +174,22 @@ class RailwayTest(unittest.TestCase):
         left = railways.crossing_props(FRAME, 0, 0, [f], lambda xy: np.full(len(xy), 10.0), left_hand=True)
         self.assertTrue(all(r[0].endswith("_l") for r in left if r[0].startswith("rrgate")))
 
+    def test_osm_railway_tags_decide_when_known(self):
+        """The weekly rail file's OSM values (railtags.py): proposed out whatever Overture's class, disused worn, a
+        gauge in mm; a crossing node's devices."""
+        f = features([[(0.0, 100.0), (250.0, 100.0)], [(0.0, 120.0), (250.0, 120.0)], [(0.0, 140.0), (250.0, 140.0)]],
+                     ["standard_gauge", "standard_gauge", "unknown"], subtypes=["rail"] * 3)
+        f.attrs["osm_railway"] = np.array(["proposed", "disused", "rail"], object)
+        f.attrs["osm_gauge"] = np.array([None, None, "1520"], object)
+        self.assertIsNone(railways.drawn(f, 0))
+        self.assertEqual(railways.drawn(f, 1), ("standard_gauge", 1))
+        self.assertEqual(railways.drawn(f, 2), ("standard_gauge", 0))
+        self.assertAlmostEqual(railways.osm_gauge(f, 2), 1.52)
+        self.assertEqual(railways.osm_kit_of({"railway": "level_crossing", "crossing:barrier": "half"}), "gate")
+        self.assertEqual(railways.osm_kit_of({"railway": "level_crossing", "crossing:light": "yes"}), "flash")
+        self.assertEqual(railways.osm_kit_of({"crossing:barrier": "no", "crossing:light": "no"}), "cross")
+        self.assertIsNone(railways.osm_kit_of({"railway": "level_crossing"}), "no word: the road class's")
+
     def test_proposed_and_unbuilt_lines_are_not_drawn(self):
         """Overture's "unknown" rail with no abandoned or disused flag is OpenStreetMap's railway=proposed or
         construction (Link Union Station across US-101, 2026-10-27); a line under construction neither."""

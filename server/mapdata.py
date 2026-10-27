@@ -238,6 +238,8 @@ class MapData:
         self.raw_dir = os.path.join(cache_dir, "mapdata", "raw")
         self.overture = overture.Reader(self.raw_dir, self.fetcher, release, threads)
         self.rasters = maprasters.Rasters(self.raw_dir, self.fetcher)
+        import railtags                 # (OSM's railway tags joined to the roads layer's rail segments)
+        self.rail_tags = railtags.RailTags(cache_dir, self.fetcher) if railtags.ON else None
         self._locks = {}
         self._lock = threading.Lock()
         self.pool = ThreadPoolExecutor(LAYER_THREADS, thread_name_prefix="mapdata-layer")
@@ -253,9 +255,27 @@ class MapData:
             self._warm_ex.shutdown(wait=False, cancel_futures=True)
         self.overture.close()
 
+    def _rails(self, key, layer, feats):
+        """The roads layer's rail segments with OSM's railway tags (railtags.py), once per build of them."""
+        rt = getattr(self, "rail_tags", None)
+        if rt is None or layer != "roads" or feats is None or not len(feats):
+            return
+        sub = feats.attrs.get("subtype")
+        if sub is None or not (np.asarray(sub).astype(str) == "rail").any():
+            return                          # (no rails: nothing to ask for)
+        built = rt.version()
+        if built is None or feats.__dict__.get("_rails_built") == built:
+            return
+        try:
+            rt.join(feats, key)
+            feats.__dict__["_rails_built"] = built
+        except Exception as e:      # (Overture's classes alone)
+            log.debug("railtags join %s: %s: %s", key, type(e).__name__, e)
+
     def versions(self):
+        rails = getattr(self, "rail_tags", None)
         return {"pipeline": VERSION, "overture": self.release, "worldcover": maprasters.WORLDCOVER_RELEASE,
-                "canopy": maprasters.CHM_RELEASE}
+                "canopy": maprasters.CHM_RELEASE, "rails": rails.known() if rails is not None else None}
 
     def path(self, key, layer):
         source, release = _source(layer, self.release)
@@ -551,6 +571,7 @@ class MapData:
             if layer in mem:                # decoded before: shared (cell layers are never changed after loading)
                 cd.layers[layer], prov, _ = mem[layer]
                 dt, hit = 0.0, True
+                self._rails(key, layer, cd.layers[layer])
             else:
                 arrays, hit, dt = results[layer]
                 arrays = dict(arrays)
@@ -564,6 +585,7 @@ class MapData:
                     else:
                         cd.layers[layer] = f.localize(frame)
                     # (which cell's layer: the per-cell facts the server's processes share, roads.cell_facts)
+                    self._rails(key, layer, cd.layers[layer])
                     cd.layers[layer].__dict__["_bnge_cell"] = (str(key), layer, json.dumps(self.versions(),
                                                                                            sort_keys=True))
                 elif "missing" in arrays:
