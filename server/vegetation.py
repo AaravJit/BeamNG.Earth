@@ -603,14 +603,16 @@ AUDIO_SOUND = [g for g in range(len(GROUPS)) if g not in (G_ROCK, G_DESERT_ROCK)
 def _ambience(group, e, n, z, height, lat, lon):
     """(audio, biome) of a tile's items: audio its sound nodes as one flat list of [x, y, z, depth, size, count] rows
     (earthfast.audio_nodes), biome its ambience set and variant (earthfast.audio_biome)."""
-    fast.require(77, "audio_nodes")
+    fast.require(80, "audio_nodes")
     f64 = lambda a: np.ascontiguousarray(a, np.float64)     # noqa: E731
     g = np.ascontiguousarray(group, np.uint8)
     nodes = fast._ef.audio_nodes(g, f64(e), f64(n), f64(z), f64(height), AUDIO_SOUND, AUDIO_CELL_M, AUDIO_H_MID,
                                  AUDIO_H_LARGE)
     nodes[:, :4] = np.round(nodes[:, :4], 1)
     nodes[:, 4] = np.round(nodes[:, 4], 2)
-    biome = fast._ef.audio_biome(g, float(lat), float(lon), [G_DESERT_SHRUB, G_DESERT_ROCK, G_JUNIPER])
+    import climate
+    biome = fast._ef.audio_biome(g, float(lat), float(lon), [G_DESERT_SHRUB, G_DESERT_ROCK, G_JUNIPER],
+                                 climate.koppen_at(float(lat), float(lon)))
     return nodes.ravel().tolist(), list(biome)
 
 

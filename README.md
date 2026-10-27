@@ -28,7 +28,7 @@ You can help support development by reporting [issues](https://github.com/TecnaG
 - Trees and forests from a canopy height model, regional species (conifers, broadleaf, palms, desert
   shrubs), autumn colours in season.
 - Forest and river sounds: the stock maps' wind in the trees (louder and fuller in dense, tall forest) and background
-  sound, the set by climate (temperate, US West Coast, Mediterranean, desert, tropical), running water along
+  sound, the set by climate (Köppen-Geiger zones: temperate, oceanic, Mediterranean, desert, tropical), running water along
   rivers and streams, waves along coasts and large lakes, the stock tunnel, under-bridge and parking garage echo, and rain you can hear.
 - Buildings from Overture / OpenStreetMap with regional styles (US siding and brick, Alpine chalets, Nordic
   wood, Mediterranean stucco, East Asian and Latin American looks), real heights, roofs, windows, shopfronts,
@@ -277,6 +277,8 @@ The repository contains only code; all map data is downloaded at runtime and cac
   Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA).
 - Roads, buildings, water and places: Overture Maps / OpenStreetMap contributors (lane counts, widths and speed limits from OpenStreetMap via OSM US Layercake); trees from a
   canopy height model; airports from OurAirports.
+- Climate zones (the forest sounds' set): Beck et al. (2023), High-resolution (1 km) Köppen-Geiger maps for
+  1901–2099, Scientific Data 10, 724 (CC BY 4.0).
 Each source's terms apply to the downloaded data; the in-game window shows the attribution line.
 The full list of data sources, services, libraries, tools and references, with licences and the
 credit each one asks for, is in [CREDITS.md](CREDITS.md).

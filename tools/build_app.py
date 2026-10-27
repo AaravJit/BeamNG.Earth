@@ -140,7 +140,8 @@ def pyinstaller(work, ico, onefile, ver=None, boot=None):
            "--add-data", f"{os.path.join(ROOT, 'mod', 'beamng_earth')}{SEP}mod/beamng_earth",
            "--add-data", f"{os.path.join(ROOT, 'VERSION')}{SEP}.",
            "--add-data", f"{os.path.join(server, 'bridges_us.npz')}{SEP}.",     # (bridgetypes.DB_PATH: beside the modules)
-           "--add-data", f"{os.path.join(server, 'bridges_wd.npz')}{SEP}."]     # (bridgetypes.WD_PATH)
+           "--add-data", f"{os.path.join(server, 'bridges_wd.npz')}{SEP}.",     # (bridgetypes.WD_PATH)
+           "--add-data", f"{os.path.join(server, 'koppen_1991_2020_0p1.png')}{SEP}."]  # (climate.PATH)
     # the sources' fingerprint (peerwork.code_id: compute-sharing helpers build only for the same code)
     sys.path.insert(0, server)
     import peerwork

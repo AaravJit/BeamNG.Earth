@@ -55,16 +55,34 @@ pub fn audio_nodes<'py>(py: Python<'py>, group: PyReadonlyArray1<'py, u8>, x: Py
 }
 
 /// The ambience set of a tile at (lat, lon) with these items' groups: (set, variant), the set TEMPERATE,
-/// MEDITERRANEAN, DESERT or TROPICAL, the variant the stock _01 (0) or _02 (1). ids: the groups (desert_shrub,
-/// desert_rock, juniper). A coarse climate as vegetation.regional's (until a climate map): desert where most items
-/// are the dry West's (the stock Utah's _01; west of 114 W, the Mojave's, Johnson Valley's _02), tropical within the
-/// tropics, Mediterranean round the Mediterranean Sea, temperate elsewhere (the US West Coast's as West Coast USA's
-/// _02, else East Coast USA's _01).
+/// MEDITERRANEAN, DESERT or TROPICAL, the variant the stock _01 (0) or _02 (1). koppen: the tile's Koppen-Geiger
+/// class (Beck et al. 2023, 1991-2020: 1-30 as their legend, 0 none: the sea) by koppen_biome; without one, a coarse
+/// climate from the position and the groups (ids: desert_shrub, desert_rock, juniper) by biome.
 #[pyfunction]
-pub fn audio_biome(group: PyReadonlyArray1<'_, u8>, lat: f64, lon: f64, ids: [u8; 3]) -> (u8, u8) {
+pub fn audio_biome(group: PyReadonlyArray1<'_, u8>, lat: f64, lon: f64, ids: [u8; 3], koppen: u8) -> (u8, u8) {
+    if let Some(b) = koppen_biome(koppen) {
+        return b;
+    }
     let group = group.as_array();
     let dry = group.iter().filter(|g| ids.contains(g)).count();
     biome(group.len(), dry, lat, lon)
+}
+
+/// The stock set of a Koppen-Geiger class: tropical (A: Jungle Rock Island's), desert (B arid and E polar: hot BWh /
+/// BSh as Johnson Valley's _02, cold as Utah's _01), Mediterranean (Cs: hot-summer Csa as Italy's _01, the cooler
+/// Csb / Csc as Small Island's and Cliff's _02), temperate (the other C and D: oceanic Cfb / Cfc as West Coast USA's
+/// _02, the rest as East Coast USA's _01). None for 0 (no class) or an unknown one.
+fn koppen_biome(k: u8) -> Option<(u8, u8)> {
+    Some(match k {
+        1..=3 => (TROPICAL, 0),
+        4 | 6 => (DESERT, 1),
+        5 | 7 | 29 | 30 => (DESERT, 0),
+        8 => (MEDITERRANEAN, 0),
+        9 | 10 => (MEDITERRANEAN, 1),
+        15 | 16 => (TEMPERATE, 1),
+        11..=14 | 17..=28 => (TEMPERATE, 0),
+        _ => return None,
+    })
 }
 
 fn biome(total: usize, dry: usize, lat: f64, lon: f64) -> (u8, u8) {
@@ -292,6 +310,17 @@ fn douglas_peucker(line: &[(f64, f64)], eps: f64) -> Vec<(f64, f64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn koppen() {
+        assert_eq!(koppen_biome(4), Some((DESERT, 1)));             // BWh: Mojave
+        assert_eq!(koppen_biome(7), Some((DESERT, 0)));             // BSk: Utah, Denver
+        assert_eq!(koppen_biome(9), Some((MEDITERRANEAN, 1)));      // Csb: San Francisco, Cape Town
+        assert_eq!(koppen_biome(14), Some((TEMPERATE, 0)));         // Cfa: Baltimore
+        assert_eq!(koppen_biome(15), Some((TEMPERATE, 1)));         // Cfb: Seattle, London
+        assert_eq!(koppen_biome(1), Some((TROPICAL, 0)));
+        assert_eq!(koppen_biome(0), None);
+    }
 
     #[test]
     fn simplify() {
