@@ -1585,6 +1585,7 @@ def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, li
     # headroom (2026-10-11: such decks became steep wedges, "walls" in the user's screenshot)
     cap = [np.full(len(ln), np.inf) for ln in lines]
     dab = [np.full(len(ln), np.inf) for ln in lines]      # m to the nearest abutment
+    steep = [np.full(len(ln), np.inf) for ln in lines]    # DECK_STEEP_GRADE off each abutment (below)
     for k, (a, b, s) in enumerate(edges):
         for node, zend in ((a, zs[k][0]), (b, zs[k][-1])):
             if deg[node] != 1 or not np.isfinite(zend):
@@ -1594,6 +1595,7 @@ def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, li
                 dk = np.minimum(d[ea] + es, d[eb] + (es[-1] - es))
                 cap[k2] = np.minimum(cap[k2], zend + DECK_MAX_GRADE * dk)
                 dab[k2] = np.minimum(dab[k2], dk)
+                steep[k2] = np.minimum(steep[k2], zend + DECK_STEEP_GRADE * dk)
     n_road = len(crossings) if n_road is None else n_road
     req = [np.full(len(ln), -np.inf) for ln in lines]
     for ci, cr in enumerate(crossings):     # (part, arc, height under it[, its own clearance: over water])
@@ -1655,6 +1657,11 @@ def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, li
         # sharp peak and floored there has no spike
         g = np.maximum(g, _ground_envelope(s, g, 0.0, 1.0 / (2.0 * DECK_CREST_R)))
         cap[k] = np.maximum(cap[k], _ground_envelope(s, g, DECK_MAX_GRADE))
+        # ... but never steeper than DECK_STEEP_GRADE off an abutment where the ground under it is lower (nor under
+        # the straight line between the abutments): raised by the ground 90 m off at the far, 10 m higher abutment, a
+        # water clearance stood the New York Thruway's deck over the Vloman Kill 5 m up in its first 3.6 m, a wall an
+        # AI car hit at 65 mph (2026-10-27)
+        cap[k] = np.minimum(cap[k], np.maximum(np.maximum(steep[k], g), np.where(np.isfinite(z), z, -np.inf)))
         zz = np.maximum(np.minimum(np.maximum(z, req[k]), cap[k]), g)
         if deg[a] == 1:                         # an abutment keeps the ground's height
             zz[0] = z[0]
@@ -2476,6 +2483,7 @@ DECK_ROAD_CLEAR = MIN_BRIDGE_HEADROOM_M + BRIDGE_HEADROOM_MARGIN_M + roadmesh.DE
 DECK_CLEAR_REACH_M = 20.0   # full headroom either side of a road crossing (matches approach fills' flat reach)
 DECK_GRADE = 0.05       # that requirement falls 5 % along the deck from the crossing
 DECK_MAX_GRADE = 0.06   # a deck climbs no steeper than this from an abutment
+DECK_STEEP_GRADE = 0.15  # ... nor, whatever ground the caps were raised to, than this over lower ground (no walls)
 CORNER_CONCRETE_M = 4.0  # m: a concrete street this close to a curb return fills its corner in concrete too
 AT_GRADE_M = 3.0        # m: a road crossing a deck within AT_GRADE_REACH_M of an abutment that cannot get this
 AT_GRADE_REACH_M = 12.0     # high over it is a junction at grade (the intersection a ramp starts from)
