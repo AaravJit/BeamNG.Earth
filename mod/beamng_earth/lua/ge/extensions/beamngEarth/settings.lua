@@ -657,8 +657,11 @@ function M.mapControls(on)
     bm.onChangeUiFilter = function(v, dir) mapInput('filter', v, dir) end
     local veh = rawget(_G, 'getPlayerVehicle') and getPlayerVehicle(0)
     if veh then
+      -- the pedals let go (blocked below, they would hold their last value), the steering left as it is: written
+      -- here with the direct filter and no wheel angle, a force-feedback wheel locked fully right after the map until
+      -- the car was respawned, G920 / G29 / Fanatec / Moza (GitHub #284); the car stands still without it
       pcall(veh.queueLuaCommand, veh, "input.event('throttle', 0, 2) input.event('brake', 0, 2) "
-        .. "input.event('steering', 0, 2) input.event('clutch', 0, 2)")
+        .. "input.event('clutch', 0, 2)")
     end
     if filter and filter.createActionTemplate then
       pcall(function()
