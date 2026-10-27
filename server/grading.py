@@ -940,25 +940,28 @@ class Grader:
                     continue
                 if not (UNDER_ANY_ON or cls in APPROACH_SKIP or cls.endswith("_link")):
                     continue
-                bridges.append((line, cls in APPROACH_SKIP or cls.endswith("_link")))
+                bridges.append((line, cls in APPROACH_SKIP or cls.endswith("_link"), False))
+            # (a line's deck: never raised; straight between its ends whatever its length or what it joins, as
+            # railways.deck_heights lays it: no single-span test)
+            bridges += [(line, True, True) for line in c.get("rail_bridges", ())]
         if not bridges:
             return
         # (single spans: neither end continues into another bridge part; deduplicated across cells)
         uniq, seen = [], set()
-        for b, fixed in bridges:
+        for b, fixed, rail in bridges:
             k2 = (round(float(b[0, 0]), 1), round(float(b[0, 1]), 1), round(float(b[-1, 0]), 1), len(b))
             if k2 not in seen:
                 seen.add(k2)
-                uniq.append((b, fixed))
+                uniq.append((b, fixed, rail))
         spans = []
-        ue = np.array([[b[0, :2], b[-1, :2]] for b, _f in uniq], np.float64)        # (n, 2 ends, 2)
-        for n, (b, fixed) in enumerate(uniq):
+        ue = np.array([[b[0, :2], b[-1, :2]] for b, _f, _r in uniq], np.float64)        # (n, 2 ends, 2)
+        for n, (b, fixed, rail) in enumerate(uniq):
             L = float(np.hypot(*np.diff(b, axis=0).T).sum())
-            if L > UNDER_MAX_BRIDGE_M or L < 2 * APPROACH_MIN_CROSS_M:
+            if L < 2 * APPROACH_MIN_CROSS_M or (L > UNDER_MAX_BRIDGE_M and not rail):
                 continue
             d = np.hypot(ue[:, :, None, 0] - ue[n, None, None, :, 0], ue[:, :, None, 1] - ue[n, None, None, :, 1])
             d[n] = np.inf                       # (another part's end within 0.75 m of either of its ends: joined)
-            if not (d < 0.75).any():
+            if rail or not (d < 0.75).any():
                 spans.append((b, L, fixed))
         if not spans:
             return
@@ -1106,6 +1109,20 @@ class Grader:
                         kk = (fid, kind, j)
                         if len(ring) >= 2 and (kk not in parts or len(ring) > len(parts[kk][0])):
                             parts[kk] = (ring, sp)
+        # the rail bridges (railways.DRAWN lines' bridge pieces): the roads under them dip as under a road overpass
+        # (_lower_underpasses), nothing else (no ramps, no abutments: a line's deck is never raised for a road).
+        # (GitHub #311 / #345 / #364: the track lay across the road under a rail bridge)
+        rail = []
+        if f is not None and len(f) and f.attrs.get("subtype") is not None:
+            import railways
+            sub, rcls = f.attrs["subtype"], f.attrs.get("class")
+            for i in range(len(f)):
+                if str(sub[i]) != "rail" or (str(rcls[i]) if rcls is not None else "unknown") not in railways.DRAWN \
+                        or railways._gone(f, i):
+                    continue
+                for kind, rings in railways._pieces(f, i):
+                    if kind == "bridge":
+                        rail += [np.asarray(r, np.float64) for r in rings if len(r) >= 2]
         bridges, ground_l, ends, end_of, bcls = [], [], [], [], []
         items = sorted(parts.items())
         if items:               # (the frame's conversion once for every part: it is per call)
@@ -1123,8 +1140,17 @@ class Grader:
                 bcls.append(getattr(sp, "cls", None))
             else:
                 ground_l.append((line, sp.width / 2 + shoulder(sp), sp.cls))
+        rail_xy = []
+        if rail:
+            allr = np.concatenate(rail)
+            re_, rn, _ = self.frame.geodetic_to_enu(allr[:, 1], allr[:, 0], 0.0)
+            rxy = np.stack([np.asarray(re_, np.float64), np.asarray(rn, np.float64)], axis=1)
+            k0 = 0
+            for ring in rail:
+                rail_xy.append(rxy[k0:k0 + len(ring)])
+                k0 += len(ring)
         out = {"bridges": bridges, "bridge_cls": bcls, "ground": ground_l, "end_of": end_of,
-               "ends": np.asarray(ends, np.float64).reshape(-1, 2)}
+               "ends": np.asarray(ends, np.float64).reshape(-1, 2), "rail_bridges": rail_xy}
         with self.lock:
             if len(self.enu_cache) > 128:
                 self.enu_cache.clear()
