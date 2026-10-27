@@ -44,8 +44,9 @@ M.RESPAWN_M = { 60, 300 }   -- a respawned car goes this far (min, max) behind t
 -- A car that has just appeared (FRESH_S) turns round for a cut much farther ahead (Bathurst: 89 m): CUT_FRESH_M.
 M.CUT_M = 60
 M.CUT_S = 4
-M.CUT_FRESH_M = 250
+M.CUT_FRESH_M = 95
 M.FRESH_S = 5
+M.COOLDOWN_S = 8.0      -- minimum seconds before a vehicle can be teleported again by cuts/stuck
 M.JUMP_M = 30           -- a car this much farther than at the last check was respawned (stock or ours)
 -- At speed a car respawned behind the camera is never seen again: on a motorway every car ahead reached the block's
 -- edge within ~30 s and reappeared behind the player, who drove alone (GitHub #353, Albany to New York). Faster than
@@ -410,6 +411,7 @@ end
 -- Traffic cars the block left behind (or all, after a teleport), and stuck ones, are respawned on the graph.
 local stillSince = {}   -- car id -> os.clock() it stopped moving
 local seenAt = {}       -- car id -> { x, y, os.clock() it appeared there }
+local lastTeleport = {} -- car id -> os.clock() it was last teleported
 local function guard(b, all)
   local gt = gameplay_traffic
   if not gt or gt.getState() ~= 'on' then return end
@@ -434,15 +436,18 @@ local function guard(b, all)
         seenAt[id] = { p.x, p.y, s0[3] }
         local reach = now - s0[3] < M.FRESH_S and M.CUT_FRESH_M or math.max(M.CUT_M, sp * M.CUT_S)
         local toCut = dl > 1e-6 and M.headingToCut(p.x, p.y, dir.x / dl, dir.y / dl, cuts, reach)
-        if toCut then stats.cutRespawns = (stats.cutRespawns or 0) + 1 end
         if not paused and o:getVelocity():length() < M.STUCK_MS then
           stillSince[id] = stillSince[id] or now
         else
           stillSince[id] = nil
         end
         local d = pp and (p - pp):length() or math.huge
-        if all or toCut or not M.inside(b, p.x, p.y, M.GUARD_M) or M.stuck(stillSince[id], now, d) then
+        local underCooldown = (now - (lastTeleport[id] or -math.huge)) < M.COOLDOWN_S
+        local urgent = not M.inside(b, p.x, p.y, M.GUARD_M)
+        if all or urgent or (not underCooldown and (toCut or M.stuck(stillSince[id], now, d))) then
+          if toCut then stats.cutRespawns = (stats.cutRespawns or 0) + 1 end
           stillSince[id] = nil
+          lastTeleport[id] = now
           -- behind the camera: the stock default is 100-500 m in front of it, where the player sees the car
           -- pop in and its tyres smoke as it lands (the photo comparisons, 2026-10-14)
           local cp, cf = core_camera and core_camera.getPosition(), core_camera and core_camera.getForward()
@@ -666,6 +671,7 @@ function M.reset()
   pendingSignals = nil
   stillSince = {}
   seenAt = {}
+  lastTeleport = {}
   cuts = {}
   M.restoreChoice()
   stats = { applies = 0, lastMs = 0, nodes = 0, edges = 0 }
