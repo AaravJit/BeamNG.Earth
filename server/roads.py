@@ -1405,12 +1405,20 @@ def _merge_overlaps(lines, zs, widths, levels, rounds=3):
             # never raised faster than DECK_MAX_GRADE from an abutment (a road's bridge forking off uphill near one,
             # taken for a carriageway beside it, pulled US-24's deck 1.1 m up in the first 3 m off its abutment near
             # Buena Vista CO, 2026-10-27)
+            # (fading out toward a joint with other parts, where the parts must meet: capped right up to it, an 8 m
+            # ramp part of a Calgary diverging diamond stood 0.7 m under the joint it leaves, #369)
             rise = np.full(len(es), np.inf)
-            if deg[a] == 1:
-                rise = np.minimum(rise, zs[i][0] + DECK_MAX_GRADE * es)
-            if deg[b] == 1:
-                rise = np.minimum(rise, zs[i][-1] + DECK_MAX_GRADE * (es[-1] - es))
-            new[i] = np.minimum(new[i], np.maximum(zs[i], rise))
+            to_joint = np.full(len(es), np.inf)
+            for end, d, at in ((a, es, 0), (b, es[-1] - es, -1)):
+                if deg[end] == 1:
+                    rise = np.minimum(rise, floors[i][at] + DECK_MAX_GRADE * d)
+                else:
+                    to_joint = np.minimum(to_joint, d)
+            capped = np.minimum(new[i], np.maximum(floors[i], rise))     # (from the unmerged heights: no creep per round)
+            if np.isfinite(to_joint).any() and np.isfinite(rise).any():
+                w = np.clip(to_joint / max(float(es[-1]), 1e-6), 0.0, 1.0)
+                capped = w * capped + (1.0 - w) * new[i]
+            new[i] = capped
             if deg[a] == 1:
                 new[i][0] = zs[i][0]
             if deg[b] == 1:

@@ -127,6 +127,30 @@ class MinimumBridgeClearanceTest(TestCase):
         self.assertIn("below 6.0 m target", " ".join(messages.output))
 
 
+class MergeJointTest(TestCase):
+    def _y(self):
+        # a deck over a road at x = 60 (two 60 m parts) and a short ramp part forking off at a 20 degree angle from
+        # the joint at x = 90 to its own abutment 8 m away
+        a = np.c_[np.arange(0.0, 90.1, 3.0), np.zeros(31)]
+        b = np.c_[np.arange(90.0, 180.1, 3.0), np.zeros(31)]
+        t = np.linspace(0.0, 8.0, 5)
+        c = np.c_[90.0 + t * np.cos(0.35), t * np.sin(0.35)]
+        return [a, b, c]
+
+    def test_parts_meet_at_their_joint(self):
+        lines = self._y()
+        zs = roads.deck_profile(lines, flat, [(0, 60.0, 10.0)], levels=[1.0, 1.0, 1.0], widths=[8.5, 8.5, 6.0])
+        joint = [float(zs[0][-1]), float(zs[1][0]), float(zs[2][0])]
+        self.assertLess(max(joint) - min(joint), 0.05, joint)
+
+    def test_merge_never_lifts_a_deck_steeply_off_its_abutment(self):
+        lines = self._y()
+        zs = roads.deck_profile(lines, flat, [(0, 60.0, 10.0)], levels=[1.0, 1.0, 1.0], widths=[8.5, 8.5, 6.0])
+        s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(lines[0], axis=0).T))]
+        first = (zs[0][1] - zs[0][0]) / (s[1] - s[0])
+        self.assertLess(float(first), 0.25)
+
+
 class SemiApproachIntegrationTest(TestCase):
     def test_approach_and_generated_deck_clear_six_metres(self):
         fixture = approaches.OverpassIntegrationTest("test_deck_clears_the_lanes")
