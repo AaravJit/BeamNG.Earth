@@ -530,6 +530,22 @@ local function otherPlayers()
   return ok and list or nil
 end
 
+-- The map's weather + local-time badge (the player's spot): sky.lua's real local clock for the lat/lon, and the
+-- latest 'weather' message's code/temperature (weather.current(), a plain table; weather.status() is a dumps()
+-- string for the console, too slow to parse every second). nil when neither is up yet.
+local function localWeatherBadge()
+  local okS, sky = pcall(require, 'beamngEarth/sky')
+  local sst = okS and sky.status and sky.status()
+  local okW, weather = pcall(require, 'beamngEarth/weather')
+  local m = okW and weather.current and weather.current()
+  if not (sst and sst.localTime) and not m then return nil end
+  return {
+    localTime = sst and sst.localTime or nil,
+    code = m and m.code or nil,
+    tempC = m and (m.tempC or m.slTempC) or nil,
+  }
+end
+
 local mapPolledAt = nil    -- when the map last asked for its state (MAP_LOST_S)
 function M.uiMapState()
   mapPolledAt = os.clock()
@@ -547,6 +563,7 @@ function M.uiMapState()
     attribution = core and core.attribution and core.attribution() or '',
     creditsByArea = core and core.creditsByArea and core.creditsByArea() or nil,
     gps = require('beamngEarth/gps').status(),
+    weather = localWeatherBadge(),
   }
 end
 

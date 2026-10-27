@@ -16,6 +16,7 @@
           v-for="t in L.fallback"
           :key="L.id + t.key"
           class="map-tile"
+          :class="{ 'tile-dark': baseLayer === 'dark' && !L.overlay }"
           :src="t.src"
           :style="{ left: t.left + 'px', top: t.top + 'px', width: t.size + (L.overlay ? 0 : 1) + 'px', height: t.size + (L.overlay ? 0 : 1) + 'px' }"
           draggable="false"
@@ -24,6 +25,7 @@
           v-for="t in L.tiles"
           :key="L.id + ':' + t.key"
           class="map-tile"
+          :class="{ 'tile-dark': baseLayer === 'dark' && !L.overlay }"
           :src="t.src"
           :style="{ left: t.left + 'px', top: t.top + 'px', width: t.size + (L.overlay ? 0 : 1) + 'px', height: t.size + (L.overlay ? 0 : 1) + 'px' }"
           draggable="false"
@@ -90,6 +92,13 @@
     <!-- top bar: title, search, buttons -->
     <div class="map-top">
       <div class="map-title">BeamNG.Earth map</div>
+      <!-- the player's local time + weather (settings.uiMapState's weather: sky.lua's real clock for the lat/lon,
+           weather.lua's last message), 2026-10-27 -->
+      <div v-if="weatherBadge" class="weather-badge">
+        <span v-if="weatherBadge.icon">{{ weatherBadge.icon }}</span>
+        <span v-if="weatherBadge.tempC != null">{{ weatherBadge.tempC }}°C</span>
+        <span v-if="weatherBadge.localTime">{{ weatherBadge.localTime }}</span>
+      </div>
       <div class="search">
         <input
           ref="searchEl"
@@ -124,6 +133,7 @@
           <div class="panel-sub">Base map</div>
           <label class="layer-opt"><input type="radio" value="sat" v-model="baseLayer" /> Satellite</label>
           <label class="layer-opt"><input type="radio" value="map" v-model="baseLayer" /> Map</label>
+          <label class="layer-opt"><input type="radio" value="dark" v-model="baseLayer" /> Dark</label>
           <div class="panel-sub">Overlays</div>
           <label class="layer-opt"><input type="checkbox" v-model="labelsOn" /> Roads &amp; labels</label>
           <label class="layer-opt"><input type="checkbox" v-model="layersOn" /> Borders &amp; places
@@ -318,12 +328,17 @@ function poll() {
 const TILE_DIR = "/temp/beamngEarth/maptiles/"
 function stored(key, def) { try { const v = localStorage.getItem(key); return v === null ? def : v } catch (e) { return def } }
 function store(key, v) { try { localStorage.setItem(key, v) } catch (e) { /* storage blocked: not kept */ } }
-const baseLayer = ref(stored("beamngEarth.map.base", "sat") === "map" ? "map" : "sat")
+const BASE_LAYERS = new Set(["sat", "map", "dark"])
+const storedBase = stored("beamngEarth.map.base", "sat")
+const baseLayer = ref(BASE_LAYERS.has(storedBase) ? storedBase : "sat")
 const labelsOn = ref(stored("beamngEarth.map.labels", "0") === "1")
 watch(baseLayer, v => store("beamngEarth.map.base", v))
 watch(labelsOn, on => store("beamngEarth.map.labels", on ? "1" : "0"))
 const layersPanel = ref(false)
-const activeLayers = computed(() => (labelsOn.value ? [baseLayer.value, "labels"] : [baseLayer.value]))
+// "Dark" is not a tile source of its own: the "map" tiles (terrain-light, already hillshaded) through a CSS
+// filter (.tile-dark below) - the usual trick for a dark map without a dark-themed tile set of its own.
+const tileBaseLayer = computed(() => (baseLayer.value === "dark" ? "map" : baseLayer.value))
+const activeLayers = computed(() => (labelsOn.value ? [tileBaseLayer.value, "labels"] : [tileBaseLayer.value]))
 
 const readyTiles = ref({})                // layer -> Set of "z/x/y" whose file is there
 const NONE = new Set()
@@ -403,11 +418,19 @@ const notice = computed(() => {
   return ""
 })
 
+// the player's local time + weather, next to the title (state.weather: settings.uiMapState)
+const weatherBadge = computed(() => {
+  const w = state.value.weather
+  if (!w || (!w.localTime && w.code == null)) return null
+  return { icon: w.code != null ? mm.weatherIcon(w.code) : "", localTime: w.localTime || "",
+    tempC: w.tempC != null ? Math.round(w.tempC) : null }
+})
+
 const creditsFull = ref(false)          // the credits' whole text (else two lines)
 const attributionText = computed(() => {
   if (!state.value.mapPort) return ""
   const sat = baseLayer.value === "sat"
-  const parts = [mm.layerCredits(baseLayer.value, labelsOn.value)]   // the EOX map / labels layers shown
+  const parts = [mm.layerCredits(tileBaseLayer.value, labelsOn.value)]   // the EOX map / labels layers shown
   const cba = state.value.creditsByArea
   if (cba) {                                // only the imagery sources the view shows (the server's areas)
     const v = view.value
@@ -1230,6 +1253,12 @@ const fmtLatLon = mm.fmtLatLon
   pointer-events: none;
   image-rendering: auto;
 }
+/* "Dark" base layer: the "map" tiles (terrain-light, already hillshaded) inverted and hue-rotated back towards
+   blue/grey - relief stays visible, just dark instead of the light "paper" look (checked against a sample tile,
+   2026-10-27: a plain satellite dark mode lost the mountains, the user wanted them kept) */
+.map-tile.tile-dark {
+  filter: invert(1) hue-rotate(180deg) brightness(0.92);
+}
 .map-grid {
   position: absolute;
   left: 0;
@@ -1286,6 +1315,10 @@ const fmtLatLon = mm.fmtLatLon
 }
 .map-title {
   padding: 7px 12px; background: rgba(0, 0, 0, 0.7); border-radius: 4px; font-weight: 600; white-space: nowrap;
+}
+.weather-badge {
+  display: flex; gap: 7px; align-items: center; padding: 7px 12px; background: rgba(0, 0, 0, 0.7);
+  border-radius: 4px; white-space: nowrap; font-size: 13px;
 }
 .search { position: relative; flex: 1; max-width: 460px; }
 .search-input {
