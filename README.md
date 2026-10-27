@@ -37,7 +37,8 @@ You can help support development by reporting [issues](https://github.com/TecnaG
 - Night lighting: lit windows and street lamps after dusk.
 - Buildings from Overture / OpenStreetMap with regional styles (US siding and brick, Alpine chalets, Nordic
   wood, Mediterranean stucco, East Asian and Latin American looks), real heights, roofs, windows, shopfronts,
-  porches, churches with steeples, glass towers, far-away buildings drawn as a skyline.
+  porches, churches with steeples, glass towers. Buildings show out to about 3 miles: simpler versions past 1 mile,
+  and a light skyline beyond that; bridges show out to about 3 miles too.
 - Roads painted into the ground itself (no floating road surface), with lane markings, sidewalks and curbs, curb ramps, storm drains, cobblestone streets,
   traffic islands, roundabouts, rural motorways with shoulders and toll booths; the ground graded under them, with
   retaining walls where a road is cut into a hill (dry stone in the mountains and towns, concrete along major roads)
