@@ -582,6 +582,14 @@ class LayoutTest(unittest.TestCase):
         for t in ("Servicio Postal Mexicano", "H&m Land And Minerals", "fuel2U", "McDonald's", "Business Services",
                   "Shellfish Bar", "Sind Ofs Elet Trab IND Inst e Manut Elet Gas Hidr", "", None):
             self.assertFalse(gs._fuel_named(t), t)
+        # (the user, 2026-10-27: "it needs to work for around the world, we have players in Russia all over Europe")
+        for t in ("Лукойл", "АЗС №12", "Роснефть", "Газпромнефть", "Татнефть", "Заправка", "ORLEN", "MOL", "Circle K",
+                  "Neste", "OKQ8", "Preem", "St1", "Uno-X", "Petrom", "Rompetrol", "Slovnaft", "Benzina", "INA",
+                  "Petrol Ofisi", "Opet", "Tamoil", "WOG", "OKKO", "SOCAR", "čerpací stanice", "huoltoasema", "bensinstasjon",
+                  "Πρατήριο καυσίμων", "akaryakıt istasyonu", "stacja paliw Lotos", "benzinkút", "ÖMV", "Q8", "Teboil"):
+            self.assertTrue(gs._fuel_named(t), t)
+        for t in ("Почта России", "Molly's Pub", "Inazuma", "Circle Kitchen", "Neste Oyj headquarters office"[:4] + "rov"):
+            self.assertFalse(gs._fuel_named(t), t)
 
     def test_no_shop_no_site(self):
         st = gs.Station("st", 0.0, 200.0, "Shell", "Shell", ("p",), True)
