@@ -23,6 +23,7 @@ import logging
 import math
 import os
 import threading
+from collections import OrderedDict
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -123,6 +124,7 @@ APPROACH_FLAT_M = 20.0      # m from an abutment the deck needs its full clearan
 APPROACH_MARGIN_M = 0.3     # m over the clearance (the deck profile's smoothing takes a little off near its ends)
 APPROACH_SKIP = ("motorway", "trunk")   # never raised (nor their links): the overpasses over them are what is
 APPROACH_GAP_M = 1.0        # m of flat ground kept between a ramp's fill slope and the road beside it
+ENU_CACHE_MAX = 512         # cells' road parts in the anchor frame kept (Grader._cell_enu; ~0.02-0.5 MB each)
 APPROACH_CELL_M = 450.0     # m: a plan's end this far from a cell cannot raise what that cell's queries see
 APPROACH_CAP_GRADE = 0.10   # steepest grade a ramp falls at where a road beside it caps it (a cap alone dropped 3 m
                             # in 8 m by a side road north of the I-20 bridge near Temple, GA, 2026-10-20)
@@ -1087,13 +1089,45 @@ class Grader:
     def _cell_enu(self, k, ground=True):
         """Cell k's road parts in the anchor frame, made once: {"bridges": [line (k, 2)], "ends": (n, 2) bridge end
         points, "end_of": [bridge index per end], "ground": [(line, half width, cls)]} (the longest copy of each part).
-        With ground False, only the bridges (most plan ends touch none: their cells' ground roads are not needed)."""
+        With ground False, only the bridges (most plan ends touch none: their cells' ground roads are not needed).
+        Kept for the ENU_CACHE_MAX cells used last; a cell another thread is making is waited for (cleared whole at
+        128 cells, while the planning threads made the same cells at once, a 36-tile downtown Los Angeles set made
+        318 cells for 242, ~125 ms each, 2026-10-27)."""
+        key = (str(k), ground)
         with self.lock:
             if not hasattr(self, "enu_cache"):
-                self.enu_cache = {}
-            got = self.enu_cache.get((str(k), ground)) or (self.enu_cache.get((str(k), True)) if not ground else None)
-        if got is not None:
-            return got
+                self.enu_cache, self.enu_making = OrderedDict(), {}
+            while True:
+                got = self.enu_cache.get(key) or (self.enu_cache.get((str(k), True)) if not ground else None)
+                if got is not None:
+                    self.enu_cache.move_to_end(key if key in self.enu_cache else (str(k), True))
+                    return got
+                ev = self.enu_making.get(key)
+                if ev is None:
+                    ev = self.enu_making[key] = threading.Event()
+                    break
+                self.lock.release()
+                try:
+                    ev.wait(60.0)
+                finally:
+                    self.lock.acquire()
+                if key not in self.enu_cache and self.enu_making.get(key) is ev:    # (its maker gave up: make it here)
+                    break
+        try:
+            out = self._cell_enu_calc(k, ground)
+            with self.lock:
+                self.enu_cache[key] = out
+                self.enu_cache.move_to_end(key)
+                while len(self.enu_cache) > ENU_CACHE_MAX:
+                    self.enu_cache.popitem(last=False)
+            return out
+        finally:
+            with self.lock:
+                if self.enu_making.get(key) is ev:
+                    del self.enu_making[key]
+            ev.set()
+
+    def _cell_enu_calc(self, k, ground):
         parts = {}
         f = self.md.cell(k, layers=("roads",), kind="demand").layers.get("roads")
         if f is not None and len(f):
@@ -1154,13 +1188,8 @@ class Grader:
             for ring, out_ in [(r, rail_xy) for r in rail] + [(r, rail_gxy) for r in rail_g]:
                 out_.append(rxy[k0:k0 + len(ring)])
                 k0 += len(ring)
-        out = {"bridges": bridges, "bridge_cls": bcls, "ground": ground_l, "end_of": end_of,
-               "ends": np.asarray(ends, np.float64).reshape(-1, 2), "rail_bridges": rail_xy, "rail_ground": rail_gxy}
-        with self.lock:
-            if len(self.enu_cache) > 128:
-                self.enu_cache.clear()
-            self.enu_cache[(str(k), ground)] = out
-        return out
+        return {"bridges": bridges, "bridge_cls": bcls, "ground": ground_l, "end_of": end_of,
+                "ends": np.asarray(ends, np.float64).reshape(-1, 2), "rail_bridges": rail_xy, "rail_ground": rail_gxy}
 
     def _ground_table(self, keys, cs):
         """The ground road parts of the cells keys (cs: their _cell_enu), each once (the first copy, by its first point
