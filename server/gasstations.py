@@ -1196,6 +1196,11 @@ ONE_BLD_CLASSES = {"", "roof", "commercial"}    # (retail, apartments, homes, wa
 ONE_BLD_MAX_H_M = 9.0                       # Japanese canopies to 8.3 m; the next real building in the sample 10.8 m
 ONE_BLD_MIN_H_M = 4.5                       # (where a height is mapped) a canopy's clearance; a kiosk is lower (3.1 m)
 ONE_BLD_FILL = 0.6                          # area / its oriented box's (not an L: the roof slab would cut the rest)
+# (the user, 2026-10-27, Mexico City: "pillars on the side walks, it looks tacky") the outline is the lot, to the back
+# of the sidewalk: the canopy stands this far back from each side whose edge a public road's edge is within
+# ONE_BLD_ROAD_M of (a sidewalk and its verge)
+ONE_BLD_INSET_M = 3.0
+ONE_BLD_ROAD_M = 6.0
 
 # a fuel station's name (as well as STATION_WORDS): its brands and words in the map data's languages, whole words; a
 # Japanese service station's "SS" after its place name (南森町SS); never a bare "gas" (a union of gas fitters is no station)
@@ -1244,19 +1249,44 @@ def _pin_building(st, blds):
     return best[1] if best else None
 
 
+def _off_the_sidewalk(ring, roads):
+    """The canopy's box for a station's whole-lot outline: its oriented box, each side moved in ONE_BLD_INSET_M where a
+    public road's edge (centreline less its half width) is within ONE_BLD_ROAD_M of the side's middle, so
+    the pillars and the roof's edge stand on the forecourt, not on the sidewalk; the other sides stay (a neighbour's
+    wall). A side is moved in only while the box keeps half its width that way."""
+    c, u, hl, hw = _obox(ring)
+    v = np.array([-u[1], u[0]])
+    lo, hi = [-hl, -hw], [hl, hw]
+    for ax, d, h in ((0, u, hl), (1, v, hw)):
+        o = v if ax == 0 else u
+        oh = hw if ax == 0 else hl
+        for sg in (-1.0, 1.0):
+            pts = np.array([c + d * (sg * h)])          # (its middle: a side meeting the road only at its corner
+                                                        # runs along the lot, away from it)
+            edge = min((float(_seg_dist(pts, line[:-1], line[1:]).min()) - half for line, half in roads), default=np.inf)
+            if edge <= ONE_BLD_ROAD_M and (hi[ax] - lo[ax]) - ONE_BLD_INSET_M >= h:
+                if sg > 0:
+                    hi[ax] -= ONE_BLD_INSET_M
+                else:
+                    lo[ax] += ONE_BLD_INSET_M
+    corners = [c + u * x + v * y for x, y in ((lo[0], lo[1]), (hi[0], lo[1]), (hi[0], hi[1]), (lo[0], hi[1]))]
+    return np.array(corners + corners[:1], np.float64)
+
+
 def _one_building_site(st, blds, roads, service=(), style="default"):
     """The forecourt of a station mapped as one building around its pin (_pin_building), or None: a gas station (not a
     convenience brand alone) whose name or brand says fuel (_fuel_named: not an office in the gas station category);
     the building is its canopy (left out of the buildings, the islands under it as under a mapped canopy); its shop
     the nearest other building beside it (within PAD_SHOP_LINK_M: its office, the asphalt reaching it; not a home, a
     roof or across a public road), else the station is keyed by its own outline (one station per shop, _one_per_shop:
-    a block farther off is no shop of its, and two stations near it must not hide each other)."""
+    a block farther off is no shop of its, and two stations near it must not hide each other). The canopy stands back
+    from the sides that face a public road (_off_the_sidewalk)."""
     if not st.confirmed or not (_fuel_named(st.name) or _fuel_named(st.brand)):
         return None
     b = _pin_building(st, blds)
     if b is None:
         return None
-    canopy = Bld(b.id, b.ring, "roof", b.name, b.src, b.height)
+    canopy = Bld(b.id, _off_the_sidewalk(b.ring, roads), "roof", b.name, b.src, b.height)
     others = [o for o in blds if o.id != b.id]
     c = _centre(b.ring)
     shops = [(_gap(o.ring, b.ring), o.id, o) for o in others

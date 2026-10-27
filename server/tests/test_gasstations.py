@@ -494,6 +494,27 @@ class LayoutTest(unittest.TestCase):
         site = gs.layout(st, [bld, far] + tight, ROAD)
         self.assertEqual(site.shop_id, "bld:bld")
 
+    def test_one_building_pillars_off_the_sidewalk(self):
+        # (the user, 2026-10-27, Mexico City's two stations: "pillars on the side walks, it looks tacky") an outline of the
+        # whole station runs to the lot line at the back of the sidewalk: the canopy stands back from every side that
+        # faces a public road, so no pillar or roof edge is on the sidewalk
+        st = gs.Station("en", 0.0, 15.0, "ENEOS", "ENEOS", ("p",), True)
+        bld = rect("bld", 0.0, 15.0, 20.0, 15.0)            # front at y = 7.5: the road's edge at 5, a 2.5 m sidewalk
+        tight = [rect("w", -16.0, 25.0, 10.0, 30.0, cls="apartments"), rect("e", 16.0, 25.0, 10.0, 30.0, cls="apartments")]
+        site = gs.layout(st, [bld] + tight, ROAD)
+        self.assertIsNotNone(site)
+        self.assertEqual(site.drop_ids, ("bld",))
+        pillars = [p for p in site.props if p["shape"] == gs._PILLAR]
+        self.assertTrue(pillars)
+        for p in pillars:
+            self.assertGreaterEqual(p["y"], 7.5 + gs.ONE_BLD_INSET_M - 0.01, p)
+        roof = next(p for p in site.props if p["shape"] == gs._ROOF)
+        self.assertAlmostEqual(roof["yaw"] % 180.0, 0.0)          # (lanes along y: the slab unturned, its y half scale[1])
+        front = roof["y"] - roof["scale"][1] * gs.ROOF_HALF[1]
+        self.assertGreaterEqual(front, 7.5 + 1.0, roof)
+        # a side against a neighbour, not a road, keeps its place: the roof reaches the back (y = 22.5)
+        self.assertGreaterEqual(roof["y"] + roof["scale"][1] * gs.ROOF_HALF[1], 22.5)
+
     def test_one_building_never_over_a_working_layout(self):
         # a pin inside an unclassed shop with a mapped canopy beside it: laid out as before (the shop stays a building)
         shop = rect("shop", 0.0, 45.0, 20.0, 18.0)
