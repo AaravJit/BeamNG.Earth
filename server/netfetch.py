@@ -188,7 +188,7 @@ POLICIES = {
     # Photon (komoot's OpenStreetMap geocoder, made for search-as-you-type; geocode.py): the map's search box,
     # debounced and cached; a modest rate, a daily cap (fair use of a free public service)
     "photon.komoot.io": HostPolicy(rate=2.0, burst=4.0, max_conc=1, daily_budget=2000, daily_hard=3000,
-                                   cache_ttl=7 * DAY, miss_ttl=None, max_wait=5.0, timeout=8.0, max_attempts=1, optional=True),
+                                   cache_ttl=7 * DAY, miss_ttl=None, max_wait=5.0, timeout=12.0, max_attempts=1, optional=True),
     # OSRM on OpenStreetMap by FOSSGIS (routing.py): one request per GPS destination or re-route; their fair use:
     # ~1 request a second at most, no bulk
     "routing.openstreetmap.de": HostPolicy(rate=0.5, burst=2.0, max_conc=1, daily_budget=300, daily_hard=500,
@@ -581,7 +581,8 @@ class Fetcher:
 
     # --- hosts and policies ------------------------------------------------------------------
     def policy(self, host):
-        return self.policies.get(host, self.default_policy)
+        # (a lane, "host#name": the host's own policy, its own bucket and breaker: get's lane)
+        return self.policies.get(host.split("#", 1)[0], self.default_policy)
 
     def host(self, name):
         with self._lock:
@@ -708,11 +709,11 @@ class Fetcher:
             raise Deferred(f"{h.name}: bucket low, {kind} dropped", url, h.name)
         return h.sem
 
-    def _admit(self, url, kind):
+    def _admit(self, url, kind, lane=None):
         """Everything before the network: (Host, is_probe). The caller then _acquire()s per attempt."""
         if self.offline_flag:
             raise Offline(f"offline: {url}", url, host_of(url))
-        h = self.host(host_of(url))
+        h = self.host(host_of(url) + ("#" + lane if lane else ""))
         self._check_policy(h, url, kind)
         self._check_budget(h, url, kind)
         ok, probe, wait = h.breaker.allow()
@@ -735,9 +736,11 @@ class Fetcher:
         with self._rng_lock:
             return self.rng.uniform(0.0, min(p.max_delay, p.base_delay * 2 ** attempt))
 
-    def get(self, url, *, kind="demand", headers=None):
-        """GET url under its host's policy: a Response with status 2xx, or one of the errors above."""
-        h, probe = self._admit(url, kind)
+    def get(self, url, *, kind="demand", headers=None, lane=None):
+        """GET url under its host's policy: a Response with status 2xx, or one of the errors above. lane: a name of
+        its own (its own rate bucket, breaker and day's count under the host's policy): one kind of request whose
+        failures must not shut another out (the status bar's town lookups and the map's search, GitHub #350)."""
+        h, probe = self._admit(url, kind, lane)
         p = h.policy
         attempts = 1 if probe else max(1, p.max_attempts)
         hd = self.headers(h.name, headers)

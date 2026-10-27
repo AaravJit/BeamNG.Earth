@@ -381,6 +381,17 @@ class RetryAfterTest(unittest.TestCase):
             f.get(url(MT))
         self.assertEqual(f.unavailable_hosts(), [MT])
 
+    def test_a_lane_has_its_own_breaker_under_the_hosts_policy(self):
+        """GitHub #350: the status bar's town lookups timed out, opened photon.komoot.io's breaker and the map's
+        search said 'unavailable'. A lane is the host's policy with its own bucket and breaker."""
+        P = "photon.komoot.io"
+        f, clock, sleep, tr = fetcher()
+        f.host(P + "#reverse").breaker.trip(60)
+        with self.assertRaises(nf.HostUnavailable):
+            f.get(f"https://{P}/reverse?lat=1&lon=2", lane="reverse")
+        self.assertEqual(f.get(f"https://{P}/api/?q=x").body, b"data")          # search: still open
+        self.assertIs(f.host(P + "#reverse").policy, f.host(P).policy)
+
     def test_optional_hosts_left_out_of_the_status(self):
         """GitHub #23: SourceForge (gravity only) blocked in the player's country showed "Degraded" for good."""
         f, clock, sleep, tr = fetcher()
