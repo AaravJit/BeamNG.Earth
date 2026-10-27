@@ -320,7 +320,9 @@ M.PORTAL_EVENT = 'event:>Snapshot Events>Snapshot_WC_Tunnel_Highway_In_01'
 -- refinery tower sounds, "fans and monitors" to the user's ear, 2026-10-26)
 local WC = 'event:>Ambient>Maps>West Coast>'
 M.POINTS = { [4] = M.PORTAL_EVENT, [5] = WC .. 'Refinery_Tower_Engines', [6] = WC .. 'Refinery_Tower_Large',
-  [7] = WC .. 'Refinery_Tower_Small' }
+  [7] = WC .. 'Refinery_Tower_Small', [8] = WC .. 'Power Plant_2' }
+-- a point kind's volume (else 1): the power plant's, quieter (the user, 2026-10-26: "just quieter")
+M.POINT_VOLUME = { [8] = 0.35 }
 local spaces = {}       -- road tile key -> { { id, row }, ... }
 M.spacesMade = 0
 
@@ -352,7 +354,10 @@ function M.onSpaces(key, flat)
       placeSpace(o, r)
       o.canSave = false
       o:registerObject('bngEarthSpace_' .. (M.spacesMade + 1))
-      if ev then o:play() end
+      if ev then
+        o:play()
+        if M.POINT_VOLUME[r[1]] then o:setVolumePitchCT(M.POINT_VOLUME[r[1]], 1, 0, 0) end
+      end
       list[#list + 1] = { id = o:getId(), row = r }
       M.spacesMade = M.spacesMade + 1
     end

@@ -19,6 +19,11 @@ GRID_M = 150.0
 UP_M = 5.0
 NAME_WORDS = re.compile(r"refin|raffin|rafin|нефтеперераб", re.I)
 PLANT_CLASSES = ("industrial", "works")
+# Power plants that look like ones (the user, 2026-10-26: West Coast USA's power plant sound "just quieter", "at
+# locations that look like power plants"): areas mapped as plants (Overture infrastructure class plant, or land use
+# tagged power=plant) burning fuel or nuclear, by plant:source / generator:source (solar, wind and hydro farms and
+# plants of no stated source are left out); their sound on the same grid (the mod plays it quieter: ambience.lua)
+THERMAL = re.compile(r"coal|gas|oil|diesel|nuclear|biomass|biogas|biofuel|waste|geothermal|lignite|peat", re.I)
 
 _data = None
 _lock = threading.Lock()
@@ -106,5 +111,60 @@ def refinery_sound_rows(frame, tx, ty, md, elev):
     for (x, y), zz in zip(p, np.asarray(z)):
         n = int(np.floor(x / GRID_M) + np.floor(y / GRID_M)) % len(roads.SOUND_REFINERY)
         out += [float(roads.SOUND_REFINERY[n]), round(float(x), 2), round(float(y), 2), round(float(zz) + UP_M, 2),
+                0.0, 0.0, 0.0, 0.0]
+    return out
+
+
+def power_plant_sound_rows(frame, tx, ty, md, elev):
+    """The fuel-burning / nuclear power plants' sound points in road tile (tx, ty) (THERMAL; kind
+    roads.SOUND_POWER_PLANT), on the GRID_M grid inside them."""
+    import json
+    import roads
+    if md is None:
+        return []
+    x0, y0, x1, y1 = roads.tile_bbox(tx, ty)
+    kx = np.arange(np.floor(x0 / GRID_M), np.ceil(x1 / GRID_M))
+    ky = np.arange(np.floor(y0 / GRID_M), np.ceil(y1 / GRID_M))
+    gx, gy = np.meshgrid((kx + 0.5) * GRID_M, (ky + 0.5) * GRID_M)
+    pts = np.stack([gx.ravel(), gy.ravel()], -1)
+    pts = pts[(pts[:, 0] >= x0) & (pts[:, 0] < x1) & (pts[:, 1] >= y0) & (pts[:, 1] < y1)]
+    if not len(pts):
+        return []
+    inside = np.zeros(len(pts), bool)
+    seen = set()
+    for key in roads.cells_of_tile(frame, tx, ty, margin=0.0):
+        cell = md.cell(key, layers=("infrastructure", "land_use"), kind="demand")
+        for layer in ("infrastructure", "land_use"):
+            f = cell.layers.get(layer)
+            if f is None or not len(f.kind) or f.attrs.get("tags") is None:
+                continue
+            cls, tags = f.attrs.get("class"), f.attrs["tags"]
+            xy = None
+            for i in np.flatnonzero(f.kind == 3):
+                t = str(tags[i])
+                if f.ids[i] in seen or not ((layer == "infrastructure" and cls is not None and str(cls[i]) == "plant")
+                                            or '"power":"plant"' in t):
+                    continue
+                try:
+                    d = json.loads(t) if t.startswith("{") else {}
+                except ValueError:
+                    d = {}
+                if not THERMAL.search(str(d.get("plant:source") or d.get("generator:source") or "")):
+                    continue
+                seen.add(f.ids[i])
+                xy = f.xy_in(frame) if xy is None else xy
+                for part in f.parts(i, xy):
+                    here = np.zeros(len(pts), bool)
+                    for ring in part:
+                        here ^= Path(ring).contains_points(pts)
+                    inside |= here
+    if not inside.any():
+        return []
+    p = pts[inside]
+    pla, plo, _ = frame.enu_to_geodetic(p[:, 0], p[:, 1], np.zeros(len(p)))
+    _, _, z = frame.geodetic_to_enu(pla, plo, np.asarray(elev(pla, plo), np.float64))
+    out = []
+    for (x, y), zz in zip(p, np.asarray(z)):
+        out += [float(roads.SOUND_POWER_PLANT), round(float(x), 2), round(float(y), 2), round(float(zz) + UP_M, 2),
                 0.0, 0.0, 0.0, 0.0]
     return out

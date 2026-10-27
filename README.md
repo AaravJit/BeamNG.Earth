@@ -30,7 +30,7 @@ You can help support development by reporting [issues](https://github.com/TecnaG
 - Forest and river sounds: the stock maps' wind in the trees (louder and fuller in dense, tall forest) and background
   sound, the set by climate (Köppen-Geiger zones: temperate, oceanic, Mediterranean, desert, tropical), running water along
   rivers and streams, waves along coasts and large lakes, the stock tunnel, under-bridge and parking garage echo, refinery
-  machinery, and rain you can hear.
+  machinery and power plants, and rain you can hear.
 - Pump jacks at oil wells (OpenStreetMap), animated, with their sounds.
 - Buildings from Overture / OpenStreetMap with regional styles (US siding and brick, Alpine chalets, Nordic
   wood, Mediterranean stucco, East Asian and Latin American looks), real heights, roofs, windows, shopfronts,
