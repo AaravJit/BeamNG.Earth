@@ -558,6 +558,23 @@ class LayoutTest(unittest.TestCase):
                   gs.Station("u", 0.0, 25.0, "Sind Ofs Elet Trab IND Inst e Manut Elet Gas Hidr", "", ("p",), True)):
             self.assertIsNone(gs._one_building_site(s, [bld] + tight, ROAD), s.name)
 
+    def test_one_building_needs_a_trusted_station(self):
+        # (the user, 2026-10-27, a Google Maps view of Ginza 8-chome: an office block, "I dont think that is a gas
+        # station") a single old listing (Meta, 0.77: Showa Shell Shinbashi, a brand gone since 2023) put a station in
+        # an office: with no mapped canopy to confirm it, a building around the pin needs a record that is current
+        mk = lambda pid, conf, src: gs.Pin(pid, 0.0, 15.0, "ENEOS", "ENEOS", "", True, False, False, conf, src)
+        self.assertFalse(gs.merge([mk("a", 0.77, "meta")])[0].trusted, "one listing under TRUST_CONF")
+        self.assertTrue(gs.merge([mk("a", 0.95, "meta")])[0].trusted, "a confident one")
+        self.assertTrue(gs.merge([mk("a", 0.80, "AllThePlaces")])[0].trusted, "a brand's own store finder")
+        b = gs.Pin("b", 5.0, 15.0, "ENEOS", "ENEOS", "", True, False, False, 0.6, "Foursquare")
+        self.assertTrue(gs.merge([mk("a", 0.77, "meta"), b])[0].trusted, "two sources")
+        st = gs.Station("en", 0.0, 17.0, "ENEOS", "ENEOS", ("p",), True, False)
+        bld = rect("bld", 0.0, 17.0, 20.0, 15.0)
+        tight = [rect("w", -16.0, 25.0, 10.0, 30.0, cls="apartments"), rect("e", 16.0, 25.0, 10.0, 30.0, cls="apartments")]
+        self.assertIsNone(gs._one_building_site(st, [bld] + tight, ROAD), "untrusted: no canopy over an office")
+        self.assertIsNotNone(gs._one_building_site(gs.Station("en", 0.0, 17.0, "ENEOS", "ENEOS", ("p",), True, True),
+                                                   [bld] + tight, ROAD))
+
     def test_fuel_named(self):
         for t in ("Pemex", "BR", "Ipiranga", "Gasolineria San Jeronimo", "ENEOS Dr.Drive 梅田店", "Jx日鉱日石リテールサービス",
                   "北海道エネルギー 札幌大通Ss", "西新橋SS", "Agip Service-Station", "Esso", "Posto de Gasolina Ruckert"):

@@ -80,6 +80,15 @@ class Pin:
     gas: bool
     fuel_brand: bool
     conv_brand: bool
+    confidence: float = 1.0     # Overture's (how sure its sources are the place exists and is open)
+    src: str = ""               # its first source's dataset (meta, Foursquare, AllThePlaces, Microsoft...)
+
+
+# (the user, 2026-10-27: Ginza 8-chome, an office block, "I dont think that is a gas station") a single old listing
+# (Meta, 0.77: Showa Shell Shinbashi, a brand gone since 2023) is no proof a station is there; a station is trusted
+# when a brand's own store finder lists it (AllThePlaces), a record is at least TRUST_CONF sure, or two sources agree
+TRUST_CONF = 0.8
+TRUST_SOURCES = {"AllThePlaces"}
 
 
 @dataclass(frozen=True)
@@ -91,6 +100,7 @@ class Station:
     brand: str
     pins: tuple
     confirmed: bool     # a gas_station pin or a fuel brand; else a convenience brand that needs a canopy
+    trusted: bool = True    # its records current (TRUST_CONF): a station mapped as one building needs it
 
 
 def pins(frame, layers):
@@ -118,8 +128,12 @@ def pins(frame, layers):
             if xy is None:
                 xy = f.xy_in(frame)
             k = f.coord_off[f.ring_off[f.part_off[i]]]
+            try:
+                conf = float(col("confidence", i) or 1.0)
+            except ValueError:
+                conf = 1.0
             out.append(Pin(fid, float(xy[k, 0]), float(xy[k, 1]), col("name", i), col("brand_name", i),
-                           col("brand_wikidata", i), *c))
+                           col("brand_wikidata", i), *c, conf, col("src_dataset", i)))
     return out
 
 
@@ -188,7 +202,9 @@ def merge(ps, merge_m=MERGE_M):
                                          or named.brand),       # (the list's name: Overture's can be another store's)
                            named.brand or FUEL_BRANDS.get(named.wikidata)
                            or CONV_BRANDS.get(named.wikidata, ""), tuple(ids),
-                           any(p.gas or p.fuel_brand for p in g)))
+                           any(p.gas or p.fuel_brand for p in g),
+                           any(p.confidence >= TRUST_CONF or p.src in TRUST_SOURCES for p in g)
+                           or len({p.src for p in g}) >= 2))
     return sorted(out, key=lambda s: s.id)
 
 
@@ -1275,13 +1291,14 @@ def _off_the_sidewalk(ring, roads):
 
 def _one_building_site(st, blds, roads, service=(), style="default"):
     """The forecourt of a station mapped as one building around its pin (_pin_building), or None: a gas station (not a
-    convenience brand alone) whose name or brand says fuel (_fuel_named: not an office in the gas station category);
+    convenience brand alone) whose name or brand says fuel (_fuel_named: not an office in the gas station category)
+    and whose records are current (Station.trusted: with no mapped canopy, an old listing would put it in an office);
     the building is its canopy (left out of the buildings, the islands under it as under a mapped canopy); its shop
     the nearest other building beside it (within PAD_SHOP_LINK_M: its office, the asphalt reaching it; not a home, a
     roof or across a public road), else the station is keyed by its own outline (one station per shop, _one_per_shop:
     a block farther off is no shop of its, and two stations near it must not hide each other). The canopy stands back
     from the sides that face a public road (_off_the_sidewalk)."""
-    if not st.confirmed or not (_fuel_named(st.name) or _fuel_named(st.brand)):
+    if not st.confirmed or not st.trusted or not (_fuel_named(st.name) or _fuel_named(st.brand)):
         return None
     b = _pin_building(st, blds)
     if b is None:
