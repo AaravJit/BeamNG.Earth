@@ -2342,6 +2342,42 @@ end
 function M._state() return st end -- read-only: the dev tools and the settings page
 function M._rebaseLag() return rebaseLag end -- for tests
 function M._governor() return gov end
+-- The in-vehicle map app's session context. Read-only snapshot: map tiles are obtained through
+-- settings.mapTiles(list), which requests files under /temp rather than using CEF HTTP.
+function M.dashboardContext()
+  local player
+  local pl = st.player
+  if pl then
+    player = { lat = pl.lat, lon = pl.lon, speed = pl.speed } -- speed is m/s
+    local veh = getPlayerVehicle and getPlayerVehicle(0)
+    if veh then
+      local ok, dir = pcall(function() return veh:getDirectionVector() end)
+      if ok and dir and math.abs(dir.x) + math.abs(dir.y) >= 1e-6 then
+        local heading = math.deg(math.atan2(dir.x, dir.y))
+        local anchor = st.anchor
+        if anchor and anchor.northAt then
+          local okN, nx, ny = pcall(anchor.northAt, anchor, pl.x, pl.y)
+          if okN and tonumber(nx) and tonumber(ny) then heading = heading - math.deg(math.atan2(nx, ny)) end
+        end
+        player.heading = (heading + 360) % 360 -- degrees clockwise from true north
+      end
+    end
+  end
+  local creditsByArea
+  if type(serverCreditsByArea) == 'table' then
+    creditsByArea = {}
+    for k, v in pairs(serverCreditsByArea) do creditsByArea[k] = v end
+  end
+  return {
+    active = st.inOurLevel == true,
+    connected = net.isConnected(),
+    mapPort = st.mapPort,
+    attribution = attributionText(farfield.counters()),
+    imageryCreditsByArea = creditsByArea,
+    otherCredits = serverOtherCredits,
+    player = player,
+  }
+end
 
 -- The Roads setting: off removes them; on again asks the server to send the tiles once more.
 function M.setRoadsEnabled(on)

@@ -299,6 +299,7 @@ const settingsSchema = [
     name: "Interface",
     items: [
       { id: "hudVisible", type: "bool", default: false, name: "Status HUD", desc: "Show the compact BeamNG.Earth status window (connection, anchor, far field, quick buttons). Also whether it opens at level start." },
+      { id: "dashboardSatellite", type: "bool", default: true, name: "Satellite map on dashboard", desc: "Show BeamNG.Earth satellite imagery on compatible vehicle dashboard screens. Off restores the stock dashboard page." },
       { id: "creditsVisible", type: "bool", default: true, name: "Data credits on screen", desc: "Small text in a screen corner naming the sources of the imagery, elevation and weather around you right now (the far field's own sources on a second line). On by default: CC BY and similar licences ask for visible attribution. Hidden in the pause menu and the big map." },
       { id: "creditsCorner", type: "select", default: "bottom-left", name: "Data credits corner", desc: "The screen corner of the data credits.",
         options: [ { label: "Bottom left", value: "bottom-left" }, { label: "Bottom right", value: "bottom-right" }, { label: "Top left", value: "top-left" }, { label: "Top right", value: "top-right" } ] },
