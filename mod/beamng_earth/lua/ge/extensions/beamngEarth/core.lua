@@ -1569,7 +1569,10 @@ local function minimapNorth()
   return st.anchor:northAt(cx, cy)
 end
 local function drawUi(dt)
-  ui.draw(buildView(), { teleport = M.teleport, setRebaseDistance = M.setRebaseDistance })
+  -- the window's view only while it is shown: buildView walks every far tile (farfield.stats) and makes its tables, and
+  -- the window is hidden by default (settings hudVisible), where ui.draw returns at once (in-game 2026-10-26, Fells
+  -- Point, ~400 far tiles: drawUi 0.085-0.089 -> 0.009-0.011 ms a frame, 2.4 KB less garbage a frame)
+  if ui.visible then ui.draw(buildView(), { teleport = M.teleport, setRebaseDistance = M.setRebaseDistance }) end
   -- each element drawn by imgui unless its UI app is on screen (hudapps.lua)
   if not hudapps.mounted('credits') then credits.draw(st.active, creditsFallback) end
   updateBanner(dt)

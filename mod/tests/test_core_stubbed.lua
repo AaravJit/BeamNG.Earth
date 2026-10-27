@@ -817,6 +817,20 @@ T.check(cs.clears == 1 and cs.clearedBytes == 1034567890 and cs.usedBytes == 2e8
 serverSend({ type = 'cache', v = 1, usedBytes = 210000000, capBytes = 0, files = 13, ready = true, managed = true })
 frames(2)
 T.check(core.cacheState().clears == 1 and core.cacheState().clearedBytes == 1034567890, 'later usage keeps the last clear')
+
+do -- the window gets its view only while it is shown: it is hidden by default (settings hudVisible), and building
+   -- one walks every far tile (farfield.stats) each frame
+  local ui = require('beamngEarth/ui')
+  local draw, vis0, views = ui.draw, ui.visible, {}
+  ui.draw = function(view, actions) views[#views + 1] = view; return draw(view, actions) end
+  ui.visible = false
+  frames(5)
+  T.check(#views == 0, 'hidden window: no view built')
+  ui.visible = true
+  frames(1)
+  T.check(#views == 1 and type(views[1].connection) == 'string', 'shown window: its view built')
+  ui.draw, ui.visible = draw, vis0
+end
 core.reconnect()
 T.check(core.cacheState() == nil and not core.cacheClear(), 'disconnected: numbers gone, no request sent')
 beamngEarth_settings = nil
