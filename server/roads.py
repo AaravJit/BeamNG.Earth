@@ -2612,8 +2612,10 @@ def tile_needs(frame, tx, ty, buildings=True, widths=True, water_ring=0):
     needs = [(k, ly) for k in sorted(keys) for ly in tile]
     needs += [(k, "roads") for k in ring(1) if k not in own]
     # (and the ring past that: gradesep reads the neighbours of every cell whose level ranges are asked, the ring's too)
-    r1 = set(ring(1))
-    needs += [(k, "roads") for k in ring(2) if k not in r1]
+    import gradesep
+    if gradesep.ON:
+        r1 = set(ring(1))
+        needs += [(k, "roads") for k in ring(2) if k not in r1]
     if widths:      # the walls of the cells the ring's roads cross, each with its neighbours' buildings
         needs += [(k, "buildings") for k in ring(2) if k not in own]
     if water_ring:

@@ -12,6 +12,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import geodesy  # noqa: E402
 import gradesep  # noqa: E402
+
+gradesep.ON = True      # (off by default: these test the rule itself)
 import mapcells  # noqa: E402
 import roads  # noqa: E402
 from test_roads import LAT, LON, features  # noqa: E402
@@ -82,12 +84,11 @@ class HeightsTest(unittest.TestCase):
         self.assertEqual([k for _, _, k in roads.level_ranges(f, 0)], ["tunnel"])
 
     def test_off(self):
-        on = gradesep.ON
         gradesep.ON = False
         try:
             self.assertEqual(roads.level_ranges(hooked(cross(), embankment), 0), [])
         finally:
-            gradesep.ON = on
+            gradesep.ON = True
 
 
 class ShortTunnelTest(unittest.TestCase):

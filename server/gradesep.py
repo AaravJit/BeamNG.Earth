@@ -25,7 +25,11 @@ import railways
 
 log = logging.getLogger("earthd.gradesep")
 
-ON = os.environ.get("BNE_GRADESEP", "on") != "off"
+# Off by default (2026-10-27 in-game A/B on fresh caches): every cell whose level ranges are asked reads its eight
+# neighbours, and grading asks a ring of cells round a road tile, so a first visit read about twice the roads cells
+# (PC: +7-12 s to the first road tile; Steam Deck, no warm-up threads: first road tile 141 s against 91 s off).
+# BNE_GRADESEP=on turns it on.
+ON = os.environ.get("BNE_GRADESEP", "off") == "on"
 VERSION = 1             # in MapData.versions(): every cell's ranges (cell_facts) and tiles made again on a change
 DEM_ZOOM = 15
 SEP_M = 4.0             # m the upper line's ground stands above the lower one's (medians of four heights each)

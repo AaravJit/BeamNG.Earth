@@ -1121,8 +1121,9 @@ class TileNeedsTest(unittest.TestCase):
         self.assertEqual(far, list(range(far[0], len(needs))), "the water ring last")
         bare = roads.tile_needs(frame, 0, 0, buildings=False, widths=False, water_ring=0)
         self.assertEqual({ly for _, ly in bare}, {"roads", "infrastructure"})
-        # (two rings of roads: grading's neighbours, and gradesep's neighbours of those)
-        self.assertEqual(sorted({k.x for k, ly in bare if ly == "roads"}), list(range(xs[0] - 2, xs[-1] + 3)))
+        import gradesep
+        r = 2 if gradesep.ON else 1     # (grading's ring of roads; gradesep's neighbours of those when it is on)
+        self.assertEqual(sorted({k.x for k, ly in bare if ly == "roads"}), list(range(xs[0] - r, xs[-1] + r + 1)))
 
 
 class InGroundTest(unittest.TestCase):
