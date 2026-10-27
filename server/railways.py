@@ -8,7 +8,8 @@ above 0) is a deck straight between the bed at its ends (deck_heights), raised o
 come through, never steeper than GRADE. Where it is raised, its height reaches out along the track it joins, falling
 GRADE per metre: the approach embankments, across segment ends and tile edges alike (the lines are taken from REACH_M
 around the tile). The ballast's sides go down past the ground, a low
-embankment on the flat and a tall one on a ramp. Where a road crosses at grade, the track stops either side of the
+embankment on the flat and a tall one on a ramp. Short mapped road tunnels also create supported spans when the upper rail lacks a bridge tag.
+Where a road crosses at grade, the track stops either side of the
 carriageway (a level crossing: the road's own surface across it). Tunnels are left out. Pure given its inputs."""
 import numpy as np
 
@@ -113,6 +114,8 @@ def grade_plans(frame, cells, box, elev):
     """[(fid, xy (k, 2), z (k,))]: the bed line of each on-ground rail part near box, in elev's heights (elev(lat, lon):
     the grader's DEM), for grading.Grader to lay the ground to (the cutting's walls back from the track, the ramps'
     embankments filled). tile_mesh then finds the ground at its bed. Pure given elev."""
+    cells = list(cells)
+    tunnels = road_underpasses(frame, cells, box, GRADE_REACH_M)
     rails = parts(frame, cells, box, reach=GRADE_REACH_M, clip=True)
     if not rails:
         return []
@@ -136,7 +139,7 @@ def grade_plans(frame, cells, box, elev):
         return out
     pad = GRADE_HALF_M + 15.0
     out = []
-    for (fid, _c, kind, xy), (zb, _zg) in zip(rails, profile(rails, ground)):
+    for (fid, _c, kind, xy), (zb, _zg) in zip(rails, profile(rails, ground, tunnels)):
         if kind != "ground":
             continue
         if _box_hit((xy[:, 0].min(), xy[:, 1].min(), xy[:, 0].max(), xy[:, 1].max()),
@@ -161,6 +164,7 @@ def parts(frame, cells, box, reach=REACH_M, clip=False):
     Each part must intersect that window: a feature's bbox can cover far-away bridges or a long bend around it.
     clip: the ground parts cut to their points within reach of box (a segment of line runs on for km, and every one of
     its points was profiled for each cell and tile: _clip); the bridges stay whole (a deck runs between its ends)."""
+    cells = list(cells)
     near = (box[0] - reach, box[1] - reach, box[2] + reach, box[3] + reach)
     seen, out = set(), []
     for feats in cells:
@@ -192,7 +196,126 @@ def parts(frame, cells, box, reach=REACH_M, clip=False):
                         out.append((fid, c, kind, xy))
     out.sort(key=lambda p: (p[0], p[2], float(p[3][0, 0]), float(p[3][0, 1])))
     out = _drop_stubs(out)
+    out = _span_underpasses(out, road_underpasses(frame, cells, box, reach))
     return _clip(out, near) if clip else out
+
+
+
+# A short road tunnel may be tagged only on the lower road, with no bridge flag on
+# the railway above. Its ballast and grading must not fill the lower carriageway.
+UNDERPASS_CLEAR_M = 3.6
+UNDERPASS_SIDE_M = 1.0
+UNDERPASS_MIN_SIN = 0.25    # conservatively exclude near-parallel tracks beside a tunnel
+
+
+def road_underpasses(frame, cells, box, reach=REACH_M):
+    """Short mapped road tunnels near box as (xy, half width), each part once."""
+    near = (box[0] - reach, box[1] - reach, box[2] + reach, box[3] + reach)
+    out, seen = [], set()
+    for feats in cells:
+        if feats is None or not len(feats):
+            continue
+        specs = roads.tunnel_specs(feats)
+        boxes = feats.boxes(frame)
+        for i, sp in enumerate(specs):
+            if sp is None or not _box_hit(boxes[i], near):
+                continue
+            for ring in roads.tunnel_parts(feats, i):
+                e, n = mapgeom.enu_xy(feats, frame, ring)
+                xy = np.c_[e, n]
+                if len(xy) < 2 or _arc(xy)[-1] > roads.UNDERPASS_MAX_M:
+                    continue
+                key = (str(feats.ids[i]), tuple(np.round(xy[[0, -1]].ravel(), 2)))
+                if key not in seen:
+                    seen.add(key)
+                    out.append((xy, sp.width / 2 + UNDERPASS_SIDE_M))
+    return out
+
+
+def _underpass_distance(xy, line):
+    """Distance to a finite tunnel centreline, and fraction along it, per point."""
+    s = _arc(line)
+    dist = np.full(len(xy), np.inf)
+    along = np.zeros(len(xy))
+    for j, (a, b) in enumerate(zip(line[:-1], line[1:])):
+        d = b - a
+        length = float(np.hypot(*d))
+        if length < 1e-6:
+            continue
+        t = np.clip((xy - a) @ d / (length * length), 0.0, 1.0)
+        dd = np.linalg.norm(xy - (a + t[:, None] * d), axis=1)
+        take = dd < dist
+        dist[take] = dd[take]
+        along[take] = (s[j] + t[take] * length) / max(s[-1], 1e-6)
+    return dist, along
+
+
+def _underpass_masks(rails, line, half, margin):
+    """Points near a tunnel, connected locally to a track that actually crosses it.
+
+    A crossing on one track must not qualify a neighbouring track. Connect only
+    the runs inside the tunnel's padded footprint: this preserves source-feature
+    splits without following a turnout or a returning track far outside it.
+    """
+    masks = [np.zeros(len(xy), bool) for *_, xy in rails]
+    candidates, runs, owners = [], [], []
+    pad = half + margin
+    near = (*(line.min(0) - pad), *(line.max(0) + pad))
+    direction = line[-1] - line[0]
+    for n, (*_, xy) in enumerate(rails):
+        covered = np.zeros(len(xy), bool)
+        if _box_hit((*xy.min(0), *xy.max(0)), near):
+            tangent = np.gradient(xy, axis=0)
+            cross = np.abs(tangent[:, 0] * direction[1] - tangent[:, 1] * direction[0])
+            cross /= np.maximum(np.linalg.norm(tangent, axis=1) * np.linalg.norm(direction), 1e-9)
+            distance, _ = _underpass_distance(xy, line)
+            covered = (distance <= pad) & (cross > UNDERPASS_MIN_SIN)
+        candidates.append(covered)
+        spans = covered[:-1] | covered[1:]
+        cuts = np.flatnonzero(np.diff(np.r_[False, spans, False]))
+        for a, b in zip(cuts[::2], cuts[1::2]):
+            runs.append(xy[a:b + 1])
+            owners.append((n, a, b))
+    crossings = roads._crossings(runs, [line])
+    if not crossings:
+        return masks
+    _nodes, edges, adj = roads._chain_graph(runs)
+    connected = {node for n, _s, _xy in crossings for node in edges[n][:2]}
+    pending = list(connected)
+    while pending:
+        for node, _length in adj[pending.pop()]:
+            if node not in connected:
+                connected.add(node)
+                pending.append(node)
+    for (n, a, b), (start, _end, _s) in zip(owners, edges):
+        if start in connected:
+            masks[n][a:b + 1] = candidates[n][a:b + 1]
+    return masks
+
+
+def _span_underpasses(rails, tunnels):
+    """Replace the ground track over mapped road tunnels with supported spans.
+
+    Keep the original sample lattice and shared endpoints, including across source
+    feature and tile boundaries. The margin keeps the approach ballast's feet out
+    of the carriageway as well as the bridge itself.
+    """
+    if not tunnels:
+        return rails
+    covered = [np.zeros(len(xy), bool) for *_, xy in rails]
+    for line, half in tunnels:
+        for keep, mask in zip(covered, _underpass_masks(rails, line, half, FOOT_MAX_M + STEP_M)):
+            keep |= mask
+    out = []
+    for (fid, cls, kind, xy), mask in zip(rails, covered):
+        if kind != "ground":
+            out.append((fid, cls, kind, xy))
+            continue
+        spans = mask[:-1] | mask[1:]
+        cuts = np.r_[0, np.flatnonzero(spans[1:] != spans[:-1]) + 1, len(spans)]
+        for a, b in zip(cuts[:-1], cuts[1:]):
+            out.append((fid, cls, "bridge" if spans[a] else kind, xy[a:b + 1]))
+    return out
 
 
 def _clip(rails, near):
@@ -368,8 +491,10 @@ def deck_heights(s, z_ground, z_start, z_end):
     return _envelope(s, req)
 
 
-def profile(rails, ground):
-    """Per part of rails (parts()): the bed line (k,) and the ground under it (k,). ground(xy (n, 2)) -> z."""
+def profile(rails, ground, underpasses=()):
+    """Per part: bed and ground heights. Underpasses reserve clearance above their lower road mouths.
+    ground(xy (n, 2)) -> z. The resulting deck heights propagate along connected approach ramps.
+    """
     if not rails:
         return []
     allxy = np.concatenate([xy for *_, xy in rails])
@@ -379,6 +504,12 @@ def profile(rails, ground):
         zgs.append(zg_all[k:k + len(xy)])
         k += len(xy)
     zb = [bed_heights(zg) if kind == "ground" else zg.copy() for (_, _, kind, _), zg in zip(rails, zgs)]
+    # Read the lower road at its mouths, not on the filled railway bed above it.
+    crossings = [(line, half, _underpass_masks(rails, line, half, DECK_HALF_M + STEP_M))
+                 for line, half in underpasses]
+    crossings = [(line, half, masks) for line, half, masks in crossings if any(m.any() for m in masks)]
+    mouths = np.concatenate([ln[[0, -1]] for ln, _hw, _masks in crossings]) if crossings else np.empty((0, 2))
+    mouth_z = np.asarray(ground(mouths), np.float64).reshape(-1, 2) if len(mouths) else []
     ends = {}                                   # node -> the ground parts' bed there (a bridge's ends)
     lines = [xy for *_, xy in rails]
     nodes, edges, adj = roads._chain_graph(lines)
@@ -394,6 +525,14 @@ def profile(rails, ground):
         za = float(np.mean(ends[a])) if a in ends else float(g[0])
         zb_ = float(np.mean(ends[b])) if b in ends else float(g[-1])
         zb[n] = deck_heights(_arc(xy), g, za, zb_)
+        for (line, _half, masks), (z0, z1) in zip(crossings, mouth_z):
+            over = masks[n]
+            if over.any():
+                _distance, t = _underpass_distance(xy, line)
+                req = zb[n].copy()
+                req[over] = np.maximum(req[over], z0 + (z1 - z0) * t[over]
+                                       + UNDERPASS_CLEAR_M + DECK_D - BALLAST_H)
+                zb[n] = _envelope(_arc(xy), req)
         for node, h in ((a, zb[n][0]), (b, zb[n][-1])):
             seeds[node] = max(seeds.get(node, -np.inf), float(h))
     if seeds:                                   # the decks' heights out along the track, GRADE per metre down
@@ -640,15 +779,17 @@ def tile_mesh(frame, tx, ty, cells, ground, sign_style=None, far_ground=None):
     ground(xy (n, 2)) -> z: the drawn ground in the frame. far_ground: the natural ground, read beyond GRADED_NEAR_M
     of the tile (the lines REACH_M round it only smooth the track and carry its ramps: the graded ground there made the
     grader plan the cells round every tile, and the railways doubled a tile's time, 2026-10-25)."""
+    cells = list(cells)
     box = roads.tile_bbox(tx, ty)
+    tunnels = road_underpasses(frame, cells, box)
     ground = _mixed(ground, far_ground, box)
     ex = (box[0] - roads.OVERLAP, box[1] - roads.OVERLAP, box[2] + roads.OVERLAP, box[3] + roads.OVERLAP)
     rails = parts(frame, cells, box, clip=True)
     if not any(_box_hit((xy[:, 0].min(), xy[:, 1].min(), xy[:, 0].max(), xy[:, 1].max()),
                         (ex[0] - STEP_M, ex[1] - STEP_M, ex[2] + STEP_M, ex[3] + STEP_M)) for *_, xy in rails):
         return None
-    prof = profile(rails, ground)
-    cr = crossings(frame, cells, box, reach=50.0)
+    prof = profile(rails, ground, tunnels)
+    cr = crossings(frame, cells, box, reach=50.0) + tunnels
     crossers = []
     if cr:                                          # (one ground call for all of them: its cost is per call)
         zc = np.asarray(ground(np.concatenate([ln for ln, _ in cr])), np.float64)
