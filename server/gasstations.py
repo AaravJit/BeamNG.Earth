@@ -1227,8 +1227,9 @@ FUEL_WORDS = re.compile(r"\b(oil|petrol\w*|petro|gasolina|gasoline|service[- ]st
                         r"ampol|engen|sasol|puma|kobil|hidrosina|cosmo|idemitsu|apollostation|eneos|ptt|orlen|lotos|mol|"
                         r"circle k|neste|okq8|preem|st1|uno-x|ingo|statoil|teboil|petrom|rompetrol|slovnaft|benzina|ina|"
                         r"opet|tamoil|wog|okko|socar|čerpací stanice|benzinárna|huoltoasema|bensinstasjon|bensinstation|"
-                        r"akaryakıt)\b|石油|日石|ガソリン|スタンド|エネオス|コスモ|出光|ปตท|азс|агзс|заправ|нефт|бензин|лукойл|"
-                        r"καυσίμ|πρατήριο",
+                        r"akaryakıt|jetoil|silkoil|revoil|elin|eko|aegean|avin|prio|retitalia)\b|"
+                        r"石油|日石|ガソリン|スタンド|エネオス|コスモ|出光|ปตท|азс|агзс|заправ|нефт|бензин|лукойл|"
+                        r"καυσίμ|πρατήριο|βενζιν|ελιν",
                         re.IGNORECASE)
 SS_WORD = re.compile(r"(?<![A-Za-z])(SS|Ss|ＳＳ)(?![A-Za-z])")
 

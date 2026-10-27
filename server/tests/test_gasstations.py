@@ -586,9 +586,10 @@ class LayoutTest(unittest.TestCase):
         for t in ("Лукойл", "АЗС №12", "Роснефть", "Газпромнефть", "Татнефть", "Заправка", "ORLEN", "MOL", "Circle K",
                   "Neste", "OKQ8", "Preem", "St1", "Uno-X", "Petrom", "Rompetrol", "Slovnaft", "Benzina", "INA",
                   "Petrol Ofisi", "Opet", "Tamoil", "WOG", "OKKO", "SOCAR", "čerpací stanice", "huoltoasema", "bensinstasjon",
-                  "Πρατήριο καυσίμων", "akaryakıt istasyonu", "stacja paliw Lotos", "benzinkút", "ÖMV", "Q8", "Teboil"):
+                  "Πρατήριο καυσίμων", "akaryakıt istasyonu", "stacja paliw Lotos", "benzinkút", "ÖMV", "Q8", "Teboil",
+                  "Α.Π. Βενζινάδικο", "Jetoil", "Silkoil", "Elin", "Ελιν", "EKO", "Aegean", "Revoil", "PRIO", "Retitalia"):
             self.assertTrue(gs._fuel_named(t), t)
-        for t in ("Почта России", "Molly's Pub", "Inazuma", "Circle Kitchen", "Neste Oyj headquarters office"[:4] + "rov"):
+        for t in ("Почта России", "Molly's Pub", "Inazuma", "Circle Kitchen", "Renault", "Garagem Manique", "Neste Oyj headquarters office"[:4] + "rov"):
             self.assertFalse(gs._fuel_named(t), t)
 
     def test_no_shop_no_site(self):
