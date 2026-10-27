@@ -64,6 +64,8 @@ class _State:
         self.surface = surfacemod.Surface(md) if surface else None
         if self.surface is not None:    # gas station forecourts painted asphalt (--gas-stations on)
             self.surface.gas_pads = bool(gas_stations)
+            if self.airports is not None:   # ... and the runways (GitHub #337)
+                self.surface.extra_pads = self.airports.runway_pads
         self.graders = {}           # anchor id -> grading.Grader
         self.chunks = {}            # anchor id -> heightmap.ChunkCache
         self.bridges = {}           # anchor id -> roads.BridgeProfiles (roads_tile)

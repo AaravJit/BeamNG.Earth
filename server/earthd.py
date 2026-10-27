@@ -733,6 +733,8 @@ class Server:
         # On-screen data credits (credits.py): a creditsmod.Credits, or None (--credits off; Server()'s default)
         self.credits = credits
         self.surface = surface      # surface.Surface: ground models under the physics block (--surface on)
+        if surface is not None and self.airports is not None:      # the runways painted in (GitHub #337)
+            surface.extra_pads = self.airports.runway_pads
         self.mapdata = mapdata      # mapdata.MapData for the roads (--roads on), else None
         self.grading = bool(grading) and mapdata is not None   # ground graded under roads (grading.py)
         # street widths measured between the buildings (roadwidth.py), decided once per road per run
