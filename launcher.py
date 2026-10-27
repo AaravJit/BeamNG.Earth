@@ -1115,7 +1115,14 @@ def run(args):
     row("Server log", log_path)
     beammp = None
     try:
-        beammp = None if args.no_game else beammp_up(user_dir, build, args)
+        try:
+            beammp = None if args.no_game else beammp_up(user_dir, build, args)
+        except OSError as e:
+            # (multiplayer is optional: a damaged BeamMP launcher folder, WinError 1392 "the file or directory is
+            # corrupted and unreadable", stopped the app before the game started, GitHub #282)
+            row("Multiplayer", f"BeamMP not started ({e}); if this repeats, delete the BeamMP-Launcher folder in "
+                               "%LOCALAPPDATA% (BeamNG.Earth downloads it again)")
+            beammp = None
         if args.no_game:
             say()
             say("Start BeamNG.drive and pick 'BeamNG.Earth' in Freeroam. Ctrl+C stops the server.")

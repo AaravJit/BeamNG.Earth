@@ -1147,6 +1147,13 @@ def _osm_sidewalks(feats, specs):
     return out
 
 
+def unbuilt(feats, i):
+    """Is feature i a road not built yet (OpenStreetMap's highway=construction / proposed: osmtags osm_highway)? Not
+    drawn, as on the stock map views (GitHub #184)."""
+    col = feats.attrs.get("osm_highway")
+    return col is not None and str(col[i]) in ("construction", "proposed")
+
+
 def _road_specs(feats, urban_fn, left_hand):
     out = []
     rules = feats.rules
@@ -1156,7 +1163,7 @@ def _road_specs(feats, urban_fn, left_hand):
     lens = _lengths(feats) if ncon is not None else None
     for i in range(len(feats)):
         cls = str(feats.attrs["class"][i]) if "class" in feats.attrs else "unknown"
-        if str(feats.attrs.get("subtype", ["road"] * len(feats))[i]) != "road" or cls not in STYLE:
+        if str(feats.attrs.get("subtype", ["road"] * len(feats))[i]) != "road" or cls not in STYLE or unbuilt(feats, i):
             out.append(None)
             continue
         rngs = raw_level_ranges(feats, i)        # (raw: _skew_decks reads these specs)
@@ -1256,7 +1263,7 @@ def _bridge_specs(feats, want="bridge"):
     rules = feats.rules
     for i in range(len(feats)):
         cls = str(feats.attrs["class"][i]) if "class" in feats.attrs else "unknown"
-        if str(feats.attrs.get("subtype", ["road"] * len(feats))[i]) != "road" or cls not in STYLE:
+        if str(feats.attrs.get("subtype", ["road"] * len(feats))[i]) != "road" or cls not in STYLE or unbuilt(feats, i):
             out.append(None)
             continue
         # (the lengthened ranges: a bridge's range carried onto the road joined at its end (_skew_decks) is a deck
