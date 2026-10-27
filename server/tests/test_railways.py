@@ -174,6 +174,14 @@ class RailwayTest(unittest.TestCase):
         left = railways.crossing_props(FRAME, 0, 0, [f], lambda xy: np.full(len(xy), 10.0), left_hand=True)
         self.assertTrue(all(r[0].endswith("_l") for r in left if r[0].startswith("rrgate")))
 
+    def test_light_rail_crossings_only_with_data(self):
+        f = features([[(0.0, 100.0), (250.0, 100.0)], [(120.0, 0.0), (120.0, 250.0)]], ["light_rail", "secondary"],
+                     subtypes=["rail", "road"])
+        ground = lambda xy: np.zeros(len(xy))     # noqa: E731
+        self.assertEqual(railways.crossing_props(FRAME, 0, 0, [f], ground), [], "a street's light rail: none")
+        rows = railways.crossing_props(FRAME, 0, 0, [f], ground, kits=lambda p, c: "gate")
+        self.assertEqual(len(rows), 2, "the inventory says gates")
+
     def test_osm_railway_tags_decide_when_known(self):
         """The weekly rail file's OSM values (railtags.py): proposed out whatever Overture's class, disused worn, a
         gauge in mm; a crossing node's devices."""

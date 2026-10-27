@@ -881,6 +881,9 @@ CROSSING_SIGN_OFF_M = 1.2       # m from the carriageway's edge to the post
 CROSSING_SIGN_BEFORE_M = 2.5    # m before the track's ballast (along the road)
 CROSSING_HEIGHT = {"cross": 3.263, "flash": 4.7, "gate": 8.25}
 AMERICAS_LON = -30.0            # west of this the crossbuck (the Americas), else the St Andrew's cross
+# light rail mostly runs in the street (a German Stadtbahn's tracks down Bielefeld's Schildescher Strasse had crosses
+# at every side street, 2026-10-27): its crossings have devices only where the FRA's inventory or OSM's tags say
+CROSSING_DATA_ONLY = {"light_rail"}
 
 
 def crossing_props(frame, tx, ty, cells, ground, left_hand=False, kits=None):
@@ -892,7 +895,7 @@ def crossing_props(frame, tx, ty, cells, ground, left_hand=False, kits=None):
     box = roadsmod.tile_bbox(tx, ty)
     reach = 60.0
     worn = {}
-    rails = [(fid, xy) for fid, _c, kind, xy in parts(frame, cells, box, reach=reach, worn=worn) if kind == "ground"]
+    rails = [(fid, xy, c) for fid, c, kind, xy in parts(frame, cells, box, reach=reach, worn=worn) if kind == "ground"]
     if not rails:
         return []
     near = (box[0] - reach, box[1] - reach, box[2] + reach, box[3] + reach)
@@ -916,12 +919,13 @@ def crossing_props(frame, tx, ty, cells, ground, left_hand=False, kits=None):
     americas = float(frame.lon0 if hasattr(frame, "lon0") else 0.0) < AMERICAS_LON
     osm_kit = _osm_kits(frame, cells)
     rows, done = [], set()
-    for (rfid, sp, line), crs in zip(roads, roadsmod._crossings_by([xy for _f, xy in rails], [ln for *_, ln in roads])):
+    for (rfid, sp, line), crs in zip(roads, roadsmod._crossings_by([xy for _f, xy, _c in rails],
+                                                                     [ln for *_, ln in roads])):
         for ri, _arc_r, pt in crs:
             pt = np.asarray(pt, np.float64)
             if not (box[0] <= pt[0] < box[2] and box[1] <= pt[1] < box[3]):
                 continue
-            lfid, rxy = rails[ri]
+            lfid, rxy, rcls = rails[ri]
             w = worn.get(lfid, 0)
             key = (rfid, lfid, round(float(pt[0]), 1), round(float(pt[1]), 1))
             if w >= 2 or key in done:
@@ -929,6 +933,8 @@ def crossing_props(frame, tx, ty, cells, ground, left_hand=False, kits=None):
             done.add(key)
             kit = kits(pt, sp.cls) if kits is not None else None
             kit = kit or osm_kit(pt)
+            if kit is None and rcls in CROSSING_DATA_ONLY:
+                continue                # (a tram-like line in the street: only where the data says it has devices)
             kit = kit or CROSSING_KIT.get(sp.cls, CROSSING_KIT_DEFAULT)
             if w:
                 kit = "cross"
