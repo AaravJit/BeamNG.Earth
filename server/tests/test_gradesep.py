@@ -117,6 +117,20 @@ class GapTest(unittest.TestCase):
         self.assertEqual(len(roads.level_ranges(f, 0)), 2)
 
 
+    def test_a_stretch_shorter_than_its_decks_is_a_bridge(self):
+        # an interchange ramp: 160 m decks and 80 m between them, crossing nothing (the line alone)
+        f = hooked(features([[(-200.0, 0.0), (200.0, 0.0)]], ["motorway"],
+                            flags=[(0, "is_bridge", 0.0, 0.4), (0, "is_bridge", 0.6, 1.0)]), lambda e, n: np.zeros_like(e))
+        self.assertEqual(roads.level_ranges(f, 0), [(0.0, 1.0, "bridge")])
+
+    def test_a_freeway_between_short_street_bridges_stays_on_the_ground(self):
+        # 30 m decks over the cross streets, 120 m of freeway between them
+        f = hooked(features([[(-90.0, 0.0), (90.0, 0.0)]], ["motorway"],
+                            flags=[(0, "is_bridge", 0.0, 1 / 6), (0, "is_bridge", 5 / 6, 1.0)]),
+                   lambda e, n: np.zeros_like(e))
+        self.assertEqual(len(roads.level_ranges(f, 0)), 2)
+
+
 class JoinedTest(unittest.TestCase):
     def test_a_span_past_a_line_s_end_goes_on_along_the_next(self):
         # the upper road is two segments joined 3 m past the crossing: the span covers both sides

@@ -1509,6 +1509,11 @@ def _merge_overlaps(lines, zs, widths, levels, rounds=3, pins=None):
             new[i][m] = (zs[i][m] + acc[i][m]) / (1 + cnt[i][m])
             new[i] = np.maximum(new[i], zs[i] + up[i])
             a, b, es = edges[i]
+            # a lift fades along the deck no faster than DECK_MAX_GRADE: it ended where the parts drew apart, over a
+            # few metres of their spacing (a High Five ramp lifted 11 m to its twin fell back over ~60 m, 35 %)
+            lifted = new[i] > zs[i] + 1e-6
+            if lifted.any():
+                new[i] = np.maximum(new[i], _ground_envelope(es, np.where(lifted, new[i], -np.inf), DECK_MAX_GRADE))
             # never raised faster than DECK_MAX_GRADE from an abutment (a road's bridge forking off uphill near one,
             # taken for a carriageway beside it, pulled US-24's deck 1.1 m up in the first 3 m off its abutment near
             # Buena Vista CO, 2026-10-27)

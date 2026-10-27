@@ -151,6 +151,23 @@ class MergeJointTest(TestCase):
         self.assertLess(float(first), 0.25)
 
 
+class TwinLiftTest(TestCase):
+    def test_a_lift_to_a_twin_fades_no_steeper_than_a_deck_climbs(self):
+        # two ramps of one level side by side from a joint, parting after 120 m (the High Five, Dallas: one lifted 11 m
+        # to its twin fell back over ~60 m, 35 %, once they were 30 m apart)
+        x = np.arange(0.0, 400.1, 4.0)
+        low = np.c_[x, np.zeros(len(x))]
+        bend = np.clip(x - 120.0, 0.0, None)
+        high = np.c_[x, bend * np.tan(np.radians(12.0))]
+        zl = 20.0 - 0.05 * x
+        zh = np.full(len(x), 25.0)
+        out = roads._merge_overlaps([low, high], [zl, zh], [8.0, 8.0], [4.0, 4.0])
+        z = out[0]
+        self.assertGreater(float(z[20]), 22.0)                  # beside its twin: lifted toward it (16 m alone)
+        grade = np.abs(np.diff(z)) / 4.0
+        self.assertLess(float(grade.max()), 0.10)       # (the blend to the far abutment's cap adds ~3 %)
+
+
 class SemiApproachIntegrationTest(TestCase):
     def test_approach_and_generated_deck_clear_six_metres(self):
         fixture = approaches.OverpassIntegrationTest("test_deck_clears_the_lanes")

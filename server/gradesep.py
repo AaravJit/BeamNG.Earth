@@ -36,9 +36,12 @@ SAMPLE_STEP_M = 12.0    # m on to the farther one
 MIN_SIN = 0.3           # flatter crossings taken as this (the reach would run away)
 CLEAR_M = 5.0           # m of span past the lower line's half width either side (shoulders, abutment slopes)
 MIN_HALF_M = 8.0        # m of span at least either side of the crossing
-GAP_MAX_M = 150.0       # m: a stretch between two decks this short crossing a ground line is a bridge whole
-# (one joining a deck that crosses a road close by, unable to come down there, was tried too: the DEM's ground under a
-# short overpass is the lower road's dip smoothed, and urban freeways between their street bridges became viaducts)
+GAP_MAX_M = 150.0       # m: a stretch between two decks this short crossing a ground line is a bridge whole, and
+GAP_SHARE = 1.0         # one shorter than this times the longer deck it joins (an interchange ramp's untagged piece:
+# Springfield's flyover 97 m between a 373 m and a 62 m deck stood 0 m over I-95 coming down to it; a freeway between
+# its short street bridges runs on the ground). (One joining a deck that crosses a road close by, unable to come down
+# there, was tried too: the DEM's ground under a short overpass is the lower road's dip smoothed, and urban freeways
+# became viaducts.)
 TOUCH_M = 1.0           # m: ends this close are joined
 TURN_COS = 0.7          # a span goes on onto a joined line turning less than ~45 degrees
 NEAR_M = 60.0           # m round the cell's own lines that neighbours' lines are taken from
@@ -164,11 +167,12 @@ def _spans(md, key, feats):
                     halves.append(half)
                     groups.append(g)
                     owner.append((own.get(fid), a, b))   # (a row of this cell's, or None)
-    if len(lines) < 2:
+    if not lines:
         return {}
-    de = np.zeros((2 * len(decks), 2))         # (the decks' ends)
+    de = np.zeros((2 * len(decks), 3))         # (the decks' ends and lengths)
     for d, (xy, _g) in enumerate(decks):
         de[2 * d, :2], de[2 * d + 1, :2] = xy[0], xy[-1]
+        de[2 * d:2 * d + 2, 2] = float(np.hypot(*np.diff(xy, axis=0).T).sum())
     fast.require(86, "gradesep_candidates")
     pts = np.ascontiguousarray(np.vstack(lines))
     starts = np.r_[0, np.cumsum([len(x) for x in lines])].astype(np.int64)
@@ -176,7 +180,7 @@ def _spans(md, key, feats):
     halves = np.asarray(halves, np.float64)
     cand, smp = fast._ef.gradesep_candidates(pts, starts, kinds, halves, np.asarray(groups, np.int64),
                                              np.ascontiguousarray(de), np.array(
-        [END_M, SAMPLE_GAP_M, SAMPLE_STEP_M, MIN_SIN, TOUCH_M, GAP_MAX_M, TURN_COS], np.float64))
+        [END_M, SAMPLE_GAP_M, SAMPLE_STEP_M, MIN_SIN, TOUCH_M, GAP_MAX_M, TURN_COS, GAP_SHARE], np.float64))
     if not len(cand):
         return {}
     z = np.full(len(smp), np.nan)

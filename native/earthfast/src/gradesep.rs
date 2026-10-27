@@ -117,8 +117,8 @@ impl<'a> Lines<'a> {
 /// on i, arc on j, sin of the angle, how) and 8 sample points per row in samples (i at -d2, -d1, +d1, +d2 m along it
 /// from the crossing, then j; NaN off a line's end; d1 the other's half width over the sine (at least prm[3]) + prm[1],
 /// d2 = d1 + prm[2]; past a line's end on along the line joined there, as gradesep_spans goes on). how: 0 compare the heights; 1 i passes over j's short tunnel; 2 i is a gap between two decks
-/// (both its ends within prm[4] m of deck_ends (rows x, y), shorter than prm[5] m) crossing a ground line: a bridge
-/// whole. One row per pair of lines and
+/// (both its ends within prm[4] m of deck_ends (rows x, y, that deck's length m), shorter than prm[5] m) crossing a
+/// ground line, or shorter than prm[7] times the longer deck it joins: a bridge whole. One row per pair of lines and
 /// crossing (a crossing at a shared point of two segments counted once).
 #[pyfunction]
 pub fn gradesep_candidates<'py>(
@@ -133,19 +133,38 @@ pub fn gradesep_candidates<'py>(
 ) -> (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<f64>>) {
     let (xy, starts, kind, half, group, de, prm) = (xy.as_array(), starts.as_array(), kind.as_array(), half.as_array(),
                                                    group.as_array(), deck_ends.as_array(), prm.as_array());
-    let (end_m, gap, step, min_sin, touch, gap_max, turn) = (prm[0], prm[1], prm[2], prm[3], prm[4], prm[5], prm[6]);
+    let (end_m, gap, step, min_sin, touch, gap_max, turn, gap_share) =
+        (prm[0], prm[1], prm[2], prm[3], prm[4], prm[5], prm[6], prm[7]);
     let ln = Lines::new(xy, starts);
     let n = ln.n();
-    let near_deck = |p: (f64, f64)| (0..de.nrows()).any(|k| (de[[k, 0]] - p.0).hypot(de[[k, 1]] - p.1) < touch);
-    let gap_line: Vec<bool> = (0..n)
+    // the longest deck ending at p (deck_ends rows x, y, its deck's length), 0 none
+    let deck_at = |p: (f64, f64)| {
+        (0..de.nrows())
+            .filter(|&k| (de[[k, 0]] - p.0).hypot(de[[k, 1]] - p.1) < touch)
+            .map(|k| de[[k, 2]])
+            .fold(0.0f64, f64::max)
+    };
+    let gap_end: Vec<(f64, f64)> = (0..n)
         .map(|l| {
-            kind[l] != UNDER && ln.st[l + 1] >= ln.st[l] + 2 && ln.len(l) < gap_max
-                && near_deck(ln.end(l, false)) && near_deck(ln.end(l, true))
+            if kind[l] == UNDER || ln.st[l + 1] < ln.st[l] + 2 || ln.len(l) >= gap_max {
+                (0.0, 0.0)
+            } else {
+                (deck_at(ln.end(l, false)), deck_at(ln.end(l, true)))
+            }
         })
         .collect();
+    let gap_line: Vec<bool> = gap_end.iter().map(|&(a, b)| a > 0.0 && b > 0.0).collect();
     let boxes: Vec<_> = (0..n).map(|l| ln.bbox(l)).collect();
     let mut rows: Vec<[f64; 6]> = Vec::new();
     let mut gap_done = vec![false; n];
+    for l in 0..n {
+        // shorter than a deck it joins: a ramp's or a flyover's stretch the map left untagged (a freeway between the
+        // short bridges over its cross streets runs on the ground: longer than those)
+        if gap_line[l] && ln.len(l) < gap_end[l].0.max(gap_end[l].1) * gap_share {
+            gap_done[l] = true;
+            rows.push([l as f64, l as f64, 0.0, 0.0, 1.0, 2.0]);
+        }
+    }
     for a in 0..n {
         let (ax0, ay0, ax1, ay1) = boxes[a];
         if ln.st[a + 1] < ln.st[a] + 2 {
