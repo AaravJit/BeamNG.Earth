@@ -80,6 +80,7 @@ WIRE_Z = 7.9                    # m above the pole's base (s_powerpole_3wire: 8.
 WIRE_SAG = 0.012                # sag per metre of span
 WIRE_SEG_M = 5.0
 WIRE_R = 0.012                  # m half width of a wire's ribbons
+WIRE_VERTS_MAX = 60000          # a tile's wire mesh at most (the engine's 16-bit index buffers; railways.VERTS_MAX)
 
 
 def wire_lines(poles):
@@ -107,6 +108,8 @@ def wire_mesh(lines, origin):
     ox, oy, oz = origin
     for line in lines:
         line, r = line if isinstance(line, tuple) else (line, WIRE_R)
+        if len(P) + 8 * (len(line) - 1) > WIRE_VERTS_MAX:       # (8 vertices a segment; the rest left out)
+            break
         for a, b in zip(line[:-1], line[1:]):
             d = b - a
             L = float(np.linalg.norm(d))
