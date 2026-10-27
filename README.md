@@ -34,6 +34,7 @@ You can help support development by reporting [issues](https://github.com/TecnaG
 - Pump jacks at oil wells (OpenStreetMap), animated, with their sounds.
 - High-voltage power lines along their mapped routes (OpenStreetMap), with towers, conductors and fenced substations.
 - The satellite map on cars' own navigation screens.
+- Night lighting: lit windows and street lamps after dusk.
 - Buildings from Overture / OpenStreetMap with regional styles (US siding and brick, Alpine chalets, Nordic
   wood, Mediterranean stucco, East Asian and Latin American looks), real heights, roofs, windows, shopfronts,
   porches, churches with steeples, glass towers, far-away buildings drawn as a skyline.
