@@ -155,6 +155,12 @@ T.check(math.abs(sp[1].xf.pos.x + 20) < 1e-9 and math.abs(sp[1].xf.pos.y - 10) <
   and math.abs(sp[1].xf.yaw + 0.5 + math.pi / 2) < 1e-9, 'a rebase turns and moves them')
 amb.dropSpaces('1:3_4')
 T.check(#S.liveOf('SFXSpace') == 0, 'the tile goes: its spaces with it')
+amb.onSpaces('1:5_5', { 4, 3, 4, 5, 0, 0, 0, 0 })
+local pe = nil
+for _, o in ipairs(S.liveOf('SFXEmitter')) do if o.fields.track == amb.PORTAL_EVENT then pe = o end end
+T.check(pe and pe.playing and pe.pos.x == 3 and pe.pos.z == 5, 'a portal: the stock portal event playing there')
+amb.dropSpaces('1:5_5')
+T.check(not scenetree.findObjectById(pe.id), 'and gone with its tile')
 
 -- shores: a "Waves" ribbon along a shoreline near the listener, SHORE_W wide, with the rivers
 seaV.shores = function() return { S1 = { kind = 'sea', nodes = { { 0, -30, 0 }, { 40, -30, 0 } } } }, 3 end

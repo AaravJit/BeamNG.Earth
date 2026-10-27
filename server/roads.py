@@ -4558,31 +4558,54 @@ def shape_files(aid, tx, ty):
 
 # Sound spaces (the mod's ambience.lua makes them SFXSpaces: the stock maps' tunnel reverb in a tube, the one under a
 # bridge below its deck): kinds, and how far a bridge's space reaches under the deck's surface
-SOUND_TUNNEL, SOUND_BRIDGE, SOUND_TUNNEL_OPEN, SOUND_GARAGE = 0, 1, 2, 3
+SOUND_TUNNEL, SOUND_BRIDGE, SOUND_TUNNEL_OPEN, SOUND_GARAGE, SOUND_PORTAL = 0, 1, 2, 3, 4
 SOUND_UNDER_M = 25.0
+# a closed tunnel's mouths: the stock portal snapshot event this far inside each (recorded 2026-10-26: the outside cut
+# off within ~10 m of it, 7 dB down at 20 m, untouched from 40 m: a ~25 m fade outside the portal, both ways), its
+# position SOUND_PORTAL_UP over the floor (a row [kind, x, y, z, 0, 0, 0, yaw (into the tube)])
+SOUND_PORTAL_IN_M = 10.0
+SOUND_PORTAL_UP = 2.0
 # a low arch, or a tube shorter than this, has the open tunnel's (the outside heard, muffled ~5 dB) instead of the
 # closed one's (the outside cut off): recorded 2026-10-26
 SOUND_SHORT_TUNNEL_M = 120.0
 SOUND_BOX_M, SOUND_TURN, SOUND_DZ_M, SOUND_EXTEND_M = 60.0, math.radians(10.0), 1.0, 1.0
 
 
+def _along(line, dist):
+    """The point dist along polyline line (k, 3) from its start (its end if shorter)."""
+    seg = np.hypot(*np.diff(line[:, :2], axis=0).T)
+    for i, L in enumerate(seg):
+        if dist <= L and L > 0:
+            return line[i] + (line[i + 1] - line[i]) * (dist / L)
+        dist -= L
+    return line[-1]
+
+
 def sound_boxes(chunks):
     """The sound spaces of a tile's chunks: along every tunnel tube (its floor to its vault) and under every bridge
     deck (from its slab down SOUND_UNDER_M), as earthfast.sound_boxes rows [kind, x, y, z, length, width, height, yaw]
-    rounded, one flat list."""
+    rounded, one flat list; first a closed tunnel's portal points (SOUND_PORTAL) at its mouths."""
     import fast
     import roadmesh
-    lines = []
+    lines, out = [], []
     for c in chunks:
         if c.get("tunnel") and not c.get("no_tube"):
             h = float(c.get("tunnel_h") or roadmesh.TUNNEL_H)
             short = h < roadmesh.TUNNEL_H - 0.01 or float(c.get("tunnel_len") or 1e9) < SOUND_SHORT_TUNNEL_M
             lines.append((SOUND_TUNNEL_OPEN if short else SOUND_TUNNEL, c["n"],
                           float(c["w"]) + 2 * roadmesh.TUNNEL_SHOULDER, 0.5, h + 0.5))
+            n = np.asarray(c["n"], np.float64)[:, :3]
+            for end, line in ((0, n), (1, n[::-1])):
+                if not short and (c.get("portal") or (False, False))[end] and len(line) >= 2:
+                    p = _along(line, SOUND_PORTAL_IN_M)
+                    d = line[1, :2] - line[0, :2]
+                    out += [float(SOUND_PORTAL), round(float(p[0]), 2), round(float(p[1]), 2),
+                            round(float(p[2]) + SOUND_PORTAL_UP, 2), 0.0, 0.0, 0.0,
+                            round(math.atan2(float(d[1]), float(d[0])), 4)]
         elif c.get("deck") and not c.get("tunnel"):
             lines.append((SOUND_BRIDGE, c["n"], float(c["w"]), SOUND_UNDER_M, -roadmesh.DECK_DEPTH))
     if not lines:
-        return []
+        return out
     fast.require(78, "sound_boxes")
     pts = np.ascontiguousarray(np.concatenate([np.asarray(n, np.float64)[:, :3] for _, n, _, _, _ in lines]))
     off = np.cumsum([0] + [len(n) for _, n, _, _, _ in lines]).astype(np.int64)
@@ -4591,7 +4614,7 @@ def sound_boxes(chunks):
                                 SOUND_EXTEND_M)
     rows[:, 1:7] = np.round(rows[:, 1:7], 2)
     rows[:, 7] = np.round(rows[:, 7], 4)
-    return rows.ravel().tolist()
+    return out + rows.ravel().tolist()
 
 
 def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None, deck_mesh=None, bld=None,

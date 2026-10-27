@@ -46,6 +46,17 @@ class SoundBoxesTest(unittest.TestCase):
         self.assertEqual(rows({"tunnel": True, "w": 7.0, "tunnel_h": 6.8, "tunnel_len": 500.0, "n": n}),
                          [roads.SOUND_TUNNEL])
 
+    def test_portals(self):
+        # a closed tunnel's mouths: a portal point SOUND_PORTAL_IN_M inside each, SOUND_PORTAL_UP over the floor
+        tube = {"tunnel": True, "w": 7.0, "tunnel_h": 6.8, "tunnel_len": 500.0, "portal": [True, False],
+                "n": [[0, 0, 10], [30, 0, 10]]}
+        r = roads.sound_boxes([tube])
+        self.assertEqual(r[0::8].count(roads.SOUND_PORTAL), 1)
+        k, x, y, z = r[:4]
+        self.assertEqual((k, x, y, z), (roads.SOUND_PORTAL, roads.SOUND_PORTAL_IN_M, 0.0, 10.0 + roads.SOUND_PORTAL_UP))
+        short = dict(tube, tunnel_len=60.0)           # (an open tunnel: none)
+        self.assertNotIn(roads.SOUND_PORTAL, roads.sound_boxes([short])[0::8])
+
     def test_none(self):
         self.assertEqual(roads.sound_boxes([{"w": 5.0, "n": [[0, 0, 0], [10, 0, 0]]}]), [])
         self.assertEqual(roads.sound_boxes([{"tunnel": True, "no_tube": True, "w": 5.0, "n": [[0, 0, 0], [10, 0, 0]]}]), [])
