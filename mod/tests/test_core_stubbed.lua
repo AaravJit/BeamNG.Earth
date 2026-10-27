@@ -851,4 +851,15 @@ do -- a rebase's anchor on its grid, the terrain hint shifted by the player's sp
   local ex, ey = require('beamngEarth/follow').target(dx + 290, dy, 30, 0)     -- (290 m to the 10 km rebase distance)
   T.check(cx == ex and cy == ey, string.format('rebase hint in the snapped frame: (%d, %d), want (%d, %d)', cx, cy, ex, ey))
 end
+-- GitHub #339: a teleport onto a hole in the ground (a tunnel's portal) is set down on the nearest ground instead
+do
+  local core = require('beamngEarth/core')
+  local hole = function(x, y) if math.sqrt(x * x + y * y) < 20 then return nil end return 100 end
+  local x, y, z = core.safeSpot(0, 0, hole)
+  T.check(z == 100 and math.sqrt(x * x + y * y) >= 20 and math.sqrt(x * x + y * y) <= 20 + core.SAFE_RING_M,
+    'safeSpot: out of a 20 m hole onto the nearest ground')
+  local a, b, c = core.safeSpot(5, 5, function() return 7 end)
+  T.check(a == 5 and b == 5 and c == 7, 'safeSpot: ground under the spot: the spot itself')
+  T.check(core.safeSpot(0, 0, function() return nil end) == nil, 'safeSpot: no ground anywhere near: nil')
+end
 T.done('test_core_stubbed')

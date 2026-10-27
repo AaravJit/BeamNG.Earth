@@ -652,6 +652,36 @@ local function commitTerrain(msg)
   return true
 end
 
+-- Pure: a spot with collision under it near (x, y): (x, y, ground z) where groundAt(x, y) (the ground's height there or
+-- nil: nothing to stand on) finds some, the nearest first (rings SAFE_RING_M apart, SAFE_DIRS around, out to
+-- SAFE_MAX_M); nil when none. A teleport onto a tunnel's portal set the car down over the terrain's hole there before
+-- the cutting's road tile came, and it fell through the world (GitHub #339's spot near Grenoble, 2026-10-27).
+M.SAFE_RING_M, M.SAFE_DIRS, M.SAFE_MAX_M = 8, 12, 96
+function M.safeSpot(x, y, groundAt)
+  local z = groundAt(x, y)
+  if z then return x, y, z end
+  for r = M.SAFE_RING_M, M.SAFE_MAX_M, M.SAFE_RING_M do
+    for k = 0, M.SAFE_DIRS - 1 do
+      local a = 2 * math.pi * k / M.SAFE_DIRS
+      local qx, qy = x + r * math.cos(a), y + r * math.sin(a)
+      z = groundAt(qx, qy)
+      if z then return qx, qy, z end
+    end
+  end
+  return nil
+end
+
+-- The ground under (x, y) from a ray down from z + 60 (nil: no collision within 200 m).
+function M.groundRay(z)
+  local ray = rawget(_G, 'castRayStatic')
+  return function(x, y)
+    if not ray then return z end
+    local d = ray(vec3(x, y, z + 60), vec3(0, 0, -1), 200)
+    if d and d < 200 then return z + 60 - d end
+    return nil
+  end
+end
+
 -- Put the player vehicle on the new ground at the origin, upright, keeping its heading.
 -- spawn.safeTeleport with resetVehicle=true resets the vehicle, drops its bounding box onto
 -- the ground (spawn.lua:494 getBBOnGround) and zeroes velocity (spawn.lua:533-534).
@@ -668,11 +698,48 @@ local function placePlayer(z)
   if (x ~= 0 or y ~= 0) and not st.placeSnapped then
     -- away from the origin (a BeamMP player's anchor): the server's height there is the raw elevation data; set down
     -- on the collision under it (a graded road can be a few metres off)
-    local ray = rawget(_G, 'castRayStatic')
-    local d = ray and ray(vec3(x, y, z + 60), vec3(0, 0, -1), 200)
-    if d and d < 200 then z = z + 60 - d + 1.0 end
+    local g = M.groundRay(z)(x, y)
+    if g then z = g + 1.0 end
+  end
+  -- nothing under the spot (a hole in the terrain: a tunnel's portal before its road tile): the nearest spot that has
+  -- some (safeSpot); a tunnel's tube (floorZ) is left to floorCheck
+  if not st.floorZ and rawget(_G, 'castRayStatic') and not M.groundRay(z)(x, y) then
+    local sx, sy, sz = M.safeSpot(x, y, M.groundRay(z))
+    if sx then
+      log('I', 'beamngEarth', string.format('teleport: no ground at (%.0f, %.0f), set down %.0f m away', x, y,
+        math.sqrt((sx - x) ^ 2 + (sy - y) ^ 2)))
+      x, y, z = sx, sy, sz + 1.0
+    end
   end
   spawn.safeTeleport(veh, vec3(x, y, z), quatFromDir(dir:normalized(), vec3(0, 0, 1)), nil, nil, false, nil, true)
+  st.placedAt = { x = x, y = y, z = z, t = st.clock }
+end
+
+-- After a teleport: a car falling far under where it was set down (through a hole nobody saw coming) is set down
+-- again on the nearest ground (FALL_WATCH_S, FALL_M).
+M.FALL_WATCH_S, M.FALL_M, M.FALL_MS = 30, 40, 15
+function M.fallGuard()
+  local pa = st.placedAt
+  if not pa then return end
+  if st.clock - pa.t > M.FALL_WATCH_S then st.placedAt = nil; return end
+  local veh = getPlayerVehicle(0)
+  if not veh then return end
+  local p = veh:getPosition()
+  local vz = veh:getVelocity().z
+  -- (falling, not driving down a mountain road: fast, and nothing under it)
+  if p.z < pa.z - M.FALL_M and vz < -M.FALL_MS and not M.groundRay(p.z - 58)(p.x, p.y) then
+    local sx, sy, sz = M.safeSpot(p.x, p.y, M.groundRay(pa.z))
+    if not sx then sx, sy, sz = M.safeSpot(pa.x, pa.y, M.groundRay(pa.z)) end
+    st.placedAt = nil
+    if sx then
+      log('W', 'beamngEarth', string.format('teleport: the car fell through at (%.0f, %.0f); set down again', p.x, p.y))
+      local dir = veh:getDirectionVector()
+      dir = vec3(dir.x, dir.y, 0)
+      if dir:length() < 1e-3 then dir = vec3(0, 1, 0) end
+      spawn.safeTeleport(veh, vec3(sx, sy, sz + 1.0), quatFromDir(dir:normalized(), vec3(0, 0, 1)), nil, nil, false, nil, true)
+      st.placedAt = { x = sx, y = sy, z = sz + 1.0, t = st.clock }
+    end
+  end
 end
 
 -- A teleport into a tunnel: once a ray down from just over its floor (floorZ) meets collision at the floor (the tube's
@@ -1189,6 +1256,7 @@ end
 
 local function updateWorld(dt)
   if st.floorZ and not st.placeFrames then M.floorCheck() end
+  if st.placedAt and not st.placeFrames then M.fallGuard() end
   if st.placeFrames then
     st.placeFrames = st.placeFrames - 1
     if st.placeFrames <= 0 then
