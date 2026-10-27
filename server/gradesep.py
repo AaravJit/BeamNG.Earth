@@ -69,14 +69,22 @@ def hook(md, key):
     return run
 
 
+_POOL = None
+_POOL_LOCK = threading.Lock()
+
+
 def _neighbours(md, key):
-    out = []
-    for dy in (-1, 0, 1):
-        for dx in (-1, 0, 1):
-            if (dx or dy) and 0 <= key.y + dy < key.n:
-                k = mapcells.CellKey(key.z, (key.x + dx) % key.n, key.y + dy)
-                out.append(md.cell(k, layers=("roads",), kind="demand").layers.get("roads"))
-    return out
+    """The roads layers of the eight cells round key, asked at once (one after another, cold, they held a fresh
+    place's first road tile ~7 s: 2026-10-27 A/B)."""
+    global _POOL
+    keys = [mapcells.CellKey(key.z, (key.x + dx) % key.n, key.y + dy)
+            for dy in (-1, 0, 1) for dx in (-1, 0, 1) if (dx or dy) and 0 <= key.y + dy < key.n]
+    with _POOL_LOCK:
+        if _POOL is None:
+            from concurrent.futures import ThreadPoolExecutor
+            _POOL = ThreadPoolExecutor(8, thread_name_prefix="gradesep-cells")
+    futs = [_POOL.submit(lambda k: md.cell(k, layers=("roads",), kind="demand").layers.get("roads"), k) for k in keys]
+    return [f.result() for f in futs]
 
 
 def _kind_half(feats, i):
