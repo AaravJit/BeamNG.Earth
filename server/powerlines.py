@@ -83,6 +83,36 @@ def _substations(frame, cells, md):
     return out
 
 
+NEAR_M = MAX_SPAN_M + 50.0  # m round a tile a line's towers are laid out (a span reaching into it, and one past)
+
+
+def _near(frame, ring, box):
+    """The runs of a line's points (lon/lat ring) within NEAR_M of box, each with the point either side of it: the
+    tile's spans and their towers' neighbours. A line's every tower had its ground read for each tile it touched: a
+    100 km line's 2,000 towers, ~6,000 DEM tiles downloaded for one road tile in rural Pennsylvania (5 min),
+    2026-10-27."""
+    e, n, _ = frame.geodetic_to_enu(ring[:, 1], ring[:, 0], np.zeros(len(ring)))
+    e, n = np.asarray(e), np.asarray(n)
+    near = (e >= box[0] - NEAR_M) & (e <= box[2] + NEAR_M) & (n >= box[1] - NEAR_M) & (n <= box[3] + NEAR_M)
+    if near.all():
+        return [ring]
+    keep = near.copy()
+    keep[:-1] |= near[1:]
+    keep[1:] |= near[:-1]
+    out, i = [], 0
+    while i < len(keep):
+        if not keep[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < len(keep) and keep[j + 1]:
+            j += 1
+        if j > i:
+            out.append(ring[i:j + 1])
+        i = j + 1
+    return out
+
+
 def tile_lines(frame, tx, ty, md, elev, props, wires):
     """Add road tile (tx, ty)'s towers, gantries, substation yards (props rows, furniture.place's form) and conductors
     (wires polylines) of the power lines near it; elev(lat, lon): the ground."""
@@ -107,7 +137,7 @@ def tile_lines(frame, tx, ty, md, elev, props, wires):
             for part in f.parts(i):
                 for ring in part:
                     if len(ring) >= 2:
-                        lines.append((fid, np.asarray(ring, np.float64)))
+                        lines += [(fid, r) for r in _near(frame, np.asarray(ring, np.float64), (x0, y0, x1, y1))]
     subs = _substations(frame, cells, md)
     ends = np.zeros((0, 4))
     fast.require(82, "power_line_layout")
