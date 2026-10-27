@@ -507,13 +507,25 @@ class LayoutTest(unittest.TestCase):
         pillars = [p for p in site.props if p["shape"] == gs._PILLAR]
         self.assertTrue(pillars)
         for p in pillars:
-            self.assertGreaterEqual(p["y"], 7.5 + gs.ONE_BLD_INSET_M - 0.01, p)
+            self.assertGreaterEqual(p["y"], 5.0 + gs.ONE_BLD_CLEAR_M - 0.01, p)     # (the road's edge at y = 5)
         roof = next(p for p in site.props if p["shape"] == gs._ROOF)
         self.assertAlmostEqual(roof["yaw"] % 180.0, 0.0)          # (lanes along y: the slab unturned, its y half scale[1])
         front = roof["y"] - roof["scale"][1] * gs.ROOF_HALF[1]
         self.assertGreaterEqual(front, 7.5 + 1.0, roof)
         # a side against a neighbour, not a road, keeps its place: the roof reaches the back (y = 22.5)
         self.assertGreaterEqual(roof["y"] + roof["scale"][1] * gs.ROOF_HALF[1], 22.5)
+
+    def test_one_building_outline_to_the_kerb(self):
+        # (Gasolineria San Jeronimo, Mexico City, 2026-10-27: its outline drawn to the kerb, the sidewalk inside it, so
+        # 3 m in from the outline left its pillars on the sidewalk) the canopy is measured from the road's edge
+        st = gs.Station("sj", 0.0, 15.0, "Gasolineria San Jeronimo", "", ("p",), True)
+        bld = rect("bld", 0.0, 14.0, 22.0, 18.0)             # front at y = 5.0: on the road's edge
+        tight = [rect("w", -17.0, 25.0, 10.0, 30.0, cls="apartments"), rect("e", 17.0, 25.0, 10.0, 30.0, cls="apartments")]
+        site = gs.layout(st, [bld] + tight, ROAD)
+        self.assertIsNotNone(site)
+        for p in site.props:
+            if p["shape"] in (gs._PILLAR, gs.BOLLARD):
+                self.assertGreaterEqual(p["y"], 5.0 + gs.ONE_BLD_CLEAR_M - 0.01, p)
 
     def test_one_building_never_over_a_working_layout(self):
         # a pin inside an unclassed shop with a mapped canopy beside it: laid out as before (the shop stays a building)

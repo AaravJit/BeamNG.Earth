@@ -1197,10 +1197,10 @@ ONE_BLD_MAX_H_M = 9.0                       # Japanese canopies to 8.3 m; the ne
 ONE_BLD_MIN_H_M = 4.5                       # (where a height is mapped) a canopy's clearance; a kiosk is lower (3.1 m)
 ONE_BLD_FILL = 0.6                          # area / its oriented box's (not an L: the roof slab would cut the rest)
 # (the user, 2026-10-27, Mexico City: "pillars on the side walks, it looks tacky") the outline is the lot, to the back
-# of the sidewalk: the canopy stands this far back from each side whose edge a public road's edge is within
-# ONE_BLD_ROAD_M of (a sidewalk and its verge)
-ONE_BLD_INSET_M = 3.0
-ONE_BLD_ROAD_M = 6.0
+# of the sidewalk or (Gasolineria San Jeronimo) to the kerb: each side of the canopy stands at least ONE_BLD_CLEAR_M
+# from a public road's edge (a sidewalk and room to drive in under it)
+ONE_BLD_CLEAR_M = 6.0
+ONE_BLD_ROAD_M = ONE_BLD_CLEAR_M + 2.0      # a side whose middle a road's edge is within this of faces that road
 
 # a fuel station's name (as well as STATION_WORDS): its brands and words in the map data's languages, whole words; a
 # Japanese service station's "SS" after its place name (南森町SS); never a bare "gas" (a union of gas fitters is no station)
@@ -1250,25 +1250,25 @@ def _pin_building(st, blds):
 
 
 def _off_the_sidewalk(ring, roads):
-    """The canopy's box for a station's whole-lot outline: its oriented box, each side moved in ONE_BLD_INSET_M where a
-    public road's edge (centreline less its half width) is within ONE_BLD_ROAD_M of the side's middle, so
-    the pillars and the roof's edge stand on the forecourt, not on the sidewalk; the other sides stay (a neighbour's
-    wall). A side is moved in only while the box keeps half its width that way."""
+    """The canopy's box for a station's whole-lot outline: its oriented box, each side that faces a public road (the
+    road's edge, centreline less its half width, within ONE_BLD_ROAD_M of the side's middle) moved in until it stands
+    ONE_BLD_CLEAR_M from that edge, so the pillars and the roof's edge are on the forecourt, not on the sidewalk, whether
+    the outline stops at the back of the sidewalk or at the kerb; the other sides stay (a neighbour's wall). A side
+    moves in at most until the box keeps half its width that way."""
     c, u, hl, hw = _obox(ring)
     v = np.array([-u[1], u[0]])
     lo, hi = [-hl, -hw], [hl, hw]
     for ax, d, h in ((0, u, hl), (1, v, hw)):
-        o = v if ax == 0 else u
-        oh = hw if ax == 0 else hl
         for sg in (-1.0, 1.0):
             pts = np.array([c + d * (sg * h)])          # (its middle: a side meeting the road only at its corner
                                                         # runs along the lot, away from it)
             edge = min((float(_seg_dist(pts, line[:-1], line[1:]).min()) - half for line, half in roads), default=np.inf)
-            if edge <= ONE_BLD_ROAD_M and (hi[ax] - lo[ax]) - ONE_BLD_INSET_M >= h:
+            if edge <= ONE_BLD_ROAD_M:
+                move = min(max(0.0, ONE_BLD_CLEAR_M - edge), (hi[ax] - lo[ax]) - h)
                 if sg > 0:
-                    hi[ax] -= ONE_BLD_INSET_M
+                    hi[ax] -= move
                 else:
-                    lo[ax] += ONE_BLD_INSET_M
+                    lo[ax] += move
     corners = [c + u * x + v * y for x, y in ((lo[0], lo[1]), (hi[0], lo[1]), (hi[0], hi[1]), (lo[0], hi[1]))]
     return np.array(corners + corners[:1], np.float64)
 
