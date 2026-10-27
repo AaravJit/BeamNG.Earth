@@ -122,7 +122,7 @@ APPROACH_MIN_CROSS_M = 6.0  # m: a road crossing a deck closer than this to its 
                             # under it)
 APPROACH_FLAT_M = 20.0      # m from an abutment the deck needs its full clearance (beyond: it may fall at DECK_GRADE)
 APPROACH_MARGIN_M = 0.3     # m over the clearance (the deck profile's smoothing takes a little off near its ends)
-APPROACH_SKIP = ("motorway", "trunk")   # never raised (nor their links): the overpasses over them are what is
+APPROACH_SKIP = ("motorway", "trunk")   # never raised (their links are: _never_raised); the roads over them rise
 APPROACH_GAP_M = 1.0        # m of flat ground kept between a ramp's fill slope and the road beside it
 ENU_CACHE_MAX = 512         # cells' road parts in the anchor frame kept (Grader._cell_enu; ~0.02-0.5 MB each)
 APPROACH_CELL_M = 450.0     # m: a plan's end this far from a cell cannot raise what that cell's queries see
@@ -959,7 +959,7 @@ class Grader:
         raised ground, 2026-10-20 I-20 in Greene County, AL). Major roads (APPROACH_SKIP) are never raised."""
         # every plan end at once: near the cell, and on a bridge end of its own cell (most touch none)
         pe = np.array([[p.xy[0][:2], p.xy[-1][:2]] for _f, p in plans], np.float64).reshape(-1, 2)
-        ok = np.repeat([s is not None and s.cls not in APPROACH_SKIP and not _is_link(s) for s in specs], 2)
+        ok = np.repeat([s is not None and not _never_raised(s) for s in specs], 2)
         touch = self._abut_ends(key, pe, ok).reshape(-1, 2)
         for i, (fid, p) in enumerate(plans):
             if not touch[i].any():
@@ -1010,7 +1010,7 @@ class Grader:
                     continue
                 if not (UNDER_ANY_ON or cls in APPROACH_SKIP or cls.endswith("_link")):
                     continue
-                bridges.append((line, cls in APPROACH_SKIP or cls.endswith("_link"), False))
+                bridges.append((line, cls in APPROACH_SKIP, False))     # (a link's "<cls>_link": raised)
             # (a line's deck: never raised; straight between its ends whatever its length or what it joins, as
             # railways.deck_heights lays it: no single-span test)
             bridges += [(line, True, True) for line in c.get("rail_bridges", ())]
@@ -1291,7 +1291,8 @@ class Grader:
                 end_of += [len(bridges), len(bridges)]
                 ends += [line[0], line[-1]]
                 bridges.append(line)
-                bcls.append(getattr(sp, "cls", None))
+                cls = getattr(sp, "cls", None)
+                bcls.append(cls + "_link" if cls is not None and _is_link(sp) else cls)
             else:
                 ground_l.append((line, sp.width / 2 + shoulder(sp), sp.cls))
                 ground_ids.append((fid, j, profile_sigma(sp), MEDIAN_M if sp.kind in roadsmod.BUILT else DIRT_MEDIAN_M))
@@ -2045,6 +2046,14 @@ def approach_add(xy, at_end, lift, half, others=()):
 
 def _is_link(spec):
     return bool(getattr(spec, "link", False))
+
+
+def _never_raised(spec):
+    """A road whose approaches are never raised: a motorway or trunk (APPROACH_SKIP), not one of their links. A link
+    leaving a motorway's bridge runs down a fill to the street: kept at the ground, its deck fell 11 m within 90 m and
+    dropped beside its mainline while they still overlapped, and an AI car drove into the mainline's parapet trying to
+    take the exit (US-101's exit 1E over the Los Angeles River, 2026-10-27)."""
+    return spec.cls in APPROACH_SKIP and not _is_link(spec)
 
 
 class GradedDem:

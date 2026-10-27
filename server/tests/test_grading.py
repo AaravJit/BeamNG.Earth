@@ -595,5 +595,14 @@ class RacewayKeepTest(unittest.TestCase):
         self.assertAlmostEqual(float(out[0]), float(base[0]), places=6, msg="on the track: the terrain")
 
 
+
+class NeverRaisedTest(unittest.TestCase):
+    def test_links_are_raised_motorways_not(self):
+        S = roads.Spec
+        self.assertTrue(grading._never_raised(S(18.8, "paved", False, "motorway", True)))
+        self.assertFalse(grading._never_raised(S(11.6, "paved", False, "motorway", True, link=True)))
+        self.assertFalse(grading._never_raised(S(8.0, "paved", False, "secondary", False)))
+
+
 if __name__ == "__main__":
     unittest.main()

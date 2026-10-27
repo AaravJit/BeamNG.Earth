@@ -74,6 +74,11 @@ def _normals(xy):
     return n
 
 
+def ribbon_pairs(chunks):
+    """[(ribbon, its chunk)]: ribbons() of each chunk with it (ribbons() leaves out a chunk too short)."""
+    return [(r, c) for c in chunks for r in ribbons([c])]
+
+
 def ribbons(chunks):
     """Per chunk: (left (k, 2), right (k, 2), v (k,), material, layer, z (k,) or None) in the anchor
     frame; z: the chunk's own heights where it is "fixed" (bridge decks), else None (draped). Pure."""
@@ -88,6 +93,71 @@ def ribbons(chunks):
         n = _normals(xy) * (float(c["w"]) / 2)
         out.append((xy + n, xy - n, s / float(c.get("tl") or 10.0), c["m"], layer_of(c),
                     z if c.get("fixed") else None))
+    return out
+
+
+TRIM_DZ = (0.3, 4.5)                # m: another deck overlapping a deck in plan this far above or below it (two
+                                    # surfaces, too near to pass over it: a ramp leaving its mainline) ...
+TRIM_GAP_M = 0.05                   # ... each slab ends this short of halfway between their centre lines
+
+
+def trim_overlaps(rb, context=()):
+    """The deck ribbons rb ([(ribbon, chunk)]: ribbons()' (left, right, v, m, layer, z) of "fixed" decks) with each
+    edge pulled in where another deck (rb's or the context's, the decks around the tile: the same trim in every tile)
+    overlaps it in plan at a height TRIM_DZ apart: both end halfway between their centre lines (a gore; a parapet on the
+    higher one from PARAPET_COVER_DZ apart), each road on its own surface, instead of the higher one's side standing in
+    the lower one's lanes, and a car on the lower one's line riding the higher one's slab until it ends: a
+    US-101 exit ramp diverging downhill under its mainline's 18.8 m deck put that deck's edge 0.9 m from the ramp's
+    centre, and an AI car drove into it at 29 mph (Los Angeles, 2026-10-27). Pure."""
+    if not rb:
+        return rb
+    others = []                         # (owner, centre (k, 2), half width (k,), z (k,))
+    for n, ((left, right, v, m, layer, z), c) in enumerate(list(rb) + list(context)):
+        if z is None:
+            continue
+        others.append((c.get("fid", ("n", n)), (left + right) / 2, np.hypot(*(left - right).T) / 2,
+                       np.asarray(z, np.float64)))
+    out = []
+    for n, ((left, right, v, m, layer, z), c) in enumerate(rb):
+        if z is None:
+            out.append(((left, right, v, m, layer, z), c))
+            continue
+        own = c.get("fid", ("n", n))
+        mid = (left + right) / 2
+        hw = np.hypot(*(left - right).T) / 2
+        u = (left - right) / np.maximum(2 * hw, 1e-9)[:, None]       # unit left
+        tl, tr = np.zeros(len(mid)), np.zeros(len(mid))
+        lo, hi = mid.min(0) - hw.max() - 30.0, mid.max(0) + hw.max() + 30.0
+        for owner, om, ohw, oz in others:
+            if owner == own or len(om) < 2:
+                continue
+            if (om.max(0) < lo).any() or (om.min(0) > hi).any():
+                continue
+            a, b = om[:-1], om[1:]
+            d = b - a
+            L2 = np.maximum((d * d).sum(1), 1e-12)
+            t = np.clip(((mid[:, None, :] - a[None]) * d[None]).sum(2) / L2[None], 0.0, 1.0)
+            q = a[None] + t[..., None] * d[None]
+            dist = np.hypot(*(q - mid[:, None, :]).transpose(2, 0, 1))
+            j = np.argmin(dist, 1)
+            k = np.arange(len(mid))
+            dc, tj, qj = dist[k, j], t[k, j], q[k, j]
+            zo = oz[j] + tj * (oz[np.minimum(j + 1, len(oz) - 1)] - oz[j])
+            wo = ohw[j] + tj * (ohw[np.minimum(j + 1, len(ohw) - 1)] - ohw[j])
+            dz = np.abs(zo - z)
+            hit = (dc < hw + wo) & (dz >= TRIM_DZ[0]) & (dz < TRIM_DZ[1]) & (dc > 1e-3)
+            if not hit.any():
+                continue
+            cut = np.maximum(hw - (dc / 2 - TRIM_GAP_M), 0.0)
+            on_left = ((qj - mid) * u).sum(1) > 0
+            tl = np.where(hit & on_left, np.maximum(tl, cut), tl)
+            tr = np.where(hit & ~on_left, np.maximum(tr, cut), tr)
+        if not (tl.any() or tr.any()):
+            out.append(((left, right, v, m, layer, z), c))
+            continue
+        tl = np.minimum(tl, 0.9 * hw)           # (never past the centre line: at least a tenth of the deck stays)
+        tr = np.minimum(tr, 0.9 * hw)
+        out.append(((left - u * tl[:, None], right + u * tr[:, None], v, m, layer, z), c))
     return out
 
 
@@ -245,7 +315,7 @@ def _shared(P, UV, T):
     return P[first], UV[first], inv.reshape(-1)[T]
 
 
-def build(frame, chunks, elev, origin, lift=0.0, clip=None, follow=False, q=None, drawn=None):
+def build(frame, chunks, elev, origin, lift=0.0, clip=None, follow=False, q=None, drawn=None, context=()):
     """The road mesh of a tile (render only; on bridges it lies DECK_SKIN over deck()'s slab): (positions
     relative to origin, tris, uvs, materials, tri material index), or None. elev(lat, lon) -> m (graded,
     as the physics block). One elev call. lift: m more for the draped surfaces (detail mode: the physics
@@ -261,6 +331,9 @@ def build(frame, chunks, elev, origin, lift=0.0, clip=None, follow=False, q=None
     if clip is not None:
         chunks = [_reach_past(c, clip) for c in chunks]
     rb = ribbons(chunks)                        # deck surfaces too: their asphalt over deck()'s concrete
+    if any(r[5] is not None for r in rb):       # (trimmed as deck() trims their slabs: context, the decks around)
+        ctx = [(r, c) for r, c in ribbon_pairs(list(context)) if r[5] is not None]
+        rb = [r for r, _c in trim_overlaps(ribbon_pairs(chunks), ctx)]
     polys = [c for c in chunks if c.get("poly")]
     if not rb and not polys:
         return None
@@ -388,7 +461,8 @@ def deck(chunks, origin, piers=(), context=(), beams=(), ground=()):
     material index) or None. ground: the tile's ground carriageways (roads.build_tile cover_out) for the parapet
     test, drawn or not (with the roads painted into the ground the chunks have none). Pure."""
     dch = [c for c in chunks if c.get("deck")]
-    rb = [(r, c) for r, c in zip(ribbons(dch), dch) if r[5] is not None]
+    cr_all = [(r, c) for r, c in ribbon_pairs(list(context)) if r[5] is not None]
+    rb = trim_overlaps([(r, c) for r, c in ribbon_pairs(dch) if r[5] is not None], cr_all)
     if not rb and not piers and not beams:
         return None
     mats, P, UV, T, M = [], [], [], [], []
