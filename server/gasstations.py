@@ -341,13 +341,40 @@ def _lot_canopy(lot):
     return Bld(lot.id, ring, "roof", lot.name, lot.src, None)
 
 
+HOME_CLASSES = {"residential", "house", "detached", "bungalow"}     # (a low home: never a block of flats)
+HOME_CANOPY_M2 = 100.0      # the roof beside a home that makes it a station's shop: no smaller (a carport is not one)
+
+
+def _home_shop(st, blds, roads):
+    """The station's shop when find_shop has none: the nearest low home (HOME_CLASSES, no taller than CANOPY_MAX_H_M)
+    within SHOP_SEARCH_M of a gas station's pin (st.confirmed) with a tagged roof in a canopy's shape, at least
+    HOME_CANOPY_M2, within CANOPY_GAP_M of it and not across a public road; else None. (A player's report, Nagambie,
+    Victoria: United Petroleum's shop is mapped as a residential building, its canopy a roof beside it; without a shop
+    the roof stayed a solid block and the pumps stood bare at the pin.)"""
+    if not st.confirmed:
+        return None
+    p = np.array([st.x, st.y])
+    roofs = [b for b in blds if b.cls in ROOF_CLASSES and _canopy_shape(b) and _area(b.ring) >= HOME_CANOPY_M2]
+    near = []
+    for b in blds:
+        if b.cls not in HOME_CLASSES or (b.height is not None and np.isfinite(b.height)
+                                         and b.height > CANOPY_MAX_H_M):
+            continue
+        d = float(np.hypot(*(_centre(b.ring) - p)))
+        if d <= SHOP_SEARCH_M and any(_gap(r.ring, b.ring) <= CANOPY_GAP_M
+                                      and not _across(_centre(b.ring), _centre(r.ring), roads) for r in roofs):
+            near.append((d, b.id, b))
+    return min(near, key=lambda r: r[:2])[2] if near else None
+
+
 def find_canopies(st, shop, blds, roads):
     """The station's canopies: every tagged roof in a canopy's shape within CANOPY_GAP_M of the shop's outline or of a
     canopy found so far (a big station's rows of them); without any, find_canopy's one untagged imagery outline, if
     any."""
     sc = _centre(shop.ring)
+    sides = not _pin_on_road(st, roads)
     roofs = [b for b in blds if b is not shop and b.cls in ROOF_CLASSES and _canopy_shape(b)
-             and not _across(sc, _centre(b.ring), roads)]
+             and not (sides and _across(sc, _centre(b.ring), roads))]
     found, near = [], [shop]
     grew = True
     while grew:
@@ -372,6 +399,24 @@ def _across(a, b, roads):
     return bool(roadsmod._crossings([seg], [ln for ln, _ in roads]))
 
 
+def _pin_on_road(st, roads):
+    """Whether the station's pin is on a public road's carriageway (roads: drive_lines): then it does not say which
+    side of the road the station is on, and the shop found nearest it may be across the road from its mapped canopies
+    (a Sunoco in Pittsburgh, its pin 2.4 m from the centre line: _across is not asked of a tagged roof)."""
+    p = np.array([[st.x, st.y]])
+    return any(len(ln) >= 2 and _seg_dist(p, ln[:-1], ln[1:])[0] <= hw for ln, hw in roads)
+
+
+def _roof_canopy(b):
+    """Whether a tagged roof can be the shop's own canopy (find_canopy): in a canopy's shape, or of a canopy's area
+    (CANOPY_AREA_M2) and height whatever its outline (a BP in Pittsburgh: 26 x 25 m, 461 m2, not a rectangle); never a
+    platform roof or a hall (Rio de Janeiro's 1355 m2 one, GitHub #308)."""
+    if _canopy_shape(b):
+        return True
+    return (CANOPY_AREA_M2[0] <= _area(b.ring) <= CANOPY_AREA_M2[1]
+            and (b.height is None or not np.isfinite(b.height) or b.height <= ROOF_MAX_H_M))
+
+
 def find_canopy(st, shop, blds, roads):
     """The station's canopy among blds, or None (then no building is touched): the nearest tagged roof within
     CANOPY_GAP_M of the shop's outline; else an untagged imagery outline (ML_SOURCES) that is not the shop, a canopy-sized
@@ -380,12 +425,13 @@ def find_canopy(st, shop, blds, roads):
     that passes (the user, 2026-10-23, on turning a car wash into a
     canopy: "I wouldn't like that")."""
     sc = _centre(shop.ring)
-    # (a tagged roof in a canopy's shape only, as find_canopies: a station beside a train station took its 1355 m2
+    # (a tagged roof in a canopy's shape or of a canopy's area only: a station beside a train station took its 1355 m2
     # platform roof and stood its pumps on the tracks, Rio de Janeiro, GitHub #308)
     roofs = [(_gap(b.ring, shop.ring), b.id, b) for b in blds
-             if b is not shop and b.cls in ROOF_CLASSES and _canopy_shape(b)]
-    # (never across a public road from the shop: the other corner's roof, GitHub #308)
-    roofs = [r for r in roofs if r[0] <= CANOPY_GAP_M and not _across(sc, _centre(r[2].ring), roads)]
+             if b is not shop and b.cls in ROOF_CLASSES and _roof_canopy(b)]
+    # (never across a public road from the shop: the other corner's roof, GitHub #308; unless the pin is on the road)
+    sides = not _pin_on_road(st, roads)
+    roofs = [r for r in roofs if r[0] <= CANOPY_GAP_M and not (sides and _across(sc, _centre(r[2].ring), roads))]
     if roofs:
         return min(roofs, key=lambda r: r[:2])[2]
     fronts = [_nearest_on([rl], sc) for rl in roads]
@@ -1149,6 +1195,8 @@ def _layout(st, blds, roads, service=(), style="default"):
     buildings. A canopy outline found is dropped from the buildings either way. A convenience brand alone (not
     st.confirmed) needs the lanes or the canopy."""
     shop = find_shop(st, blds)
+    if shop is None:                            # (a shop mapped as a home, beside its canopy: _home_shop)
+        shop = _home_shop(st, blds, roads)
     if shop is None:                            # (a kiosk not mapped: the pin is on the forecourt)
         q, dist, _ = _nearest_on(roads, np.array([st.x, st.y])) if len(roads) else (None, np.inf, -1)
         if not st.confirmed or q is None or dist > PIN_ROAD_M:
