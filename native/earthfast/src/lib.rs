@@ -8,6 +8,7 @@ mod shore;
 mod photofill;
 mod ambience;
 mod power;
+mod underpass;
 
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, IntoPyArray};
 use pyo3::types::PyBytes;
@@ -1283,12 +1284,73 @@ fn measure_row32(line: PyReadonlyArray2<f64>, keys: PyReadonlyArray1<i64>, first
 /// count: a street's sidewalk over a cutting dragged the road in it up its wall (Munich's McGraw-Graben). Behind a
 /// cutting's wall (an up cut side, wall_flat deep: under the retaining wall's top) no other road at another level counts
 /// at all: the terrain's 2 m lattice drew the step as teeth in front of the wall where a street above came near it.
+/// grading.bank: a road's cross slope at each vertex of its centreline xy (n, 2) (m per m toward its left; a curve
+/// leaning into its turn), by the curve's radius R (the circle through the points about `stencil` m either side):
+/// e = e_max x min(1, r_min / R), left out under 0.01 (a gentle bend keeps its crown), then a running mean over
+/// `runoff` m (the bank comes in gradually) and faded to 0 over `fade_a` / `fade_b` m at the first / last vertex
+/// (0: none; a bridge's deck or a tunnel's floor is level there). After BeamNG's Hero Road editor (its bank runoff and
+/// fading) with the design-speed rule for e.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn bank_profile<'py>(py: Python<'py>, xy: PyReadonlyArray2<'py, f64>, e_max: f64, r_min: f64, stencil: f64,
+                     runoff: f64, fade_a: f64, fade_b: f64) -> Bound<'py, PyArray1<f64>> {
+    let xy = xy.as_array();
+    let n = xy.shape()[0];
+    let mut e = vec![0.0f64; n];
+    if n < 3 {
+        return e.into_pyarray(py);
+    }
+    let mut arc = vec![0.0f64; n];
+    for i in 1..n {
+        arc[i] = arc[i - 1] + (xy[[i, 0]] - xy[[i - 1, 0]]).hypot(xy[[i, 1]] - xy[[i - 1, 1]]);
+    }
+    let (mut j, mut k) = (0usize, 0usize);
+    for i in 0..n {
+        while j + 1 < i && arc[i] - arc[j + 1] >= stencil { j += 1; }
+        if k < i { k = i; }
+        while k + 1 < n && arc[k] - arc[i] < stencil { k += 1; }
+        if j >= i || k <= i { continue; }
+        let (ax, ay) = (xy[[j, 0]] - xy[[i, 0]], xy[[j, 1]] - xy[[i, 1]]);
+        let (bx, by) = (xy[[k, 0]] - xy[[i, 0]], xy[[k, 1]] - xy[[i, 1]]);
+        let la = ax.hypot(ay);
+        let lb = bx.hypot(by);
+        let lc = (bx - ax).hypot(by - ay);
+        if la < 1e-6 || lb < 1e-6 || lc < 1e-6 { continue; }
+        // the signed curvature of the circle through j, i, k: > 0 turning left (from j through i to k)
+        let cross = (xy[[i, 0]] - xy[[j, 0]]) * (xy[[k, 1]] - xy[[i, 1]]) - (xy[[i, 1]] - xy[[j, 1]]) * (xy[[k, 0]] - xy[[i, 0]]);
+        let kappa = 2.0 * cross / (la * lb * lc);
+        let rad = 1.0 / kappa.abs().max(1e-12);
+        let ee = e_max * (r_min / rad).min(1.0);
+        if ee >= 0.01 {
+            e[i] = -kappa.signum() * ee;        // (a left turn: its left, the inside, lower)
+        }
+    }
+    // the runoff: a running mean over `runoff` m (by arc length: the plan's vertices are evenly spaced or nearly)
+    let mut out = vec![0.0f64; n];
+    let half = runoff / 2.0;
+    let (mut lo, mut hi, mut sum) = (0usize, 0usize, 0.0f64);
+    for i in 0..n {
+        while hi < n && arc[hi] - arc[i] <= half { sum += e[hi]; hi += 1; }
+        while lo < hi && arc[i] - arc[lo] > half { sum -= e[lo]; lo += 1; }
+        out[i] = if hi > lo { sum / (hi - lo) as f64 } else { 0.0 };
+    }
+    let total = arc[n - 1];
+    for i in 0..n {
+        let mut f = 1.0f64;
+        if fade_a > 0.0 { let u = (arc[i] / fade_a).clamp(0.0, 1.0); f = f.min(u * u * (3.0 - 2.0 * u)); }
+        if fade_b > 0.0 { let u = ((total - arc[i]) / fade_b).clamp(0.0, 1.0); f = f.min(u * u * (3.0 - 2.0 * u)); }
+        out[i] *= f;
+    }
+    out.into_pyarray(py)
+}
+
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyReadonlyArray1<'py, f64>,
                      base: PyReadonlyArray1<'py, f64>, a: PyReadonlyArray2<'py, f64>, b: PyReadonlyArray2<'py, f64>,
                      za: PyReadonlyArray1<'py, f64>, zb: PyReadonlyArray1<'py, f64>, h: PyReadonlyArray1<'py, f64>,
-                     rh: PyReadonlyArray1<'py, f64>, rid: PyReadonlyArray1<'py, i64>, abut: PyReadonlyArray1<'py, u8>, cut: PyReadonlyArray2<'py, f64>, lift: f64, slope_run: f64,
+                     rh: PyReadonlyArray1<'py, f64>, rid: PyReadonlyArray1<'py, i64>, abut: PyReadonlyArray1<'py, u8>, cut: PyReadonlyArray2<'py, f64>,
+                     ba: PyReadonlyArray1<'py, f64>, bb: PyReadonlyArray1<'py, f64>, lift: f64, slope_run: f64,
                      t_min: f64, t_max: f64, blend_r: f64,
                      bucket: f64, wall_cut: f64, wall_t: f64, wall_flat: f64, wall_ahead: f64,
                      sep: bool, sep_from: f64, sep_full: f64, core_fade: f64, side_fade: f64, sharp_step: f64)
@@ -1298,6 +1360,9 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
     let (rh, rid) = (rh.as_array(), rid.as_array());
     let abut = abut.as_array();
     let cut = cut.as_array();               // (segments, 6): a cutting's wall, top and top offset, left then right
+    // (segments): the cross slope at each segment's ends (m per m toward its left: a banked curve, grading.bank)
+    let (ba, bb) = (ba.as_array(), bb.as_array());
+    let banked: Vec<bool> = (0..h.len()).map(|s| ba[s] != 0.0 || bb[s] != 0.0).collect();
     let sharp = cut.iter().any(|v| v.is_finite());
     let has_cut: Vec<bool> = (0..h.len()).map(|s| (0..6).any(|k| cut[[s, k]].is_finite())).collect();
     let cut_reach: Vec<f64> = (0..h.len()).map(|s| {
@@ -1384,7 +1449,11 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
                     let t = if l2 > 1e-12 { ((qx * abx + qy * aby) / l2).clamp(0.0, 1.0) } else { 0.0 };
                     let (ddx, ddy) = (qx - t * abx, qy - t * aby);
                     let d = (ddx * ddx + ddy * ddy).sqrt();       // (not hypot: libm's is ~5x dearer, the pairs loop's main cost)
-                    let target = za[s] + (zb[s] - za[s]) * t;
+                    let mut target = za[s] + (zb[s] - za[s]) * t;
+                    if banked[s] && l2 > 1e-12 {    // (a banked curve: tilted across the carriageway, its edge height past)
+                        let off = ((qy * abx - qx * aby) / l2.sqrt()).clamp(-rh[s], rh[s]);
+                        target += (ba[s] + (bb[s] - ba[s]) * t) * off;
+                    }
                     let left = (qx * aby - qy * abx) < 0.0;
                     let co = if left { 0 } else { 3 };
                     let (cwall, ctop, creach) = (cut[[s, co]], cut[[s, co + 1]], cut[[s, co + 2]]);
@@ -5011,6 +5080,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(dsm::fill_holes, m)?)?;
     m.add_function(wrap_pyfunction!(roadgeom::dedupe_polyline, m)?)?;
     m.add_function(wrap_pyfunction!(roadgeom::curve_deck, m)?)?;
+    m.add_function(wrap_pyfunction!(underpass::underpass_offsets, m)?)?;
     m.add_function(wrap_pyfunction!(shore::shore_steps, m)?)?;
     m.add_function(wrap_pyfunction!(shore::carve_segments, m)?)?;
     m.add_function(wrap_pyfunction!(vegmask::mask_polys, m)?)?;
@@ -5037,6 +5107,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(measure_row, m)?)?;
     m.add_function(wrap_pyfunction!(measure_row32, m)?)?;
     m.add_function(wrap_pyfunction!(grade_points, m)?)?;
+    m.add_function(wrap_pyfunction!(bank_profile, m)?)?;
     m.add_function(wrap_pyfunction!(resample, m)?)?;
     m.add_function(wrap_pyfunction!(tunnel_sections, m)?)?;
     m.add_function(wrap_pyfunction!(smooth_profile, m)?)?;
@@ -5106,6 +5177,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(photofill::fill_photo, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 83)?;
+    m.add("VERSION", 85)?;
     Ok(())
 }

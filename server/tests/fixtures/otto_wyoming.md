@@ -17,6 +17,8 @@ pipeline at zoom 16, using its cached geographic elevation tiles. These are
 input elevations, before road grading, not expected/solved bridge profiles.
 Sample keys are integer nanodegrees and zoom relative to sample_origin;
 this keeps submillimetre coordinate precision without large tile images.
+73 samples along Otto Road and the ramps were added on 2026-10-27 from the same pipeline (the
+underpass depth now read from the ground along the road; the captured ones matched it within 0.03 mm).
 The replay fails on a sample it has not captured instead of interpolating
 invented terrain or fetching data. Source pipeline: Mapterhorn terrain,
 with the project's normal fallback/filtering behavior (server/dem.py).

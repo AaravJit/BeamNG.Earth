@@ -53,6 +53,45 @@ class ProfileTest(unittest.TestCase):
         self.assertTrue(np.allclose(grading.smooth_profile(short, 2.0, 12.0), short, atol=1e-9))
 
 
+class BankTest(unittest.TestCase):
+    """A motorway's curve leans into its turn (grading.bank, grade_points): its inside lower, a straight level."""
+
+    def arc(self, r, ang, step=2.0):
+        th = np.arange(0.0, ang, step / r)
+        return np.stack([r * np.sin(th), r - r * np.cos(th)], axis=1)       # a left turn from (0, 0) heading +x
+
+    def test_left_curve_banked_inside_lower(self):
+        xy = self.arc(400.0, 1.2)
+        sp = roads.Spec(11.0, "paved", False, "motorway")
+        b = grading.bank(xy, sp, ext=(1, 1))
+        self.assertIsNotNone(b)
+        mid = b[len(b) // 2]
+        v, f = grading.BANK_DESIGN["motorway"]
+        r_min = v * v / (127.0 * (grading.BANK_E_MAX + f))
+        self.assertAlmostEqual(mid, -grading.BANK_E_MAX * min(1.0, r_min / 400.0), places=2)   # left (inside) lower
+        plan = grading._plan(xy, np.full(len(xy), 50.0), sp)
+        # graded across the carriageway at the middle: the outside (right) higher than the inside (left)
+        i = len(xy) // 2
+        p = xy[i]
+        th = np.arctan2(xy[i + 1, 1] - xy[i - 1, 1], xy[i + 1, 0] - xy[i - 1, 0])
+        n = np.array([-np.sin(th), np.cos(th)])          # left
+        pts = np.array([p + n * 4.0, p - n * 4.0])
+        z = grading.grade_points(pts[:, 0], pts[:, 1], np.full(2, 50.0), [plan])
+        self.assertAlmostEqual(float(z[1] - z[0]), -mid * 8.0, places=1)
+
+    def test_straight_and_city_streets_level(self):
+        xy = np.stack([np.arange(0, 300, 2.0), np.zeros(150)], axis=1)
+        self.assertIsNone(grading.bank(xy, roads.Spec(11.0, "paved", False, "motorway"), ext=(1, 1)))
+        self.assertIsNone(grading.bank(self.arc(150.0, 1.0), roads.Spec(7.0, "paved", False, "residential")))
+
+    def test_faded_to_level_at_a_bridge(self):
+        xy = self.arc(300.0, 1.0)
+        b = grading.bank(xy, roads.Spec(11.0, "paved", False, "motorway"), abut=(True, False), ext=(0, 1))
+        self.assertEqual(float(b[0]), 0.0)
+        self.assertLess(abs(float(b[len(b) // 2])), 0.09)
+        self.assertGreater(abs(float(b[len(b) // 2])), 0.03)
+
+
 class CrestTest(unittest.TestCase):
     def test_no_kinks_over_a_crest(self):
         # a road over a crest (the grade falls 4 % per 10 m): the graded centreline's slope changes smoothly, not
