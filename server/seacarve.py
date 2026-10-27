@@ -572,6 +572,26 @@ class SeaCarver:
             return
         t = np.linspace(0.0, s[-1], max(2, int(math.ceil(s[-1] / LINE_STEP_PX)) + 1))
         q = np.stack([np.interp(t, s, pts[:, 0]), np.interp(t, s, pts[:, 1])], -1)
+        # only the samples whose channel and bank can reach the raster, and one either side (their segments): each
+        # sample's level is its own; the whole river's were read for every raster, a long river's ~20,000 at a time
+        # (~300 km2 of DEM for one road tile on a first visit to rural Pennsylvania, 2026-10-27)
+        m = wmax + LINE_BANK_M / px + 2 * LINE_STEP_PX
+        near = (q[:, 0] >= -m) & (q[:, 0] <= n + m) & (q[:, 1] >= -m) & (q[:, 1] <= n + m)
+        if not near.any():
+            return
+        if not near.all():
+            keep = near.copy()
+            keep[:-1] |= near[1:]
+            keep[1:] |= near[:-1]
+            runs = np.flatnonzero(np.diff(np.r_[0, keep.astype(np.int8), 0]))
+            for a, b in zip(runs[::2], runs[1::2]):
+                if b - a >= 2:
+                    self._carve_run(q[a:b], kind, n, px, depth, level, held, drawn, o_dist, ox, oy)
+            return
+        self._carve_run(q, kind, n, px, depth, level, held, drawn, o_dist, ox, oy)
+
+    def _carve_run(self, q, kind, n, px, depth, level, held, drawn, o_dist, ox, oy):
+        import riverlines
         w = np.full(len(q), riverlines.WIDTH_M[kind])
         if o_dist is not None:          # in an outline: twice the distance to its edge
             qi = np.clip(np.round(q).astype(np.int64), 0, n - 1)
