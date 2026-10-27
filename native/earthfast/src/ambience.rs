@@ -133,9 +133,171 @@ pub fn sound_boxes<'py>(py: Python<'py>, pts: numpy::PyReadonlyArray2<'py, f64>,
     numpy::ndarray::Array2::from_shape_vec((k, 8), out).unwrap().into_pyarray(py)
 }
 
+/// Shorelines of a water raster for the shore sound (the mod's wave ribbons): kind [j, i] 0 land, 1 lake, 2 sea; the
+/// 4-connected water bodies of one kind with at least min_px pixels (every sea body) are kept; the edges between a
+/// kept body's pixels and the rest, on pixel corners (x = i, y = j: pixel [j, i] spans x i..i + 1), those whose middle
+/// lies in [i0, i1) x [j0, j1) (a cell's own pixels: its neighbour's raster has the next ones), chained into lines
+/// and simplified (Douglas-Peucker, eps px); lines under min_len px dropped. (points (n, 2), offsets (m + 1), per line
+/// one of its water pixels (m, 2) [j, i] and its kind).
+#[pyfunction]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+pub fn shore_lines<'py>(py: Python<'py>, kind: numpy::PyReadonlyArray2<'py, u8>, min_px: usize, eps: f64,
+                        min_len: f64, i0: i64, i1: i64, j0: i64, j1: i64)
+                        -> (Bound<'py, PyArray2<f64>>, Bound<'py, numpy::PyArray1<i64>>, Bound<'py, PyArray2<i64>>,
+                            Bound<'py, numpy::PyArray1<u8>>) {
+    let k = kind.as_array();
+    let (h, w) = (k.nrows(), k.ncols());
+    // bodies: 4-connected pixels of the same water kind
+    let mut label = vec![u32::MAX; h * w];
+    let mut keep: Vec<bool> = Vec::new();
+    let mut body_kind: Vec<u8> = Vec::new();
+    let mut body_px: Vec<(usize, usize)> = Vec::new();
+    let mut stack: Vec<usize> = Vec::new();
+    for s in 0..h * w {
+        let kk = k[[s / w, s % w]];
+        if kk == 0 || label[s] != u32::MAX {
+            continue;
+        }
+        let id = keep.len() as u32;
+        let mut n = 0usize;
+        label[s] = id;
+        stack.push(s);
+        while let Some(p) = stack.pop() {
+            n += 1;
+            let (j, i) = (p / w, p % w);
+            let mut visit = |q: usize| {
+                if label[q] == u32::MAX && k[[q / w, q % w]] == kk {
+                    label[q] = id;
+                    stack.push(q);
+                }
+            };
+            if i > 0 { visit(p - 1); }
+            if i + 1 < w { visit(p + 1); }
+            if j > 0 { visit(p - w); }
+            if j + 1 < h { visit(p + w); }
+        }
+        keep.push(kk == 2 || n >= min_px);
+        body_kind.push(kk);
+        body_px.push((s / w, s % w));
+    }
+    let wet = |j: usize, i: usize| -> Option<u32> {
+        let l = label[j * w + i];
+        if l != u32::MAX && keep[l as usize] { Some(l) } else { None }
+    };
+    // edges between corners (x, y), each with the body on its water side
+    let inside = |mx: f64, my: f64| mx >= i0 as f64 && mx < i1 as f64 && my >= j0 as f64 && my < j1 as f64;
+    let mut edges: Vec<((i64, i64), (i64, i64), u32)> = Vec::new();
+    for j in 0..h {
+        for i in 0..w {
+            let a = wet(j, i);
+            if i + 1 < w {
+                let b = wet(j, i + 1);
+                if a != b && inside((i + 1) as f64, j as f64 + 0.5) {
+                    let x = (i + 1) as i64;
+                    edges.push(((x, j as i64), (x, j as i64 + 1), a.or(b).unwrap()));
+                }
+            }
+            if j + 1 < h {
+                let b = wet(j + 1, i);
+                if a != b && inside(i as f64 + 0.5, (j + 1) as f64) {
+                    let y = (j + 1) as i64;
+                    edges.push(((i as i64, y), (i as i64 + 1, y), a.or(b).unwrap()));
+                }
+            }
+        }
+    }
+    // chained: open lines from corners with one edge first, then the loops
+    let mut at: std::collections::HashMap<(i64, i64), Vec<usize>> = std::collections::HashMap::new();
+    for (e, (p, q, _)) in edges.iter().enumerate() {
+        at.entry(*p).or_default().push(e);
+        at.entry(*q).or_default().push(e);
+    }
+    let mut used = vec![false; edges.len()];
+    let mut starts: Vec<(i64, i64)> = at.iter().filter(|(_, v)| v.len() == 1).map(|(c, _)| *c).collect();
+    starts.sort();
+    let mut loops: Vec<(i64, i64)> = edges.iter().map(|e| e.0).collect();
+    loops.sort();
+    let (mut pts, mut off, mut px, mut kinds) = (Vec::new(), vec![0i64], Vec::new(), Vec::new());
+    for c0 in starts.into_iter().chain(loops) {
+        let mut line = vec![c0];
+        let mut body = None;
+        let mut c = c0;
+        loop {
+            let next = at[&c].iter().copied().find(|&e| !used[e]);
+            let Some(e) = next else { break };
+            used[e] = true;
+            let (p, q, b) = edges[e];
+            body.get_or_insert(b);
+            c = if p == c { q } else { p };
+            line.push(c);
+            if c == c0 { break; }
+        }
+        if line.len() < 2 {
+            continue;
+        }
+        let fl: Vec<(f64, f64)> = line.iter().map(|&(x, y)| (x as f64, y as f64)).collect();
+        let len: f64 = fl.windows(2).map(|s| (s[1].0 - s[0].0).hypot(s[1].1 - s[0].1)).sum();
+        if len < min_len {
+            continue;
+        }
+        let simple = douglas_peucker(&fl, eps);
+        for (x, y) in &simple {
+            pts.push(*x);
+            pts.push(*y);
+        }
+        off.push((pts.len() / 2) as i64);
+        let b = body.unwrap() as usize;
+        px.push(body_px[b].0 as i64);
+        px.push(body_px[b].1 as i64);
+        kinds.push(body_kind[b]);
+    }
+    let n = pts.len() / 2;
+    let m = kinds.len();
+    (numpy::ndarray::Array2::from_shape_vec((n, 2), pts).unwrap().into_pyarray(py), off.into_pyarray(py),
+     numpy::ndarray::Array2::from_shape_vec((m, 2), px).unwrap().into_pyarray(py), kinds.into_pyarray(py))
+}
+
+/// Douglas-Peucker: the points of line within eps of it kept (its ends always).
+fn douglas_peucker(line: &[(f64, f64)], eps: f64) -> Vec<(f64, f64)> {
+    let n = line.len();
+    if n < 3 {
+        return line.to_vec();
+    }
+    let mut keep = vec![false; n];
+    keep[0] = true;
+    keep[n - 1] = true;
+    let mut stack = vec![(0usize, n - 1)];
+    while let Some((a, b)) = stack.pop() {
+        let (ax, ay) = line[a];
+        let (bx, by) = line[b];
+        let (dx, dy) = (bx - ax, by - ay);
+        let l = dx.hypot(dy);
+        let (mut best, mut bd) = (0usize, -1.0f64);
+        for (k, &(x, y)) in line.iter().enumerate().take(b).skip(a + 1) {
+            let d = if l > 1e-12 { ((x - ax) * dy - (y - ay) * dx).abs() / l } else { (x - ax).hypot(y - ay) };
+            if d > bd {
+                bd = d;
+                best = k;
+            }
+        }
+        if bd > eps {
+            keep[best] = true;
+            stack.push((a, best));
+            stack.push((best, b));
+        }
+    }
+    line.iter().zip(keep).filter(|(_, k)| *k).map(|(p, _)| *p).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn simplify() {
+        let l = [(0.0, 0.0), (1.0, 0.1), (2.0, 0.0), (3.0, 5.0)];
+        assert_eq!(douglas_peucker(&l, 0.5), vec![(0.0, 0.0), (2.0, 0.0), (3.0, 5.0)]);
+    }
 
     #[test]
     fn biomes() {

@@ -156,6 +156,16 @@ T.check(math.abs(sp[1].xf.pos.x + 20) < 1e-9 and math.abs(sp[1].xf.pos.y - 10) <
 amb.dropSpaces('1:3_4')
 T.check(#S.liveOf('SFXSpace') == 0, 'the tile goes: its spaces with it')
 
+-- shores: a "Waves" ribbon along a shoreline near the listener, SHORE_W wide, with the rivers
+seaV.shores = function() return { S1 = { kind = 'sea', nodes = { { 0, -30, 0 }, { 40, -30, 0 } } } }, 3 end
+seaV.riversVersion = 9
+amb.update(3, seaV)
+local sh
+for _, rbn in ipairs(rb.set) do if rbn.persistantId == 'S1' then sh = rbn end end
+T.check(sh and sh.emitters[2].eventNameStr == amb.SHORE_EVENT and #rb.set == 3, 'the shore ribbon, with the rivers')
+T.check(sh and math.abs(sh.nodes[1].y - sh.nodes[2].y) == amb.SHORE_W and amb.shoreRibbons == 1, 'SHORE_W across')
+seaV.shores = nil
+
 -- rain: the loop fades in with the weather's rain, out inside a tunnel's space, and goes when the rain stops
 local function rainEm()
   for _, o in ipairs(S.liveOf('SFXEmitter')) do if o.name == 'bngEarthRain' then return o end end

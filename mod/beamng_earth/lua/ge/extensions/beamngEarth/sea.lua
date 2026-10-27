@@ -234,13 +234,24 @@ function M.onMessage(msg)
       rivers[tostring(r[1])] = { kind = r[2], flow = tonumber(r[3]) or 0, nodes = r[4] }
     end
   end
-  want = { anchorId = msg.anchorId, tiles = tiles, rivers = rivers }
+  local shores = {}        -- (the shore sound's lines: server seacarve.shore_plan, ambience.lua)
+  for _, r in ipairs(type(msg.shores) == 'table' and msg.shores or {}) do
+    if type(r) == 'table' and type(r[3]) == 'table' and #r[3] >= 2 then
+      shores[tostring(r[1])] = { kind = r[2], nodes = r[3] }
+    end
+  end
+  want = { anchorId = msg.anchorId, tiles = tiles, rivers = rivers, shores = shores }
   M.riversVersion = M.riversVersion + 1
 end
 
 -- The server's rivers (key -> { kind, flow, nodes = { {x, y, z, width, depth}, ... } }) and their anchor, or nil.
 function M.rivers()
   if want then return want.rivers, want.anchorId end
+end
+
+-- The server's shorelines (key -> { kind = 'sea' | 'lake', nodes = { {x, y, z}, ... } }) and their anchor, or nil.
+function M.shores()
+  if want then return want.shores or {}, want.anchorId end
 end
 
 -- Every frame: the tiles of the server's set for the current anchor exist, the others are gone.
@@ -327,6 +338,9 @@ function M.transform(xf, newAnchorId)
   if want and want.anchorId == madeAnchor then
     for _, t in pairs(want.tiles) do mapTile(t) end
     for _, r in pairs(want.rivers) do
+      for _, n in ipairs(r.nodes) do n[1], n[2], n[3] = xf:apply(n[1], n[2], n[3]) end
+    end
+    for _, r in pairs(want.shores or {}) do
       for _, n in ipairs(r.nodes) do n[1], n[2], n[3] = xf:apply(n[1], n[2], n[3]) end
     end
     want.anchorId = newAnchorId

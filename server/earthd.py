@@ -3999,14 +3999,15 @@ class Connection:
                     rivers = riverlinesmod.plan(frame, x, y, cell_water, tiled,
                                                 lambda la, lo: dem.sample(la, lo, riverlinesmod.DEM_ZOOM),
                                                 sea.outline_at, level_at=carved, road_clear=road_clear())
-                    return tiles, rivers, not missing[0] and sea.warm_asked == asked
-                tiles, rivers, complete = await self.loop.run_in_executor(self.s.ground_pool, plan)
+                    shores = seacarvemod.shore_plan(frame, x, y, sea)     # (the mod's shore sound)
+                    return tiles, rivers, shores, not missing[0] and sea.warm_asked == asked
+                tiles, rivers, shores, complete = await self.loop.run_in_executor(self.s.ground_pool, plan)
                 if complete and self.sea_checked is not None and self.sea_checked[:2] == (aid, sq):
                     self.sea_checked = (aid, sq, self.sea_checked[2], True)
-                msg = ([t.to_msg() for t in tiles], [r.to_msg() for r in rivers])
+                msg = ([t.to_msg() for t in tiles], [r.to_msg() for r in rivers], shores)
                 if self.sea_sent is None or self.sea_sent[0] != aid or self.sea_sent[1] != msg:
                     self.sea_sent = (aid, msg)
-                    self.send({"type": "sea", "anchorId": aid, "tiles": msg[0], "rivers": msg[1]})
+                    self.send({"type": "sea", "anchorId": aid, "tiles": msg[0], "rivers": msg[1], "shores": msg[2]})
             except Exception as e:      # offline, no map data: no water tiles
                 log.debug("sea tiles: %s: %s", type(e).__name__, e)
             finally:

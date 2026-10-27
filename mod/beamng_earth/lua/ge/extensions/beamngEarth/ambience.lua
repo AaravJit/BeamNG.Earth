@@ -193,20 +193,25 @@ end
 -- the flow at the water's surface, as wide as the water; depth and speed as every stock ribbon's (10 and 1: its
 -- volume then hangs on the distance alone). (Wide calm rivers drawn as water tiles, lakes and the sea: none.)
 M.RIVER_EVENT = 'event:>Ambient>Water>River'
+-- Shores: the same ribbons along the sea's and the large lakes' shorelines (server seacarve.shore_plan, sea.lua), with
+-- the bank's "Waves" event (in no stock level: East Coast USA's "Waves" ribbons have no events; recorded 2026-10-26 it
+-- plays, quieter than the river at the same volume; the user: "it sounds like shoreline"), a strip SHORE_W wide.
+M.SHORE_EVENT = 'event:>Ambient>Water>Waves'
+M.SHORE_W = 20
 M.RIVER_KINDS = { river = true, stream = true }   -- running water (canals are still: no rushing water there)
 M.RIBBON_DEPTH, M.RIBBON_SPEED = 10, 1
 M.RIBBON_WIDTH_MIN = 0.5
 
 -- Pure: a river's nodes ({x, y, z, width, ...} downstream) as ribbon nodes: { x, y, z } bank pairs, left then right
--- of the flow, at the node's z.
-function M.banks(nodes)
+-- of the flow, at the node's z (width: every node's, instead of its own).
+function M.banks(nodes, width)
   local out, n = {}, #nodes
   for i = 1, n do
     local a, b, c = nodes[math.max(i - 1, 1)], nodes[math.min(i + 1, n)], nodes[i]
     local tx, ty = b[1] - a[1], b[2] - a[2]
     local l = math.sqrt(tx * tx + ty * ty)
     if l < 1e-6 then tx, ty, l = 1, 0, 1 end
-    local h = math.max(tonumber(c[4]) or 0, M.RIBBON_WIDTH_MIN) / 2
+    local h = math.max(width or tonumber(c[4]) or 0, M.RIBBON_WIDTH_MIN) / 2
     local nx, ny = -ty / l * h, tx / l * h
     out[#out + 1] = { c[1] + nx, c[2] + ny, c[3] }
     out[#out + 1] = { c[1] - nx, c[2] - ny, c[3] }
@@ -219,15 +224,15 @@ M.RIVER_MOVE_M = 300    -- ... chosen again once the listener is this far from w
 
 local riverVersion, riverAnchor, riverSig, riverAt = nil, nil, nil, nil
 local ribbonCache, boxes, cacheAnchor = {}, {}, nil     -- key -> ribbon / { x0, y0, x1, y1 } (the anchor's)
-M.ribbons, M.ribbonMs, M.ribbonBuilds, M.ribbonsMade = 0, 0, 0, 0
+M.ribbons, M.ribbonMs, M.ribbonBuilds, M.ribbonsMade, M.shoreRibbons = 0, 0, 0, 0, 0
 
 local function ribbonOf(rb, key, r)
   local nodes, depths = {}, {}
-  for _, p in ipairs(M.banks(r.nodes)) do
+  for _, p in ipairs(M.banks(r.nodes, r.width)) do
     nodes[#nodes + 1] = vec3(p[1], p[2], p[3])
     depths[#depths + 1] = M.RIBBON_DEPTH
   end
-  local ev = M.RIVER_EVENT
+  local ev = r.event or M.RIVER_EVENT
   local ribbon = { persistantId = key, name = key, isEnabled = true, isAmbient = false, isUpRibbon = false,
     isTopActive = false, isQuadAndVolume = false, speed = M.RIBBON_SPEED, nodes = nodes, depths = depths,
     emitters = { rb.createEmitterHost(ev), rb.createEmitterHost(ev), rb.createEmitterHost(ev),
@@ -255,14 +260,22 @@ local function updateRivers(anchorId, sea, x, y)
   if sea.riversVersion == riverVersion and anchorId == riverAnchor and not moved then return end
   local t0 = os.clockhp()
   riverVersion, riverAnchor, riverAt = sea.riversVersion, anchorId, { x, y }
-  local rivers, a = sea.rivers()
-  if a ~= anchorId then rivers = nil end
-  rivers = rivers or {}
+  local got, a = sea.rivers()
+  if a ~= anchorId then got = nil end
+  -- the rivers and the shores, one set of ribbons (keys: the server's, R... and S...)
+  local rivers = {}
+  for k, rv in pairs(got or {}) do
+    if M.RIVER_KINDS[rv.kind] then rivers[k] = rv end
+  end
+  local shores = a == anchorId and sea.shores and sea.shores() or {}
+  for k, sh in pairs(shores) do
+    rivers[k] = { kind = sh.kind, nodes = sh.nodes, width = M.SHORE_W, event = M.SHORE_EVENT }
+  end
   if cacheAnchor ~= a then ribbonCache, boxes, cacheAnchor = {}, {}, a end   -- (a rebase moved their nodes)
   local keys, r = {}, M.RIVER_M
   for k, rv in pairs(rivers) do
     local b = boxes[k]
-    if not b and M.RIVER_KINDS[rv.kind] and type(rv.nodes) == 'table' and #rv.nodes >= 2 then
+    if not b and type(rv.nodes) == 'table' and #rv.nodes >= 2 then
       b = { math.huge, math.huge, -math.huge, -math.huge }
       for _, n in ipairs(rv.nodes) do
         b[1], b[2], b[3], b[4] = math.min(b[1], n[1]), math.min(b[2], n[2]), math.max(b[3], n[1]), math.max(b[4], n[2])
@@ -281,6 +294,8 @@ local function updateRivers(anchorId, sea, x, y)
     ribbonCache[k] = ribbonCache[k] or ribbonOf(rb, k, rivers[k])
     list[#list + 1] = ribbonCache[k]
   end
+  M.shoreRibbons = 0
+  for _, k in ipairs(keys) do if shores[k] then M.shoreRibbons = M.shoreRibbons + 1 end end
   setRibbons(rb, list)
   M.ribbonMs, M.ribbonBuilds = (os.clockhp() - t0) * 1000, M.ribbonBuilds + 1
 end
@@ -458,7 +473,7 @@ function M.status()
   for _ in pairs(tiles) do n = n + 1 end
   return { tiles = n, nodes = M.nodes, builds = M.builds, buildMs = M.buildMs, wind = current and current[1],
     roomtone = current and current[2], ribbons = M.ribbons,
-    ribbonMs = M.ribbonMs, ribbonBuilds = M.ribbonBuilds, spacesMade = M.spacesMade,
+    ribbonMs = M.ribbonMs, ribbonBuilds = M.ribbonBuilds, spacesMade = M.spacesMade, shoreRibbons = M.shoreRibbons,
     rain = M.rainVol }
 end
 

@@ -941,6 +941,69 @@ class SeaCarver:
         return sea
 
 
+# Shorelines for the shore sound (the mod's ambience.lua lays the stock "Waves" ribbons along them): the sea's and the
+# lakes' edges (not rivers', which have their own sound), lakes under SHORE_MIN_M2 left out (ponds), simplified to
+# SHORE_EPS_PX, pieces under SHORE_MIN_LEN_PX dropped; within SHORE_RADIUS_M of the player
+SHORE_MIN_M2 = 50000.0
+SHORE_EPS_PX = 1.5
+SHORE_MIN_LEN_PX = 8.0
+SHORE_RADIUS_M = 1500.0
+SHORE_KINDS = {1: "lake", 2: "sea"}
+
+
+def cell_shores(carver, x, y):
+    """The shorelines of cell (x, y): [(kind "lake" / "sea", level m, lat (k,), lon (k,))], from its raster
+    (earthfast.shore_lines over its own pixels: a line on its edge is the neighbour's)."""
+    import fast
+    r = carver.raster(x, y)
+    if r is None:
+        return []
+    depth, level, outline = r
+    wet = (depth > 0) & np.isfinite(level) & ~outline
+    sea = wet & (np.abs(level - SEA_E) < 0.01)
+    kind = np.ascontiguousarray(np.where(sea, 2, np.where(wet, 1, 0)), np.uint8)
+    if not kind.any():
+        return []
+    lat_c = float(_lonlat((x + 0.5) * CELL_PX, (y + 0.5) * CELL_PX)[0])
+    min_px = int(SHORE_MIN_M2 / _px_m(lat_c) ** 2)
+    fast.require(79, "shore_lines")
+    pts, off, wpx, kinds = fast._ef.shore_lines(kind, min_px, SHORE_EPS_PX, SHORE_MIN_LEN_PX, 1, CELL_PX + 1, 1,
+                                                CELL_PX + 1)
+    out = []
+    for k in range(len(kinds)):
+        p = pts[off[k]:off[k + 1]]
+        la, lo = _lonlat(x * CELL_PX - 1 + p[:, 0], y * CELL_PX - 1 + p[:, 1])     # (corner i: px x*CELL_PX - 1 + i)
+        out.append((SHORE_KINDS[int(kinds[k])], float(level[wpx[k, 0], wpx[k, 1]]), la, lo))
+    return out
+
+
+def shore_plan(frame, x, y, carver, radius=SHORE_RADIUS_M):
+    """The shorelines within radius of (x, y) in `frame`, from the cells at hand (the others are built in the
+    background and come with a later plan): [[key, kind, [[x, y, z], ...]], ...] (z: the water's level), keys naming
+    their nodes."""
+    import hashlib
+    la0, lo0, _ = frame.enu_to_geodetic(x - radius, y - radius, 0.0)
+    la1, lo1, _ = frame.enu_to_geodetic(x + radius, y + radius, 0.0)
+    try:
+        keys = mapcells.cells_for_bbox(float(la0), float(lo0), float(la1), float(lo1), max_cells=64)
+    except ValueError:
+        return []
+    out, later = [], []
+    for key in keys:
+        cx, cy = int(key.x), int(key.y)
+        if not carver.ready(cx, cy):
+            later.append((cx, cy))
+            continue
+        for n, (kind, lv, la, lo) in enumerate(cell_shores(carver, cx, cy)):
+            e, nn, z = frame.geodetic_to_enu(la, lo, np.full(len(la), lv))
+            nodes = [[round(float(a), 1), round(float(b), 1), round(float(c), 2)] for a, b, c in zip(e, nn, z)]
+            h = hashlib.sha1(repr(nodes).encode()).hexdigest()[:8]
+            out.append([f"S{cx}_{cy}_{n}_{h}", kind, nodes])
+    if later:
+        carver.warm(later)
+    return out
+
+
 def sink(e):
     """Far-tile elevations with the DEM's sea (SEA_LO..SEA_HI m) sunk SINK_M below the surface, so the
     far tiles never show through the mod's water tiles (levels without the carved polygons)."""
