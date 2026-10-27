@@ -101,8 +101,8 @@ You can help support development by reporting [issues](https://github.com/TecnaG
 - GPS routes to any destination (OSRM on OpenStreetMap), with the stock route arrows on the road and the route
   on the game's minimap (bottom left), which shows the roads around you. The first 20 km (12 miles) of the
   route's map data and elevation download ahead while you drive, with a progress bar on the map.
-  The map shows the route's elevation profile under the GPS box, and its right-click menu copies a spot's
-  coordinates.
+  The map shows the route's elevation profile under the GPS box and the local time and weather, has a Dark base
+  map, and its right-click menu copies a spot's coordinates.
 - **Autodrive**: the car drives itself along the GPS route (in lane, legal speed, minding traffic).
 - Saved places and recent places; "Where you left off" in the level select puts you back where you last drove (it
   is saved as you drive, at teleports and when the game closes).
