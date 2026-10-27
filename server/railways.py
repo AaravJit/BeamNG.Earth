@@ -11,6 +11,8 @@ around the tile). The ballast's sides go down past the ground, a low
 embankment on the flat and a tall one on a ramp. Short mapped road tunnels also create supported spans when the upper rail lacks a bridge tag.
 Where a road crosses at grade, the track stops either side of the
 carriageway (a level crossing: the road's own surface across it). Tunnels are left out. Pure given its inputs."""
+import math
+
 import numpy as np
 
 import mapgeom
@@ -836,6 +838,103 @@ def _mixed(ground, far_ground, box):
             out[~near] = far_ground(xy[~near])
         return out
     return mixed
+
+
+# Level crossings' equipment (crossing_props; the models: tools/build_rail_crossing_props.py, trees.lua's rr* groups):
+# per road class, a gate (its arm raised), a mast with lamps or a cross on its post, at each approach on the kerb side
+# of the traffic, facing it. A disused line keeps its crosses, an abandoned one has none.
+CROSSING_KIT = {"motorway": "gate", "trunk": "gate", "primary": "gate", "secondary": "gate", "tertiary": "flash"}
+CROSSING_KIT_DEFAULT = "cross"
+CROSSING_NO_KIT = {"footway", "cycleway", "path", "pedestrian", "steps", "track", "bridleway", "corridor"}
+CROSSING_SIGN_OFF_M = 1.2       # m from the carriageway's edge to the post
+CROSSING_SIGN_BEFORE_M = 2.5    # m before the track's ballast (along the road)
+CROSSING_HEIGHT = {"cross": 3.263, "flash": 4.7, "gate": 8.25}
+AMERICAS_LON = -30.0            # west of this the crossbuck (the Americas), else the St Andrew's cross
+
+
+def crossing_props(frame, tx, ty, cells, ground, left_hand=False, kits=None):
+    """Prop rows ([group, x, y, z, yaw, scale, height, 0]) of the level crossings in road tile (tx, ty): where a drawn
+    line's ground part crosses a road's (cells: the road layers around the tile; ground(xy (n, 2)) -> z). kits: an
+    optional fn(xy (2,), road class) -> "gate" / "flash" / "cross" / None from crossing data (the FRA's inventory in
+    the US), else CROSSING_KIT by the road's class. Each crossing is the tile's that holds its point."""
+    import roads as roadsmod
+    box = roadsmod.tile_bbox(tx, ty)
+    reach = 60.0
+    worn = {}
+    rails = [(fid, xy) for fid, _c, kind, xy in parts(frame, cells, box, reach=reach, worn=worn) if kind == "ground"]
+    if not rails:
+        return []
+    near = (box[0] - reach, box[1] - reach, box[2] + reach, box[3] + reach)
+    roads, seen = [], set()
+    for feats in cells:
+        if feats is None or not len(feats):
+            continue
+        specs = roadsmod.road_specs(feats)
+        fb = feats.boxes(frame)
+        for i, sp in enumerate(specs):
+            fid = str(feats.ids[i])
+            if sp is None or fid in seen or sp.cls in CROSSING_NO_KIT or not _box_hit(fb[i], near):
+                continue
+            seen.add(fid)
+            for ring in roadsmod.ground_parts(feats, i):
+                e, n = mapgeom.enu_xy(feats, frame, ring)
+                if len(e) >= 2:
+                    roads.append((fid, sp, np.c_[e, n]))
+    if not roads:
+        return []
+    americas = float(frame.lon0 if hasattr(frame, "lon0") else 0.0) < AMERICAS_LON
+    rows, done = [], set()
+    for (rfid, sp, line), crs in zip(roads, roadsmod._crossings_by([xy for _f, xy in rails], [ln for *_, ln in roads])):
+        for ri, _arc_r, pt in crs:
+            pt = np.asarray(pt, np.float64)
+            if not (box[0] <= pt[0] < box[2] and box[1] <= pt[1] < box[3]):
+                continue
+            lfid, rxy = rails[ri]
+            w = worn.get(lfid, 0)
+            key = (rfid, lfid, round(float(pt[0]), 1), round(float(pt[1]), 1))
+            if w >= 2 or key in done:
+                continue
+            done.add(key)
+            kit = kits(pt, sp.cls) if kits is not None else None
+            kit = kit or CROSSING_KIT.get(sp.cls, CROSSING_KIT_DEFAULT)
+            if w:
+                kit = "cross"
+            rows += _crossing_rows(pt, line, rxy, sp, kit, americas, left_hand, ground)
+    return rows
+
+
+def _unit_at(line, pt):
+    """The unit direction of polyline line at its segment nearest pt."""
+    a, b = line[:-1], line[1:]
+    d = b - a
+    t = np.clip(((pt - a) * d).sum(1) / np.maximum((d * d).sum(1), 1e-12), 0.0, 1.0)
+    j = int(np.argmin(np.hypot(*(a + t[:, None] * d - pt).T)))
+    return d[j] / max(float(np.hypot(*d[j])), 1e-9)
+
+
+def _crossing_rows(pt, line, rxy, sp, kit, americas, left_hand, ground):
+    """The rows of one crossing: a kit at each approach (one on a one-way road), on its kerb side, facing it."""
+    r = _unit_at(line, pt)
+    t = _unit_at(rxy, pt)
+    sin = abs(float(r[0] * t[1] - r[1] * t[0]))
+    before = (BALLAST_TOP_M + BALLAST_SLOPE * BALLAST_H + CROSSING_SIGN_BEFORE_M) / max(sin, 0.35)
+    off = sp.width / 2 + CROSSING_SIGN_OFF_M
+    group = {"cross": "rrcross", "flash": "rrflash", "gate": "rrgate"}[kit] + ("" if americas else "_eu")
+    if kit == "gate" and left_hand:
+        group += "_l"
+    dirs = (1.0, -1.0) if not sp.oneway else (-float(sp.dir or 1),)   # (sgn -1: travel along the geometry)
+    out, pts = [], []
+    for sgn in dirs:
+        a = -r * sgn                                    # the travel direction towards the crossing
+        side = np.array([a[1], -a[0]])                  # its right
+        kerb = -side if left_hand else side
+        q = pt - a * before + kerb * off
+        pts.append((q, side))
+    z = np.asarray(ground(np.array([q for q, _ in pts])), np.float64).ravel()
+    for (q, side), zz in zip(pts, z):
+        out.append([group, round(float(q[0]), 2), round(float(q[1]), 2), round(float(zz), 2),
+                    round(math.degrees(math.atan2(side[1], side[0])) % 360.0, 1), 1.0, CROSSING_HEIGHT[kit], 0.0])
+    return out
 
 
 def tile_mesh(frame, tx, ty, cells, ground, sign_style=None, far_ground=None):

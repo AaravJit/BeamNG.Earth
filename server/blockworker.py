@@ -56,6 +56,8 @@ class _State:
         # the sea's and the lakes' floors carved in (--sea on)
         self.sea = seacarvemod.SeaCarver(md, cache_dir, dem=self.dem) if sea else None
         self.md = md if roads else None
+        import fra
+        self.fra = fra.Crossings(cache_dir, net) if roads else None     # (the US's level crossings' devices)
         self.grading = bool(grading) and self.md is not None
         self.widths = (roadwidthmod.RoadWidths(
             lambda key: md.cell(key, layers=("buildings",), kind="demand").layers.get("buildings"),
@@ -531,9 +533,18 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
                               bridges.beams_in(roadsmod.tile_bbox(tx, ty)), ground=cover)
     tmesh = roadmeshmod.tunnel(chunks, (x0, y0, 0.0), rwalls)
     import railways
-    rmesh = railways.tile_mesh(frame, tx, ty,
-                               [cell_fn(k) for k in roadsmod.cells_of_tile(frame, tx, ty, railways.REACH_M)],
-                               railways.point_ground(frame, elev, (aid, lat, lon)),
+    rcells = [cell_fn(k) for k in roadsmod.cells_of_tile(frame, tx, ty, railways.REACH_M)]
+    rground = railways.point_ground(frame, elev, (aid, lat, lon))
+    fra_kits = None                 # (the US: the FRA inventory's gates and lamps, else the road classes')
+    if getattr(_s, "fra", None) is not None:
+        try:
+            fra_kits = _s.fra.kits(frame, roadsmod.cells_of_tile(frame, tx, ty))
+        except Exception as e:
+            log.debug("fra kits: %s: %s", type(e).__name__, e)
+    rr_kits = railways.crossing_props(frame, tx, ty, rcells, rground, left_hand, fra_kits)   # level crossings
+    if rr_kits:
+        props = (props or []) + rr_kits
+    rmesh = railways.tile_mesh(frame, tx, ty, rcells, rground,
                                far_ground=railways.point_ground(
                                    frame, lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)),
                                    ("raw", aid, lat, lon)))

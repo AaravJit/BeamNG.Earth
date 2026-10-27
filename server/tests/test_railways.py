@@ -1,4 +1,5 @@
 """Railway tracks (railways.py): the rail lines taken, the level crossings, the bed's heights and the mesh."""
+import math
 import os
 import sys
 import tempfile
@@ -147,6 +148,31 @@ class RailwayTest(unittest.TestCase):
         edge = rails[np.abs(rails[:, 0] - 120.0) < 8.0]
         self.assertTrue(len(edge))
         self.assertLess(float(edge[:, 2].max()), flat(edge[:1, :2])[0] + railways.FLUSH_LIFT_M + 0.08, "flush")
+
+    def test_level_crossing_kits_face_each_approach(self):
+        """A secondary road's crossing gets a gate at each approach, on the kerb side of the traffic before the track,
+        facing it; a residential street's a cross; an abandoned line's none."""
+        f = features([[(0.0, 100.0), (250.0, 100.0)], [(120.0, 0.0), (120.0, 250.0)], [(40.0, 0.0), (40.0, 250.0)],
+                      [(0.0, 180.0), (250.0, 180.0)]],
+                     ["standard_gauge", "secondary", "residential", "unknown"], subtypes=["rail", "road", "road", "rail"],
+                     flags=[(3, "is_abandoned")])
+        rows = railways.crossing_props(FRAME, 0, 0, [f], lambda xy: np.full(len(xy), 10.0))
+        gates = [r for r in rows if r[0].startswith("rrgate")]
+        crosses = [r for r in rows if r[0].startswith("rrcross")]
+        self.assertEqual(len(gates), 2, rows)
+        self.assertEqual(len(crosses), 2, rows)
+        for g, x, y, z, yaw, *_ in gates:
+            self.assertGreater(abs(y - 100.0), 3.0, "before the track")
+            self.assertLess(abs(y - 100.0), 8.0)
+            # (the kerb side: right of the traffic heading for the track; its local +x points there)
+            travel = np.array([0.0, 1.0 if y < 100.0 else -1.0])
+            right = np.array([travel[1], -travel[0]])
+            self.assertGreater((x - 120.0) * right[0], 0.0, "on the right of the traffic")
+            ux = np.array([math.cos(math.radians(yaw)), math.sin(math.radians(yaw))])
+            np.testing.assert_allclose(ux, right, atol=1e-6)
+            self.assertEqual(z, 10.0)
+        left = railways.crossing_props(FRAME, 0, 0, [f], lambda xy: np.full(len(xy), 10.0), left_hand=True)
+        self.assertTrue(all(r[0].endswith("_l") for r in left if r[0].startswith("rrgate")))
 
     def test_proposed_and_unbuilt_lines_are_not_drawn(self):
         """Overture's "unknown" rail with no abandoned or disused flag is OpenStreetMap's railway=proposed or
