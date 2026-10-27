@@ -704,14 +704,34 @@ def _concat_all(parts):
     return out
 
 
-def write_tile(out_dir, vfs_dir, aid, tx, ty, rows):
+FLAT_STRIDE = 8             # numbers an item in a flat tile: tile_items' row, in its order
+
+
+def flat_json(rows):
+    """tile_items' rows (a list, or its JsonRows text) as the JSON text of one flat array, FLAT_STRIDE numbers an item,
+    the same numbers as json.dumps writes in the rows: no table per item in the game's Lua, which every garbage
+    collection walks (trees.lua). The JsonRows text is flattened as text, without Python objects."""
     import json
-    name = f"veg_{aid}_{tx}_{ty}.json"
+    if isinstance(rows, JsonRows):
+        return "[" + rows[2:-2].replace("],[", ",") + "]" if len(rows) > 2 else "[]"
+    return json.dumps([v for r in rows for v in r], separators=(",", ":"))
+
+
+def write_tile(out_dir, vfs_dir, aid, tx, ty, rows, flat=False):
+    """The tile's file: {"groups", "items": rows}, or with flat (a mod that reads it: hello.vegFlat) {"groups",
+    "stride": FLAT_STRIDE, "flat": [...]} (flat_json) under its own name. (vfs path, items)."""
+    import json
+    name = f"veg_{aid}_{tx}_{ty}.flat.json" if flat else f"veg_{aid}_{tx}_{ty}.json"
     path = os.path.join(out_dir, name)
     tmp = staging.tmp_for(path)
     with open(tmp, "w") as f:
-        if isinstance(rows, JsonRows):  # (tile_items as_json: the items' text, as json.dumps writes them)
-            head = {"groups": list(GROUPS), "audio": rows.audio, "biome": rows.biome, "items": []}
+        # (the tile's sound: the forest cloud's nodes and biome, ambience.lua; tile_items as_json's rows carry them)
+        sound = {"audio": rows.audio, "biome": rows.biome} if isinstance(rows, JsonRows) else {}
+        if flat:
+            head = dict({"groups": list(GROUPS)}, **sound, stride=FLAT_STRIDE, flat=[])
+            f.write(json.dumps(head, separators=(",", ":"))[:-3] + flat_json(rows) + "}")
+        elif isinstance(rows, JsonRows):  # (tile_items as_json: the items' text, as json.dumps writes them)
+            head = dict({"groups": list(GROUPS)}, **sound, items=[])
             f.write(json.dumps(head, separators=(",", ":"))[:-3] + rows + "}")
         else:
             f.write(json.dumps({"groups": list(GROUPS), "items": rows}, separators=(",", ":")))  # the C encoder

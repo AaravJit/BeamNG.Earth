@@ -973,9 +973,10 @@ class Server:
     def hm_vfs(self, key):
         return f"{self.vfs_dir}/{self.hm_name(key)}"
 
-    def build_veg_tile(self, aid, tx, ty):
+    def build_veg_tile(self, aid, tx, ty, flat=False):
         """vegetation.py: one vegetation tile of anchor aid written to the session folder: (vfs path, n) or
-        None. Worker threads (builds the map cells it lacks, ~3.5 s each the first time)."""
+        None; flat: as one flat array (a mod that reads it, hello.vegFlat). Worker threads (builds the map cells it
+        lacks, ~3.5 s each the first time)."""
         anchor = self.anchors.get(aid)
         if anchor is None or self.veg is None:
             return None
@@ -990,7 +991,7 @@ class Server:
         rows = vegetationmod.tile_items(anchor.frame, tx, ty, self.veg, lambda k: True, elev, self.sea, as_json=True)
         if rows is None:
             return None
-        return vegetationmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, rows)
+        return vegetationmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, rows, flat=flat)
 
     def country_at(self, lat, lon):
         """The ISO country code at (lat, lon) (its nearest airport's: navgraph.country_near), or None."""
@@ -2800,6 +2801,7 @@ class Connection:
         self.refining = set()                   # graded first blocks on their way (refine_first; send_progress)
         self.ground_wait = {}                   # block key -> when its photo was first seen waiting (ground_progress)
         self.veg = vegetationmod.Tracker()      # vegetation tiles sent to the mod (--trees on)
+        self.veg_flat = False                   # ... as one flat array each (the mod's hello.vegFlat; trees.lua)
         # far buildings (--buildings on); none under the road tiles (they carry the buildings themselves)
         # the far (lite) buildings under the road tiles too, nearest first: they come in seconds after a teleport and the
         # mod hides each as its road tile's full buildings are made (roads.lua updateFar), the town round the car
@@ -3177,6 +3179,10 @@ class Connection:
             self.writer.close()
             log.info("client disconnected %s", self.peer)
 
+    def build_veg_tile(self, aid, tx, ty):
+        """Server.build_veg_tile in this mod's format (veg_flat). The vegetation tracker's worker threads."""
+        return self.s.build_veg_tile(aid, tx, ty, flat=self.veg_flat)
+
     def spawn(self, coro):
         t = asyncio.create_task(coro)
         self.tasks.add(t)
@@ -3231,6 +3237,9 @@ class Connection:
                         self.slot_holds[int(g[0])] = g[1]
             # a game that outlived its server: keep the session folders its tiles still use
             self.s.claim_sessions(self, msg.get("sessions"))
+            # a mod that reads a vegetation tile as one flat array of numbers (no table per item in its Lua: trees.lua);
+            # an older one gets the rows
+            self.veg_flat = msg.get("vegFlat") is True
             self.send(m)
             if self.weather.msg is not None:        # a reconnected mod gets the weather again
                 self.send(self.weather.msg)
@@ -3743,7 +3752,7 @@ class Connection:
             if anchor is not None:                            # a teleport's cells built at once, ahead
                 la, lo, _ = anchor.frame.enu_to_geodetic(*self.focus, 0.0)
                 self.s.veg.warm_around(float(la), float(lo))
-            self.veg.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_veg_tile,
+            self.veg.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.build_veg_tile,
                              view=self.view_at, foci=[f for f in self.foci if f[3]])
         if self.s.buildings and aid == self.active:
             self.bldfar.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_far_bld_tile,
