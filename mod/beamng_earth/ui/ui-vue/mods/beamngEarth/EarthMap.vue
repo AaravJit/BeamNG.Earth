@@ -176,7 +176,7 @@
           <polyline :points="elevStats.line" class="elev-line" />
           <line :x1="elevStats.markerX" y1="0" :x2="elevStats.markerX" :y2="ELEV_H" class="elev-marker" />
         </svg>
-        <div class="elev-minmax"><span>{{ Math.round(elevStats.minE) }} m</span><span>{{ Math.round(elevStats.maxE) }} m</span></div>
+        <div class="elev-minmax"><span>{{ fmtHeight(elevStats.maxE) }}</span><span>{{ fmtHeight(elevStats.minE) }}</span></div>
       </div>
     </div>
 
@@ -995,6 +995,10 @@ const gpsScreen = computed(() => {
   const g = state.value.gps
   return g ? screen(g.lat, g.lon) : null
 })
+// a height for the route's elevation profile, in the game's length unit (fmtMiles)
+function fmtHeight(m) {
+  return state.value.gps && state.value.gps.metric ? `${Math.round(m)} m` : `${Math.round(m * 3.28084)} ft`
+}
 function fmtMiles(m) {
   // (the game's own length unit, Options > Display: gps.lua's metric; GitHub #327)
   if (state.value.gps && state.value.gps.metric) {
