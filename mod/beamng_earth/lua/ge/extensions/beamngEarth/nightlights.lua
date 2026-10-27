@@ -32,6 +32,8 @@ local lastLights = -1e9
 M.night = nil            -- the state applied (nil: none yet)
 M.errors = 0
 local lenses = {}        -- road tile key -> { {x, y, z}, ... }
+-- other lights' places: name -> function returning { {x, y, z}, ... } (gasstations.lua: the pump islands under their canopy)
+M.providers = {}
 local pool = {}          -- { id, at (lens table or nil) }
 
 -- Whether it is night by the stock environment (nil when there is no time of day, as in the main menu).
@@ -81,14 +83,19 @@ function M.transform(xf)
   for _, e in ipairs(pool) do e.at = nil end           -- (placed again at the next step)
 end
 
--- Pure: the n nearest lenses to (x, y) within r (a list of lens tables, nearest first).
+-- Pure: the n nearest lenses (and providers' places) to (x, y) within r (their tables, nearest first).
 function M.nearest(x, y, r, n)
   local cand, r2 = {}, r * r
+  local function consider(l)
+    local d = (l[1] - x) ^ 2 + (l[2] - y) ^ 2
+    if d <= r2 then cand[#cand + 1] = { l, d } end
+  end
   for _, list in pairs(lenses) do
-    for _, l in ipairs(list) do
-      local d = (l[1] - x) ^ 2 + (l[2] - y) ^ 2
-      if d <= r2 then cand[#cand + 1] = { l, d } end
-    end
+    for _, l in ipairs(list) do consider(l) end
+  end
+  for _, fn in pairs(M.providers) do
+    local ok, pts = pcall(fn)
+    if ok and type(pts) == 'table' then for _, l in ipairs(pts) do consider(l) end end
   end
   table.sort(cand, function(a, b) return a[2] < b[2] end)
   local out = {}

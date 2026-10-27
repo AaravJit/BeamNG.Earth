@@ -80,6 +80,8 @@ local nightlights = require('beamngEarth/nightlights') -- the buildings' windows
 pumpjacks.onCollide = roads.markCollisionDirty
 local parking = require('beamngEarth/parking') -- parked cars on the road tiles' spots (stock gameplay_parking)
 local gasstations = require('beamngEarth/gasstations') -- pumps and the stock refuel prompt (server gasstations.py)
+-- (the stations' pump islands: lit at night)
+nightlights.providers.gas = function() return gasstations.lightPoints() end
 gasstations.onCollide = roads.markCollisionDirty
 local navgraph = require('beamngEarth/navgraph')
 local postfx = require('beamngEarth/postfx')       -- no far depth-of-field blur in our level
