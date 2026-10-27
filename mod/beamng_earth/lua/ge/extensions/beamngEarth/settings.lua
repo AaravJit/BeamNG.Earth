@@ -543,6 +543,7 @@ local function localWeatherBadge()
     localTime = sst and sst.localTime or nil,
     code = m and m.code or nil,
     tempC = m and (m.tempC or m.slTempC) or nil,
+    metric = require('beamngEarth/gps').metric(),      -- (the game's unit: the badge's °C or °F)
   }
 end
 

@@ -96,7 +96,7 @@
            weather.lua's last message), 2026-10-27 -->
       <div v-if="weatherBadge" class="weather-badge">
         <span v-if="weatherBadge.icon">{{ weatherBadge.icon }}</span>
-        <span v-if="weatherBadge.tempC != null">{{ weatherBadge.tempC }}°C</span>
+        <span v-if="weatherBadge.temp != null">{{ weatherBadge.temp }}</span>
         <span v-if="weatherBadge.localTime">{{ weatherBadge.localTime }}</span>
       </div>
       <div class="search">
@@ -422,8 +422,10 @@ const notice = computed(() => {
 const weatherBadge = computed(() => {
   const w = state.value.weather
   if (!w || (!w.localTime && w.code == null)) return null
-  return { icon: w.code != null ? mm.weatherIcon(w.code) : "", localTime: w.localTime || "",
-    tempC: w.tempC != null ? Math.round(w.tempC) : null }
+  // (in the game's unit, as the GPS distances: gps.lua's metric, Options > Display)
+  const metric = !!w.metric
+  const temp = w.tempC == null ? null : (metric ? `${Math.round(w.tempC)}°C` : `${Math.round(w.tempC * 9 / 5 + 32)}°F`)
+  return { icon: w.code != null ? mm.weatherIcon(w.code) : "", localTime: w.localTime || "", temp }
 })
 
 const creditsFull = ref(false)          // the credits' whole text (else two lines)
