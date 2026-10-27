@@ -749,7 +749,13 @@ class Tracker:
     """Per connection: which tiles of a kind the mod has (as roads.Tracker): vegetation tiles by default
     (messages veg_tile / veg_drop); the far buildings use one too (buildings.FAR_*)."""
 
-    def __init__(self, send_m=SEND_M, drop_m=DROP_M, per_pose=BUILD_PER_POSE, kind="veg", skip_m=None):
+    def __init__(self, send_m=SEND_M, drop_m=DROP_M, per_pose=BUILD_PER_POSE, kind="veg", skip_m=None, group=None,
+                 unit=1, inner=None):
+        # group G (the far buildings under the skyline tiles): every tile of a G x G group whose square comes within
+        # send_m is wanted (a skyline tile shows only while none of its tiles do: no overlap, no hole). unit U (the
+        # skyline tiles): keys are U x U squares of road tiles; inner (m, G): squares whose G-group comes within m are
+        # not wanted (the far buildings' own groups)
+        self.group, self.unit, self.inner = group, unit, inner
         self.aid = None
         self.sent = set()
         self.building = set()
@@ -786,19 +792,25 @@ class Tracker:
             self.pool = ThreadPoolExecutor(self.per_pose, thread_name_prefix=f"{self.kind}-tile")
         spots = [(x, y)] + ([tuple(view)] if view else [])
         skip = {k for p in spots for k in roadsmod.tiles_near(*p, self.skip_m)} if self.skip_m else ()
-        car = set(roadsmod.tiles_near(x, y, self.send_m))
+        if self.inner is not None:          # (the skyline: not where the far buildings' groups are)
+            skip = {k for p in spots for k in self._near(*p, self.inner[0], unit=self.unit, group=self.inner[1])}
+        car = set(self._near(x, y, self.send_m))
         self.car = car - set(skip)          # (progress: the loading line's tiles)
-        seen = set(roadsmod.tiles_near(*view, self.send_m)) - car if view else set()
+        seen = set(self._near(*view, self.send_m)) - car if view else set()
         others = set()
         for f in foci:
-            others.update(roadsmod.tiles_near(f[0], f[1], min(self.send_m, f[2] + roadsmod.TILE / 2)))
+            others.update(self._near(f[0], f[1], min(self.send_m, f[2] + roadsmod.TILE / 2)))
         others -= car | seen
         want = [k for k in car | seen | others if k not in self.sent and k not in self.building and k not in skip]
-        car_key = roadsmod.view_key(conn, aid, x, y)
-        cam_key = roadsmod.view_key(conn, aid, *view) if seen else None
+        if self.unit == 1:
+            car_key = roadsmod.view_key(conn, aid, x, y)
+            cam_key = roadsmod.view_key(conn, aid, *view) if seen else None
+        else:                               # (keys in larger squares: nearest first)
+            car_key = lambda k: self._dist(k, x, y)     # noqa: E731
+            cam_key = (lambda k: self._dist(k, *view)) if seen else None    # noqa: E731
 
         def focus_d(k):
-            return min(roadsmod.tile_distance(k[0], k[1], f[0], f[1]) for f in foci)
+            return min(self._dist(k, f[0], f[1]) for f in foci)
         want.sort(key=lambda k: (2, focus_d(k)) if k in others else (1, cam_key(k)) if k in seen else (0, car_key(k)))
         # at most per_pose in flight: each waits in a thread of the loop's shared executor, and a teleport's
         # hundreds (one per pose, uncapped) held every thread while the road tiles under the car waited for one
@@ -807,10 +819,37 @@ class Tracker:
             self.building.add((tx, ty))
             fut = self.futs[(tx, ty)] = loop.run_in_executor(self.pool, build, aid, tx, ty)
             fut.add_done_callback(lambda f, k=(tx, ty), a=aid: self._built(conn, a, k, f))
-        for k in [k for k in self.sent if all(roadsmod.tile_distance(k[0], k[1], *p) > self.drop_m for p in spots)
-                  and all(roadsmod.tile_distance(k[0], k[1], f[0], f[1]) > f[2] + roadsmod.TILE for f in foci)]:
+        for k in [k for k in self.sent if all(self._dist(k, *p) > self.drop_m for p in spots)
+                  and all(self._dist(k, f[0], f[1]) > f[2] + roadsmod.TILE for f in foci)]:
             self.sent.discard(k)
             conn.send({"type": f"{self.kind}_drop", "anchorId": aid, "key": f"{k[0]}_{k[1]}"})
+
+    def _near(self, x, y, m, unit=None, group=None):
+        """Keys (tiles, or unit x unit squares of tiles) whose square, or whose group's square, comes within m."""
+        import roads as roadsmod
+        unit = self.unit if unit is None else unit
+        group = self.group if group is None else group
+        if group:                           # (whole groups of `group` tiles; keys in `unit` squares)
+            gs = roadsmod.TILE * group
+            g0x, g1x = math.floor((x - m) / gs), math.floor((x + m) / gs)
+            g0y, g1y = math.floor((y - m) / gs), math.floor((y + m) / gs)
+            per = group // unit
+            return [(gx * per + i, gy * per + j) for gx in range(g0x, g1x + 1) for gy in range(g0y, g1y + 1)
+                    for i in range(per) for j in range(per)]
+        if unit == 1:
+            return roadsmod.tiles_near(x, y, m)
+        us = roadsmod.TILE * unit
+        u0x, u1x = math.floor((x - m) / us), math.floor((x + m) / us)
+        u0y, u1y = math.floor((y - m) / us), math.floor((y + m) / us)
+        return [(ux, uy) for ux in range(u0x, u1x + 1) for uy in range(u0y, u1y + 1)]
+
+    def _dist(self, k, x, y):
+        """m (Chebyshev) from (x, y) to key k's square, or to its group's (the far buildings under the skyline)."""
+        import roads as roadsmod
+        size = roadsmod.TILE * (self.group or self.unit)
+        per = (self.group // self.unit) if self.group else 1
+        x0, y0 = (k[0] // per) * size, (k[1] // per) * size
+        return max(x0 - x, x - (x0 + size), y0 - y, y - (y0 + size), 0.0)
 
     def _built(self, conn, aid, key, fut):
         if aid != self.aid:                 # (an old anchor's: the same key may be in flight for the new one)
@@ -834,8 +873,8 @@ class Tracker:
         if data is not None:                # (the game need not open the file: staging.inline_json)
             m["data"] = data
         pool = getattr(getattr(conn, "s", None), "pool_shapes", None)
-        if self.kind == "bldfar" and pool is not None:      # its mesh at a pooled shape path (matslots.py)
-            slots = pool(conn, {"shape": f"bldfar_{aid}_{key[0]}_{key[1]}.cdae"})
+        if self.kind in ("bldfar", "bldsky") and pool is not None:     # its mesh at a pooled shape path (matslots.py)
+            slots = pool(conn, {"shape": f"{self.kind}_{aid}_{key[0]}_{key[1]}.cdae"})
             if slots:
                 m["slots"] = slots
         conn.send(m)

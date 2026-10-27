@@ -237,6 +237,10 @@ SERVER_TO_MOD = {
     "bldfar_tile": {"anchorId": F(int), "key": F(str), "path": F(str), "n": F(int), "data": F(dict, OPT),
                     "slots": F(dict, OPT)},    # {"shape": [pooled shape path, serial]}
     "bldfar_drop": {"anchorId": F(int), "key": F(str)},
+    # the skyline past them (buildings.skyline_tile): the same, one per SKY_UNIT x SKY_UNIT road tiles
+    "bldsky_tile": {"anchorId": F(int), "key": F(str), "path": F(str), "n": F(int), "data": F(dict, OPT),
+                    "slots": F(dict, OPT)},
+    "bldsky_drop": {"anchorId": F(int), "key": F(str)},
     # the AI road graph around the player (navgraph.py, --traffic on): a JSON file of nodes and edges
     "navgraph": {"anchorId": F(int), "path": F(str), "cx": F(NUM), "cy": F(NUM), "nodes": F(int), "edges": F(int),
                  "serial": F(int)},
@@ -261,6 +265,7 @@ EXERCISED_ELSEWHERE = {"far_retex", "roads_tile", "roads_drop",   # roads: needs
                        "sea",                                        # --sea on: needs map data (test_seacarve)
                        "veg_tile", "veg_drop",                       # --trees on: needs map data
                        "bldfar_tile", "bldfar_drop",                 # --buildings on: needs map data
+                       "bldsky_tile", "bldsky_drop",
                        "navgraph",                                   # --traffic on: needs map data
                        "map_tiles_ready",                            # only when the world map asks (map_tiles)
                        "update",                                     # only when GitHub has a newer version (online)

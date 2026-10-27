@@ -13,6 +13,7 @@ on red brick), m_highrise_metal's are office curtain wall and a shopfront; each 
 its windows a whole number of bays along every wall (no window cut at a corner). Pure functions of the
 footprints and a ground-height function; no game state.
 """
+import os
 import hashlib
 import math
 
@@ -2099,7 +2100,7 @@ class _PartsOf:
 
 def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=(), west_town=False, roads_xy=None,
                    tunnels_xy=None, garages_xy=None, supports=None, bridges_xy=None, water_xy=None, decks=None,
-                   ml_roads_xy=None, ways_xy=None, skip=frozenset()):
+                   ml_roads_xy=None, ways_xy=None, skip=frozenset(), min_size=None):
     """[(Spec, gmin, gmax)] of the buildings whose footprint centroid is in the tile [x0, x1) x [y0, y1)
     (anchor frame), rings relative to (x0, y0). layers: mapgeom.Features of buildings (one per map cell; a
     building in two cells is taken once, by id); elev(lat, lon) the physics ground. part_layers: the
@@ -2109,7 +2110,9 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
     bridge's painted steel). bridges_xy / water_xy (bridge_lines, water_rings): a machine-learned footprint (not
     OSM) on a road bridge, over water or on a public road (roads_xy, or ml_roads_xy for that test alone: the far
     buildings) is a deck, a boat or a vehicle, left out (_ml_false). skip: ids of buildings left out (a gas station's
-    canopy, drawn by the mod from the stock levels' props: gasstations.tile_sites)."""
+    canopy, drawn by the mod from the stock levels' props: gasstations.tile_sites). min_size (min height m, min
+    footprint m²): only buildings at least that tall or that large (the skyline tiles: skyline_tile), tested before
+    any other work on a building."""
     parts_of = _PartsOf(frame, part_layers)     # building id -> [(ring in the anchor frame, (own height, bottom))]
     seen = set()
     rings, attrs, looks, mins = [], [], [], []
@@ -2143,6 +2146,13 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
             cx, cy = float(e[:-1].sum() / k), float(n[:-1].sum() / k)
             if not (x0 <= cx < x1 and y0 <= cy < y1):
                 continue
+            if min_size is not None:
+                h_ = a["height"][i] if a.get("height") is not None else None
+                if h_ is None or not np.isfinite(h_):
+                    fl_ = a["num_floors"][i] if a.get("num_floors") is not None else None
+                    h_ = float(fl_) * 3.2 if fl_ is not None and np.isfinite(fl_) else 0.0
+                if h_ < min_size[0] and abs(float(np.dot(e[:-1], n[1:]) - np.dot(e[1:], n[:-1]))) / 2 < min_size[1]:
+                    continue
             at = {k: (a[k][i] if k in a else None) for k in
                   ("class", "height", "num_floors", "min_height", "roof_shape", "roof_height", "name", "facade_material")}
             hh_ = at.get("height")
@@ -2468,8 +2478,9 @@ STOOP_W = 1.3               # m wide the steps
 DOOR_ROAD_M = 30.0          # a front door on the wall facing the nearest road within this
 DOOR_CLASSES_SKIP = SHED_CLASSES | INDUSTRIAL_CLASSES
 G_DOOR = "door"
-FAR_SEND_M = 1600.0         # far building tiles (render-only, the lite mesh) sent within this (Chebyshev)
-FAR_DROP_M = 1900.0         # ... dropped beyond
+FAR_SEND_M = float(os.environ.get("BNE_BLDFAR_SEND_M", "1600"))    # far building tiles (render-only, the lite mesh)
+                                                                    # sent within this (Chebyshev)
+FAR_DROP_M = float(os.environ.get("BNE_BLDFAR_DROP_M", str(FAR_SEND_M + 300)))     # ... dropped beyond
 FAR_PER_POSE = 4
 
 
@@ -2788,6 +2799,126 @@ def far_tile(frame, tx, ty, md, ground, out_dir, vfs_dir, aid):
         f.write(json.dumps(data))       # (json.dump to a file: the pure-Python encoder)
     staging.replace(tmp, path)
     return f"{vfs_dir}/{name}", len(items)
+
+
+# ------------------------------------------------------------------------------------------- the skyline
+# Past the far buildings, a lighter ring out to SKY_SEND_M (the user, 2026-10-27: "see how far away we can render
+# buildings"): one mesh per SKY_UNIT x SKY_UNIT road tiles (1 km), only the buildings big enough to see that far
+# (SKY_MIN_H tall or SKY_MIN_AREA_M2 large), the lite mesh, the tallest first up to the 16-bit vertex budget. Far
+# buildings to 4.8 km as 256 m tiles cost +37 % frame time at Federal Hill (1129 objects, ~0.7 GB of meshes); a
+# skyline tile stands for 16 of them and holds a fraction of their buildings. The far buildings are sent for every
+# tile of a skyline square that comes within FAR_SEND_M (vegetation.Tracker group), and the mod shows a skyline tile
+# only while none of its squares' far buildings are there: no overlap, no hole.
+SKY_UNIT = 4
+SKY_SEND_M = float(os.environ.get("BNE_SKY_SEND_M", "4800"))
+SKY_DROP_M = SKY_SEND_M + 800.0
+SKY_PER_POSE = 2
+SKY_MIN_AREA_M2 = 40.0      # (sheds left out)
+SKY_BOX_AREA_M2 = 600.0     # a footprint smaller than this is drawn as its oriented box
+SKY_MAX_CORNERS = 12        # a larger one with more corners: every k-th kept
+
+
+# The mean colour of each building material's base texture (tools: a 64 x 64 resize of each material's
+# baseColorMap from the game's content zips, 2026-10-27): a skyline building is drawn in its facade's and its roof's
+# mean colour times their tints (MARBLE, nearly white, sampled at one texel: the vertex colour is the colour)
+MAT_MEAN = {"bne_bld_facade": (0.679, 0.676, 0.683), "bne_bld_shop": (0.669, 0.691, 0.699),
+            "bne_bld_office": (0.47, 0.493, 0.492), "bne_bld_roof_flat": (0.432, 0.431, 0.43),
+            "bne_bld_roof_slate": (0.359, 0.36, 0.388), "bne_bld_roof_shingle": (0.585, 0.577, 0.571),
+            "bne_bld_siding": (0.822, 0.822, 0.822), "bne_bld_stucco": (0.795, 0.795, 0.795),
+            "bne_bld_roof_metal": (0.642, 0.642, 0.642), "bne_bld_panel": (0.815, 0.815, 0.814),
+            "bne_bld_metalwall": (0.841, 0.841, 0.841), "bne_bld_stone": (0.83, 0.818, 0.803),
+            "bne_bld_marble": (0.978, 0.978, 0.978), "bne_bld_brick": (0.717, 0.569, 0.513)}
+SKY_UV = (0.5, 0.5)
+
+
+def _sky_colour(look, f):
+    """RGBA bytes of a LOOKS name drawn plain: its material's mean colour x its tint x the jitter f."""
+    if look not in LOOKS:
+        return (150, 150, 150, 255)
+    mat, tint = LOOKS[look]
+    mean = MAT_MEAN.get(mat, (0.7, 0.7, 0.7))
+    return tuple(int(max(0, min(255, round(255 * m * t * f)))) for m, t in zip(mean, tint)) + (255,)
+
+
+def _sky_mesh(items):
+    """The skyline mesh of [(Spec, gmin, gmax)]: per building a quad per wall and its flat roof, in MARBLE at one
+    texel, coloured per vertex (~4 per corner + the roof's corners: a row house is 20 vertices, the lite mesh ~72).
+    (positions, uvs, tris, tri material indices, MATERIALS, colours) as build, or None."""
+    m = Mesh()
+    mi = MATERIALS.index(MARBLE)
+    uv = SKY_UV
+    for spec, gmin, gmax in items:
+        ring = np.asarray(spec.ring, np.float64)[:, :2]
+        if len(ring) < 3:
+            continue
+        if _area2(ring) < 0:
+            ring = ring[::-1]
+        f = 1.0 + JITTER * (2.0 * _hash01(spec.seed, "jit") - 1.0)
+        wall = (mi, _sky_colour(spec.facade, f))
+        roof = (mi, _sky_colour(spec.roof_mat or ROOF_FLAT, f))
+        z0 = gmin - SKIRT_LITE_M
+        z1 = base_z(spec, gmin, gmax) + float(spec.min_h or 0.0) + float(spec.height or 0.0)
+        if z1 <= z0 + 0.5:
+            continue
+        n = len(ring)
+        for i in range(n):
+            a, b = ring[i], ring[(i + 1) % n]
+            m.quad((a[0], a[1], z0), (b[0], b[1], z0), (b[0], b[1], z1), (a[0], a[1], z1), uv, uv, uv, uv, wall)
+        m.poly([(p[0], p[1], z1) for p in ring], [uv] * n, roof)
+    if not m.n:
+        return None
+    P, UV, T, M, C = m.arrays()
+    return P, UV, T, M, MATERIALS, C
+
+
+def skyline_tile(frame, ux, uy, md, ground, out_dir, vfs_dir, aid):
+    """A skyline tile (render-only) written to the session folder: (vfs path of its JSON, building count) or None
+    when its cells are not at hand (fetched in the background: asked again later). Key (ux, uy): SKY_UNIT x SKY_UNIT
+    road tiles from road tile (ux * SKY_UNIT, uy * SKY_UNIT)."""
+    import json
+    import roads
+    x0, y0, _, _ = roads.tile_bbox(ux * SKY_UNIT, uy * SKY_UNIT)
+    x1, y1 = x0 + SKY_UNIT * roads.TILE, y0 + SKY_UNIT * roads.TILE
+    keys = sorted({k for i in range(SKY_UNIT) for j in range(SKY_UNIT)
+                   for k in roads.cells_of_tile(frame, ux * SKY_UNIT + i, uy * SKY_UNIT + j, margin=0.0)}, key=str)
+    if not all(md.has(k, "buildings") for k in keys):
+        for k in keys:                      # (the background lane: never before what the player is near)
+            md.prefetch(k, layers=("buildings",))
+        return None
+    layers = [md.cell(k, layers=("buildings",), kind="background").layers.get("buildings") for k in keys]
+    items = tile_buildings(frame, x0, y0, x1, y1, layers, ground, min_size=(1e9, SKY_MIN_AREA_M2))
+    for spec, _gmin, _gmax in items:        # (the simplest shape: a box or a few corners, a flat roof, nothing on it)
+        ring = np.asarray(spec.ring, np.float64)
+        if len(ring) > 4 and abs(_area2(ring)) / 2 < SKY_BOX_AREA_M2:
+            c, u, hl, hw = oriented_box(ring)
+            v = np.array([-u[1], u[0]])
+            ring = np.array([c - u * hl - v * hw, c + u * hl - v * hw, c + u * hl + v * hw, c - u * hl + v * hw])
+        elif len(ring) > SKY_MAX_CORNERS:     # (rings are open: the last corner is not the first again)
+            ring = ring[::int(np.ceil(len(ring) / SKY_MAX_CORNERS))]
+        spec.ring = ring
+        spec.roof, spec.steeple, spec.stoop, spec.porch, spec.sign, spec.door = "flat", None, None, None, None, None
+    items.sort(key=lambda it: (-(float(it[0].height or 0.0) + float(it[0].min_h or 0.0)), str(it[0].seed)))
+    picked, n = [], 0
+    for it in items:                        # (the tallest first, up to the 16-bit vertex budget: 5 per corner)
+        k = 5 * len(it[0].ring)
+        if n + k > MAX_MESH_VERTS:
+            break
+        picked.append(it)
+        n += k
+    mesh = _sky_mesh(picked) if picked else None
+    data = {"v": 1}
+    if mesh is not None:
+        shape = f"bldsky_{aid}_{ux}_{uy}.cdae"
+        write(os.path.join(out_dir, shape), mesh)
+        data["shape"] = f"{vfs_dir}/{shape}"
+        data["pos"] = [x0, y0, 0.0]
+    name = f"bldsky_{aid}_{ux}_{uy}.json"
+    path = os.path.join(out_dir, name)
+    tmp = staging.tmp_for(path)
+    with open(tmp, "w") as f:
+        f.write(json.dumps(data))
+    staging.replace(tmp, path)
+    return f"{vfs_dir}/{name}", len(picked) if mesh is not None else 0
 
 
 # ------------------------------------------------------------------------------------------- the ground photo

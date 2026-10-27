@@ -664,6 +664,22 @@ def far_buildings_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir):
                          lambda path, extra: (path, int(extra.get("n", 0))))
 
 
+def skyline_tile(aid, lat, lon, zoom, ux, uy, out_dir, vfs_dir):
+    """earthd.Server.build_sky_tile here (the far buildings' pool): buildings.skyline_tile (from the revisit cache when
+    built in this anchor's place before)."""
+    import buildings as buildingsmod
+    import revisit
+    frame = geodesy.EnuFrame(lat, lon)
+    k = revisit.key("bldsky", round(float(lat), 7), round(float(lon), 7), zoom, ux, uy,
+                    _s.md.versions() if _s.md is not None else None)
+    return _revisit_tile("bldsky", k, aid, ux, uy, out_dir, vfs_dir, f"bldsky_{aid}_{ux}_{uy}.json",
+                         lambda: buildingsmod.skyline_tile(frame, ux, uy, _s.md,
+                                                           lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)),
+                                                           out_dir, vfs_dir, aid),
+                         lambda res: {"n": int(res[1])},
+                         lambda path, extra: (path, int(extra.get("n", 0))))
+
+
 def base_entry(user_dir, base_vfs, ao_vfs, rgb, ao_value):
     """terraincache.base_entry here (its BC7 encode is the base photo's main cost)."""
     return terraincache.base_entry(user_dir, base_vfs, ao_vfs, rgb, ao_value)

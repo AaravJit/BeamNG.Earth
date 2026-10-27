@@ -1131,6 +1131,20 @@ class Server:
                                      lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom)),
                                      self.out_dir, self.vfs_dir, aid)
 
+    def build_sky_tile(self, aid, ux, uy):
+        """buildings.skyline_tile: a skyline (render-only) tile of anchor aid, or None (its cells not at hand: asked
+        again later). Worker threads."""
+        anchor = self.anchors.get(aid)
+        if anchor is None or self.mapdata is None or not self.buildings:
+            return None
+        zoom = anchor.zooms[0]
+        if self.far_bld_pool is not None:
+            return self.far_bld_pool.submit(blockworker.skyline_tile, aid, anchor.lat, anchor.lon, zoom, ux, uy,
+                                            self.out_dir, self.vfs_dir).result()
+        return buildingsmod.skyline_tile(anchor.frame, ux, uy, self.mapdata,
+                                         lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom)),
+                                         self.out_dir, self.vfs_dir, aid)
+
     def build_terrain_patch(self, aid, key, box):
         """terrainpatch.py: the collision patch of the ground under a collision island off the terrain block (the
         mod's terrainpatch.lua), written to the session folder in pieces. ([(vfs path, (cx, cy))], triangles) or None
@@ -2823,8 +2837,15 @@ class Connection:
         # mod hides each as its road tile's full buildings are made (roads.lua updateFar), the town round the car
         # drawn simply first and in detail after (the user, 2026-10-25: "load simpler versions first then higher detail
         # version later"); without them the far ones came first and the car's surroundings last
+        # past them the skyline (buildings.skyline_tile): the far buildings then come as whole skyline squares
+        # (group), the skyline tiles where none of theirs are (inner)
+        sky = buildingsmod.SKY_SEND_M > buildingsmod.FAR_SEND_M
         self.bldfar = vegetationmod.Tracker(buildingsmod.FAR_SEND_M, buildingsmod.FAR_DROP_M,
-                                            buildingsmod.FAR_PER_POSE, "bldfar")
+                                            buildingsmod.FAR_PER_POSE, "bldfar",
+                                            group=buildingsmod.SKY_UNIT if sky else None)
+        self.bldsky = (vegetationmod.Tracker(buildingsmod.SKY_SEND_M, buildingsmod.SKY_DROP_M, buildingsmod.SKY_PER_POSE,
+                                             "bldsky", unit=buildingsmod.SKY_UNIT,
+                                             inner=(buildingsmod.FAR_SEND_M, buildingsmod.SKY_UNIT)) if sky else None)
         self.nav = navgraphmod.Tracker()        # the AI road graph around the player (--traffic on)
         self.nav_wait = {}                      # anchor id -> monotonic time its first AI graph was wanted
         self.gravity = gravitymod.Tracker()     # real gravity: recompute rule, last message sent
@@ -3209,8 +3230,9 @@ class Connection:
             self.s.connections.discard(self)
             self.s.slots_let_go(list(self.slot_holds))
             self.slot_holds = {}
-            for tr in (self.roads, self.veg, self.bldfar, self.nav):
-                tr.close()
+            for tr in (self.roads, self.veg, self.bldfar, self.bldsky, self.nav):
+                if tr is not None:
+                    tr.close()
             self.s.drop_claims(self)
             self.streamer.cancel()
             self.credits.close()
@@ -3797,6 +3819,10 @@ class Connection:
         if self.s.buildings and aid == self.active:
             self.bldfar.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_far_bld_tile,
                                 view=self.view_at)
+            if self.bldsky is not None and self.bldfar.progress()[0] >= self.bldfar.progress()[1]:
+                # (only once the far buildings round the car are all there: the skyline is the least urgent)
+                self.bldsky.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_sky_tile,
+                                    view=self.view_at)
         if self.s.traffic and aid == self.active and self.nav_may_start(aid):
             self.nav.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_navgraph)
         if aid == self.active:

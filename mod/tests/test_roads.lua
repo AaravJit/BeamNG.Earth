@@ -380,4 +380,17 @@ do
   T.check(roads.collideRadius(100) == 1400 and roads.collideRadius(500) == roads.COLLIDE_M[2], 'reach: 14 s of driving, capped')
 end
 
+-- the skyline: a 1 km square is covered once all 16 of its far tiles are here (no hole while they arrive)
+do
+  local seen = {}
+  T.check(not roads.skyCovered(seen, 1, 0, 0), 'skyCovered: nothing here')
+  for i = 0, 3 do for j = 0, 3 do if not (i == 3 and j == 3) then seen['1:' .. i .. '_' .. j] = true end end end
+  T.check(not roads.skyCovered(seen, 1, 0, 0), 'skyCovered: 15 of 16: still shown')
+  seen['1:3_3'] = true
+  T.check(roads.skyCovered(seen, 1, 0, 0), 'skyCovered: all 16: hidden')
+  T.check(not roads.skyCovered(seen, 2, 0, 0), 'skyCovered: another anchor\'s')
+  local s2 = {}
+  for i = -4, -1 do for j = 4, 7 do s2['1:' .. i .. '_' .. j] = true end end
+  T.check(roads.skyCovered(s2, 1, -1, 1), 'skyCovered: negative squares')
+end
 T.done('test_roads')

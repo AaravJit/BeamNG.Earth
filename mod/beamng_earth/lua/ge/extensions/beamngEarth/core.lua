@@ -1000,6 +1000,11 @@ local function onMessage(msg)
     roads.onFarTile(msg, st.anchorId)
   elseif t == 'bldfar_drop' then
     roads.onFarDrop(msg)
+  elseif t == 'bldsky_tile' then
+    -- the skyline past the far buildings (server buildings.skyline_tile): render-only, roads.lua
+    roads.onFarTile(msg, st.anchorId, true)
+  elseif t == 'bldsky_drop' then
+    roads.onFarDrop(msg, true)
   elseif t == 'where_result' then
     statusbar.onResult(msg)
   elseif t == 'place_previews_ready' then      -- the level select's place pictures are there (levelinfo.lua)

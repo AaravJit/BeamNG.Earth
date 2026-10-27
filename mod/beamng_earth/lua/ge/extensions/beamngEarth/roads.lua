@@ -94,6 +94,7 @@ local deleteQ = {}          -- object ids
 local loadedMaterials = false
 local anchorId = nil
 local far = {}              -- far buildings (server buildings.far_tile): key "a:tx_ty" -> { anchor, id, shape, pos, hidden }
+local farSeen = {}          -- far tile keys that arrived (with buildings or none): the skyline tiles' test
 local farQ = {}             -- keys of far tiles to make
 local lastError = nil
 local sinceChange = stopwatch.new()  -- ms since a tile arrived / went or a road was made / deleted
@@ -281,6 +282,9 @@ local function switchAnchor(aid)
       slotDrop(f.slot)
       far[key] = nil
     end
+  end
+  for key in pairs(farSeen) do
+    if string.sub(key, 1, #tostring(aid) + 1) ~= tostring(aid) .. ':' then farSeen[key] = nil end
   end
   local keep = {}
   for _, q in ipairs(createQ) do if tiles[q.key] then keep[#keep + 1] = q end end
@@ -481,22 +485,29 @@ function M.onTile(msg, currentAnchor)
 end
 
 -- Server message `bldfar_tile` {anchorId, key, path, n}: a far tile's buildings (render-only, the lite mesh);
--- shown only while the road tile of the same square has no building mesh of its own.
-function M.onFarTile(msg, currentAnchor)
+-- shown only while the road tile of the same square has no building mesh of its own. `bldsky_tile` the same for a
+-- skyline tile (server buildings.skyline_tile: SKY_UNIT x SKY_UNIT road tiles, key "ux_uy"), shown only while not all
+-- of its squares' far tiles are here (they come as whole groups: no hole while they arrive, none left over after).
+M.SKY_UNIT = 4
+function M.onFarTile(msg, currentAnchor, sky)
   if not M.enabled then return false end
   switchAnchor(currentAnchor)
   if msg.anchorId ~= currentAnchor then return false end
   local ok, data = true, msg.data              -- (in the message, else the file: as onTile)
   if type(data) ~= 'table' then ok, data = pcall(jsonDecode, readFile(msg.path) or '') end
   if not ok or type(data) ~= 'table' then lastError = 'unreadable far building tile ' .. tostring(msg.path); return false end
-  local key = tileKey(msg.anchorId, msg.key)
+  local key = tileKey(msg.anchorId, (sky and 'S' or '') .. msg.key)
+  if not sky then farSeen[key] = true end
   local old = far[key]
   if old and old.id then deleteQ[#deleteQ + 1] = old.id end
   if old then slotDrop(old.slot) end
   far[key] = nil
   local sl = msgSlot(msg, 'shape')
   if data.shape and type(data.pos) == 'table' then
-    far[key] = { anchor = msg.anchorId, shape = sl and sl.path or data.shape, pos = data.pos, slot = sl }
+    local ux, uy = nil, nil
+    if sky then ux, uy = string.match(tostring(msg.key), '^(-?%d+)_(-?%d+)$') end
+    far[key] = { anchor = msg.anchorId, shape = sl and sl.path or data.shape, pos = data.pos, slot = sl,
+                 sky = sky and { tonumber(ux), tonumber(uy) } or nil }
     farQ[#farQ + 1] = key
   else
     slotDrop(sl)
@@ -504,9 +515,10 @@ function M.onFarTile(msg, currentAnchor)
   return true
 end
 
--- Server message `bldfar_drop` {anchorId, key}.
-function M.onFarDrop(msg)
-  local key = tileKey(msg.anchorId, msg.key)
+-- Server message `bldfar_drop` {anchorId, key} (`bldsky_drop` with sky).
+function M.onFarDrop(msg, sky)
+  local key = tileKey(msg.anchorId, (sky and 'S' or '') .. msg.key)
+  if not sky then farSeen[key] = nil end
   local f = far[key]
   if f and f.ghost then return end
   if f and f.id then deleteQ[#deleteQ + 1] = f.id end
@@ -515,10 +527,26 @@ function M.onFarDrop(msg)
 end
 
 -- A far tile is hidden while its square's road tile shows buildings (they are the same, colliding).
+-- Pure: are all the far tiles of skyline square (ux, uy) of anchor aid here (seen: key -> true)?
+function M.skyCovered(seen, aid, ux, uy)
+  local n = M.SKY_UNIT
+  for i = 0, n - 1 do
+    for j = 0, n - 1 do
+      if not seen[tileKey(aid, (ux * n + i) .. '_' .. (uy * n + j))] then return false end
+    end
+  end
+  return true
+end
+
 local function updateFar(gov)
   for key, f in pairs(far) do
     if f.id then
-      local hide = tiles[key] ~= nil and tiles[key].bld ~= nil
+      local hide
+      if f.sky then
+        hide = M.skyCovered(farSeen, f.anchor, f.sky[1], f.sky[2])
+      else
+        hide = tiles[key] ~= nil and tiles[key].bld ~= nil
+      end
       if hide ~= (f.hidden or false) then
         local o = scenetree.findObjectById(f.id)
         if o then o:setHidden(hide) end
