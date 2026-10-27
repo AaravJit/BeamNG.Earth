@@ -158,6 +158,7 @@ def _box_hit(b, box):
 def parts(frame, cells, box, reach=REACH_M, clip=False):
     """[(fid, class, kind, xy (k, 2))]: the rail parts ("ground" / "bridge"; tunnels left out) of the drawn classes
     within reach of box (x0, y0, x1, y1), resampled every STEP_M from each part's start, each feature once (by id).
+    Each part must intersect that window: a feature's bbox can cover far-away bridges or a long bend around it.
     clip: the ground parts cut to their points within reach of box (a segment of line runs on for km, and every one of
     its points was profiled for each cell and tile: _clip); the bridges stay whole (a deck runs between its ends)."""
     near = (box[0] - reach, box[1] - reach, box[2] + reach, box[3] + reach)
@@ -179,7 +180,14 @@ def parts(frame, cells, box, reach=REACH_M, clip=False):
             for kind, rings in _pieces(feats, i):
                 for ring in rings:
                     e, n = mapgeom.enu_xy(feats, frame, ring)
-                    xy = _resample(np.c_[e, n], STEP_M)
+                    xy = np.c_[e, n]
+                    if not _box_hit((xy[:, 0].min(), xy[:, 1].min(), xy[:, 0].max(), xy[:, 1].max()), near):
+                        continue
+                    if not roads.clip_polyline(xy, *near):
+                        continue
+                    # Test relevance before resampling, but keep the original part: a nearby bridge needs both
+                    # ends, and the ground samples must keep their alignment from the part's original start.
+                    xy = _resample(xy, STEP_M)
                     if len(xy) >= 2:
                         out.append((fid, c, kind, xy))
     out.sort(key=lambda p: (p[0], p[2], float(p[3][0, 0]), float(p[3][0, 1])))

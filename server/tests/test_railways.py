@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -18,6 +19,68 @@ def flat(xy):
 
 
 class RailwayTest(unittest.TestCase):
+    def test_distant_bridge_of_a_nearby_feature_is_not_profiled(self):
+        # One feature crosses the tile, but its last 100 m is a bridge 5 km away.
+        f = features([[(-100.0, 100.0), (5000.0, 100.0), (5100.0, 100.0)]],
+                     ["standard_gauge"], subtypes=["rail"],
+                     flags=[(0, "is_bridge", 5100.0 / 5200.0, 1.0)])
+        calls = []
+
+        def ground(xy):
+            calls.append(len(xy))
+            self.assertLess(float(xy[:, 0].max()), 1000.0,
+                            "a distant bridge must not trigger elevation work")
+            return flat(xy)
+
+        self.assertIsNotNone(railways.tile_mesh(FRAME, 0, 0, [f], ground))
+        self.assertTrue(calls, "the nearby ground track is still built")
+
+    def test_bridge_bbox_overlap_without_track_nearby_needs_no_work(self):
+        # The bbox covers the tile, but all three sides of this U are far away.
+        f = features([[(-1000.0, -1000.0), (-1000.0, 1000.0),
+                       (1000.0, 1000.0), (1000.0, -1000.0)]],
+                     ["standard_gauge"], subtypes=["rail"], flags=[(0, "is_bridge")])
+        ground = mock.Mock(side_effect=AssertionError("no railway here to sample"))
+        with mock.patch.object(railways, "_resample", wraps=railways._resample) as resample:
+            self.assertIsNone(railways.tile_mesh(FRAME, 0, 0, [f], ground))
+        ground.assert_not_called()
+        resample.assert_not_called()
+
+    def test_crossing_bridge_keeps_both_ends_outside_search_window(self):
+        f = features([[(-500.0, 100.0), (800.0, 100.0)]],
+                     ["standard_gauge"], subtypes=["rail"], flags=[(0, "is_bridge")])
+        parts = railways.parts(FRAME, [f], roads.tile_bbox(0, 0), clip=True)
+        self.assertEqual(len(parts), 1)
+        self.assertEqual(parts[0][2], "bridge")
+        np.testing.assert_allclose(parts[0][3][[0, -1]], f.xy_in(FRAME)[[0, -1]], atol=1e-6, rtol=0)
+        self.assertIsNotNone(railways.tile_mesh(FRAME, 0, 0, [f], flat))
+
+    def test_bridge_in_context_outside_drawn_tile_is_kept(self):
+        f = features([[(300.0, 100.0), (420.0, 100.0)]],
+                     ["standard_gauge"], subtypes=["rail"], flags=[(0, "is_bridge")])
+        parts = railways.parts(FRAME, [f], roads.tile_bbox(0, 0), clip=True)
+        self.assertEqual(len(parts), 1, "the existing reach supplies bridge and approach context")
+        np.testing.assert_allclose(parts[0][3][[0, -1]], f.xy_in(FRAME)[[0, -1]], atol=1e-6, rtol=0)
+
+    def test_bridge_profile_agrees_across_adjacent_tiles(self):
+        f = features([[(-400.0, 100.0), (100.0, 100.0)],
+                      [(100.0, 100.0), (450.0, 100.0)],
+                      [(450.0, 100.0), (900.0, 100.0)]],
+                     ["standard_gauge"] * 3, subtypes=["rail"] * 3, flags=[(1, "is_bridge")])
+        profiles = []
+        for tx in (0, 1):
+            parts = railways.parts(FRAME, [f], roads.tile_bbox(tx, 0), clip=True)
+            bridge = next(i for i, part in enumerate(parts) if part[2] == "bridge")
+            bed, _ = railways.profile(parts, flat)[bridge]
+            profiles.append((parts[bridge][3], bed))
+        np.testing.assert_allclose(profiles[0][0], profiles[1][0], atol=1e-6, rtol=0)
+        np.testing.assert_allclose(profiles[0][1], profiles[1][1], atol=1e-6, rtol=0)
+
+    def test_empty_tile_does_not_sample_ground(self):
+        ground = mock.Mock(side_effect=AssertionError("empty tile"))
+        self.assertIsNone(railways.tile_mesh(FRAME, 0, 0, [], ground))
+        ground.assert_not_called()
+
     def test_track_mesh_along_a_line(self):
         f = features([[(-50.0, 100.0), (300.0, 100.0)]], ["standard_gauge"], subtypes=["rail"])
         mesh = railways.tile_mesh(FRAME, 0, 0, [f], flat, "fi")
