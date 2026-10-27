@@ -517,9 +517,9 @@
         "ambientOcclusionMap": "/assets/materials/terrain/soil/t_dirt_dry_grassy/t_dirt_dry_grassy_ao.png",
         "metallicFactor": 0,
         "baseColorFactor": [
-          0.52,
-          0.56,
-          0.36,
+          0.5,
+          0.5,
+          0.4,
           1
         ]
       },
