@@ -45,6 +45,7 @@ import json
 import logging
 import os
 import random
+import ssl
 import threading
 import time
 from collections import deque
@@ -507,12 +508,30 @@ class CircuitBreaker:
 
 
 # --- transport ---------------------------------------------------------------------------------
+def windows_ssl_context():
+    """Use Windows' native certificate verification for HTTPS (not CERT_NONE).
+
+    Windows curl/Schannel can build a valid certificate path while OpenSSL's
+    chain selection rejects a stale or expired intermediate. truststore uses
+    Windows CryptoAPI to validate the whole chain, including hostname.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import truststore
+    except ImportError:
+        log.warning("Windows native TLS certificate verification unavailable: install truststore")
+        return None
+    return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+
+
 class HttpsTransport:
     """GET over one persistent HTTP(S) connection per thread and host (a fresh TLS handshake per tile
     roughly doubled the latency). No redirects are followed."""
 
     def __init__(self):
         self._local = threading.local()
+        self._tls_context = windows_ssl_context()
 
     def request(self, url, headers, timeout):
         """(status, {lower-case header: value}, body)."""
@@ -524,8 +543,13 @@ class HttpsTransport:
             conn = conns.get(key)
             reused = conn is not None
             if conn is None:
-                cls = http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection
-                conn = conns[key] = cls(u.netloc, timeout=timeout)
+                if u.scheme == "https":
+                    kwargs = {"timeout": timeout}
+                    if self._tls_context is not None:
+                        kwargs["context"] = self._tls_context
+                    conn = conns[key] = http.client.HTTPSConnection(u.netloc, **kwargs)
+                else:
+                    conn = conns[key] = http.client.HTTPConnection(u.netloc, timeout=timeout)
             try:
                 conn.request("GET", path, headers=dict(headers, Connection="keep-alive"))
                 r = conn.getresponse()
