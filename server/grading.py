@@ -40,7 +40,10 @@ SIGMA_M = 12.0              # m, profile smoothing of built roads
 # them where it is a 30 m surface model (BR-381 in Brazil: a junction's pad, forest edges; 20 % grades between them, a
 # flat bench halfway down a long descent; GitHub #266). Lidar areas change little: their roads are smooth already.
 SIGMA_MAJOR_M = float(os.environ.get("BNE_GRADE_MAJOR", "40"))
-MAJOR_CLASSES = ("motorway", "trunk")      # (not their slip roads: Overture's subclass "link", Spec.link)
+# (and primary roads: one through Russian forest kept every 1-3 m bump of GLO-30 over 50-100 m at 12 m, a road of hills
+# and walls on flat land, GitHub #335. Not secondary yet: Otto Road's junction with I-80's ramps came out 0.29 m apart
+# once its dip under I-80 (underpass_offsets) was laid on the longer smoothing; the ramps' pins need a look first)
+MAJOR_CLASSES = ("motorway", "trunk", "primary")      # (not their slip roads: Overture's subclass "link", Spec.link)
 DIRT_SIGMA_M = 5.0          # m, profile smoothing of gravel / dirt roads
 # A running median before the smoothing (median_profile): a bridge deck left in the elevation data where it crosses
 # over a road is a spike a few samples wide, and the Gaussian spread it into a hump in the road under (GitHub #271, an
