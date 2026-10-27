@@ -466,6 +466,12 @@ function M.takeChoice(o)
                police = o.trafficPolice == 'enabled', trafficAmount = tonumber(o.trafficAmount) or -1,
                -- (0.40 renamed trafficParkedAmount to trafficParkingAmount)
                parkedAmount = tonumber(o.trafficParkingAmount or o.trafficParkedAmount) or -1 }
+  -- (as stock freeroam: with traffic and parked cars both chosen, Options > Gameplay's parked vehicles setting off
+  -- means none; GitHub #320 / #145: parked cars came with the setting off)
+  local st = rawget(_G, 'settings')
+  if M.choice.traffic and M.choice.parked and st and st.getValue and st.getValue('trafficParkedVehicles') == false then
+    M.choice.parked = false
+  end
   if log then
     log('I', 'beamngEarth', string.format('traffic choice: traffic %s, parked %s, police %s (freeroam %s / %s)',
       tostring(M.choice.traffic), tostring(M.choice.parked), tostring(M.choice.police), tostring(o.trafficMode),

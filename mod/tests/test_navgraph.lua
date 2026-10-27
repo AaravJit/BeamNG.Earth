@@ -70,6 +70,13 @@ N.restoreChoice()
 T.check(o.trafficMode == 'enabled' and o.trafficParked == 'enabled', 'the player\'s options back afterwards')
 T.check(not N.takeChoice({ trafficMode = 'fromSetting', trafficParked = 'disabled' }).traffic, 'fromSetting: off')
 T.check(not N.takeChoice(nil).parked, 'no freeroam: off (the radial menu still works)')
+settings = { getValue = function(k) if k == 'trafficParkedVehicles' then return false end end }
+T.check(not N.takeChoice({ trafficMode = 'enabled', trafficParked = 'enabled' }).parked,
+  'traffic and parked chosen, the parked vehicles setting off: none (as stock freeroam, GitHub #320)')
+N.restoreChoice()
+T.check(N.takeChoice({ trafficMode = 'disabled', trafficParked = 'enabled' }).parked, 'parked only: the setting does not apply')
+N.restoreChoice()
+settings = nil
 T.check(math.abs(N.boxMoved({ -708, -452, 196, 452 }, { -1092, -452, -188, 452 }) - 384) < 1e-9,
   'the block moved 384 m: measured between the boxes\' centres')
 T.check(N.boxMoved(nil, { 0, 0, 1, 1 }) == 0 and N.boxMoved({}, { 0, 0, 1, 1 }) == 0, 'no box yet: not moved')
