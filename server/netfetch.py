@@ -168,10 +168,6 @@ POLICIES = {
     "tecnagamer.github.io": HostPolicy(rate=4.0, burst=8.0, max_conc=2, daily_budget=2000, allow_prefetch=True,
                                        offline_ok=True, miss_ttl=7 * DAY, timeout=20.0, max_attempts=2,
                                        base_delay=2.0, breaker_threshold=6, breaker_window=120.0, optional=True),
-    # the FRA's level crossing inventory (fra.py: one small query per map cell in the US, kept 30 days)
-    "data.transportation.gov": HostPolicy(rate=2.0, burst=4.0, max_conc=2, daily_budget=3000, allow_prefetch=True,
-                                          offline_ok=True, miss_ttl=None, timeout=8.0, max_attempts=1,
-                                          base_delay=2.0, breaker_threshold=6, breaker_window=120.0, optional=True),
     # 20 variables a request = 2 Open-Meteo calls: 500 requests = 1,000 calls a day, hard
     "api.open-meteo.com": HostPolicy(rate=0.1, burst=2.0, max_conc=1, daily_budget=500, daily_hard=500,
                                      cache_ttl=900.0, miss_ttl=None, max_wait=15.0, timeout=10.0, optional=True),
