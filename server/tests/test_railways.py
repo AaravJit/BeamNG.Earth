@@ -205,6 +205,8 @@ class RailwayTest(unittest.TestCase):
                       [(0.0, 160.0), (250.0, 160.0)]],
                      ["unknown", "standard_gauge", "unknown", "standard_gauge"], subtypes=["rail"] * 4,
                      flags=[(1, "is_under_construction"), (2, "is_disused"), (3, "is_disused")])
+        # Even if OSM tags the way as "rail", an under-construction line must not be drawn
+        f.attrs["osm_railway"] = np.array([None, "rail", "disused", "disused"], object)
         worn = {}
         got = sorted({fid for fid, *_ in railways.parts(FRAME, [f], roads.tile_bbox(0, 0), worn=worn)})
         self.assertEqual(got, ["id002", "id003"])
