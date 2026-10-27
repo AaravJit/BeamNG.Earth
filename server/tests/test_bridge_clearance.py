@@ -159,13 +159,28 @@ class TwinLiftTest(TestCase):
         low = np.c_[x, np.zeros(len(x))]
         bend = np.clip(x - 120.0, 0.0, None)
         high = np.c_[x, bend * np.tan(np.radians(12.0))]
-        zl = 20.0 - 0.05 * x
+        zl = 20.0 - 0.02 * x
         zh = np.full(len(x), 25.0)
         out = roads._merge_overlaps([low, high], [zl, zh], [8.0, 8.0], [4.0, 4.0])
         z = out[0]
-        self.assertGreater(float(z[20]), 22.0)                  # beside its twin: lifted toward it (16 m alone)
+        self.assertGreater(float(z[20]), 24.0)                  # beside its twin: lifted to it (18.4 m alone)
         grade = np.abs(np.diff(z)) / 4.0
         self.assertLess(float(grade.max()), 0.10)       # (the blend to the far abutment's cap adds ~3 %)
+
+
+    def test_a_lift_never_reaches_past_a_joint_steeper_than_its_chain_allows(self):
+        # a ramp coming down beside a higher deck of its level to a joint, then a 48 m part to the ground (Spaghetti
+        # Junction: the joint was lifted 21 m and the short part dropped 40 %)
+        x = np.arange(-200.0, 0.1, 4.0)
+        ramp = np.c_[x, np.zeros(len(x))]
+        twin = np.c_[x, np.full(len(x), 12.0)]
+        t = np.arange(0.0, 48.1, 4.0)
+        tail = np.c_[t, np.zeros(len(t))]
+        zs = [110.0 + (98.0 - 110.0) * (x + 200.0) / 200.0, np.full(len(x), 120.0), 98.0 + (96.6 - 98.0) * t / 48.0]
+        out = roads._merge_overlaps([ramp, twin, tail], zs, [8.0, 8.0, 8.0], [3.0, 3.0, 1.0])
+        grade = np.abs(np.diff(out[2])) / 4.0
+        self.assertLess(float(grade.max()), roads.DECK_MAX_GRADE + 0.01)
+        self.assertAlmostEqual(float(out[0][-1]), float(out[2][0]), delta=0.5)     # (the parts still meet)
 
 
 class SemiApproachIntegrationTest(TestCase):

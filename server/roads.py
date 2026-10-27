@@ -1441,7 +1441,7 @@ def _merge_overlaps(lines, zs, widths, levels, rounds=3, pins=None):
     one level) pulled to their mean where their surfaces overlap, so a split is one surface until the
     decks part (2026-10-11 the user: exits and splits not clean). Parts are related when they share an
     end node or a level and run within ~30 degrees of each other. Abutment ends stay (pins: deck_profile's). Pure."""
-    nodes, edges, _ = _chain_graph(lines)
+    nodes, edges, adj = _chain_graph(lines)
     deg = np.zeros(len(nodes), int)
     for a, b, _ in edges:
         deg[a] += 1
@@ -1471,6 +1471,17 @@ def _merge_overlaps(lines, zs, widths, levels, rounds=3, pins=None):
         return zs
     floors = [np.array(z, np.float64) for z in zs]
     zs = [z.copy() for z in floors]
+    # never raised faster than DECK_MAX_GRADE from any abutment of the chain, along it (a lift at a joint reached the
+    # parts beyond it: Spaghetti Junction's ramps, lifted to a higher deck of their level beside them, stood 21 m up at
+    # the joint of a 48 m part ending on the ground, 40 %)
+    reach = [np.full(len(z), np.inf) for z in zs]
+    for k0, (a0, b0, _s) in enumerate(edges[:n]):
+        for node, zend in ((a0, floors[k0][0]), (b0, floors[k0][-1])):
+            if deg[node] != 1 or not np.isfinite(zend):
+                continue
+            d = _dijkstra(adj, {node: 0.0})
+            for k, (ea, eb, es) in enumerate(edges[:n]):
+                reach[k] = np.minimum(reach[k], zend + DECK_MAX_GRADE * np.minimum(d[ea] + es, d[eb] + (es[-1] - es)))
     for _ in range(rounds):
         new = [z.copy() for z in zs]
         acc = [np.zeros(len(z)) for z in zs]
@@ -1530,7 +1541,7 @@ def _merge_overlaps(lines, zs, widths, levels, rounds=3, pins=None):
             if np.isfinite(to_joint).any() and np.isfinite(rise).any():
                 w = np.clip(to_joint / max(float(es[-1]), 1e-6), 0.0, 1.0)
                 capped = w * capped + (1.0 - w) * new[i]
-            new[i] = capped
+            new[i] = np.minimum(capped, np.maximum(reach[i], floors[i]))
             if deg[a] == 1:
                 new[i][0] = zs[i][0]
             if deg[b] == 1:
