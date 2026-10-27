@@ -736,6 +736,8 @@ class Server:
         if surface is not None and self.airports is not None:      # the runways painted in (GitHub #337)
             surface.extra_pads = self.airports.runway_pads
         self.mapdata = mapdata      # mapdata.MapData for the roads (--roads on), else None
+        if mapdata is not None and getattr(mapdata, "dem", 0) is None:
+            mapdata.dem = self.dem  # (gradesep's ground)
         self.grading = bool(grading) and mapdata is not None   # ground graded under roads (grading.py)
         # street widths measured between the buildings (roadwidth.py), decided once per road per run
         self.sidewalks = sidewalks  # raised sidewalk meshes with the road tiles (sidewalks.py)

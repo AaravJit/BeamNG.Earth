@@ -601,6 +601,36 @@ def _skew_decks(feats, i, rngs):
 
 
 def _level_ranges(feats, i):
+    """tag_level_ranges with the grade separations the map has no bridge for (gradesep.py: the cell's own, from its
+    roads and its neighbours'), where no range of the map's is."""
+    out = tag_level_ranges(feats, i)
+    hook = feats.__dict__.get("_bnge_gradesep")
+    extra = hook(feats).get(i) if hook is not None else None
+    if not extra:
+        return out
+    add = []
+    for a, b in extra:
+        for fa, fb, _ in out:
+            if fb <= a or fa >= b:
+                continue
+            if fa > a:
+                add.append((a, fa, "bridge"))
+            a = max(a, fb)
+            if a >= b:
+                break
+        if b - a > 1e-5:
+            add.append((a, b, "bridge"))
+    merged = []                                 # (touching bridge ranges joined: the map's fractions are float32s)
+    for a, b, k in sorted(out + add):
+        if merged and k == merged[-1][2] and a <= merged[-1][1] + 1e-5:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b), k)
+        else:
+            merged.append((a, b, k))
+    return merged
+
+
+def tag_level_ranges(feats, i):
+    """Feature i's off-ground ranges as the map's flags and level rules have them (level_ranges, before gradesep)."""
     got = {"flags": [], "level": []}
     for name in ("flags", "level"):
         t = feats.rules.get(name)

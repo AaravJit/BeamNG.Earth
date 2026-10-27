@@ -61,6 +61,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 import geodesy
+import gradesep
 import mapcells
 import mapgeom
 import maprasters
@@ -240,6 +241,7 @@ class MapData:
         self.rasters = maprasters.Rasters(self.raw_dir, self.fetcher)
         import railtags                 # (OSM's railway tags joined to the roads layer's rail segments)
         self.rail_tags = railtags.RailTags(cache_dir, self.fetcher) if railtags.ON else None
+        self.dem = None                 # (gradesep's ground: the server's dem.Dem, set by its owner, else its own)
         self._locks = {}
         self._lock = threading.Lock()
         self.pool = ThreadPoolExecutor(LAYER_THREADS, thread_name_prefix="mapdata-layer")
@@ -275,7 +277,8 @@ class MapData:
     def versions(self):
         rails = getattr(self, "rail_tags", None)
         return {"pipeline": VERSION, "overture": self.release, "worldcover": maprasters.WORLDCOVER_RELEASE,
-                "canopy": maprasters.CHM_RELEASE, "rails": rails.known() if rails is not None else None}
+                "canopy": maprasters.CHM_RELEASE, "rails": rails.known() if rails is not None else None,
+                "gradesep": gradesep.VERSION if gradesep.ON else None}
 
     def path(self, key, layer):
         source, release = _source(layer, self.release)
@@ -586,6 +589,8 @@ class MapData:
                         cd.layers[layer] = f.localize(frame)
                     # (which cell's layer: the per-cell facts the server's processes share, roads.cell_facts)
                     self._rails(key, layer, cd.layers[layer])
+                    if layer == "roads":        # (the bridges the map lacks, found when its ranges are first asked)
+                        cd.layers[layer].__dict__["_bnge_gradesep"] = gradesep.hook(self, key)
                     cd.layers[layer].__dict__["_bnge_cell"] = (str(key), layer, json.dumps(self.versions(),
                                                                                            sort_keys=True))
                 elif "missing" in arrays:
