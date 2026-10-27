@@ -220,6 +220,23 @@ local forestCount = 0
 local newForests = 0     -- Forests made this tree frame (FORESTS_PER_FRAME)
 M.forests = 0
 
+-- Groups the player turned off (settings: Rocks off, GitHub #5): not shown, removed where made. (After
+-- MihneaTeodorStoica's PR #321.)
+M.groupOff = {}
+function M.setGroupEnabled(groups, on)
+  local changed = false
+  for _, g in ipairs(groups) do
+    if (M.groupOff[g] == true) == (on == true) then M.groupOff[g] = (not on) or nil; changed = true end
+  end
+  if changed then
+    M.refresh()
+    -- (their colliding items near the car: a collision rebuild once they are gone)
+    local ok, roads = pcall(require, 'beamngEarth/roads')
+    if ok and roads.requestCollision then roads.requestCollision() end
+  end
+  return changed
+end
+
 -- Pure: the n-th pool Forest's name.
 function M.forestName(n)
   return M.FOREST_NAME .. '_' .. tostring(n)
@@ -705,6 +722,7 @@ function M.update(anchorId, player, view, frameMs)
         local g = names[f[b + F_GROUP] + 1]
         local cap = g and M.GROUP_MAX_M[g]
         if cap and o[2] > cap then r = 2 end     -- this group is not shown this far out
+        if g and M.groupOff[g] then r = 2 end    -- a group the player turned off (setGroupEnabled)
         -- a group this mod has no shapes for (a newer server's): left out, not drawn as a tree
         if g and not M.CATALOG[g] then
           r = 2

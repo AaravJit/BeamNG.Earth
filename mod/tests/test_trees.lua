@@ -402,5 +402,19 @@ do
   trees.suppress, trees.ROWS_PER_FRAME = nil, cap
   trees.clear()
 end
+-- a group turned off (settings: Rocks, GitHub #5): its items go, back when on again
+do
+  files['/t/rocks'] = '{ groups = { "rock", "deciduous" }, items = { {0, 10, 10, 0, 0, 1, 2, 0.0}, {1, 20, 10, 0, 0, 1, 12, 0.0} } }'
+  trees.onTile({ anchorId = 14, key = '0_0', path = '/t/rocks', n = 2 }, 14)
+  trees.update(14, { x = 10, y = 10 })
+  T.check(count() == 2, 'a rock and a tree')
+  trees.setGroupEnabled({ 'rock' }, false)
+  trees.update(14, { x = 10, y = 10 })
+  T.check(count() == 1, 'rocks off: the rock gone')
+  trees.setGroupEnabled({ 'rock' }, true)
+  trees.update(14, { x = 10, y = 10 })
+  T.check(count() == 2, 'rocks on again: back')
+  trees.clear()
+end
 trees.FRAME_MS, trees.POOL_SPARE = FRAME_MS, POOL_SPARE
 T.done('test_trees')

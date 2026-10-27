@@ -49,6 +49,8 @@ M.SCHEMA = {
   -- grass and shrubs on the surface layers (groundcover.lua; needs the server's --surface on)
   groundCover = { kind = 'bool', default = true, label = 'Grass and shrubs' },
   groundCoverDensity = { kind = 'enum', default = 'normal', values = { 'low', 'normal', 'high' }, label = 'Grass density' },
+  -- the vegetation tiles' rocks and boulders (trees.lua groups rock, desert_rock; GitHub #5, after PR #321)
+  rocks = { kind = 'bool', default = true, label = 'Rocks' },
   -- roads near the player (roads.lua; the server's --roads on)
   roads = { kind = 'bool', default = true, label = 'Roads' },
   -- Earth imagery on supported vehicle dashboard screens (dashboard.lua)
@@ -76,7 +78,7 @@ M.SCHEMA = {
   updateDismissed = { kind = 'string', default = '', maxLen = 40, label = 'Update notice dismissed (version)' },
 }
 M.ORDER = { 'rebaseDistance', 'viewDistanceMode', 'viewDistanceKm', 'hazeStrength', 'skyMode', 'clouds',
-  'weatherMode', 'realGravity', 'groundCover', 'groundCoverDensity', 'roads', 'dashboardSatellite',
+  'weatherMode', 'realGravity', 'groundCover', 'groundCoverDensity', 'rocks', 'roads', 'dashboardSatellite',
   'hudVisible', 'statusBar',
   'placeNamesOnline', 'creditsVisible', 'beammpOnLaunch',
   'creditsCorner', 'creditsSize', 'cacheCapGb', 'devOutlineKm', 'devMapKm' }
@@ -252,6 +254,7 @@ M.APPLY = {
   end,
   groundCover = function(v) require('beamngEarth/groundcover').setEnabled(v) end,
   groundCoverDensity = function(v) require('beamngEarth/groundcover').setDensity(v) end,
+  rocks = function(v) require('beamngEarth/trees').setGroupEnabled({ 'rock', 'desert_rock' }, v) end,
   roads = function(v)
     local core = ext('beamngEarth_core')
     if core and core.setRoadsEnabled then core.setRoadsEnabled(v) else require('beamngEarth/roads').setEnabled(v) end
