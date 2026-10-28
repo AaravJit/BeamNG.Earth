@@ -255,6 +255,8 @@ class MapData:
         import railtags                 # (OSM's railway tags joined to the roads layer's rail segments)
         self.rail_tags = railtags.RailTags(cache_dir, self.fetcher) if railtags.ON else None
         self.lane_tags = railtags.LaneTags(cache_dir, self.fetcher) if railtags.LANES_ON else None   # (markings.py)
+        import highwaysigns             # (exit, overhead and mile-marker signs: railtags.SignTags, signstream.py)
+        self.highway_signs = highwaysigns.Source(self) if railtags.SIGNS_ON else None
         self.dem = None                 # (gradesep's ground: the server's dem.Dem, set by its owner, else its own)
         self._locks = {}
         self._lock = threading.Lock()
