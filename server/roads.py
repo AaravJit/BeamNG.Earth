@@ -227,7 +227,7 @@ URBAN_BESIDE_M = 30.0           # ... and at least URBAN_BESIDE_SHARE of them ha
 URBAN_BESIDE_SHARE = 0.2        # the land cover counts a wide road's own pavement as built-up, and the Eyre Highway
                                 # through Eucla (centre 94 %, beside it 3 %) got a town's footpaths, bins and hydrants
                                 # across the Nullarbor (GitHub #267). Baltimore and Chicago keep every urban road.
-URBAN_BOTH_SHARE = 0.1          # a trunk (a town's main street when urban: has_sidewalks) needs built-up land on both
+URBAN_BOTH_SHARE = 0.1          # a motorway or trunk needs built-up land on both
                                 # sides of this share of its vertices: a roadhouse beside the Eyre Highway (Eucla: one
                                 # side 33 %, the other 0 %) is no town
 
@@ -1283,7 +1283,8 @@ def _road_specs(feats, urban_fn, left_hand):
         for j, cls, kind, a, b, ow, dk, lanes, token, link in ask:
             urban = (float(np.mean(u[k:k + (b - a)])) >= URBAN_SHARE
                      and float(np.mean(by[k:k + (b - a)])) >= URBAN_BESIDE_SHARE
-                     and (cls != "trunk" or float(np.mean(both[k:k + (b - a)])) >= URBAN_BOTH_SHARE))
+                     and (cls not in ("motorway", "trunk")
+                          or float(np.mean(both[k:k + (b - a)])) >= URBAN_BOTH_SHARE))
             k += b - a
             out[j] = Spec(carriageway(cls, kind, urban, None, ow, lanes), kind, urban, cls, ow, 2.5, *dk, lanes=lanes,
                           surf=token, link=link)
@@ -4828,7 +4829,9 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         decks = [(np.asarray(ch["n"], np.float64), ch["w"] / 2) for ch in chunks if ch.get("deck")]
         props.extend(furniture.place(roads, walks, (x0, y0, x1, y1), wires=wires, town=bool(town), left_hand=left_hand,
                                      speeds={k: v for k, v in speeds.items() if v is not None}, mph=mph,
-                                     decks=decks, signals=signals, buried=buried, region=lamp_region))
+                                     decks=decks, signals=signals, buried=buried, region=lamp_region,
+                                     lighting={fid: str(f.attrs["osm_lit"][i]).strip().lower()
+                                               for fid, (f, i, _sp) in seen.items() if "osm_lit" in f.attrs}))
     if park is not None and walks is not None:      # curbside parking spots (parking.py)
         import parking
         dirs = {}
