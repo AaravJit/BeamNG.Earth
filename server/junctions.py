@@ -259,6 +259,23 @@ def _across(roads, bi, bj, cr, X, walk_w, debug=None):
     return {"arc": curb, "inward": nrm, "outer": outer, "fill": None, "fills": fills, "ramps": []}, ti, tj
 
 
+def _near_node_pairs(pos, radius):
+    """Node pairs (a < b) closer than radius, in the all-pairs scan's order, from a grid of radius-sized bins (the
+    scan was quadratic: a dense town tile's few thousand junction nodes; cody196's PR #363)."""
+    if radius <= 0:
+        return
+    bins, keys = {}, []
+    for i, p in enumerate(pos):
+        key = (math.floor(p[0] / radius), math.floor(p[1] / radius))
+        keys.append(key)
+        bins.setdefault(key, []).append(i)
+    for a, (x, y) in enumerate(keys):
+        near = sorted(b for dx in (-1, 0, 1) for dy in (-1, 0, 1) for b in bins.get((x + dx, y + dy), ()) if b > a)
+        for b in near:
+            if math.hypot(*(pos[a] - pos[b])) < radius:
+                yield a, b
+
+
 def find(roads, has_walk, walk_w, parking_m=0.0, has_parking=lambda spec: False, debug=None):
     """Corners, cuts and crosswalks of the junctions among `roads` [(fid, spec, pts (k, 3), lon)].
     has_walk(spec) -> bool; walk_w: sidewalk width. Returns
@@ -287,10 +304,8 @@ def find(roads, has_walk, walk_w, parking_m=0.0, has_parking=lambda spec: False,
             parent[a] = parent[parent[a]]
             a = parent[a]
         return a
-    for a in range(len(jn)):
-        for b in range(a + 1, len(jn)):
-            if math.hypot(*(pos[a] - pos[b])) < MERGE_M:
-                parent[root(a)] = root(b)
+    for a, b in _near_node_pairs(pos, MERGE_M):
+        parent[root(a)] = root(b)
     # and junction nodes joined by a short connector (along a road: the five-way at Fells Point was
     # two nodes 10 m apart)
     node_of = {}
