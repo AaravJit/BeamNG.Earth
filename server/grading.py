@@ -116,7 +116,8 @@ JUNCTION_RANK = {"motorway": 9, "trunk": 8, "primary": 7, "secondary": 6, "terti
 JUNCTION_REACH_M = 3.0      # m beyond the joined road's carriageway edge a side road's end still counts as joining it
 JUNCTION_END_M = 10.0       # m: a same-class road ending this close to the other's end continues it (no snap)
 JUNCTION_TAPER_M = 40.0     # m along the side road the height change is eased in over (half the road when shorter)
-JUNCTION_MAX_M = 3.0        # m: a bigger difference is left as it was (an overpass ramp, bad data)
+JUNCTION_MAX_M = 6.0        # m: a bigger difference is left as it was (bad data; Perm, GitHub #414: 4-5 m steps where a
+                            # 30 m DEM smeared an embankment into the junctions)
 
 
 # Overpass approach ramps (from KyzoFox's 1.5.4, PR #64). A short bridge over a road had its ends on the ground on both
