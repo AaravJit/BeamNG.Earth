@@ -27,7 +27,7 @@ M.SIZE = lattice.N              -- samples per side (configure); the layer map h
 M.SQUARE_SIZE = lattice.SQUARE  -- 2.0 m
 M.MATERIAL = 'beamngEarthDirt'
 M.TEXTURE_SET = 'beamngEarthTerrainMaterialTextureSet'
-M.BASE_TEX_SIZE = 1024   -- = the level texture set's base slot (tools/make_level_assets.py BASE_TEX)
+M.BASE_TEX_SIZE = 2048   -- = the level texture set's base slot (tools/make_level_assets.py BASE_TEX)
 
 local TERRAIN_DIR = '/levels/beamng_earth/art/terrains/'
 local TERRAIN_DIR_BASE = TERRAIN_DIR .. 'bngEarth_base_b.png'   -- the level's flat base colour

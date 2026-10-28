@@ -152,6 +152,12 @@ DRAIN_IN, DRAIN_EVERY = 2.5, 90.0
 GUTTER = {"m": "gutter1", "tl": 8.0, "p": 14, "w": 0.5}                  # at the curb line
 CENTRE = {"tl": 12.0, "p": 6, "w": 0.12, "gap": 0.12}                    # a double line: two lines this far from the centre
 EDGE_LINE = {"m": "line_white", "tl": 6.4, "p": 2, "w": 0.15, "inset": 0.3}
+# The asphalt's edge where no curb ends it: East Coast USA's decal (a ragged opaque edge of gravel and dirt fading
+# into the ground; its texture's u = 1 side lies on the asphalt, the opaque edge EDGE_DECAL_AT across it). The
+# ground photo is ~2 m a pixel and the terrain's materials change on its 2 m grid: the edge was blurred and stepped
+# (the user, 2026-10-28: "the edge of the road is blurry and slightly jagged").
+EDGE_DECAL = {"m": "ECA_road_edge_dirt", "tl": 6.4, "p": 1, "w": 1.6, "layer": "edge"}
+EDGE_DECAL_AT = 0.95
 MEASURE_SKIP = {"service"}      # classes not measured between buildings (lots, alleys: far walls)
 MEASURE_MAX = 3.0               # a measured carriageway at most this times the class default
 SIDEWALK_CLASSES = {"residential", "tertiary", "secondary", "primary", "unclassified", "living_street"}
@@ -2213,13 +2219,96 @@ def sidewalk_stop(spec, fid, other, ofid):
     return other.width / 2
 
 
-def extras(spec, pts, lon, left_hand=False):
+def extras(spec, pts, lon, left_hand=False, country=None):
     """The sidewalk / gutter / marking polylines of one road: [(look dict with m / tl / p, width, pts)].
-    pts: its centreline (k, 3) in the anchor frame; lon: its longitude (centre line colour). Pure."""
+    pts: its centreline (k, 3) in the anchor frame (a whole ground part: its broken lines' dashes start their cycle at
+    its start, so they meet across tiles); lon: its longitude; country: ISO code (markings.style: the country's line
+    colours, widths and dash patterns; by longitude when unknown). Pure."""
+    import markings
     out = []
+    st = markings.style(country, lon)
     w, kind, urban, cls = spec[:4]
     if kind not in BUILT:
         return out
+    if has_sidewalks(spec):
+        for side in walk_sides(spec, left_hand):
+            out.append(({**SIDEWALK, "side": side}, spec.walk,
+                        offset_polyline(pts, side * (w / 2 + spec.walk / 2))))
+            out.append(({**GUTTER, "side": side}, GUTTER["w"], offset_polyline(pts, side * (w / 2 - GUTTER["w"] / 2))))
+        ms = median_side(spec, left_hand)
+        if ms is not None:
+            # the median: a curbed band, lawn beyond it (two sidewalks back to back made a concrete strip, the user's
+            # report #48 on Boston Street, 2026-10-17: "Improve how medians are made")
+            mw = median_width(spec)
+            # (each carriageway's half, a hair short of the middle: touching the other's carriageway where the gap
+            # narrows, the band was cut away)
+            band = max(0.3, mw / 2 - 0.15) if mw <= MEDIAN_SLAB_M else MEDIAN_CURB_W
+            out.append(({**SIDEWALK, "side": ms, "median": True}, band, offset_polyline(pts, ms * (w / 2 + band / 2))))
+            if kind == "paved":     # a double yellow line along it (Boston Street, Mapillary 2026-10-17) ...
+                look = {"m": st.centre, "tl": CENTRE["tl"], "p": CENTRE["p"]}
+                # ... where centre lines are white one solid white edge line along the median's curb (PR #146)
+                for k in ((0,) if st.centre == "line_white" else (0, 1)):
+                    out.append((look, st.w, offset_polyline(
+                        pts, ms * (w / 2 - EDGE_LINE["inset"] - k * (st.w + st.double_gap)))))
+            out.append(({**GUTTER, "side": ms}, GUTTER["w"], offset_polyline(pts, ms * (w / 2 - GUTTER["w"] / 2))))
+    motorway = cls == "motorway"
+    lw_ = st.w_motorway if motorway else st.w           # a line's width
+
+    def mark(kind_, mat, width, along, pattern=None):
+        """A solid line, or a broken one's dashes (pattern: dash, gap); kind_: "centre", "lane" or "edge"."""
+        if pattern is None:
+            out.append(({"m": mat, "tl": EDGE_LINE["tl"], "p": CENTRE["p"], "kind": kind_}, width, along))
+            return
+        for piece in markings.dashes(along, pattern):
+            out.append(({"m": mat, "tl": max(1.0, pattern[0]), "p": CENTRE["p"], "kind": kind_}, width, piece))
+    # the driving width (a town street's parking lanes and a rural road's edge strips left out: three lanes on every
+    # rural Interstate, GitHub #43) and its lanes (OpenStreetMap's count where known)
+    parked = urban and cls in PARKING_CLASSES and not (not spec.oneway and cls in URBAN_ARTERIAL)
+    drive = w - ((PARKING_M if spec.oneway else 2 * PARKING_M) if parked else 2 * edge_margin(spec))
+    lanes = spec.lanes if spec.lanes else int(drive // LANE_M)
+    if kind == "paved" and cls in CENTRE_CLASSES and w - (2 * PARKING_M if parked else 0.0) >= st.min_centre_m \
+            and not spec.oneway:   # no paint on cobbles (the width between the parking lanes, edge strips included)
+        # the centre line (MUTCD 3B.01-02, TSRGD / RMS / IISR centre lines): too narrow a road has none; four lanes or
+        # more get a solid line (the Americas: double solid yellow), and in the US a town's street a double solid one;
+        # otherwise one broken line in the country's colour and town / country pattern
+        solid = lanes >= 4 or (st.double_centre_urban and urban)
+        if solid and st.centre == "line_yellow":
+            for side in (1, -1):
+                mark("centre", st.centre, lw_, offset_polyline(pts, side * (st.double_gap + lw_) / 2))
+        elif solid:
+            mark("centre", st.centre, lw_, pts.copy())
+        else:
+            mark("centre", st.centre, lw_, pts.copy(), st.centre_urban if urban else st.centre_rural)
+    if kind == "paved" and cls in LANE_CLASSES:
+        # lane lines between the lanes of one direction, broken in the country's pattern
+        pat = st.lane_motorway if motorway else (st.lane_urban if urban else st.lane_rural)
+        if spec.oneway and lanes >= 2:
+            lw = drive / lanes
+            for k in range(1, lanes):
+                mark("lane", "line_white", lw_, offset_polyline(pts, -drive / 2 + k * lw), pat)
+        elif not spec.oneway and lanes >= 4:
+            n = lanes // 2
+            lw = drive / 2 / n
+            for side in (1, -1):
+                for k in range(1, n):
+                    mark("lane", "line_white", lw_, offset_polyline(pts, side * k * lw), pat)
+    if kind == "paved" and not has_sidewalks(spec):          # no curb: the asphalt's edge
+        dw = EDGE_DECAL["w"]
+        for side in (1, -1):
+            line = offset_polyline(pts, side * (w / 2 + (EDGE_DECAL_AT - 0.5) * dw))
+            # (u runs from the ribbon's left to its right: the road is on the right of the left side's, so the right
+            # side's runs backwards)
+            out.append(({**EDGE_DECAL, "side": side}, dw, line if side > 0 else line[::-1].copy()))
+    if kind == "paved" and (not urban or not has_sidewalks(spec)) and cls in EDGE_LINE_CLASSES:   # no curb: edge lines
+        # the right edge white; a one-way carriageway's left edge yellow where the country says so (MUTCD 3B.09:
+        # divided roads, ramps); wider on motorways (TSRGD 1012, RMS: 0.20-0.30 m)
+        ew = st.edge_motorway if motorway else st.edge
+        travel_left = 1 if getattr(spec, "dir", 0) >= 0 else -1      # (dir < 0: one way against the line)
+        for side in (1, -1):
+            inset = motorway_shoulder(spec) if rural_motorway(spec) else EDGE_LINE["inset"]
+            mat = st.left_edge if (st.left_edge and spec.oneway and side == travel_left) else "line_white"
+            mark("edge", mat, ew, offset_polyline(pts, side * (w / 2 - inset)))
+    return out
     if has_sidewalks(spec):
         for side in walk_sides(spec, left_hand):
             out.append(({**SIDEWALK, "side": side}, spec.walk,
@@ -2266,6 +2355,13 @@ def extras(spec, pts, lon, left_hand=False):
             for side in (1, -1):
                 for k in range(1, n):
                     out.append((LANE_LINE, LANE_LINE["w"], offset_polyline(pts, side * k * lw)))
+    if kind == "paved" and not has_sidewalks(spec):          # no curb: the asphalt's edge
+        dw = EDGE_DECAL["w"]
+        for side in (1, -1):
+            line = offset_polyline(pts, side * (w / 2 + (EDGE_DECAL_AT - 0.5) * dw))
+            # (u runs from the ribbon's left to its right: the road is on the right of the left side's, so the right
+            # side's runs backwards)
+            out.append(({**EDGE_DECAL, "side": side}, dw, line if side > 0 else line[::-1].copy()))
     if kind == "paved" and (not urban or not has_sidewalks(spec)) and cls in EDGE_LINE_CLASSES:   # no curb: edge lines
         for side in (1, -1):
             inset = motorway_shoulder(spec) if rural_motorway(spec) else EDGE_LINE["inset"]
@@ -2621,8 +2717,11 @@ COVER_MARGIN_M = 30.0   # m past the tile: the ground carriageways a deck's para
 
 
 def _chunk(look, w, c):
-    return {"m": look["m"], "w": round(float(w), 2), "tl": look["tl"], "p": look["p"],
-            "n": [[round(float(v), 3) for v in p] for p in c]}
+    out = {"m": look["m"], "w": round(float(w), 2), "tl": look["tl"], "p": look["p"],
+           "n": [[round(float(v), 3) for v in p] for p in c]}
+    if look.get("layer"):
+        out["layer"] = look["layer"]
+    return out
 
 
 DECK = {"m": "road_asphalt_2lane", "tl": 11.0, "p": 20}      # bridge decks (roadmesh.deck)
@@ -4206,7 +4305,7 @@ def _tunnel_chunks(tunnels, cells, exact, terrain_paint=True):
             pts = np.c_[xy, z]
             for look, w, line in [(look_of(spec), spec.width, pts)] + [
                     (lk, w2, ln) for lk, w2, ln in extras(spec, pts, lon)
-                    if lk["m"] != SIDEWALK["m"] and lk["m"] != GUTTER["m"]]:
+                    if lk["m"] not in (SIDEWALK["m"], GUTTER["m"], EDGE_DECAL["m"])]:
                 for piece in clip_polyline(line, *exact):
                     for c in split(densify(simplify(piece))):
                         if len(c) >= 2:
@@ -4228,7 +4327,7 @@ def _tunnel_chunks(tunnels, cells, exact, terrain_paint=True):
             look = None                     # painted in the ground layer, as any other ground part
         lines = [] if look is None else [({**look, "deck": True, "tunnel": True, "no_tube": n in twinned}, spec.width, pts)]
         for look, w, line in extras(spec, pts, lon):
-            if look["m"] != SIDEWALK["m"] and look["m"] != GUTTER["m"]:
+            if look["m"] not in (SIDEWALK["m"], GUTTER["m"], EDGE_DECAL["m"]):     # (no ground beside a deck)
                 lines.append((look, w, line))
         jobs.append((fid, (pts[0, :2], pts[-1, :2]), lines))
     for fid, ends, lines in jobs:
@@ -4352,7 +4451,7 @@ def _deck_chunks(decks, exact):
     for fid, spec, pts, lon in decks:
         lines = [({**_deck_look(spec), "deck": True}, spec.width, pts)]
         for look, w, line in extras(spec, pts, lon):
-            if look["m"] != SIDEWALK["m"] and look["m"] != GUTTER["m"]:
+            if look["m"] not in (SIDEWALK["m"], GUTTER["m"], EDGE_DECAL["m"]):     # (no ground beside a deck)
                 lines.append((look, w, line))
         for look, w, line in lines:
             for piece in clip_polyline(line, *exact):
@@ -4402,7 +4501,7 @@ def drains(run, side, caps, walk_w=None):
 
 def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=None, widths=None, props=None,
                lines=None, wires=None, town=None, park=None, left_hand=False, structures=(), mph=True, tunnels=None,
-               buried=0.0, lamp_region=None,
+               buried=0.0, lamp_region=None, country=None,
                walls=None, deck_context=None, ground=None, terrain_paint=True, cover_out=None, walk_cuts=(),
                signals=None):
     """The chunks of one tile. cells: the mapgeom.Features of the "roads" layer of every cell touching
@@ -4555,7 +4654,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                 chunks.append(_chunk(look, cw["w"], np.array([cw["a"], cw["b"]])))
     runs_near = []                              # sidewalk runs near the tile, before clipping (walks: below)
     for fid, spec, pts, lon in roads:
-        ex = extras(spec, pts, lon, left_hand) if fid not in jinternal else []    # inside a junction: none
+        ex = extras(spec, pts, lon, left_hand, country) if fid not in jinternal else []    # inside a junction: none
         if not ex:
             continue
         blockers = [(p2[:, :2], s2.width / 2 + CUT_MARGIN) for f2, s2, p2, _ in roads if f2 != fid]

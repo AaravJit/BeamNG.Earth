@@ -242,7 +242,16 @@ PROGRESS_S = 0.5            # load_progress at most this often (Connection.send_
 GROUND_WAIT_S = 90.0        # a block's photo still to be drawn again counts as loading this long at most
 PERF_LOG_LINES, PERF_LOG_CHARS = 40, 2000   # a perf_log message's lines and characters a line, at most
 SLOW_BASE_S = 3.0               # a base photo slower than this is logged with its stages
-BASE_PX = 1024                  # detail mode: the block's base photo (1 km -> 1 m per texel; USGS is ~1.9 m)
+BASE_RENDER_PX = 1024           # detail mode: the block's base photo as the imagery renders it (the 1 km block: 1 m a
+                                # texel; USGS is ~1.9 m, NAIP 0.6 m)
+BASE_PX = 2048                  # ... and as the game gets it: enlarged (a plain resize), then the roads, pads and rock
+                                # painted in at 0.5 m a texel (at 1 m the asphalt's edges blurred into the ground and
+                                # the sand and the trees' green into the road: the user, 2026-10-28)
+# The terrain shader samples a block's base colour half a sample on (block-local sample coordinates + 0.5): a photo
+# over the block's own square showed every road painted into it a metre south-west of its lines and edge decals
+# (painted dots against objects at the same points, in game 2026-10-28; the user: "the decals are still offset").
+# The photo is rendered over the square moved back by that much.
+BASE_SHIFT_M = heightmap.SQUARE / 2
 BASE_AO_VFS = "/levels/beamng_earth/art/terrains/bngEarth_base_ao.png"   # every surface layer's aoBaseTex
 BASE_AO = 251                   # its flat value (tools/make_level_assets.py)
 DETAIL_ROAD_LIFT = 0.025        # detail mode: road surfaces over the drawn block, within roadmesh.FOLLOW_TOL of it (0.05
@@ -753,6 +762,8 @@ class Server:
             lambda key: mapdata.cell(key, layers=("buildings",), kind="demand").layers.get("buildings"),
             roadwidthmod.store_dir(cache_dir, mapdata)).get
             if road_widths and mapdata is not None else None)
+        if vegetation is not None:      # trees kept off the roads' drawn widths (vegetation._mask_roads)
+            vegetation.surface, vegetation.widths = surface, self.road_widths
         self.grader_lock = threading.Lock()
         # The download cache's bookkeeping (cache.py): every producer reports its disk hits and writes
         self.cache = cache
@@ -1021,6 +1032,15 @@ class Server:
             anchor._buried = v
         return v
 
+    def country(self, anchor):
+        """The anchor's country (ISO alpha-2, its nearest airport's: navgraph.country_near), or None: the road
+        markings' style (markings.style)."""
+        v = getattr(anchor, "_country", "")
+        if v == "":
+            v = navgraphmod.country_near(self.airports_db, anchor.lat, anchor.lon) if self.airports_db else None
+            anchor._country = v
+        return v
+
     def lamp_region(self, anchor):
         """The anchor's street lamp rules (furniture.lamp_region: their spacing)."""
         v = getattr(anchor, "_lamp_region", "")
@@ -1222,7 +1242,7 @@ class Server:
                 blockworker.roads_tile, aid, anchor.lat, anchor.lon, anchor.zooms[0], tx, ty, self.out_dir,
                 self.vfs_dir, self.sidewalks, DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0,
                 self.buildings, self.left_hand(anchor), self.mph(anchor), self.anchor_q(anchor),
-                self.gas_stations, self.buried(anchor), self.lamp_region(anchor)).result()
+                self.gas_stations, self.buried(anchor), self.lamp_region(anchor), self.country(anchor)).result()
             log.debug("road tile %d_%d: %.2f s (queue + build)", tx, ty, time.perf_counter() - t0)
             self.keep_fuel_pads(res[2])
             return res[:2]
@@ -1280,7 +1300,7 @@ class Server:
                                      walk_cuts=fuel_cuts,    # (the stations' made-up driveways: no sidewalk across them)
                                      widths=self.road_widths, props=props, lines=lines, wires=wires, town=town, park=park,
                                      left_hand=self.left_hand(anchor), mph=self.mph(anchor), buried=self.buried(anchor),
-                                     lamp_region=self.lamp_region(anchor),
+                                     lamp_region=self.lamp_region(anchor), country=self.country(anchor),
                                      structures=buildingsmod.centres(items, tx, ty) if items else (),
                                      tunnels=anchor.tunnels, walls=rwalls,
                                      ground=lambda x, y: roadmeshmod.drawn_ground(anchor.frame, drawn, np.c_[x, y],
@@ -1513,7 +1533,7 @@ class Server:
             return
         reach = self.layout.block * heightmap.SQUARE / 2 + IMG_WARM_MARGIN
         pts = [(x + vx * t, y + vy * t) for t in WARM_STEPS_S]
-        self.imagery.warm(anchor.frame, pts, reach, self.layout.block * heightmap.SQUARE / BASE_PX)
+        self.imagery.warm(anchor.frame, pts, reach, self.layout.block * heightmap.SQUARE / BASE_RENDER_PX)
 
     def _warm_loop(self):
         while True:
@@ -1759,11 +1779,12 @@ class Server:
         tex = {"chain": [s.name for s in im.chain], "tone": self.tone, "leaf_on": im.leaf_on,
                "season_mode": im.season_mode}
         try:
-            got = pool.submit(blockworker.base_photo, anchor.lat, anchor.lon, cx - size / 2, cy - size / 2, size,
-                              BASE_PX, tex, bool(self.buildings and self.mapdata is not None), anchor.zooms[0],
+            got = pool.submit(blockworker.base_photo, anchor.lat, anchor.lon, cx - size / 2 - BASE_SHIFT_M,
+                              cy - size / 2 - BASE_SHIFT_M, size,
+                              BASE_RENDER_PX, tex, bool(self.buildings and self.mapdata is not None), anchor.zooms[0],
                               os.path.join(self.out_dir, name),
                               (self.user_dir, f"{self.vfs_dir}/{name}", BASE_AO_VFS, BASE_AO),
-                              fuel_pads=self.block_fuel_pads(anchor, cx, cy, size)).result()
+                              fuel_pads=self.block_fuel_pads(anchor, cx, cy, size), out_px=BASE_PX).result()
         except Exception as e:
             log.info("base photo %s in the block process: %s", key, e)
             return None
@@ -1854,15 +1875,15 @@ class Server:
         of a fresh place's 22 s photo on a Deck, before the car could be placed; 2026-10-23); rendered again in full
         once the graded block is in (base_refresh), as for a lazy imagery source."""
         size = self.layout.block * heightmap.SQUARE
-        x0, y0 = cx - size / 2, cy - size / 2
+        x0, y0 = cx - size / 2 - BASE_SHIFT_M, cy - size / 2 - BASE_SHIFT_M
         quick = quick and not self._photo_data_cached(anchor, x0, y0, size)
         t0 = time.perf_counter()
         try:
             pending = set()
             with (self.deshadow.no_wait() if self.deshadow is not None else contextlib.nullcontext()):
-                rgb, used = self.imagery.render(anchor.frame, x0, y0, size, BASE_PX, pending)
+                rgb, used = self.imagery.render(anchor.frame, x0, y0, size, BASE_RENDER_PX, pending)
             log.debug("base photo %s r%d: %s", (anchor.id, cx, cy), rev,
-                      {k: round(v / BASE_PX ** 2, 3) for k, v in used.items()})
+                      {k: round(v / BASE_RENDER_PX ** 2, 3) for k, v in used.items()})
         except Exception as e:      # an imagery failure must not cost the terrain
             log.info("base photo %s: %s", (anchor.id, cx, cy), e)
             return None
@@ -1872,11 +1893,17 @@ class Server:
         stamps = [("imagery", time.perf_counter())]
         if self.buildings and self.mapdata is not None and not quick:   # no roofs beside the 3D buildings
             try:
-                mask = buildingsmod.photo_mask(anchor.frame, x0, y0, size, BASE_PX, self.mapdata)
+                mask = buildingsmod.photo_mask(anchor.frame, x0, y0, size, BASE_RENDER_PX, self.mapdata)
                 if mask is not None:
-                    rgb = buildingsmod.fill_photo(rgb, mask, size, BASE_PX)
+                    rgb = buildingsmod.fill_photo(rgb, mask, size, BASE_RENDER_PX)
             except Exception as e:      # the photo stays as it is
                 log.info("base photo %s: building mask: %s", (anchor.id, cx, cy), e)
+        if roadsmod.ROADS_IN_GROUND and not quick:      # the photo's own pavement beside the drawn roads
+            try:
+                rgb = surfacemod.unghost_square(rgb, anchor.frame, x0, y0, size, self.surface, self.road_widths)
+            except Exception as e:      # the photo stays as it is
+                log.info("base photo %s: road ghosts: %s", (anchor.id, cx, cy), e)
+        rgb = surfacemod.enlarge(rgb, BASE_PX)
         stamps.append(("buildings", time.perf_counter()))
         if roadsmod.ROADS_IN_GROUND and not quick:      # the carriageways in the ground (surface.photo_roads)
             try:
@@ -1905,7 +1932,8 @@ class Server:
         tmp = staging.tmp_for(path)
         # stored, not deflated: the game reads the packed cache entry (terraincache), this file only if that is stale;
         # level 1 was 0.15 s of a block photo on a Steam Deck, level 0 0.08 (3 MB, a session keeps a few)
-        Image.fromarray(rgb, "RGB").save(tmp, format="PNG", compress_level=0)
+        with open(tmp, "wb") as f:
+            f.write(terraincache.stored_png(rgb))
         staging.replace(tmp, path)
         t2 = time.perf_counter()
         try:            # after the photo: the cache entry must be the newer file
@@ -1935,7 +1963,8 @@ class Server:
         """Rendering the block's base photo again would not change it: every lazy imagery tile is here and
         the regions it was rendered without (base_pending) are done."""
         size = self.layout.block * heightmap.SQUARE
-        if not self.imagery.lazy_ready(anchor.frame, cx - size / 2, cy - size / 2, size, BASE_PX):
+        if not self.imagery.lazy_ready(anchor.frame, cx - size / 2 - BASE_SHIFT_M, cy - size / 2 - BASE_SHIFT_M, size,
+                                       BASE_RENDER_PX):
             return False
         return all(self._region_status(rk) is not None for rk in self.base_pending.get((anchor.id, cx, cy), ()))
 

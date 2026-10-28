@@ -146,7 +146,7 @@ M.CATALOG = {
     { '/art/shapes/common/building_architect_modules/doors/R_HS_A_DR_01_100x210', 2.2 },
     { '/art/shapes/common/building_architect_modules/doors/R_HS_B_DR_03_100x210', 2.2 },
   },
-  signal = { { '/art/shapes/objects/s_trafficlight_boom_sn', 9.4 } },
+  signal = { { '/art/shapes/objects/s_trafficlight_boom_sn', 9.4 } },      -- (setup: M.STATIC_SIGNAL)
   stop = { { '/levels/east_coast_usa/art/shapes/signs_usa/sign_stop', 3.0 } },
   giveway = { { '/art/shapes/garage_and_dealership/Clutter/italy_traf_sign_give_way', 3.0 } },
   -- a low wooden yard fence, 5.4 m along its x (server buildings._front_fence)
@@ -282,11 +282,45 @@ local function releaseForest(t)
   t.forestId = nil
 end
 
+-- The stock boom's lamps (instanced_trafficlight) light by the object's instance colour, and a forest item has none:
+-- every lamp glowed at once (GitHub #415). The static booms (the ones no switchable head of navgraph.lua stands in
+-- for) use a copy of the shape whose lamps are dark lenses: written once into the user folder from the game's own
+-- file, its lamp material renamed (STATIC_SIGNAL_MAT, unlit).
+M.SIGNAL_STOCK = '/art/shapes/objects/s_trafficlight_boom_sn'
+M.STATIC_SIGNAL = '/temp/beamngEarth/shapes/s_trafficlight_boom_static_v1'
+M.STATIC_SIGNAL_MAT = 'bne_trafficlight_static'
+function M.staticSignalDae(dae)      -- pure: the stock dae's text with its lamp material renamed (nil: not found)
+  if type(dae) ~= 'string' or not dae:find('instanced_trafficlight', 1, true) then return nil end
+  return (dae:gsub('instanced_trafficlight', M.STATIC_SIGNAL_MAT))
+end
+function M.staticSignalMaterial()
+  return { [M.STATIC_SIGNAL_MAT] = { name = M.STATIC_SIGNAL_MAT, mapTo = M.STATIC_SIGNAL_MAT, class = 'Material',
+    version = 1.5, Stages = { { baseColorMap = '/assets/materials/utility/trafficLight/instanced_trafficlight_lights.png',
+      baseColorFactor = { 0.06, 0.06, 0.06, 1 }, roughnessFactor = 0.6, vertColor = true }, {}, {}, {} },
+    translucent = true, translucentBlendOp = 'Add', castShadows = false } }
+end
+local function staticSignal()
+  local dae, mat = M.STATIC_SIGNAL .. '.dae', M.STATIC_SIGNAL .. '.materials.json'
+  if not FS:fileExists(dae) then
+    local text = M.staticSignalDae(readFile(M.SIGNAL_STOCK .. '.dae'))
+    if not text then return false end
+    writeFile(dae, text)
+  end
+  if not FS:fileExists(mat) then writeFile(mat, jsonEncode(M.staticSignalMaterial())) end
+  loadJsonMaterialsFile(mat)
+  return FS:fileExists(dae)
+end
+
 local function setup()
   if ready then return true end
   for _, m in ipairs(MATERIALS) do
     local p = m .. '/main.materials.json'
     if not FS or FS:fileExists(p) then pcall(loadJsonMaterialsFile, p) end
+  end
+  if FS and readFile and writeFile then
+    local ok, made = pcall(staticSignal)
+    if ok and made then M.CATALOG.signal[1][1] = M.STATIC_SIGNAL
+    else log('W', 'beamngEarth.trees', 'static signal shape: ' .. tostring(made)) end
   end
   ready = true
   return true

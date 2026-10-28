@@ -301,19 +301,20 @@ class BuildTileTest(unittest.TestCase):
 
         def lanes(cls, urban):
             sp = roads.Spec(roads.carriageway(cls, "paved", urban, None, True), "paved", urban, cls, True, 2.5, 1)
-            n = sum(1 for look, w, line in roads.extras(sp, pts, -100.0) if look is roads.LANE_LINE)
+            n = len({round(float(line[0][1]), 2) for look, w, line in roads.extras(sp, pts, -100.0)
+                     if look.get("kind") == "lane"})
             return n + 1, sp
         n, rural = lanes("motorway", False)
         self.assertEqual(n, 2, "rural motorway carriageway")
         self.assertAlmostEqual(rural.width, roads.MOTORWAY_RURAL_M + 2 * roads.SHOULDER_M)
-        edges = [line[0][1] for look, w, line in roads.extras(rural, pts, -100.0) if look is roads.EDGE_LINE]
+        edges = [line[0][1] for look, w, line in roads.extras(rural, pts, -100.0) if look.get("kind") == "edge"]
         self.assertEqual(sorted(round(abs(y), 2) for y in edges), [round(roads.MOTORWAY_RURAL_M / 2, 2)] * 2,
                          "edge lines between the lanes and the shoulders")
         self.assertEqual(lanes("motorway", True)[0], 3, "urban motorway carriageway")
         self.assertEqual(lanes("trunk", False)[0], 2, "rural divided trunk")
         # a ramp (one lane, LINK_M): its edge lines a lane apart, not inside the motorway's shoulders (GitHub #107)
         ramp = roads.Spec(roads.LINK_M[1], "paved", False, "motorway", True, 2.5, 1)
-        edges = [line[0][1] for look, w, line in roads.extras(ramp, pts, -100.0) if look is roads.EDGE_LINE]
+        edges = [line[0][1] for look, w, line in roads.extras(ramp, pts, -100.0) if look.get("kind") == "edge"]
         self.assertAlmostEqual(abs(edges[0] - edges[1]), roads.LINK_LANE_M, places=2)
 
     def test_divided_trunk_sidewalk_outer_side_only_when_slow(self):
@@ -719,14 +720,22 @@ class BuildTileTest(unittest.TestCase):
         self.assertTrue(np.allclose(o[1], [9, 1, 5]), "mitred corner")
         self.assertEqual(roads.centre_colour(-76.6), "line_yellow")
         self.assertEqual(roads.centre_colour(12.5), "line_white")
-        # the Americas' double yellow line; elsewhere one broken white line (the Gotthard road, 2026-10-18)
+        # the Americas' yellow centre line: double solid in town, broken (MUTCD 10 ft / 30 ft) on a rural two-lane road;
+        # elsewhere one broken white line (the Gotthard road, 2026-10-18), its dashes the country's (DE: 6 m / 12 m)
         sp = roads.Spec(7.0, "paved", False, "primary", False)
         line = np.array([[0.0, 0, 5], [100, 0, 5]])
-        us = [lk for lk, w, ln in roads.extras(sp, line, -76.6) if lk["m"] == "line_yellow"]
-        eu = [lk for lk, w, ln in roads.extras(sp, line, 8.6) if lk["m"] in ("line_white", roads.LANE_LINE["m"])
-              and lk is not roads.EDGE_LINE]
-        self.assertEqual(len(us), 2)
-        self.assertEqual([lk["m"] for lk in eu], [roads.LANE_LINE["m"]])
+        centre = lambda s, lon, c=None: [(lk, ln) for lk, w, ln in roads.extras(s, line, lon, country=c)
+                                         if lk.get("kind") == "centre"]
+        town = centre(sp._replace(urban=True), -76.6, "US")
+        self.assertEqual(len(town), 2)
+        self.assertTrue(all(lk["m"] == "line_yellow" for lk, _ in town))
+        rural = centre(sp, -76.6, "US")
+        self.assertTrue(all(lk["m"] == "line_yellow" for lk, _ in rural))
+        self.assertEqual(len(rural), 9, "a 3.05 m dash every 12.19 m along 100 m")
+        self.assertAlmostEqual(float(rural[0][1][-1][0] - rural[0][1][0][0]), 3.05, places=2)
+        de = centre(sp, 8.6, "DE")
+        self.assertTrue(all(lk["m"] == "line_white" for lk, _ in de))
+        self.assertEqual(len(de), 6, "6 m dashes every 18 m along 100 m")
 
     def test_feature_in_two_cells_once_and_deterministic(self):
         f = features([[(-300, 50), (300, 50)]], ["primary"])

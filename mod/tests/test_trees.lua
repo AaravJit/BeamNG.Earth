@@ -416,5 +416,16 @@ do
   T.check(count() == 2, 'rocks on again: back')
   trees.clear()
 end
+do -- GitHub #415: the static boom's copy has its lamps' material renamed (unlit), the rest of the shape as it was
+  local dae = '<material id="instanced_trafficlight-material" name="instanced_trafficlight"><x name="concrete_plain"/>'
+  local out = trees.staticSignalDae(dae)
+  T.check(out and not out:find('instanced_trafficlight', 1, true), 'no instanced lamp material left')
+  T.check(out and out:find(trees.STATIC_SIGNAL_MAT .. '-material', 1, true) and out:find('concrete_plain', 1, true),
+    'renamed, the others kept')
+  T.check(trees.staticSignalDae('<COLLADA/>') == nil and trees.staticSignalDae(nil) == nil, 'not the boom: none')
+  local m = trees.staticSignalMaterial()[trees.STATIC_SIGNAL_MAT]
+  T.check(m and m.mapTo == trees.STATIC_SIGNAL_MAT and not m.Stages[1].instanceEmissive and not m.Stages[1].emissive,
+    'its material does not glow')
+end
 trees.FRAME_MS, trees.POOL_SPARE = FRAME_MS, POOL_SPARE
 T.done('test_trees')

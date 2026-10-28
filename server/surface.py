@@ -258,21 +258,43 @@ def _lonlat_boxes(feats):
     return got
 
 
+ROAD_EDGE_M = 1.0    # m past a carriageway's edge its material reaches: a square whose centre is at most this far out
+                     # is road (a 2 m square reaches back up to 1.4 m: at 0.5 a wheel 0.2 m inside a 9 m road's edge was
+                     # on dirt; the grain beyond lies under the edge decal, roads.EDGE_DECAL)
+
+
 def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, extra=()):
     """idx (material per sample, [row, col], as classify gives it) with the roads of feats_list (the
     "roads" Features of the cells around) drawn in at their width: ROAD_MATERIAL by surface kind.
     lat / lon: the samples' positions; square: m between samples; urban_fn: as roads.road_specs (the
     same widths as the drawn roads); extra: [(lat (k,), lon (k,), roads.Spec)] more roads (a tunnel's open
-    sections, grading.Grader.open_tunnels). Pure (a new array)."""
+    sections, grading.Grader.open_tunnels). Each sample is a road's when it lies within the road's half width
+    (+ ROAD_EDGE_M) of its line (earthfast.mask_segments): PIL's thick lines put the material half a sample off the line
+    and an odd number of samples wide (an 11 m road painted 14 m, 1.4 m to one side: the asphalt's grain beyond the
+    edge line, GitHub #402). The engine gives each square the material of its south-west sample (the ground model under
+    a wheel and the detail texture both: a car 1.4 m inside a 9 m road's edge was on dirt, and the dirt's grain lay over
+    the asphalt along one edge; wheels swept across the edges in game, 2026-10-28): a sample is tested at the centre of
+    the square north-east of it. Pure (a new array)."""
     h, w = idx.shape
-    to_px = grid_affine(lat, lon)
-    layers = {k: Image.new("L", (w, h), 0) for k in ROAD_ORDER}
-    draws = {k: ImageDraw.Draw(im) for k, im in layers.items()}
-    lawn = Image.new("L", (w, h), 0)            # divided roads' medians (under the roads: they paint over it)
-    lawn_draw = ImageDraw.Draw(lawn)
-    verge = Image.new("L", (w, h), 0)           # a bare strip beside roads without sidewalks (VERGE_M)
-    verge_draw = ImageDraw.Draw(verge)
+    grid = grid_affine(lat, lon)
+    la_c, lo_c = float(np.mean(lat)), float(np.mean(lon))
+    m_lat = 1.0 / 111320.0
+    m_lon = m_lat / max(math.cos(math.radians(la_c)), 1e-6)
+    c0_, r0_ = grid(lo_c, la_c)
+    c1_, r1_ = grid(lo_c + m_lon * square / 2, la_c + m_lat * square / 2)
+    dc, dr = float(c1_ - c0_), float(r1_ - r0_)        # half a square east and north, in samples
+
+    def to_px(x, y):
+        c, r = grid(x, y)
+        return c - dc, r - dr
+    segs = {k: ([], []) for k in ROAD_ORDER}    # kind -> (segments (m, 4) in samples, half widths in samples)
+    lawn, verge = ([], []), ([], [])
     seen = set()
+
+    def add(dst, c, r, half):
+        if len(c) >= 2:
+            dst[0].append(np.stack([c[:-1], r[:-1], c[1:], r[1:]], axis=1))
+            dst[1].append(np.full(len(c) - 1, half / square))
 
     def line(x, y, spec, aisle):
         width, kind = spec.width, roadsmod.surface_material_kind(spec)
@@ -283,20 +305,14 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, e
             width += 2 * (spec.walk + square)   # the sidewalks (+ a sample: tufts at the outer edge): grass grew up
                                                 # through them (ground cover is the terrain's: Lauterbrunnen, Baltimore
                                                 # 2026-10-15)
-        # rounded up to an odd number of samples: a 9 m road was painted 8 m wide (round(4.5) = 4), and an even width
-        # sits half a sample off the line (PIL), its one edge a metre short
-        px = max(1, int(math.ceil(width / square - 1e-9)))
-        px += 1 - px % 2
-        # to a millionth of a sample: PIL floors, and a line on a sample row came out 63.99999999996 on Windows (its
-        # libm, the affine fit), drawn a sample north of where it lands on Linux
-        c, r = (np.round(v, 6) for v in to_px(x, y))
-        vx = 0 if walks else 2 * int(math.ceil(VERGE_M / square))     # (even: the verge stays odd, centred)
-        if c.max() < -px - vx or c.min() > w + px + vx or r.max() < -px - vx or r.min() > h + px + vx:
+        c, r = to_px(x, y)
+        c, r = np.asarray(c, np.float64), np.asarray(r, np.float64)
+        reach = (width / 2 + ROAD_EDGE_M + (0 if walks else VERGE_M)) / square + 2
+        if c.max() < -reach or c.min() > w + reach or r.max() < -reach or r.min() > h + reach:
             return
-        pts = list(zip(c.tolist(), r.tolist()))
-        draws[kind].line(pts, fill=255, width=px, joint="curve")
-        if vx:
-            verge_draw.line(pts, fill=255, width=px + vx, joint="curve")
+        add(segs[kind], c, r, width / 2 + ROAD_EDGE_M)
+        if not walks:
+            add(verge, c, r, width / 2 + ROAD_EDGE_M + VERGE_M)    # (VERGE_M past the road's material)
 
     for feats in feats_list:
         if feats is None or len(feats) == 0:
@@ -329,17 +345,22 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, e
                     off = roadsmod.offset_polyline(np.c_[xy, np.zeros(len(xy))],
                                                    ms * (specs[i].width / 2 + mw / 2))[:, :2] / sc + ring[0, :2]
                     c, r = to_px(off[:, 0], off[:, 1])
-                    lawn_draw.line(list(zip(c.tolist(), r.tolist())), fill=255,
-                                   width=max(1, int(round(mw / square))), joint="curve")
+                    add(lawn, np.asarray(c, np.float64), np.asarray(r, np.float64), mw / 2)
     for la, lo, spec in extra:
         line(np.asarray(lo), np.asarray(la), spec, False)
+    fast.require(91, "mask_segments")
+
+    def mask(dst):
+        m = np.zeros((h, w), bool)
+        if dst[0]:
+            fast._ef.mask_segments(m, np.ascontiguousarray(np.concatenate(dst[0])), np.concatenate(dst[1]))
+        return m
     out = idx.copy()
-    out[np.asarray(lawn) > 0] = LAWN
-    v = np.asarray(verge) > 0
+    out[mask(lawn)] = LAWN
+    v = mask(verge)
     out[v & np.isin(out, VERGE_FROM)] = VERGE
     for k in ROAD_ORDER:
-        m = np.asarray(layers[k]) > 0
-        out[m] = ROAD_MATERIAL[k]
+        out[mask(segs[k])] = ROAD_MATERIAL[k]
     return out
 
 
@@ -354,14 +375,18 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, e
 PHOTO_ROAD_RGBA = {"dirt": (122, 104, 82, 0.45), "gravel": (128, 118, 102, 0.6), "cobble": (112, 104, 96, 0.85),
                    "paved": (95, 95, 94, 0.92)}
 PHOTO_ROADS_MAX_TEXEL = 2.0     # m per texel: coarser far tiles keep the photo's own roads (far, under a pixel wide)
+PHOTO_ROAD_EDGE_M = 0.2         # m the photo's asphalt reaches past the drawn edge, under the edge decal's inner sliver (its
+                                # antialiased rim left a pale hair between the edge line and the decal)
 
 
-def _road_segments(frame, x0, y0, size, w, h, feats_list, urban_fn=None, widths=None):
+def _road_segments(frame, x0, y0, size, w, h, feats_list, urban_fn=None, widths=None, roads_of=None):
     """(segs (m, 4), half widths (m,), kind index into PHOTO_ROAD_RGBA (m,)) of the carriageways of feats_list in pixel
-    coordinates of a w x h photo over [x0, x0 + size] x [y0, y0 + size] (row 0 north), or None when none is in it."""
+    coordinates of a w x h photo over [x0, x0 + size] x [y0, y0 + size] (row 0 north), or None when none is in it.
+    roads_of: a list that gets, per segment, (its road's number, its road has no curb: roads.has_sidewalks)."""
     px_m = w / size
     kinds = list(PHOTO_ROAD_RGBA)
     segs, hws, kind = [], [], []
+    nroad = 0
     seen = set()
     for feats in feats_list:
         if feats is None or len(feats) == 0:
@@ -378,7 +403,7 @@ def _road_segments(frame, x0, y0, size, w, h, feats_list, urban_fn=None, widths=
             m = sp.width / 2        # (all of the feature off the photo: none of its rings is in it)
             if box[i, 1] < x0 - m or box[i, 0] > x0 + size + m or box[i, 3] < y0 - m or box[i, 2] > y0 + size + m:
                 continue
-            hw = sp.width * px_m / 2
+            hw = (sp.width / 2 + PHOTO_ROAD_EDGE_M) * px_m
             for ring in roadsmod.ground_parts(feats, i):
                 e, n = mapgeom.enu_xy(feats, frame, ring)
                 c = (np.asarray(e) - x0) * px_m
@@ -388,6 +413,10 @@ def _road_segments(frame, x0, y0, size, w, h, feats_list, urban_fn=None, widths=
                 segs.append(np.stack([c[:-1], r[:-1], c[1:], r[1:]], axis=1))
                 hws.append(np.full(len(c) - 1, hw))
                 kind.append(np.full(len(c) - 1, kinds.index(sp.kind), np.uint8))
+                if roads_of is not None:
+                    roads_of.append((np.full(len(c) - 1, nroad, np.int64),
+                                     np.full(len(c) - 1, not roadsmod.has_sidewalks(sp) and sp.kind == "paved")))
+            nroad += 1
     if not segs:
         return None
     return np.concatenate(segs), np.concatenate(hws), np.concatenate(kind)
@@ -417,6 +446,33 @@ def _feature_boxes(feats, frame):
     return got
 
 
+PHOTO_GHOST_M = 6.0     # m beside a curbless paved road where the photo's own pavement takes the ground beyond
+PHOTO_GHOST_TOL = 36.0  # RGB distance from the road's mean photo colour that counts as its pavement
+
+
+def photo_ghosts(rgb, frame, x0, y0, size, feats_list, urban_fn=None, widths=None):
+    """The photo rgb with its own pavement beside the drawn curbless paved roads (within PHOTO_GHOST_M of their edge,
+    coloured like the photo on the road) replaced by the ground beyond it, mirrored (earthfast.photo_ghosts), before
+    photo_roads paints the roads in: the map's carriageway is narrower than the photo's (its paved shoulders)
+    or a metre or two off it, and the photo's strip showed as a pale band beside one edge (Woodland Park, US-24: the
+    photo's pavement 17 m wide, the drawn road 11 m; the user, 2026-10-28). Pure (a new array)."""
+    h, w = rgb.shape[:2]
+    of = []
+    got = _road_segments(frame, x0, y0, size, w, h, feats_list, urban_fn, widths, roads_of=of)
+    if got is None:
+        return rgb
+    segs, hws, _ = got
+    road = np.concatenate([a for a, _ in of])
+    ghost = np.where(np.concatenate([b for _, b in of]), PHOTO_GHOST_M * w / size, 0.0)
+    if not ghost.any():
+        return rgb
+    fast.require(92, "photo_ghosts")
+    out, _ = fast._ef.photo_ghosts(np.ascontiguousarray(rgb, np.uint8), np.ascontiguousarray(segs, np.float64),
+                                   np.ascontiguousarray(hws, np.float64), np.ascontiguousarray(ghost, np.float64),
+                                   np.ascontiguousarray(road, np.int64), int(road.max()) + 1, PHOTO_GHOST_TOL)
+    return out
+
+
 def photo_roads(rgb, frame, x0, y0, size, feats_list, urban_fn=None, widths=None):
     """The photo rgb (H x W x 3, row 0 = north, covering [x0, x0 + size] x [y0, y0 + size] of frame) with the
     carriageways of feats_list (road Features: roads.road_specs widths, ground parts only) painted in, antialiased
@@ -439,6 +495,15 @@ def _square_roads(frame, x0, y0, size, surface):
     return feats
 
 
+def enlarge(rgb, px):
+    """The photo rgb (h x w x 3 uint8) at px x px (a plain bilinear resize; as it was at that size already), so what
+    is painted into it after (roads, pads, rock) is drawn at the finer texel."""
+    rgb = np.asarray(rgb, np.uint8)
+    if rgb.shape[0] == px and rgb.shape[1] == px:
+        return rgb
+    return np.asarray(Image.fromarray(rgb, "RGB").resize((px, px), Image.BILINEAR), np.uint8)
+
+
 def paint_square(rgb, frame, x0, y0, size, surface, widths=None):
     """photo_roads for a ground photo over [x0, x0 + size]² of frame with the roads of surface's cached cells (a
     Surface; never waits); as it was when its texels are coarser than PHOTO_ROADS_MAX_TEXEL or no cell is cached."""
@@ -449,6 +514,17 @@ def paint_square(rgb, frame, x0, y0, size, surface, widths=None):
     if not feats:
         return rgb
     return photo_roads(rgb, frame, x0, y0, size, feats, surface.urban, widths)
+
+
+def unghost_square(rgb, frame, x0, y0, size, surface, widths=None):
+    """photo_ghosts for a ground photo over [x0, x0 + size]² of frame with the roads of surface's cached cells (never
+    waits; as paint_square), at the photo's own resolution, before it is enlarged and the roads painted in."""
+    if surface is None or size / max(rgb.shape[1], 1) > PHOTO_ROADS_MAX_TEXEL:
+        return rgb
+    feats = _square_roads(frame, x0, y0, size, surface)
+    if not feats:
+        return rgb
+    return photo_ghosts(rgb, frame, x0, y0, size, feats, surface.urban, widths)
 
 
 def _square_pads(frame, x0, y0, size, surface):

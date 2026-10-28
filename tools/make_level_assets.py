@@ -122,7 +122,7 @@ lines(os.path.join(L, "main/MissionGroup/Weather/items.level.json"), [
 # here (means of template's t_terrain_base_dirt_*), so nothing depends on another level's zip.
 A = "/assets/materials/terrain/soil/"
 B = "/levels/beamng_earth/art/terrains/"
-BASE_TEX = 1024     # base texture slot (px): the shipped flat base maps and the server's photo (earthd.BASE_PX)
+BASE_TEX = 2048     # base texture slot (px): the shipped flat base maps and the server's photo (earthd.BASE_PX)
 # Every texture slot of every material is filled: an empty one makes the engine build a default texture at
 # every TerrainBlock:updateMaterial (~0.8 s per call with the surface materials, in-game 2026-10-12)
 FLAT_H = B + "bngEarth_flat_h_1024.png"     # neutral height for the detail / macro height slots

@@ -417,7 +417,7 @@ def terrain_patch(aid, lat, lon, zoom, box, path):
 
 
 def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, buildings=False, left_hand=False,
-               mph=True, q=None, gas_stations=False, buried=0.0, lamp_region=None):
+               mph=True, q=None, gas_stations=False, buried=0.0, lamp_region=None, country=None):
     """earthd.Server.build_roads_tile here (road-tile pool): the anchor's road tile (tx, ty) built and
     written; returns roads.write_tile's (vfs path, chunks) and its stations' pads (gasstations.tile_sites pads: the
     server keeps them for the ground's painters). In the server's process its Python made up
@@ -426,10 +426,10 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
     import revisit
     k = revisit.key("roads", round(float(lat), 7), round(float(lon), 7), zoom, tx, ty, bool(sidewalks), float(lift),
                     bool(buildings), bool(left_hand), bool(mph), None if q is None else float(q), bool(gas_stations),
-                    _s.md.versions() if _s.md is not None else None, float(buried), lamp_region)
+                    _s.md.versions() if _s.md is not None else None, float(buried), lamp_region, country)
     return _revisit_tile("roads", k, aid, tx, ty, out_dir, vfs_dir, f"roads_{aid}_{tx}_{ty}.json",
                          lambda: _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, buildings,
-                                             left_hand, mph, q, gas_stations, buried, lamp_region),
+                                             left_hand, mph, q, gas_stations, buried, lamp_region, country),
                          lambda res: {"n": int(res[1]), "pads": [[sid, [[np.asarray(la).tolist(), np.asarray(lo).tolist()]
                                                                        for la, lo in rs]] for sid, rs in res[2]]},
                          lambda path, extra: (path, int(extra.get("n", 0)),
@@ -478,7 +478,7 @@ def _write_bytes(path, data):
 
 
 def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, buildings, left_hand, mph, q,
-                gas_stations, buried=0.0, lamp_region=None):
+                gas_stations, buried=0.0, lamp_region=None, country=None):
     import parking as parkingmod
     import rails as railsmod
     import roadmesh as roadmeshmod
@@ -528,7 +528,7 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
     chunks = roadsmod.build_tile(frame, tx, ty, cells, elev, urban, walks=walks, deck_context=ctx, bridges=bridges, widths=_s.widths,
                                  walk_cuts=fuel_cuts,    # (the stations' made-up driveways: no sidewalk across them)
                                  props=props, lines=lines, wires=wires, town=town, park=park,
-                                 left_hand=left_hand, mph=mph, buried=buried, lamp_region=lamp_region,
+                                 left_hand=left_hand, mph=mph, buried=buried, lamp_region=lamp_region, country=country,
                                  structures=buildingsmod.centres(items, tx, ty) if items else (),
                                  tunnels=tunnels, walls=rwalls,
                                  ground=lambda x, y: roadmeshmod.drawn_ground(frame, drawn, np.c_[x, y], q),
@@ -829,14 +829,15 @@ def _imagery(tex):
     return _s.imagery[1]
 
 
-def base_photo(lat, lon, x0, y0, size, px, tex, buildings, rock_zoom, path, cache, fuel_pads=None):
+def base_photo(lat, lon, x0, y0, size, px, tex, buildings, rock_zoom, path, cache, fuel_pads=None, out_px=None):
     """earthd.Server.write_base here, for a server without its imagery analyses (a small machine): the block's base
     photo from the imagery tiles on disk, its building footprints filled and its cliffs as rock, written to path
     (PNG) and packed into the game's terrain texture cache (cache: terraincache.base_entry's arguments but the rgb).
     Returns (rgb, sources used, lazy tiles still to come), or None when an imagery tile it needs is not on disk (the
     server renders it, fetching what is missing). In the server process it ran 2 s alone but 8-11 s next to the
     rest of the world's threads on a Steam Deck (one interpreter lock), and the next block waited for it. fuel_pads:
-    the gas station pads around it (_take_pads)."""
+    the gas station pads around it (_take_pads). px: the imagery's render size, out_px: the photo's (enlarged before
+    the roads are painted in: earthd.BASE_PX)."""
     _take_pads(fuel_pads)
     import imagery as imagerymod
     import roads as roadsmod
@@ -859,6 +860,13 @@ def base_photo(lat, lon, x0, y0, size, px, tex, buildings, rock_zoom, path, cach
                 rgb = buildingsmod.fill_photo(rgb, mask, size, px)
         except Exception as e:      # the photo stays as it is
             log.info("base photo: building mask: %s", e)
+    import surface as surfacemod
+    if roadsmod.ROADS_IN_GROUND:          # (earthd.Server.write_base)
+        try:
+            rgb = surfacemod.unghost_square(rgb, frame, x0, y0, size, getattr(_s, "surface", None), _s.widths)
+        except Exception as e:      # the photo stays as it is
+            log.info("base photo: road ghosts: %s", e)
+    rgb = surfacemod.enlarge(rgb, out_px or px)
     if roadsmod.ROADS_IN_GROUND:          # (earthd.Server.write_base)
         try:
             import surface as surfacemod
@@ -876,7 +884,8 @@ def base_photo(lat, lon, x0, y0, size, px, tex, buildings, rock_zoom, path, cach
     tmp = staging.tmp_for(path)
     # stored, not deflated: the game reads the packed cache entry (terraincache), this file only if that is stale;
     # level 1 was 0.15 s of a block photo on a Steam Deck, level 0 0.08 (3 MB, a session keeps a few)
-    Image.fromarray(rgb, "RGB").save(tmp, format="PNG", compress_level=0)
+    with open(tmp, "wb") as f:
+        f.write(terraincache.stored_png(rgb))
     staging.replace(tmp, path)
     user_dir, base_vfs, ao_vfs, ao_value = cache
     terraincache.base_entry(user_dir, base_vfs, ao_vfs, rgb, ao_value)

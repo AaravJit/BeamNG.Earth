@@ -14,6 +14,7 @@ mod lamps;
 mod decks;
 mod islands;
 mod ribbons;
+mod groundpaint;
 
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, IntoPyArray};
 use pyo3::types::PyBytes;
@@ -1024,8 +1025,16 @@ fn bc7_encode<'py>(py: Python<'py>, img: PyReadonlyArray3<'py, u8>) -> Bound<'py
     let (h, w, ch) = (a.shape()[0], a.shape()[1], a.shape()[2]);
     let (nby, nbx) = ((h + 3) / 4, (w + 3) / 4);
     let mut out = vec![0u8; nby * nbx * 16];
+    // block rows in bands across the cores (a 4096² base photo was 0.46 s on one, 2026-10-28)
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(8).min(nby.max(1));
+    let rows_per = (nby + threads - 1) / threads.max(1);
+    std::thread::scope(|sc| {
+    for (bi, band) in out.chunks_mut((rows_per * nbx * 16).max(16)).enumerate() {
+    let a = &a;
+    sc.spawn(move || {
     let mut t = [[0i32; 4]; 16];
-    for by in 0..nby {
+    let by0 = bi * rows_per;
+    for by in by0..(by0 + rows_per).min(nby) {
         for bx in 0..nbx {
             for yy in 0..4 {
                 let y = (by * 4 + yy).min(h - 1);
@@ -1038,10 +1047,13 @@ fn bc7_encode<'py>(py: Python<'py>, img: PyReadonlyArray3<'py, u8>) -> Bound<'py
                 }
             }
             let blk = bc7_block(&t);
-            let o = (by * nbx + bx) * 16;
-            out[o..o + 16].copy_from_slice(&blk);
+            let o = ((by - by0) * nbx + bx) * 16;
+            band[o..o + 16].copy_from_slice(&blk);
         }
     }
+    });
+    }
+    });
     out
     });
     PyBytes::new(py, &out)
@@ -5128,6 +5140,9 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(decks::deck_beside, m)?)?;
     m.add_function(wrap_pyfunction!(islands::road_cycles, m)?)?;
     m.add_function(wrap_pyfunction!(ribbons::ribbon_edges, m)?)?;
+    m.add_function(wrap_pyfunction!(groundpaint::mask_segments, m)?)?;
+    m.add_function(wrap_pyfunction!(groundpaint::photo_ghosts, m)?)?;
+    m.add_function(wrap_pyfunction!(groundpaint::dash_pieces, m)?)?;
     m.add_function(wrap_pyfunction!(power::substation_yard, m)?)?;
     m.add_function(wrap_pyfunction!(vegmask::road_segments, m)?)?;
     m.add_function(wrap_pyfunction!(vegmask::disc_max, m)?)?;
@@ -5216,6 +5231,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(photofill::fill_photo, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 90)?;
+    m.add("VERSION", 93)?;
     Ok(())
 }

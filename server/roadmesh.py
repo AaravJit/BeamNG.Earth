@@ -22,7 +22,7 @@ import numpy as np
 import cdae
 
 DRAPE_STEP = 2.0        # m between ribbon cross-sections (the physics block's lattice)
-LIFT = {"base": 0.0, "gutter": 0.005, "mark": 0.01}   # m above the physics ground (lifted under roads
+LIFT = {"base": 0.0, "edge": 0.003, "gutter": 0.005, "mark": 0.01}   # m above the physics ground (lifted under roads
                                                         # by grading.ROAD_LIFT over the visible ground)
 
 
