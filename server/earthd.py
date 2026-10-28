@@ -2041,6 +2041,9 @@ class Server:
                                    else f"{h} unreachable" for h in down))
         if self.degraded:
             parts.append(f"{len(self.degraded)} tiles without imagery")
+        if self.net.slow() is not None:     # (map data at a crawl: a new place's roads take minutes: GitHub #241;
+            # no number in it: the note is re-sent whenever its text changes)
+            parts.append("slow internet connection: new places take a few minutes to load")
         return "Degraded: " + "; ".join(parts) if parts else ""
 
     def level_summary(self):
@@ -4630,7 +4633,8 @@ async def main_async(args):
             await asyncio.sleep(NET_TICK_S)
             line = await asyncio.get_running_loop().run_in_executor(None, net.tick)
             if line:
-                log.info("net: %s", line)
+                rate = net.throughput()     # (a slow connection shows here: GitHub #241's stuck-looking roads)
+                log.info("net: %s%s", line, "" if rate is None else f"; large downloads at {rate:.2f} MB/s")
             for c in list(server.connections):     # a host that came back while nobody posed
                 c.refresh_status()
     ticker = asyncio.create_task(net_log())
