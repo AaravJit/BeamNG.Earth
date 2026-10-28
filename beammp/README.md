@@ -3,8 +3,8 @@
 This zip turns a BeamMP server into a BeamNG.Earth server: the real world, streamed around every player. Players join
 with the normal BeamMP launcher.
 
-> ## Help: the BeamNG.Earth Discord, not BeamMP
-> **Join the BeamNG.Earth Discord, [discord.gg/tgf](https://discord.gg/tgf), to get help setting this up, ask
+> ## Help: the TGForever Discord, not BeamMP
+> **Join the TGForever Discord, [discord.gg/tgf](https://discord.gg/tgf), to get help setting this up, ask
 > questions, report bugs, chat with other players or help develop the mod.**
 >
 > BeamNG.Earth isn't like a normal BeamNG mod: it needs its own app running next to the game on every player's

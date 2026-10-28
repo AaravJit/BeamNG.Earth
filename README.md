@@ -7,11 +7,11 @@ real curvature of the Earth.
 Status: beta (see VERSION). Tested on BeamNG.drive 0.40.3 on Linux (Vulkan) and the Steam Deck. See
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is coming.
 
-**Community:** join the BeamNG.Earth Discord, **[discord.gg/tgf](https://discord.gg/tgf)**, and head to the
+**Community:** join the TGForever Discord, **[discord.gg/tgf](https://discord.gg/tgf)**, and head to the
 #beamng-earth channel to chat about the mod, get help, report bugs, help with its development, and get an IP to join a
 BeamMP.Earth server (see [Multiplayer](#multiplayer-beammp)).
 
-> **Help with multiplayer comes from the BeamNG.Earth Discord too.** BeamNG.Earth isn't like a normal BeamNG mod (it
+> **Help with multiplayer comes from the TGForever Discord too.** BeamNG.Earth isn't like a normal BeamNG mod (it
 > runs its own app next to the game), so if something isn't working with BeamMP, it's almost certainly a BeamNG.Earth
 > problem, not a BeamMP one. Please **don't contact the BeamMP team or open BeamMP support tickets** about it.
 
@@ -233,7 +233,7 @@ Tests: `cd server && python3 -m unittest discover -s tests -t tests` and
 BeamNG.Earth runs on [BeamMP](https://beammp.com/) servers (in testing): drive the real world together.
 
 > **Support for BeamNG.Earth on BeamMP comes from us, not from BeamMP.** For questions or help with joining or hosting
-> a BeamNG.Earth server, join the BeamNG.Earth Discord: **[discord.gg/tgf](https://discord.gg/tgf)**. BeamNG.Earth
+> a BeamNG.Earth server, join the TGForever Discord: **[discord.gg/tgf](https://discord.gg/tgf)**. BeamNG.Earth
 > isn't like a normal BeamNG mod: it needs its own app running next to the game. If something isn't working, it's
 > almost certainly a BeamNG.Earth problem, not a BeamMP one, so please **don't contact the BeamMP team or open BeamMP
 > support tickets** when you run into trouble getting BeamNG.Earth to work with BeamMP.
@@ -261,7 +261,7 @@ BeamNG.Earth runs on [BeamMP](https://beammp.com/) servers (in testing): drive t
 2. In the game: main menu > More > BeamMP, log in (an account or a guest).
 3. Pick the **BeamNG.Earth** category in BeamMP's server browser: the servers running BeamNG.Earth (search,
    filters, favorites and details as for the other servers), the official server at the top. They are listed only there, for players who have BeamNG.Earth. A private server: Direct Connect with its address (the
-   [Discord server](https://discord.gg/tgf) has some). Every player needs the BeamNG.Earth app running: each builds the
+   [TGForever Discord server](https://discord.gg/tgf) has some). Every player needs the BeamNG.Earth app running: each builds the
    world on their own computer.
    (Starting the BeamMP launcher yourself first still works: the app then starts just the world server.)
 

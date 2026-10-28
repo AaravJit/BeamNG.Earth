@@ -57,7 +57,7 @@ function G.supportNotice()
   local bar = string.rep('=', 78)
   return {
     bar,
-    'Join the BeamNG.Earth Discord to get help with this server, ask questions,',
+    'Join the TGForever Discord to get help with this server, ask questions,',
     'report bugs, chat with other players or help develop the mod:',
     '    ' .. G.DISCORD,
     '',

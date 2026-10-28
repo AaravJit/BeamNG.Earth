@@ -112,14 +112,14 @@ def support_notice(multiplayer=False):
     """Where to get help (the BeamMP team, 2026-10-27: players kept asking them about BeamNG.Earth): the Discord once at
     every start; once BeamMP is up, what it means for multiplayer (said once each: the user, 2026-10-27)."""
     if not multiplayer:
-        say("Join the BeamNG.Earth Discord to chat, get help, report bugs or help develop")
+        say("Join the TGForever Discord to chat, get help, report bugs or help develop")
         say(f"the mod: {DISCORD}")
         return
     _out("")
     _out("  " + "=" * 78)
     _out("  BeamNG.Earth is not like a normal BeamNG mod: it needs this app running")
     _out("  next to the game. If something is not working in multiplayer, it is almost")
-    _out("  certainly a BeamNG.Earth problem, not a BeamMP one: ask on the BeamNG.Earth")
+    _out("  certainly a BeamNG.Earth problem, not a BeamMP one: ask on the TGForever")
     _out("  Discord above, and do NOT contact the BeamMP team or open BeamMP support")
     _out("  tickets about it.")
     _out("  BeamNG.Earth servers are in the \"BeamNG.Earth\" tab of BeamMP's server browser.")
