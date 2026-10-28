@@ -101,7 +101,7 @@ class WaterFillTest(unittest.TestCase):
         line = np.c_[np.linspace(0, 400, 101), np.zeros(101)]
         g = self.grader(4.7)
         g._chains_for = lambda: type("C", (), {"_depth": lambda s, l: 0.9,
-                                               "_water": lambda s, l, n, d: [(0, 200.0, 0.0, 4.7)]})()
+                                               "_water": lambda s, l, n, d, c=0.0: [(0, 200.0, 0.0, 4.7)]})()
         self.assertEqual(g._water_lift(line, [], line[0], lambda xy: np.full(len(xy), 4.0)), 0.0)
 
 

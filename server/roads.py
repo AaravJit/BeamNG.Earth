@@ -2104,8 +2104,11 @@ def _curve_try(s, want, cap, z0, zL, g0, gL, step, L, K, iters):
         short[0] = short[-1] = 0.0
         if short.max() <= 0.02:
             break
+        # (not where the grade cap holds want down: no raise reaches it there, and raising it again and again
+        # tented a 5 m hump past the cap onto the Vincent Thomas Bridge's span, 2026-10-28)
         raise_ += np.maximum(short, 0.0)
     return z
+
 
 
 def _path_curve(lines, order, ground_fn, crossings, spans, clear, lift, max_grade, ends=(None, None)):
@@ -3630,7 +3633,7 @@ class BridgeProfiles:
         self.depth = {}                         # (fid, j) -> m of slab and girders under its road (deck_depth)
         self.lock = threading.Lock()
 
-    def _water(self, lines, nav=0.0, depth=None):
+    def _water(self, lines, nav=0.0, depth=None, channel=0.0):
         """Clearance requirements over water (deck_profile_once crossings with their own clearance): every
         WATER_STEP_M along each wet run of each line, water_clear of the run's length over the ground there; over a
         run of NAV_RUN_M or more at least nav (m: the bridge's navigation clearance, bridgetypes.nav_clearance) plus
@@ -3666,8 +3669,24 @@ class BridgeProfiles:
                     # for 15 m over a 3 m deep bed and humped to its grade cap (the Sunshine Skyway causeway, 2026-10-27)
                     c = nav + under if s[j] - s[i] >= NAV_RUN_M else min(c, nav + under)
                     base = np.maximum(g, sea)
+                run = s[j] - s[i]
+                # the nav clearance holds over the channel only: the main span (channel m: NBI item 48) over the
+                # run's deepest water, else the middle half of the run; outside it the clearance asked eases off at the
+                # design grade to the run's own (water_clear: a causeway's low). Held flat across the whole run the
+                # Sunshine Skyway stood 58 m up for 3.5 km of its causeway, and where the grade cap only just reached
+                # the run's start the solver humped the Vincent Thomas Bridge 5 m over its span (2026-10-28)
+                c_low = min(c, water_clear(run + (s[1] - s[0])))
+                if nav > 0 and channel > 0 and 3 * channel < run:      # (a river crossing: its whole run)
+                    seg = np.arange(i, j + 1)
+                    mid = float(s[seg[int(np.argmin(g[seg]))]])
+                    mid = float(np.clip(mid, s[i] + channel / 2, s[j] - channel / 2))
+                    c0, c1 = mid - channel / 2, mid + channel / 2
+                else:
+                    c0, c1 = s[i] + run / 4, s[j] - run / 4
                 for sc in np.arange(s[i], s[j] + 1e-6, WATER_STEP_M):
-                    out.append((k, float(sc), float(np.interp(sc, s, base)), c))
+                    out_by = max(0.0, c0 - sc, sc - c1)
+                    cc = max(c_low, c - DECK_DESIGN_GRADE * out_by) if nav > 0 else c
+                    out.append((k, float(sc), float(np.interp(sc, s, base)), cc))
                 i = j + 1
         return out
 
@@ -3813,7 +3832,11 @@ class BridgeProfiles:
         dd = self.__dict__.setdefault("depth", {})
         for k in comp:
             dd[k] = DECK_FULL_DEPTH if depth is None else depth
-        water = self._water(lines, nav, depth)
+        try:
+            channel = bridgetypes.nav_span(self.frame, lines) if nav > 0 else 0.0
+        except Exception:
+            channel = 0.0
+        water = self._water(lines, nav, depth, channel)
         if not water and nav > 0 and bridge_profile_mode() == "curve":
             water = self._gap(lines, nav, depth)
         rails = [(c[0], c[1], z, deck_road_clear(depth)) for c, z in zip(rcr, rail_z)]

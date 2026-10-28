@@ -264,6 +264,18 @@ def nav_clearance(frame, lines):
     return 0.0
 
 
+def nav_span(frame, lines):
+    """m: the main span (NBI item 48) of the record nav_clearance takes its clearance from, 0 if none: the channel
+    that clearance holds over."""
+    db = _load()
+    if "nav" not in db:
+        return 0.0
+    for _, i in matches(frame, lines):
+        if db["nav"][i] > 0 and nav_plausible(float(db["nav"][i]), float(db["span"][i]), int(db["type"][i])):
+            return float(db["span"][i])
+    return 0.0
+
+
 NAV_SPAN_MIN = 0.06         # a navigation clearance under this share of the record's main span (15 m at most) is not ...
 NAV_SPAN_MAX_MOVABLE = 0.30  # ... and a movable bridge's over this share is its span raised
 MOVABLE = (15, 16, 17)       # NBI 43B: lift, bascule, swing
