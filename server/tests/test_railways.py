@@ -518,3 +518,18 @@ class UnderpassNeighbourTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RailCollisionTest(unittest.TestCase):
+    """The lean rail collision mesh (roads._rail_collision): the drawn mesh without its sleepers."""
+
+    def test_sleepers_left_out(self):
+        P = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [5, 5, 0], [6, 5, 0], [5, 6, 0]], np.float64)
+        T = np.array([[0, 1, 2], [3, 4, 5]])
+        mats = ["bne_rail_ballast", "bne_rail_sleeper"]
+        got = roads._rail_collision((P, T, None, mats, np.array([0, 1])))
+        self.assertIsNotNone(got)
+        self.assertEqual(len(got[1]), 1)
+        self.assertEqual(len(got[0]), 3)
+        self.assertEqual(got[2], "bne_rail_ballast")
+        self.assertIsNone(roads._rail_collision((P, T, None, ["bne_rail_ballast"], np.array([0, 0]))))

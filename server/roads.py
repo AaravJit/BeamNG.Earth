@@ -4787,7 +4787,7 @@ def shape_files(aid, tx, ty):
            "walk": f"walks_{aid}_{tx}_{ty}.cdae", "walkcol": f"walkcol_{aid}_{tx}_{ty}.cdae",
            "bldcol": f"bldcol_{aid}_{tx}_{ty}.cdae", "wire": f"wire_{aid}_{tx}_{ty}.cdae",
            "bld": f"bld_{aid}_{tx}_{ty}.cdae", "tunnel": f"tunnel_{aid}_{tx}_{ty}.cdae",
-           "rail": f"rail_{aid}_{tx}_{ty}.cdae"}
+           "rail": f"rail_{aid}_{tx}_{ty}.cdae", "railcol": f"railcol_{aid}_{tx}_{ty}.cdae"}
     for k in range(2, BLD_PARTS_MAX + 1):
         out[f"bld{k}"] = f"bld_{aid}_{tx}_{ty}_{k}.cdae"
     return out
@@ -4856,6 +4856,26 @@ def sound_boxes(chunks):
     return out + rows.ravel().tolist()
 
 
+RAIL_NO_COLLIDE = ("sleeper",)     # rail mesh materials left out of its collision (railways' sleeper materials): 64 %
+                                  # of a Baltimore rail tile's triangles, its colliding mesh 430 ms to load on a Steam
+                                  # Deck (2026-10-28); the ballast's top and the rails carry a car or a train alike
+
+
+def _rail_collision(mesh):
+    """(positions, tris, material name) of a rail mesh (roadmesh.write's form) without the materials RAIL_NO_COLLIDE
+    names (vertices compacted), or None when nothing would be left out or nothing is left. Pure."""
+    P, T, _UV, mats, M = mesh
+    T = np.asarray(T, np.int64)
+    M = np.asarray(M, np.int64)
+    drop = np.array([any(k in str(m) for k in RAIL_NO_COLLIDE) for m in mats], bool)
+    keep = ~drop[M] if len(drop) else np.ones(len(T), bool)
+    if keep.all() or not keep.any():
+        return None
+    T = T[keep]
+    used, inv = np.unique(T.ravel(), return_inverse=True)
+    return np.asarray(P, np.float64)[used], inv.reshape(T.shape), str(mats[int(M[keep][0])])
+
+
 def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None, deck_mesh=None, bld=None,
                props=None, wires=None, park=None, tunnel_mesh=None, fuel=None,
                rail_mesh=None, garage_sound=(), wells=()):
@@ -4891,11 +4911,17 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
         shape = f"tunnel_{aid}_{tx}_{ty}.cdae"
         roadmesh.write(os.path.join(out_dir, shape), tunnel_mesh)
         data["tunnel"] = {"shape": f"{vfs_dir}/{shape}", "pos": [x0, y0, 0.0]}
-    if rail_mesh is not None:       # railways.tile_mesh: ballast, sleepers and rails (colliding)
+    if rail_mesh is not None:       # railways.tile_mesh: ballast, sleepers and rails (drawn)
         x0, y0, _, _ = tile_bbox(tx, ty)
         shape = f"rail_{aid}_{tx}_{ty}.cdae"
         roadmesh.write(os.path.join(out_dir, shape), rail_mesh)
         data["rail"] = {"shape": f"{vfs_dir}/{shape}", "pos": [x0, y0, 0.0]}
+        col = _rail_collision(rail_mesh)
+        if col is not None:         # the lean physics-only mesh: the drawn one then only renders
+            import cdae
+            shape = f"railcol_{aid}_{tx}_{ty}.cdae"
+            cdae.write(os.path.join(out_dir, shape), col[0], col[1], material=col[2], collision_only=True)
+            data["railcol"] = {"shape": f"{vfs_dir}/{shape}", "pos": [x0, y0, 0.0]}
     if walks:
         x0, y0, _, _ = tile_bbox(tx, ty)
         b = sidewalks.Builder((x0, y0, 0.0), collision=True)
