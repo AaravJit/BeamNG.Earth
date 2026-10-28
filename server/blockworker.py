@@ -423,6 +423,42 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
     server keeps them for the ground's painters). In the server's process its Python made up
     ~80 % of the main process's busy threads (in-game profile 2026-10-13): the block photos and far
     textures waited for the GIL. A tile built in this anchor's place before comes from the revisit cache."""
+    watch = _stack_watch(f"road tile {tx}_{ty}")
+    try:
+        return _roads_tile_cached(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, buildings,
+                                  left_hand, mph, q, gas_stations, buried, lamp_region, country)
+    finally:
+        watch.cancel()
+
+
+STACK_DUMP_S = float(os.environ.get("BNGE_STACK_DUMP_S", "") or 75.0)   # s before a slow tile's stacks go to the log
+
+
+def _stack_watch(what):
+    """A timer that writes every thread's stack of this worker to the server log (stderr) when what is still running
+    after STACK_DUMP_S: where a hung road tile waits (the server's own stuck warning says only that it waits)."""
+    def dump():
+        import faulthandler
+        import sys
+        out = sys.stderr
+        if out is None:
+            return
+        try:
+            log.warning("%s still building after %.0f s in worker %d: its threads' stacks follow", what,
+                        STACK_DUMP_S, os.getpid())
+            out.flush()
+            faulthandler.dump_traceback(file=out, all_threads=True)
+            out.flush()
+        except Exception:               # (diagnostics only)
+            pass
+    t = threading.Timer(STACK_DUMP_S, dump)
+    t.daemon = True
+    t.start()
+    return t
+
+
+def _roads_tile_cached(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, buildings, left_hand, mph, q,
+                       gas_stations, buried, lamp_region, country=None):
     import revisit
     k = revisit.key("roads", round(float(lat), 7), round(float(lon), 7), zoom, tx, ty, bool(sidewalks), float(lift),
                     bool(buildings), bool(left_hand), bool(mph), None if q is None else float(q), bool(gas_stations),
