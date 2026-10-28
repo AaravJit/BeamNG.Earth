@@ -283,28 +283,25 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None,
             before = idx
             idx = surfacemod.paint_roads(idx, keep["lat"], keep["lon"], road_feats, heightmap.SQUARE,
                                          _s.surface.urban, _s.widths, _open_tunnels(g, keep))
-            if not (idx != before).any():   # (roads over it, none painted: Discord's gravel mountain roads)
+            if not (idx != before).any():   # (drawn roads over it, none painted: Discord's gravel mountain roads)
+                import roads as roadsmod
                 la0, la1 = float(np.min(keep["lat"])), float(np.max(keep["lat"]))
                 lo0, lo1 = float(np.min(keep["lon"])), float(np.max(keep["lon"]))
-                over = 0                    # (road vertices inside it)
+                over = n_ground = 0             # (points of roads with a spec in it; of those, with ground parts)
                 for f in road_feats:
-                    if f is not None and len(f):
-                        ll = np.asarray(f.lonlat)
-                        over += int(((ll[:, 0] >= lo0) & (ll[:, 0] <= lo1) & (ll[:, 1] >= la0) & (ll[:, 1] <= la1)).sum())
+                    if f is None or not len(f):
+                        continue
+                    specs = roadsmod.road_specs(f, _s.surface.urban, _s.widths)
+                    for i in range(len(f)):
+                        if specs[i] is None:
+                            continue            # (paths, tracks ...: never painted)
+                        ll = np.concatenate([np.asarray(r)[:, :2] for part in f.parts(i) for r in part])
+                        n = int(((ll[:, 0] >= lo0) & (ll[:, 0] <= lo1) & (ll[:, 1] >= la0) & (ll[:, 1] <= la1)).sum())
+                        over += n
+                        n_ground += n if len(roadsmod.ground_parts(f, i)) else 0
                 if over:
-                    import roads as roadsmod
-                    n_spec = n_ground = 0               # (which step lost them: no spec, or no ground part)
-                    for f in road_feats:
-                        if f is None or not len(f):
-                            continue
-                        specs = roadsmod.road_specs(f, _s.surface.urban, _s.widths)
-                        for i in range(len(f)):
-                            if specs[i] is not None:
-                                n_spec += 1
-                                n_ground += len(roadsmod.ground_parts(f, i)) > 0
-                    log.warning("block (%s, %s, %s): %d road points in it from %d cells (%s), none painted; %d with a "
-                                "spec, %d with ground parts", aid, cx, cy, over, len(road_feats),
-                                ", ".join("none" if f is None else str(len(f)) for f in road_feats), n_spec, n_ground)
+                    log.warning("block (%s, %s, %s): %d points of drawn roads in it (%d of them with ground parts) from "
+                                "%d cells, none painted", aid, cx, cy, over, n_ground, len(road_feats))
         idx = (surfacemod.paint_lots(idx, keep["lat"], keep["lon"], _s.surface.lots(keep["lat"], keep["lon"]))
             if hasattr(_s.surface, "lots") else idx)
         if hasattr(_s.surface, "fuel_pads"):    # gas station forecourts (--gas-stations on)
