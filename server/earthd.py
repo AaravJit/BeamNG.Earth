@@ -269,6 +269,9 @@ TILE_CACHE = {32: 6000, 64: 2500}
 HM_THREADS = 4
 LAG_TICK_S, LAG_REPORT_S = 0.1, 0.25     # the event-loop stall report (-v)
 ROAD_PROCESSES = 2              # road-tile processes (--block-process on, --roads on)
+# s a road tile may take in its worker before it is given up and its workers restarted (build_roads_tile): a first
+# visit's slowest tiles take ~1 min on a busy 6-core laptop; BNGE_ROAD_TILE_TIMEOUT=<s> to change it
+ROAD_TILE_TIMEOUT_S = float(os.environ.get("BNGE_ROAD_TILE_TIMEOUT", "") or 120.0)
 WORKERS = 3                     # far-tile workers (--workers)
 TRACE_S = 60.0                  # BNGE_TRACEMALLOC: seconds between the memory reports ...
 TRACE_TOP = 15                  # ... and the allocation sites in each
@@ -1218,11 +1221,22 @@ class Server:
             return None
         if self.road_pool is not None:
             t0 = time.perf_counter()
-            res = self.road_pool.submit(
+            fut = self.road_pool.submit(
                 blockworker.roads_tile, aid, anchor.lat, anchor.lon, anchor.zooms[0], tx, ty, self.out_dir,
                 self.vfs_dir, self.sidewalks, DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0,
                 self.buildings, self.left_hand(anchor), self.mph(anchor), self.anchor_q(anchor),
-                self.gas_stations, self.buried(anchor), self.lamp_region(anchor)).result()
+                self.gas_stations, self.buried(anchor), self.lamp_region(anchor))
+            try:
+                # bounded: a worker that never answered held this thread and its roads.Tracker slot for good (4
+                # slots: four hung tiles and no road tile ever again, the loading line at "roads & buildings 0/26")
+                res = fut.result(timeout=ROAD_TILE_TIMEOUT_S)
+            except concurrent.futures.TimeoutError:
+                fut.cancel()
+                log.warning("road tile %d_%d of anchor %d: no answer from its worker in %.0f s: built again",
+                            tx, ty, aid, ROAD_TILE_TIMEOUT_S)
+                if hasattr(self.road_pool, "recycle"):
+                    self.road_pool.recycle(f"road tile {tx}_{ty} hung for {ROAD_TILE_TIMEOUT_S:.0f} s")
+                raise
             log.debug("road tile %d_%d: %.2f s (queue + build)", tx, ty, time.perf_counter() - t0)
             self.keep_fuel_pads(res[2])
             return res[:2]
