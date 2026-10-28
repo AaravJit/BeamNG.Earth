@@ -280,8 +280,21 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None,
         stages["landcover"] = time.perf_counter() - t1
         t1 = time.perf_counter()
         if road_feats:
+            before = idx
             idx = surfacemod.paint_roads(idx, keep["lat"], keep["lon"], road_feats, heightmap.SQUARE,
                                          _s.surface.urban, _s.widths, _open_tunnels(g, keep))
+            if not (idx != before).any():   # (roads over it, none painted: Discord's gravel mountain roads)
+                la0, la1 = float(np.min(keep["lat"])), float(np.max(keep["lat"]))
+                lo0, lo1 = float(np.min(keep["lon"])), float(np.max(keep["lon"]))
+                over = 0                    # (road vertices inside it)
+                for f in road_feats:
+                    if f is not None and len(f):
+                        ll = np.asarray(f.lonlat)
+                        over += int(((ll[:, 0] >= lo0) & (ll[:, 0] <= lo1) & (ll[:, 1] >= la0) & (ll[:, 1] <= la1)).sum())
+                if over:
+                    log.warning("block (%s, %s, %s): %d road points in it from %d cells (%s), none painted", aid, cx,
+                                cy, over, len(road_feats), ", ".join("none" if f is None else str(len(f))
+                                                                     for f in road_feats))
         idx = (surfacemod.paint_lots(idx, keep["lat"], keep["lon"], _s.surface.lots(keep["lat"], keep["lon"]))
             if hasattr(_s.surface, "lots") else idx)
         if hasattr(_s.surface, "fuel_pads"):    # gas station forecourts (--gas-stations on)
