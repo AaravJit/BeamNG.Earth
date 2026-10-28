@@ -13,6 +13,7 @@ mod gradesep;
 mod lamps;
 mod decks;
 mod islands;
+mod ribbons;
 
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, IntoPyArray};
 use pyo3::types::PyBytes;
@@ -5126,6 +5127,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lamps::lamp_stations, m)?)?;
     m.add_function(wrap_pyfunction!(decks::deck_beside, m)?)?;
     m.add_function(wrap_pyfunction!(islands::road_cycles, m)?)?;
+    m.add_function(wrap_pyfunction!(ribbons::ribbon_edges, m)?)?;
     m.add_function(wrap_pyfunction!(power::substation_yard, m)?)?;
     m.add_function(wrap_pyfunction!(vegmask::road_segments, m)?)?;
     m.add_function(wrap_pyfunction!(vegmask::disc_max, m)?)?;
@@ -5214,6 +5216,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(photofill::fill_photo, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 89)?;
+    m.add("VERSION", 90)?;
     Ok(())
 }

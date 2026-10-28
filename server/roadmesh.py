@@ -81,19 +81,39 @@ def ribbon_pairs(chunks):
 
 def ribbons(chunks):
     """Per chunk: (left (k, 2), right (k, 2), v (k,), material, layer, z (k,) or None) in the anchor
-    frame; z: the chunk's own heights where it is "fixed" (bridge decks), else None (draped). Pure."""
-    out = []
-    for c in chunks:
-        pts = np.asarray(c["n"], np.float64)
-        if len(pts) < 2:
+    frame; z: the chunk's own heights where it is "fixed" (bridge decks), else None (draped). Pure. The draped and
+    plain chunks' resampling and normals in one Rust call (earthfast.ribbon_edges: numpy per chunk was ~0.9 s of 8
+    city road tiles, 2026-10-28); a fixed deck's (its profile's knots kept) here."""
+    import fast
+    out = [None] * len(chunks)
+    batch, pts, half = [], [], []
+    for k, c in enumerate(chunks):
+        p = np.asarray(c["n"], np.float64)
+        if len(p) < 2:
             continue
-        xy, s, z = _resample(pts, DRAPE_STEP, keep_vertices=bool(c.get("deck") and c.get("fixed")))
-        if len(xy) < 2:
+        if c.get("deck") and c.get("fixed"):
+            xy, s, z = _resample(p, DRAPE_STEP, keep_vertices=True)
+            if len(xy) < 2:
+                continue
+            n = _normals(xy) * (float(c["w"]) / 2)
+            out[k] = (xy + n, xy - n, s / float(c.get("tl") or 10.0), c["m"], layer_of(c), z)
             continue
-        n = _normals(xy) * (float(c["w"]) / 2)
-        out.append((xy + n, xy - n, s / float(c.get("tl") or 10.0), c["m"], layer_of(c),
-                    z if c.get("fixed") else None))
-    return out
+        batch.append(k)
+        pts.append(p[:, :3])
+        half.append(float(c["w"]) / 2)
+    if batch:
+        fast.require(90, "ribbon_edges")
+        off = np.r_[0, np.cumsum([len(p) for p in pts])].astype(np.int64)
+        L, R, S, Z, o = fast._ef.ribbon_edges(np.ascontiguousarray(np.concatenate(pts)), off,
+                                             np.asarray(half, np.float64), float(DRAPE_STEP))
+        for n, k in enumerate(batch):
+            a, b = int(o[n]), int(o[n + 1])
+            if b - a < 2:
+                continue
+            c = chunks[k]
+            out[k] = (L[a:b], R[a:b], S[a:b] / float(c.get("tl") or 10.0), c["m"], layer_of(c),
+                      Z[a:b] if c.get("fixed") else None)
+    return [r for r in out if r is not None]
 
 
 TRIM_DZ = (0.3, 4.5)                # m: another deck overlapping a deck in plan this far above or below it (two
