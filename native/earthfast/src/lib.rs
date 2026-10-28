@@ -10,6 +10,7 @@ mod ambience;
 mod power;
 mod underpass;
 mod coarseease;
+mod tunnelcover;
 mod gradesep;
 mod lamps;
 mod decks;
@@ -5128,6 +5129,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(roadgeom::curve_deck, m)?)?;
     m.add_function(wrap_pyfunction!(underpass::underpass_offsets, m)?)?;
     m.add_function(wrap_pyfunction!(coarseease::ease_coarse, m)?)?;
+    m.add_function(wrap_pyfunction!(tunnelcover::tunnel_cover_roads, m)?)?;
     m.add_function(wrap_pyfunction!(gradesep::gradesep_candidates, m)?)?;
     m.add_function(wrap_pyfunction!(gradesep::gradesep_spans, m)?)?;
     m.add_function(wrap_pyfunction!(shore::shore_steps, m)?)?;
@@ -5233,6 +5235,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(photofill::fill_photo, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 94)?;
+    m.add("VERSION", 95)?;
     Ok(())
 }

@@ -2648,6 +2648,14 @@ ROAD_CAP_JOIN_M = 20.0  # a road with an end this near a low arch's mouth joins 
 ROAD_CAP_GAP_M = 0.5    # m a low arch's stone top stops short of a carriageway over its mouth ...
 ROAD_CAP_OVER_M = 1.0   # ... and its portal face reaches at most this far over that road
 TUNNEL_LOW_H = 3.6      # m: the lowest tube (floor to vault)
+# A covered section (a low arch or a tube) goes on along the tunnel until every ground road crossing over it within
+# TUNNEL_ROAD_REACH_M of its ends is covered, its carriageway and TUNNEL_ROAD_CLEAR_M past it (along the tunnel: / the
+# sine of the crossing angle, at least TUNNEL_ROAD_MIN_SIN). On lidar each carriageway of a divided motorway over an
+# underpass is its own embankment: the arch under one was 8 m long under 13 m of lanes, its mouths and terrain holes
+# in them (GitHub #450, the A-7 near Málaga).
+TUNNEL_ROAD_CLEAR_M = 2.0
+TUNNEL_ROAD_MIN_SIN = 0.35
+TUNNEL_ROAD_REACH_M = 15.0
 
 
 def tunnel_profile(lines, ground_fn):
@@ -4199,6 +4207,7 @@ class TunnelProfiles(BridgeProfiles):
             g = g.copy()
             g[0], g[-1] = ge[0], ge[-1]
             floor, kinds = tunnel_sections(s, g)
+            kinds = self._cover_roads(xy, s, kinds, ground)
             secs, i = [], 0
             while i < len(kinds):
                 j = i
@@ -4254,6 +4263,31 @@ class TunnelProfiles(BridgeProfiles):
         for i in range(len(feats)):
             if rs[i] is not None:
                 self._hw[(str(feats.ids[i]), "g")] = rs[i].width / 2
+
+    def _cover_roads(self, xy, s, kinds, ground):
+        """kinds with each covered section carried on until the ground roads crossing over it are covered (their
+        carriageway and TUNNEL_ROAD_CLEAR_M past it): earthfast.tunnel_cover_roads (GitHub #450)."""
+        lines, halves = [], []
+        for gk, lns in (ground or {}).items():
+            hw = self._hw.get(gk)
+            if hw is None:
+                continue
+            for ln in lns:
+                ln = np.asarray(ln, np.float64).reshape(-1, 2)
+                if len(ln) >= 2:
+                    lines.append(ln)
+                    halves.append(hw)
+        kinds = np.asarray(kinds, np.int64)
+        if not lines or not (kinds > 0).any() or len(xy) < 2:
+            return kinds
+        import fast
+        fast.require(95, "tunnel_cover_roads")
+        pts = np.ascontiguousarray(np.concatenate(lines))
+        starts = np.concatenate([[0], np.cumsum([len(ln) for ln in lines])]).astype(np.int64)
+        return np.asarray(fast._ef.tunnel_cover_roads(
+            np.ascontiguousarray(np.asarray(xy, np.float64)[:, :2]), np.ascontiguousarray(s, np.float64),
+            np.ascontiguousarray(kinds), pts, starts, np.asarray(halves, np.float64), TUNNEL_ROAD_CLEAR_M,
+            TUNNEL_ROAD_MIN_SIN, TUNNEL_ROAD_REACH_M, SECTION_MIN_M), np.int64)
 
     def _road_caps(self, xy, floor, th, ups, mouths, width, ground):
         """A low arch's stone tops (roadmesh.LOW_CAP_M back from each portal face over its mouth) and face reaches where
@@ -4540,8 +4574,52 @@ def block_tunnel_holes(tunnels, cell_fn, frame, keep, cx, cy, square):
         return None
     if not parts:
         return None
-    return tunnel_hole_mask(parts, u, cx, cy, square, getattr(tunnels, "heights", None),
+    mask = tunnel_hole_mask(parts, u, cx, cy, square, getattr(tunnels, "heights", None),
                             getattr(tunnels, "mouths", None))
+    if mask is not None and mask.any():
+        mask = spare_carriageways(mask, parts, cells, frame, cx, cy, square)
+    return mask
+
+
+HOLE_ROAD_MARGIN = 0.3      # m past another road's carriageway no tunnel hole is cut (spare_carriageways)
+HOLE_JOIN_M = 3.0           # m: a road with an end this near a tunnel part's end is its approach (its mouth cut)
+
+
+def spare_carriageways(mask, parts, cells, frame, cx, cy, square):
+    """mask with the hole samples inside the carriageway of a ground road that is not the tunnel's (another feature, not
+    an approach joined at a mouth) filled again: a portal's opening reaching into a road beside or over it left a hole in
+    its lanes (GitHub #450, the A-7 near Málaga, a 2 m drop at the edge of a carriageway beside an underpass's mouth)."""
+    import fast
+    own = {str(p[0]).split("#")[0] for p in parts}
+    ends = np.array([np.asarray(p[2], np.float64)[k, :2] for p in parts for k in (0, -1) if len(p[2])], np.float64)
+    others = []
+    for feats in cells:
+        if feats is None or len(feats) == 0:
+            continue
+        rs = road_specs(feats)
+        for i, sp in enumerate(rs):
+            fid = str(feats.ids[i])
+            if sp is None or sp.kind not in BUILT or fid in own:
+                continue
+            for ring in ground_parts(feats, i):
+                e, n = mapgeom.enu_xy(feats, frame, ring)
+                xy = np.c_[e, n]
+                if len(xy) < 2:
+                    continue
+                if len(ends) and min(float(np.min(np.hypot(*(ends - xy[0]).T))),
+                                     float(np.min(np.hypot(*(ends - xy[-1]).T)))) < HOLE_JOIN_M:
+                    continue            # (its approach: the mouth is cut into it)
+                others.append((fid, sp.width / 2, xy))
+    if not others:
+        return mask
+    oth = fast.Others(others)
+    n = mask.shape[0]
+    x0, y0 = cx - n * square / 2, cy - n * square / 2
+    out = mask.copy()
+    for iy, ix in zip(*np.nonzero(mask)):
+        if not oth.clear((x0 + ix * square, y0 + iy * square), None, HOLE_ROAD_MARGIN):
+            out[iy, ix] = False
+    return out
 
 
 WALL_STEP = 2.0         # m between a retaining wall's points

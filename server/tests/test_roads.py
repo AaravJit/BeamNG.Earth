@@ -1275,3 +1275,24 @@ class ChainResolveTest(unittest.TestCase):
                 pool = {("b", 0): pool[("b", 0)], ("a", 0): pool[("a", 0)]}
             self.assertEqual(res._resolve(("a", 0), pool, {}, set()), [("a", 0), ("b", 0)])
             self.assertEqual(float(pool[("b", 0)][1][-1][0]), 300.0)
+
+
+class TunnelCoverRoadsTest(unittest.TestCase):
+    """GitHub #450: a covered tunnel section goes on until the road crossing over it is covered."""
+
+    def test_a_short_arch_grows_under_the_whole_carriageway(self):
+        import fast
+        fast.require(95, "tunnel_cover_roads")
+        s = np.arange(0.0, 72.1, 4.0)
+        xy = np.c_[s, np.zeros_like(s)]
+        kinds = np.zeros(len(s), np.int64)
+        kinds[(s >= 16) & (s <= 24)] = 1                   # an 8 m arch ...
+        road = np.array([[20.0, -50.0], [20.0, 50.0]])     # ... under a road 13 m wide crossing at 20 m
+        out = np.asarray(fast._ef.tunnel_cover_roads(np.ascontiguousarray(xy), s, kinds, road, np.array([0, 2], np.int64),
+                                                     np.array([6.5]), 2.0, 0.35, 15.0, 8.0))
+        covered = s[out > 0]
+        self.assertLessEqual(covered.min(), 20 - 8.5)
+        self.assertGreaterEqual(covered.max(), 20 + 8.5)
+        far = np.asarray(fast._ef.tunnel_cover_roads(np.ascontiguousarray(xy), s, kinds, road + [50.0, 0.0],
+                                                     np.array([0, 2], np.int64), np.array([6.5]), 2.0, 0.35, 15.0, 8.0))
+        np.testing.assert_array_equal(far, kinds)          # a road far from the arch: as it was
