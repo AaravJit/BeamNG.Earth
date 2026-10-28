@@ -636,6 +636,26 @@ class JunctionTest(unittest.TestCase):
         self.assertTrue(np.all(np.diff(side.z[:12]) >= -1e-9))             # eased in, no bump
         np.testing.assert_allclose(main.z, 10 + 0.02 * x)                  # the main road keeps its profile
 
+    def test_a_road_crossing_a_bigger_one_meets_it_there(self):
+        """GitHub #414 (Perm): a service road crossing a primary at a shared node, 4 m higher, stood as a wall across
+        it; it takes the primary's height at the crossing, eased in either side; the primary keeps its own. (Opt-in with
+        the coarse easing: BNE_COARSE_EASE=1.)"""
+        import roads
+        from unittest import mock
+        patcher = mock.patch.object(grading, "COARSE_EASE_ON", True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        x = np.arange(-200, 201, 4.0)
+        main = grading.Plan(np.stack([x, 0 * x], 1), 10.0 + 0 * x, 5, road_half=5)
+        y = np.arange(-200, 201, 4.0)
+        cross = grading.Plan(np.stack([0 * y + 20, y], 1), 14.0 + 0 * y, 3, road_half=2)
+        grading.snap_junctions([main, cross], [roads.Spec(10.0, "paved", False, "primary", False),
+                                               roads.Spec(4.0, "paved", False, "service", False)])
+        mid = int(np.argmin(np.abs(y)))
+        self.assertAlmostEqual(cross.z[mid], 10.0, places=6)
+        self.assertAlmostEqual(cross.z[0], 14.0, places=6)
+        np.testing.assert_allclose(main.z, 10.0)
+
     def test_a_continuation_is_not_a_junction(self):
         import roads
         x = np.arange(0, 201, 4.0)
@@ -648,3 +668,37 @@ class JunctionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CoarseEaseTest(unittest.TestCase):
+    """earthfast.ease_coarse (GitHub #414): roads side by side on a coarse DEM brought together."""
+
+    def run_ease(self, z_main, z_side, gap_y, rank_side=1, take=(1, 1)):
+        import fast
+        fast.require(94, "ease_coarse")
+        x = np.linspace(0.0, 200.0, 41)
+        xy = np.concatenate([np.c_[x, np.zeros_like(x)], np.c_[x, np.full_like(x, gap_y)]])
+        z = np.concatenate([np.full_like(x, z_main), np.full_like(x, z_side)])
+        off = np.array([0, len(x), 2 * len(x)], np.int64)
+        out = fast._ef.ease_coarse(np.ascontiguousarray(xy), z, off, np.array([7, rank_side], np.int64),
+                                   np.array([4.0, 2.0]), np.array(take, np.uint8), grading.COARSE_REACH_M,
+                                   grading.COARSE_MAX_STEP_M, grading.COARSE_MAX_SLOPE, grading.COARSE_SIGMA_M)
+        return out[:len(x)], out[len(x):]
+
+    def test_a_service_road_beside_a_primary_comes_down_to_it(self):
+        main, side = self.run_ease(100.0, 104.5, 7.0)
+        np.testing.assert_allclose(main, 100.0)                     # the higher rank stays
+        self.assertLess(float(np.median(side)), 101.0)               # the 4.5 m wall mostly gone
+        self.assertGreater(float(np.median(side)), 100.0)            # (a little cross slope kept)
+
+    def test_far_roads_and_real_separations_stay(self):
+        _m, far = self.run_ease(100.0, 104.5, 60.0)
+        np.testing.assert_allclose(far, 104.5)
+        _m, sep = self.run_ease(100.0, 108.0, 7.0)                   # 8 m: an overpass or a cutting, left alone
+        np.testing.assert_allclose(sep, 108.0)
+        _m, kept = self.run_ease(100.0, 104.5, 7.0, take=(1, 0))      # a bridge approach: as it was
+        np.testing.assert_allclose(kept, 104.5)
+
+    def test_equal_ranks_meet_halfway(self):
+        main, side = self.run_ease(100.0, 104.0, 7.0, rank_side=7)
+        self.assertLess(float(np.median(side) - np.median(main)), 2.5)

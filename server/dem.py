@@ -185,6 +185,14 @@ def _resize(a, size):
     return np.asarray(Image.fromarray(a, mode="F").resize((size, size), Image.BILINEAR))
 
 
+def _tile_xy(lat, lon, z):
+    """Web-Mercator tile (x, y) holding (lat, lon) at zoom z."""
+    n = 2 ** z
+    x = int((lon + 180.0) / 360.0 * n) % n
+    y = int((1.0 - math.asinh(math.tan(math.radians(max(-MAX_LAT, min(MAX_LAT, lat))))) / math.pi) / 2.0 * n)
+    return x, max(0, min(n - 1, y))
+
+
 def _gauss2(a, sigma):
     """A separable Gaussian blur of a small 2-D grid (edges held), pure numpy."""
     r = max(1, int(round(3 * sigma)))
@@ -435,6 +443,23 @@ class Dem:
                 log.debug("dem: Mapterhorn coverage: %s: %s", type(e).__name__, e)
                 c["at"], c["failed"] = now, True
             return c["index"]
+
+    def coarse_at(self, lat, lon):
+        """Is the elevation at (lat, lon) only the coarse global model (Mapterhorn's file list has nothing deeper than
+        GLOBAL_ZOOM under its z6 tile: no lidar, ~30 m Copernicus and the like)? False when unknown (no list yet) or
+        where the opt-in Canadian lidar reads. grading.ease_coarse (GitHub #414)."""
+        idx = self._coverage()
+        if idx is None:
+            return False
+        n = 2 ** COVERAGE_ZOOM
+        lat = max(-MAX_LAT, min(MAX_LAT, float(lat)))
+        x = int((float(lon) + 180.0) / 360.0 * n) % n
+        y = int((1.0 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2.0 * n)
+        if idx.get((x, max(0, min(n - 1, y))), GLOBAL_ZOOM) > GLOBAL_ZOOM:
+            return False
+        if (self.lidarbc is not None or HRDEM_NEAR) and hrdemmod.covers(GLOBAL_ZOOM, *_tile_xy(lat, lon, GLOBAL_ZOOM)):
+            return False
+        return True
 
     def _listed(self, z, x, y):
         """False when Mapterhorn's file list says it has no tile (z, x, y) (z > GLOBAL_ZOOM); True otherwise."""

@@ -118,6 +118,19 @@ JUNCTION_END_M = 10.0       # m: a same-class road ending this close to the othe
 JUNCTION_TAPER_M = 40.0     # m along the side road the height change is eased in over (half the road when shorter)
 JUNCTION_MAX_M = 6.0        # m: a bigger difference is left as it was (bad data; Perm, GitHub #414: 4-5 m steps where a
                             # 30 m DEM smeared an embankment into the junctions)
+# Roads side by side where the elevation is only the coarse global model (dem.coarse_at: no lidar; GitHub #414, Perm on
+# Copernicus' 30 m: service roads 7 m beside the primary stood 4-5 m over it, where Mapillary shows them at grade): a
+# lower-ranked road within COARSE_REACH_M of a higher-ranked one's edge eased to its height (equal ranks halfway), less a
+# COARSE_MAX_SLOPE cross slope between their edges (a real hillside keeps its fall); over COARSE_MAX_STEP_M apart they
+# are taken as truly separated. Rust: earthfast.ease_coarse.
+# (off by default: at Perm the trench turned out to be the underpass dip, which this does not touch; an A/B across
+# coarse-elevation places comes first, BNE_COARSE_EASE=1 turns it on)
+COARSE_EASE_ON = os.environ.get("BNE_COARSE_EASE", "0") == "1"
+COARSE_REACH_M = 20.0
+COARSE_MAX_STEP_M = 6.0
+COARSE_MAX_SLOPE = 0.25
+COARSE_SIGMA_M = 8.0
+COARSE_SIDE_M = 12.0        # m: plan_roads' side samples on coarse elevation (the median of three)
 
 
 # Overpass approach ramps (from KyzoFox's 1.5.4, PR #64). A short bridge over a road had its ends on the ground on both
@@ -294,7 +307,17 @@ def plan_road(frame, lonlat, spec, elev):
     return plan_roads(frame, [(lonlat, spec)], elev)[0]
 
 
-def plan_roads(frame, parts, elev, abut=None, ext=None, pins=None, cuts=True):
+def _normals(xy):
+    """Unit normals (k, 2) of a polyline's points (the direction from the neighbours). Pure."""
+    xy = np.asarray(xy, np.float64)[:, :2]
+    if len(xy) < 2:
+        return np.zeros((len(xy), 2))
+    d = np.gradient(xy, axis=0)
+    ln = np.maximum(np.hypot(d[:, 0], d[:, 1]), 1e-9)
+    return np.stack([-d[:, 1] / ln, d[:, 0] / ln], axis=1)
+
+
+def plan_roads(frame, parts, elev, abut=None, ext=None, pins=None, cuts=True, coarse=False):
     """plan_road for many (lonlat, spec) parts with one elev call (its cost is per call); abut: per part (start, end)
     flags, the ends leading onto a bridge (fill_abutment); ext: per part (before, after), the lines (k, 2) in the frame
     from its start / end outward along the part the road goes on in (Grader._extensions), or None: their ground is in
@@ -336,8 +359,18 @@ def plan_roads(frame, parts, elev, abut=None, ext=None, pins=None, cuts=True):
     if not pts:
         return [None] * len(parts)
     allxy = np.concatenate(pts)
-    la, lo, _ = frame.enu_to_geodetic(allxy[:, 0], allxy[:, 1], 0.0)
-    zall = np.asarray(elev(la, lo), np.float64)
+    if coarse:
+        # coarse elevation (dem.coarse_at, GitHub #414): the median of the centre line and COARSE_SIDE_M to either side,
+        # so a pit or a spike narrower than the data's own cells does not drag the road into a walled trench (Perm's
+        # primary sat 4-5 m under the ground 7 m beside it, at grade in the street photos)
+        nrm = np.concatenate([_normals(q) for q in pts])
+        three = np.concatenate([allxy, allxy + nrm * COARSE_SIDE_M, allxy - nrm * COARSE_SIDE_M])
+        la, lo, _ = frame.enu_to_geodetic(three[:, 0], three[:, 1], 0.0)
+        z3 = np.asarray(elev(la, lo), np.float64).reshape(3, -1)
+        zall = np.median(z3, axis=0)
+    else:
+        la, lo, _ = frame.enu_to_geodetic(allxy[:, 0], allxy[:, 1], 0.0)
+        zall = np.asarray(elev(la, lo), np.float64)
     out, k = [], 0
     for j, ((lonlat, spec), pr) in enumerate(zip(parts, prof)):
         if pr is None:
@@ -606,6 +639,37 @@ def snap_junctions(plans, specs):
             taper = min(JUNCTION_TAPER_M, 0.5 * length)
             u = (s if end == 0 else length - s) / max(taper, 1e-6)
             dz += delta * np.where(u < 1.0, 0.5 * (1.0 + np.cos(np.pi * np.clip(u, 0.0, 1.0))), 0.0)
+        # crossings (GitHub #414, Perm: service roads crossing a primary at a shared node stood as 4-5 m walls across
+        # it): where this road runs over a higher-ranked road's carriageway away from its own ends, it takes that
+        # road's height there, eased in over JUNCTION_TAPER_M either side (with the coarse easing: BNE_COARSE_EASE=1)
+        for k in ([] if not COARSE_EASE_ON else np.flatnonzero((rank > rank[j]) & (boxes[:, 0] <= p.bbox[2]) & (boxes[:, 2] >= p.bbox[0])
+                                & (boxes[:, 1] <= p.bbox[3]) & (boxes[:, 3] >= p.bbox[1]))):
+            q = plans[k]
+            if len(q.xy) < 2:
+                continue
+            inner = np.flatnonzero((s > JUNCTION_END_M) & (s < length - JUNCTION_END_M))
+            if not len(inner):
+                continue
+            a, b = q.xy[:-1, :2], q.xy[1:, :2]
+            d = b - a
+            ll = np.maximum((d * d).sum(1), 1e-12)
+            P = p.xy[inner, :2]
+            t = np.clip(((P[:, None, 0] - a[None, :, 0]) * d[None, :, 0] + (P[:, None, 1] - a[None, :, 1]) * d[None, :, 1])
+                        / ll[None, :], 0.0, 1.0)
+            dist = np.hypot(a[None, :, 0] + t * d[None, :, 0] - P[:, None, 0], a[None, :, 1] + t * d[None, :, 1] - P[:, None, 1])
+            si = dist.argmin(1)
+            dmin = dist[np.arange(len(inner)), si]
+            hit = dmin <= q.road_half
+            if not hit.any():
+                continue
+            h = int(np.argmin(np.where(hit, dmin, np.inf)))       # the crossing point (nearest the other's line)
+            i_, sg = int(inner[h]), int(si[h])
+            zq = float(q.z[sg] + (q.z[sg + 1] - q.z[sg]) * t[h, sg])
+            delta = zq - (p.z[i_] + dz[i_])
+            if abs(delta) > JUNCTION_MAX_M or abs(delta) < 0.05:
+                continue
+            u = np.abs(s - s[i_]) / max(min(JUNCTION_TAPER_M, 0.5 * length), 1e-6)
+            dz += delta * np.where(u < 1.0, 0.5 * (1.0 + np.cos(np.pi * np.clip(u, 0.0, 1.0))), 0.0)
         if dz.any():
             p.z = p.z + dz
 
@@ -749,7 +813,9 @@ class Grader:
                 except Exception as e:      # each part smoothed alone rather than no grading
                     log.debug("grading: road chains of %s: %s: %s", key, type(e).__name__, e)
             pclip = []
-            for fid, part, cl, p in zip(ids, parts, clipped, plan_roads(self.frame, parts, self.elev, abut, ext, pins)):
+            coarse = COARSE_EASE_ON and self._coarse(key)
+            for fid, part, cl, p in zip(ids, parts, clipped, plan_roads(self.frame, parts, self.elev, abut, ext, pins,
+                                                                         coarse=coarse)):
                 if p is not None:
                     p.rid = road_id(fid)
                     plans.append((fid, p))
@@ -760,6 +826,11 @@ class Grader:
                     snap_junctions([p for _f, p in plans], pspecs)
                 except Exception as e:      # blended as before rather than no grading
                     log.debug("grading: junctions of %s: %s: %s", key, type(e).__name__, e)
+            if COARSE_EASE_ON and plans:
+                try:
+                    self._ease_coarse(key, plans, pspecs)
+                except Exception as e:      # as they were rather than no grading
+                    log.debug("grading: coarse easing of %s: %s: %s", key, type(e).__name__, e)
             if APPROACH_ON and plans:
                 try:
                     self._lift_approaches(key, plans, pspecs)
@@ -984,7 +1055,8 @@ class Grader:
                 preps = [self._strong_part(*asks[n]) for n in jobs]
                 parts = [(part, asks[n][0][4]) for n, (part, _last, _whole) in zip(jobs, preps)]
                 ext = self._extensions(parts, [asks[n][0][5] for n in jobs])
-                plans = plan_roads(self.frame, parts, self.elev, None, ext, cuts=False)
+                plans = plan_roads(self.frame, parts, self.elev, None, ext, cuts=False,
+                                   coarse=COARSE_EASE_ON and self._coarse_ll(parts[0][0]))
                 for n, (part, last, whole), p in zip(jobs, preps, plans):
                     self._strong_keep(asks[n][0], keys[n], p, last, whole)
             except Exception as e:      # one at a time, each its own failure (_stronger_z)
@@ -1042,7 +1114,8 @@ class Grader:
             part, last, whole = self._strong_part(cand, at_last)
             # (the profile alone: its cutting's walls cost most of a plan and no height, 2026-10-25)
             p = plan_roads(self.frame, [(part, cand[4])], self.elev, None,
-                           self._extensions([(part, cand[4])], [cand[5]]), cuts=False)[0]
+                           self._extensions([(part, cand[4])], [cand[5]]), cuts=False,
+                           coarse=COARSE_EASE_ON and self._coarse_ll(part))[0]
             self._strong_keep(cand, k, p, last, whole)
         except Exception as e:      # not held rather than no grading
             log.debug("grading: pin height of %s: %s: %s", cand[5], type(e).__name__, e)
@@ -1079,6 +1152,48 @@ class Grader:
             la, lo, _ = self.frame.enu_to_geodetic(run[:, 0], run[:, 1], 0.0)
             out.append(np.stack([np.asarray(lo, np.float64), np.asarray(la, np.float64)], axis=1))
         return out
+
+    def _coarse(self, key):
+        """Is cell key's elevation only the coarse global model (dem.coarse_at its centre)? False without a DEM."""
+        dem = getattr(self, "dem", None) or getattr(self.md, "dem", None)
+        if dem is None or not hasattr(dem, "coarse_at"):
+            return False
+        lon0, lat0, lon1, lat1 = key.bounds()
+        try:
+            return bool(dem.coarse_at((lat0 + lat1) / 2, (lon0 + lon1) / 2))
+        except Exception:
+            return False
+
+    def _coarse_ll(self, lonlat):
+        """dem.coarse_at the middle of a part's (lon, lat) points (the pins' and chains' own plans sample as the cell's)."""
+        dem = getattr(self, "dem", None) or getattr(self.md, "dem", None)
+        if dem is None or not hasattr(dem, "coarse_at") or not len(lonlat):
+            return False
+        lon, lat = np.asarray(lonlat, np.float64)[len(lonlat) // 2][:2]
+        try:
+            return bool(dem.coarse_at(float(lat), float(lon)))
+        except Exception:
+            return False
+
+    def _ease_coarse(self, key, plans, pspecs):
+        """COARSE_* above: the cell's plans eased together where its elevation is coarse (in place)."""
+        if not self._coarse(key):
+            return
+        ps = [p for _f, p in plans]
+        if len(ps) < 2:
+            return
+        import fast
+        fast.require(94, "ease_coarse")
+        off = np.r_[0, np.cumsum([len(p.xy) for p in ps])].astype(np.int64)
+        xy = np.ascontiguousarray(np.concatenate([np.asarray(p.xy, np.float64)[:, :2] for p in ps]))
+        z = np.ascontiguousarray(np.concatenate([np.asarray(p.z, np.float64) for p in ps]))
+        rank = np.array([road_rank(sp) for sp in pspecs], np.int64)
+        half = np.array([p.road_half for p in ps], np.float64)
+        take = np.array([0 if (p.abut[0] or p.abut[1]) else 1 for p in ps], np.uint8)
+        out = fast._ef.ease_coarse(xy, z, off, rank, half, take, COARSE_REACH_M, COARSE_MAX_STEP_M, COARSE_MAX_SLOPE,
+                                   COARSE_SIGMA_M)
+        for j, p in enumerate(ps):
+            p.z = np.asarray(out[off[j]:off[j + 1]], np.float64)
 
     def _lift_approaches(self, key, plans, specs):
         """Raise, in place, the plans of the roads leading onto overpasses (APPROACH_ON). A road is raised where one of
