@@ -470,8 +470,9 @@ BANK_ON = os.environ.get("BNE_BANK", "on") != "off"
 BANK_E_MAX = 0.08
 BANK_DESIGN = {"motorway": (110.0, 0.10), "trunk": (90.0, 0.12)}     # km/h, side friction
 BANK_LINK = (60.0, 0.16)                                              # their slip roads
-BANK_STENCIL_M = 12.0       # the curve's circle through the points this far either side
-BANK_RUNOFF_M = 18.0
+BANK_STENCIL_M = 50.0       # the curve's mean curvature over this far either side (map lines turn at vertices ~100 m
+                            # apart on rural interstates: 12 m saw a bump at each, Discord 2026-10-28)
+BANK_RUNOFF_M = 60.0        # (AASHTO's runoff for 6-8 % at 70 mph: 200-300 ft)
 BANK_FADE_M = 30.0
 
 

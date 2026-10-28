@@ -1287,7 +1287,7 @@ fn measure_row32(line: PyReadonlyArray2<f64>, keys: PyReadonlyArray1<i64>, first
 /// cutting's wall (an up cut side, wall_flat deep: under the retaining wall's top) no other road at another level counts
 /// at all: the terrain's 2 m lattice drew the step as teeth in front of the wall where a street above came near it.
 /// grading.bank: a road's cross slope at each vertex of its centreline xy (n, 2) (m per m toward its left; a curve
-/// leaning into its turn), by the curve's radius R (the circle through the points about `stencil` m either side):
+/// leaning into its turn), by the curve's radius R (its mean curvature, the turning over `stencil` m either side):
 /// e = e_max x min(1, r_min / R), left out under 0.01 (a gentle bend keeps its crown), then a running mean over
 /// `runoff` m (the bank comes in gradually) and faded to 0 over `fade_a` / `fade_b` m at the first / last vertex
 /// (0: none; a bridge's deck or a tunnel's floor is level there). After BeamNG's Hero Road editor (its bank runoff and
@@ -1306,21 +1306,26 @@ fn bank_profile<'py>(py: Python<'py>, xy: PyReadonlyArray2<'py, f64>, e_max: f64
     for i in 1..n {
         arc[i] = arc[i - 1] + (xy[[i, 0]] - xy[[i - 1, 0]]).hypot(xy[[i, 1]] - xy[[i - 1, 1]]);
     }
+    // the road's turning (radians) summed along it to each vertex: a map line draws a curve as straight pieces turning
+    // at their vertices, ~100 m apart on a rural interstate, and a circle through points 12 m apart saw 8 % at each
+    // vertex and none between, a row of bumps (I-80 in Wyoming, Discord 2026-10-28); the mean curvature over
+    // `stencil` m either side spreads each vertex's turn over its pieces
+    let mut turn = vec![0.0f64; n];
+    for i in 1..n - 1 {
+        let (ax, ay) = (xy[[i, 0]] - xy[[i - 1, 0]], xy[[i, 1]] - xy[[i - 1, 1]]);
+        let (bx, by) = (xy[[i + 1, 0]] - xy[[i, 0]], xy[[i + 1, 1]] - xy[[i, 1]]);
+        let d = if ax.hypot(ay) < 1e-9 || bx.hypot(by) < 1e-9 { 0.0 } else { (ax * by - ay * bx).atan2(ax * bx + ay * by) };
+        turn[i] = turn[i - 1] + d;      // (> 0 turning left)
+    }
+    turn[n - 1] = turn[n - 2];
     let (mut j, mut k) = (0usize, 0usize);
     for i in 0..n {
-        while j + 1 < i && arc[i] - arc[j + 1] >= stencil { j += 1; }
+        while j + 1 <= i && arc[i] - arc[j + 1] >= stencil { j += 1; }
         if k < i { k = i; }
         while k + 1 < n && arc[k] - arc[i] < stencil { k += 1; }
-        if j >= i || k <= i { continue; }
-        let (ax, ay) = (xy[[j, 0]] - xy[[i, 0]], xy[[j, 1]] - xy[[i, 1]]);
-        let (bx, by) = (xy[[k, 0]] - xy[[i, 0]], xy[[k, 1]] - xy[[i, 1]]);
-        let la = ax.hypot(ay);
-        let lb = bx.hypot(by);
-        let lc = (bx - ax).hypot(by - ay);
-        if la < 1e-6 || lb < 1e-6 || lc < 1e-6 { continue; }
-        // the signed curvature of the circle through j, i, k: > 0 turning left (from j through i to k)
-        let cross = (xy[[i, 0]] - xy[[j, 0]]) * (xy[[k, 1]] - xy[[i, 1]]) - (xy[[i, 1]] - xy[[j, 1]]) * (xy[[k, 0]] - xy[[i, 0]]);
-        let kappa = 2.0 * cross / (la * lb * lc);
+        let span = arc[k] - arc[j];
+        if span < stencil { continue; }     // (a piece shorter than the window: its ends lean on nothing)
+        let kappa = (turn[(k - 1).max(j)] - turn[j]) / span;     // (the vertices strictly inside)
         let rad = 1.0 / kappa.abs().max(1e-12);
         let ee = e_max * (r_min / rad).min(1.0);
         if ee >= 0.01 {

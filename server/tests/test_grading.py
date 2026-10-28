@@ -79,6 +79,24 @@ class BankTest(unittest.TestCase):
         z = grading.grade_points(pts[:, 0], pts[:, 1], np.full(2, 50.0), [plan])
         self.assertAlmostEqual(float(z[1] - z[0]), -mid * 8.0, places=1)
 
+    def test_a_curve_of_long_chords_is_banked_evenly(self):
+        # a map line draws a curve as straight pieces turning at vertices ~100 m apart (I-80 in Wyoming, Discord
+        # 2026-10-28: "a series of bumps where the bank would be"): the bank holds through the curve, not one per vertex
+        r = 600.0
+        th = np.arange(0.0, 1.2, 100.0 / r)
+        verts = np.stack([r * np.sin(th), r - r * np.cos(th)], axis=1)
+        xy = [verts[0]]
+        for a, b in zip(verts[:-1], verts[1:]):        # (resampled every 2 m, as the plans are)
+            k = max(1, int(np.hypot(*(b - a)) // 2.0))
+            xy.extend(a + (b - a) * (t / k) for t in range(1, k + 1))
+        xy = np.asarray(xy)
+        b = grading.bank(xy, roads.Spec(11.0, "paved", False, "motorway"), ext=(1, 1))
+        arc = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
+        body = b[(arc > 150.0) & (arc < arc[-1] - 150.0)]
+        self.assertGreater(len(body), 50)
+        self.assertLess(float(body.max() - body.min()), 0.012)       # (it was 0 % between vertices, 8 % at them)
+        self.assertLess(float(body.max()), -0.05)
+
     def test_straight_and_city_streets_level(self):
         xy = np.stack([np.arange(0, 300, 2.0), np.zeros(150)], axis=1)
         self.assertIsNone(grading.bank(xy, roads.Spec(11.0, "paved", False, "motorway"), ext=(1, 1)))
