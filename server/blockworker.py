@@ -292,9 +292,19 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None,
                         ll = np.asarray(f.lonlat)
                         over += int(((ll[:, 0] >= lo0) & (ll[:, 0] <= lo1) & (ll[:, 1] >= la0) & (ll[:, 1] <= la1)).sum())
                 if over:
-                    log.warning("block (%s, %s, %s): %d road points in it from %d cells (%s), none painted", aid, cx,
-                                cy, over, len(road_feats), ", ".join("none" if f is None else str(len(f))
-                                                                     for f in road_feats))
+                    import roads as roadsmod
+                    n_spec = n_ground = 0               # (which step lost them: no spec, or no ground part)
+                    for f in road_feats:
+                        if f is None or not len(f):
+                            continue
+                        specs = roadsmod.road_specs(f, _s.surface.urban, _s.widths)
+                        for i in range(len(f)):
+                            if specs[i] is not None:
+                                n_spec += 1
+                                n_ground += len(roadsmod.ground_parts(f, i)) > 0
+                    log.warning("block (%s, %s, %s): %d road points in it from %d cells (%s), none painted; %d with a "
+                                "spec, %d with ground parts", aid, cx, cy, over, len(road_feats),
+                                ", ".join("none" if f is None else str(len(f)) for f in road_feats), n_spec, n_ground)
         idx = (surfacemod.paint_lots(idx, keep["lat"], keep["lon"], _s.surface.lots(keep["lat"], keep["lon"]))
             if hasattr(_s.surface, "lots") else idx)
         if hasattr(_s.surface, "fuel_pads"):    # gas station forecourts (--gas-stations on)
