@@ -221,7 +221,9 @@ class BridgeTest(unittest.TestCase):
         flat = np.abs(n[:, 2]) > 0.5
         c = P[T].mean(1)
         high = c[:, 2] > 20.0 + 0.04 * c[:, 0] - roadmesh.DECK_DEPTH / 2   # the top rises 20 -> 22 m
-        self.assertTrue((n[flat & high, 2] > 0).all() and (flat & high).any(), "the top faces up")
+        # (the parapets are closed solids since 2026-10-27: their undersides, on the slab's edge, face down)
+        road = np.abs(c[:, 1]) < 4.0
+        self.assertTrue((n[flat & high & road, 2] > 0).all() and (flat & high & road).any(), "the top faces up")
         self.assertTrue((n[flat & ~high, 2] < 0).all() and (flat & ~high).any(), "the underside faces down")
         self.assertAlmostEqual(P[:, 2].max(), 22.0 + roadmesh.PARAPET_H, msg="a parapet on each edge")
         self.assertAlmostEqual(P[:, 2].min(), 20.0 - roadmesh.DECK_DEPTH - roadmesh.GIRDER_D, msg="girders under it")
@@ -412,7 +414,8 @@ class BridgeProfilesTest(unittest.TestCase):
         hi_xy, hi_z = got["high"]
         zl = lo_z[int(np.argmin(np.abs(lo_xy[:, 0])))]
         zh = hi_z[int(np.argmin(np.abs(hi_xy[:, 1])))]
-        self.assertGreaterEqual(zh - zl, roads.DECK_ROAD_CLEAR - 0.6, (zl, zh))
+        # (the upper deck's own depth: roads.deck_depth of its span)
+        self.assertGreaterEqual(zh - zl, roads.deck_road_clear(bp.depth_of("high")) - 0.6, (zl, zh))
 
     def test_short_bridge_no_wall_and_splits_merge(self):
         import roads

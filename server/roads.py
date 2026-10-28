@@ -1598,9 +1598,13 @@ def deck_profile(lines, ground_fn, crossings=(), clear=None, grade=None, lift=No
     over = _deck_crossings(lines)
     stacks = _deck_stacks(lines, levels, widths) if widths is not None else []
     if not over and not stacks:
-        return _merge_overlaps(lines, zs, widths, levels, pins=pins) if widths is not None else zs
+        zs = _merge_overlaps(lines, zs, widths, levels, pins=pins) if widths is not None else zs
+        return _ease(lines, zs, ground_fn, lift) if bridge_profile_mode() == "curve" else zs
     arcs = [np.r_[0.0, np.cumsum(np.hypot(*np.diff(ln[:, :2], axis=0).T))] for ln in lines]
-    for _ in range(4):
+    # curve mode: one round. Its grades carry a requirement along the line to the parts joined to it whatever their
+    # level, so a ramp under the upper deck rose with it and lifted it again each round (the Morrison Bridge 21 ->
+    # 41 m over the Willamette, 2026-10-19)
+    for _ in range(1 if bridge_profile_mode() == "curve" else 4):
         extra = []
         for i, j, si, sj in over:
             if levels[i] == levels[j]:
@@ -1617,7 +1621,8 @@ def deck_profile(lines, ground_fn, crossings=(), clear=None, grade=None, lift=No
             zs = new
             break
         zs = new
-    return _merge_overlaps(lines, zs, widths, levels, pins=pins) if widths is not None else zs
+    zs = _merge_overlaps(lines, zs, widths, levels, pins=pins) if widths is not None else zs
+    return _ease(lines, zs, ground_fn, lift) if bridge_profile_mode() == "curve" else zs
 
 
 STACK_STEP_M = 16.0     # m between the points where an upper deck must clear the one under it (_deck_stacks)
@@ -1643,6 +1648,10 @@ def _deck_stacks(lines, levels, widths, step=STACK_STEP_M):
             reach = (float(widths[i]) + float(widths[j])) / 2
             if (hi_b[i] + reach < lo_b[j]).any() or (hi_b[j] + reach < lo_b[i]).any():
                 continue
+            # over it means over at least half the narrower deck: two carriageways side by side that the map gives
+            # different layers touch edge to edge (the Vincent Thomas Bridge's, 8.5 m apart, 11.8 m wide: the upper
+            # was lifted 10 m over its twin, 2026-10-27)
+            reach -= 0.5 * min(float(widths[i]), float(widths[j]))
             s = np.arange(0.0, arcs[i][-1], step)
             q = np.c_[np.interp(s, arcs[i], pts[i][:, 0]), np.interp(s, arcs[i], pts[i][:, 1])]
             P, ab = pts[j][:-1], np.diff(pts[j], axis=0)
@@ -1704,10 +1713,48 @@ WATER_CAUSEWAY_M = 1500.0
 WATER_CAUSEWAY_CLEAR = 5.0
 WATER_STEP_M = 16.0         # m between a wet run's clearance points
 NAV_RUN_M = 100.0           # a wet run this long takes the bridge's navigation clearance (NBI item 39)
+GAP_DIP_M = 2.0             # BridgeProfiles._gap: the chain's lowest ground this far under its highest end, ...
+GAP_LOW_M = 1.5             # ... the stretch within this of it is the water
+GAP_SEA_M = 1.0             # ... and at most this high (a river at sea level)
+
+
+def _curve_grade(lines, zs):
+    """The steepest grade (rise / run) between consecutive points of any part of a deck profile. Pure."""
+    g = 0.0
+    for ln, z in zip(lines, zs):
+        if len(ln) < 2:
+            continue
+        run = np.maximum(np.hypot(*np.diff(np.asarray(ln, np.float64)[:, :2], axis=0).T), 0.5)
+        g = max(g, float(np.max(np.abs(np.diff(np.asarray(z, np.float64))) / run)))
+    return g
+
+
+def _end_step(lines, zs):
+    """The steepest grade of a deck's first or last segment at a free end (an abutment: no other part ends within
+    0.75 m), where a curve that cannot meet its end leaves a step. Pure."""
+    ends = [np.asarray(ln, np.float64)[k, :2] for ln in lines for k in (0, -1)]
+    g = 0.0
+    for ln, z in zip(lines, zs):
+        ln = np.asarray(ln, np.float64)
+        if len(ln) < 2:
+            continue
+        for a, b in ((0, 1), (-1, -2)):
+            if sum(np.hypot(*(e - ln[a, :2])) < 0.75 for e in ends) > 1:
+                continue
+            run = max(float(np.hypot(*(ln[b, :2] - ln[a, :2]))), 0.5)
+            g = max(g, abs(float(z[b]) - float(z[a])) / run)
+    return g
+
+
+def _curve_crossings(crossings, n_road=None, levels=None):
+    """deck_profile_once's crossings for deck_curve: (part, arc, height under it, its clearance or None). A
+    deck-over-deck requirement holds on the upper part itself (deck_curve applies a requirement where it is, not
+    falling along the chain, so it never reaches the lower deck). Pure."""
+    return [(cr[0], cr[1], cr[2], cr[3] if len(cr) > 3 else None) for cr in crossings]
 
 
 def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, lift=None, n_road=None, levels=None,
-                      pins=None):
+                      pins=None, curve=True):
     """Deck heights (one array per part) of a bridge chain: deck_heights between the abutments, at
     least `lift` over the ground under it, and at least `clear` over each crossing road below
     ((part index, arc m, road height)), the requirement falling at `grade` along the chain; then
@@ -1717,6 +1764,18 @@ def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, li
     clear = DECK_ROAD_CLEAR if clear is None else clear
     grade = DECK_GRADE if grade is None else grade
     lift = DECK_CLEAR if lift is None else lift
+    # (curve mode for a deck that clears something; one over nothing but the ground keeps the ground envelope's rounded
+    # crest: Lombard Street, Baltimore's deck over its embankment, test_no_step_onto_a_steep_abutment)
+    if curve and lines and bridge_profile_mode() == "curve" and len(crossings):
+        got = deck_curve(lines, ground_fn, _curve_crossings(crossings, n_road, levels), (), clear, lift)
+        if got is not None:
+            g = _curve_grade(lines, got)
+            if g <= DECK_STEEP_GRADE or _end_step(lines, got) <= DECK_STEEP_GRADE:
+                return got
+            # (a curve steeper than that may not meet its ends: a "bridge" mapped along a hillside stepped 40 m at
+            # its abutment, GitHub #382 near Tata. The ground envelope's profile when it is the gentler one)
+            old = deck_profile_once(lines, ground_fn, crossings, clear, grade, lift, n_road, levels, pins, False)
+            return got if not old or _end_step(lines, got) <= _end_step(lines, old) + 0.05 else old
     zs = deck_heights(lines, ground_fn, pins)
     if not zs:
         return zs
@@ -1832,6 +1891,529 @@ def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, li
 
 
 DECK_CREST_R = 60.0     # m: the ground under a deck is its floor rounded to vertical curves this wide (deck_profile_once)
+# ---- clearance-aware deck profile ----------------------------------------------------------------------
+# 2026-10-18 (a user in Portland, OR): decks came out as "two flat pieces of road joined in the middle with slight
+# up, then down slopes": deck_heights' straight line between abutments, a 5 % tent where a road crosses
+# under, smoothed. deck_curve plans the deck as a road designer would: grades of DECK_DESIGN_GRADE up to
+# whatever must be cleared beneath (never steeper than DECK_MAX_GRADE from an abutment), joined by parabolic vertical
+# curves (one moving average of a piecewise-linear profile), the whole simple chain solved as one line.
+# BNE_BRIDGE_PROFILE=legacy (earthd --bridge-profile legacy) brings the old profile back for comparison.
+DECK_CURVE_K = 1500.0   # m of vertical curve per unit of grade change (15 m per %)
+DECK_CURVE_MIN = 16.0   # m, shortest vertical curve
+DECK_CURVE_KMIN = 260.0 # m per unit grade change at least: under 2 % of grade change between 4 m deck points
+DECK_ROAD_HALF = 8.0    # m either side of a crossing road's centreline the clearance is held
+DECK_CURVE_STEP = 1.0   # m, the profile's working grid
+DECK_DESIGN_GRADE = 0.05  # a deck climbs to (and leaves) what it must clear at this grade (DECK_MAX_GRADE at most)
+APPROACH_GRADE = 0.08  # m/m: the approach road's grade read from the ground 12 m past an abutment, at most
+
+
+def bridge_profile_mode():
+    """'curve' (default) or 'legacy', from BNE_BRIDGE_PROFILE (set by earthd --bridge-profile)."""
+    return "legacy" if os.environ.get("BNE_BRIDGE_PROFILE", "curve").lower() == "legacy" else "curve"
+
+
+def _upper_hull(s, z):
+    """Indices of the least concave majorant's vertices of points (s ascending, z). Pure."""
+    h = []
+    for i in range(len(s)):
+        while len(h) >= 2:
+            a, b = h[-2], h[-1]
+            if (s[b] - s[a]) * (z[i] - z[a]) - (z[b] - z[a]) * (s[i] - s[a]) >= 0:
+                h.pop()
+            else:
+                break
+        h.append(i)
+    return h
+
+
+def _simple_path(lines):
+    """[(edge index, reversed)] in order along the chain if the parts form one open path, else None."""
+    nodes, edges, adj = _chain_graph(lines)
+    deg = np.zeros(len(nodes), int)
+    for a, b, _ in edges:
+        deg[a] += 1
+        deg[b] += 1
+    ends = np.flatnonzero(deg == 1)
+    if len(ends) != 2 or deg.max() > 2 or len(edges) != len(nodes) - 1:
+        return None
+    at, used, order = int(ends[0]), set(), []
+    while len(order) < len(edges):
+        for k, (a, b, _) in enumerate(edges):
+            if k in used or at not in (a, b):
+                continue
+            used.add(k)
+            order.append((k, at == b and a != b))
+            at = a if at == b else b
+            break
+        else:
+            return None
+    return order
+
+
+CHORD_KINK = 0.02       # curve_profile keeps the straight line between abutments meeting the approaches within this grade
+CHORD_SHELF_M = 1.0     # m
+CHORD_TOL = 0.35        # m a requirement may go short: 0.21 m of it margins, 6 m headroom to 5.86 m at worst
+
+
+def _chord(s, g, need, z0, zL, g0, gL, max_grade, cap=None):
+    """curve_profile's straight line or single parabola between the abutments (see there), or None. Pure."""
+    L = float(s[-1])
+    if L <= 0:
+        return None
+    t = s / L
+    line = z0 + (zL - z0) * t
+    gl = (zL - z0) / L
+    if abs(gl) > max_grade:
+        return None
+    p = 4.0 * t * (1.0 - t)
+    # (where the ground stands within CHORD_SHELF_M of it, an abutment's shelf, nothing under it is to be cleared: the
+    # crossing's +-DECK_CLEAR_REACH_M corridor reached over the abutments of a 24 m overpass)
+    on = g >= line - CHORD_SHELF_M
+    shelf = (np.cumsum(~on) == 0) | (np.cumsum((~on)[::-1])[::-1] == 0)     # (from each end, while on it)
+    if shelf.all():
+        shelf[:] = False
+    short = np.maximum(np.where(shelf, -np.inf, need - CHORD_TOL - line), g - line)
+    h = 0.0
+    inner = p > 1e-6
+    if (short[~inner] > 1e-6).any():
+        return None
+    if (short[inner] > 0).any():
+        h = float(np.max(short[inner] / p[inner]))
+    # its grade out of each abutment, against the approach's there
+    if abs(gl + 4.0 * h / L - g0) > CHORD_KINK or abs(gl - 4.0 * h / L - gL) > CHORD_KINK             or 4.0 * h / L > CHORD_KINK or abs(gl) + 4.0 * h / L > max_grade:
+        return None
+    z = line + h * p
+    if cap is not None and not bool(np.all(z <= np.asarray(cap) + 1e-6)):
+        return None
+    return z
+
+
+def curve_profile(s, g, req, z0, zL, g0=0.0, gL=0.0, max_grade=None, lift=None, iters=20, cap=None):
+    """One deck line's heights on a uniform grid s (0..L): from z0 to zL (the abutments), meeting the
+    approach grades g0 (dz/ds just before s=0) and gL (just after L); at least req (the clearances) where
+    the grade cap lets it, reached and left at DECK_DESIGN_GRADE (no steeper than max_grade from either end), joined by parabolic
+    vertical curves; never below g + lift nor the straight line between the abutments; under cap (m, per point: a
+    junction at grade's) where given. Pure."""
+    max_grade = DECK_MAX_GRADE if max_grade is None else max_grade
+    lift = DECK_CLEAR if lift is None else lift
+    s = np.asarray(s, np.float64)
+    L = s[-1]
+    floor = np.asarray(g, np.float64) + lift
+    req = np.maximum(np.asarray(req, np.float64), floor)
+    cap = np.minimum(np.minimum(z0 + max_grade * s, zL + max_grade * (L - s)),
+                     np.inf if cap is None else cap)        # (and under a junction at grade's own cap)
+    line = z0 + (zL - z0) * s / max(L, 1e-9)    # never under the straight line between the abutments
+    # the straight line between the abutments, or one parabola over it rising at most CHORD_KINK more steeply out of
+    # each abutment, when that clears everything (the requirements within CHORD_TOL: they carry 0.21 m of margin;
+    # the ground itself, which it may rest on) and meets both approaches within CHORD_KINK. The curve's floor stood
+    # DECK_CLEAR over the approach ground beside each abutment and its smoothing crowned a 24 m overpass by 0.2-0.3 m
+    # (I-275 by the Sunshine Skyway, 2026-10-27: "it just has a HUMP in the middle that's not necessary")
+    chord = _chord(s, np.asarray(g, np.float64), np.asarray(req, np.float64) - lift, z0, zL, g0, gL, max_grade, cap)
+    if chord is not None:
+        return chord
+    want = np.minimum(np.maximum(req, line), cap)
+    want[0], want[-1] = z0, zL
+    step = L / max(len(s) - 1, 1)
+    # every curve length from long to the shortest allowed: of those holding the clearance (within 5 cm)
+    # the one that rises least above what is needed (a long curve over a short clearance stretch had to
+    # be lifted 14 m over the Fremont Bridge's 58 m), else the one falling least short
+    best = None
+    for kf in (1.0, 0.5, 0.25, 0.12, 0.067):
+        z = _curve_try(s, want, cap, z0, zL, g0, gL, step, L, DECK_CURVE_K * kf, iters)
+        short = float(np.max(want - z))
+        over = float(np.max(z) - np.max(want))
+        key = (0, over) if short <= 0.05 else (1, short)
+        if best is None or key < best[0]:
+            best = (key, z)
+    z = best[1].copy()
+    return _lift_smooth(s, z, floor)                # the abutments stay on the approach road
+
+
+def _tents(s, z, grade):
+    """max over points i of z_i - grade * |s - s_i|: every requirement reached at `grade` and left at it
+    (the deck rides low where nothing is under it, then climbs to what it must clear). Pure."""
+    ds = np.diff(s)
+    f = np.array(z, np.float64)
+    for i in range(1, len(f)):
+        f[i] = max(f[i], f[i - 1] - grade * ds[i - 1])
+    b = np.array(z, np.float64)
+    for i in range(len(b) - 2, -1, -1):
+        b[i] = max(b[i], b[i + 1] - grade * ds[i])
+    return np.maximum(f, b)
+
+
+def _curve_try(s, want, cap, z0, zL, g0, gL, step, L, K, iters):
+    raise_ = np.zeros(len(s))
+    z = want
+    for _ in range(iters):
+        pts = want + raise_
+        pts[0], pts[-1] = z0, zL
+        hull = np.minimum(_tents(s, pts, DECK_DESIGN_GRADE), cap)
+        gr = np.diff(hull) / np.maximum(np.diff(s), 1e-9)
+        # the whole crest's change (close hull corners act as one curve), or an end's
+        A = max(float(np.max(gr) - np.min(gr)), abs(gr[0] - g0), abs(gr[-1] - gL))
+        W = float(np.clip(K * A, max(DECK_CURVE_MIN, DECK_CURVE_KMIN * A), max(DECK_CURVE_MIN, 0.8 * L)))
+        n = max(int(round(W / step)) | 1, 1)
+        r = n // 2
+        ext = np.r_[z0 - g0 * step * np.arange(r, 0, -1), hull, zL + gL * step * np.arange(1, r + 1)]
+        sm = np.convolve(ext, np.ones(n) / n, mode="valid") if r else hull.copy()
+        sm = sm + (z0 - sm[0]) + ((zL - sm[-1]) - (z0 - sm[0])) * (s / max(L, 1e-9))
+        z = sm
+        short = want - z
+        short[0] = short[-1] = 0.0
+        if short.max() <= 0.02:
+            break
+        raise_ += np.maximum(short, 0.0)
+    return z
+
+
+def _path_curve(lines, order, ground_fn, crossings, spans, clear, lift, max_grade, ends=(None, None)):
+    """curve_profile along one path of parts (order: [(part, reversed)]). ends: per end None (an abutment:
+    the ground's height, the approach grade from the ground beyond it) or (z, grade dz/ds arriving) (a
+    junction with a part already solved). Returns {part: heights}, the path's polyline (m, 2), its grid s,
+    heights z. None if degenerate."""
+    pts, off, info = [], 0.0, {}
+    for k, rev in order:
+        ln = np.asarray(lines[k], np.float64)[:, :2]
+        a = np.r_[0.0, np.cumsum(np.hypot(*np.diff(ln, axis=0).T))]
+        info[k] = (off, rev, a)
+        seq = ln[::-1] if rev else ln
+        pts.append(seq if not pts else seq[1:])
+        off += a[-1]
+    P = np.concatenate(pts)
+    S = np.r_[0.0, np.cumsum(np.hypot(*np.diff(P, axis=0).T))]
+    L = S[-1]
+    if L < 1.0 or len(P) < 2:
+        return None
+    n = max(int(math.ceil(L / DECK_CURVE_STEP)), 2)
+    s = np.linspace(0.0, L, n + 1)
+    xy = np.c_[np.interp(s, S, P[:, 0]), np.interp(s, S, P[:, 1])]
+
+    def to_s(k, arc):
+        o, rev, a = info[k]
+        return o + (a[-1] - arc if rev else arc)
+    t0 = (P[0] - P[1]) / max(np.hypot(*(P[0] - P[1])), 1e-9)
+    t1 = (P[-1] - P[-2]) / max(np.hypot(*(P[-1] - P[-2])), 1e-9)
+    out_pts = np.array([P[0] + t0 * 12.0, P[-1] + t1 * 12.0])
+    gz = np.asarray(ground_fn(np.r_[xy, out_pts]), np.float64)
+    g, go = gz[:len(s)], gz[len(s):]
+    if ends[0] is None:
+        z0, g0 = float(g[0]), float(np.clip((g[0] - go[0]) / 12.0, -APPROACH_GRADE, APPROACH_GRADE))
+    else:
+        z0, g0 = ends[0]
+    if ends[1] is None:
+        zL, gL = float(g[-1]), float(np.clip((go[1] - g[-1]) / 12.0, -APPROACH_GRADE, APPROACH_GRADE))
+    else:
+        zL, gL = ends[1]
+    req = g + lift
+    junction = np.full(len(s), np.inf)
+    for cr in crossings:
+        k, arc, zc = cr[:3]
+        own = len(cr) > 3 and cr[3] is not None
+        cl = cr[3] if own else clear
+        if k in info:
+            sc = to_s(k, arc)
+            # a road by an abutment the deck cannot get AT_GRADE_M over is a junction at grade (the intersection a
+            # ramp climbs from: deck_profile_once's rule): no requirement, the deck leaves the road's height
+            d_end = min(sc if ends[0] is None else np.inf, L - sc if ends[1] is None else np.inf)
+            if not own and d_end <= AT_GRADE_REACH_M and                     min(z0, zL) + DECK_MAX_GRADE * d_end < zc + AT_GRADE_M:
+                junction = np.minimum(junction, zc + DECK_MAX_GRADE * np.abs(s - sc))
+                continue
+            # (upstream's full-headroom corridor, DECK_CLEAR_REACH_M either side, and the curve's 5 cm acceptance
+            # taken up front: the corridor came out 4 cm short, test_bridge_clearance)
+            m = np.abs(s - sc) <= max(DECK_ROAD_HALF, DECK_CLEAR_REACH_M if not own else 0.0)
+            req[m] = np.maximum(req[m], zc + cl + (0.06 if not own else 0.0))
+    for k, a0, a1, zmin in spans:
+        if k in info:
+            x0, x1 = sorted((to_s(k, a0), to_s(k, a1)))
+            m = (s >= x0) & (s <= x1)
+            req[m] = np.maximum(req[m], zmin)
+    z = curve_profile(s, g, req, z0, zL, g0, gL, max_grade, lift, cap=junction)
+    out = {}
+    for k, rev in order:
+        o, r, a = info[k]
+        out[k] = np.interp(o + (a[-1] - a if r else a), s, z)
+    return out, xy, s, z
+
+
+def deck_curve(lines, ground_fn, crossings=(), spans=(), clear=None, lift=None, max_grade=None):
+    """Deck heights (one array per part) of a bridge chain by curve_profile. A chain of parts in one line is
+    solved as one profile; a branched chain (ramps leaving a viaduct) as its longest abutment-to-abutment
+    line first, then each remaining branch from the solved deck it leaves (its height and grade there) to
+    its own abutment or the deck it rejoins. None when the chain has no abutment (a closed loop). crossings:
+    (part, arc m, height under it[, its own clearance]) roads and water under it (held `clear`, or their own
+    clearance, over +-DECK_ROAD_HALF); spans: (part, arc from, arc to, min deck height). Pure given ground_fn."""
+    clear = DECK_ROAD_CLEAR if clear is None else clear
+    lift = DECK_CLEAR if lift is None else lift
+    if not lines:
+        return None
+    args = (ground_fn, crossings, spans, clear, lift, max_grade)
+    order = _simple_path(lines)
+    if order is not None:
+        got = _path_curve(lines, order, *args)
+        return None if got is None else [got[0][k] for k in range(len(lines))]
+    nodes, edges, adj = _chain_graph(lines)
+    # parts not joined at all (a chain also holds the decks crossing it, solved together for the deck-over-deck
+    # rule): each joined group on its own (2026-10-19: one crossing deck sent a whole interchange to the legacy
+    # profile)
+    comp = list(range(len(nodes)))
+
+    def find(a):
+        while comp[a] != a:
+            comp[a] = comp[comp[a]]
+            a = comp[a]
+        return a
+    for a, b, _ in edges:
+        comp[find(a)] = find(b)
+    groups = {}
+    for k, (a, _, _) in enumerate(edges):
+        groups.setdefault(find(a), []).append(k)
+    if len(groups) > 1:
+        out = [None] * len(lines)
+        for ks in groups.values():
+            idx = {k: i for i, k in enumerate(ks)}
+            sub = deck_curve([lines[k] for k in ks], ground_fn,
+                             [(idx[cr[0]],) + tuple(cr[1:]) for cr in crossings if cr[0] in idx],
+                             [(idx[k], a0, a1, z) for k, a0, a1, z in spans if k in idx], clear, lift, max_grade)
+            if sub is None:
+                sub = deck_profile_once([lines[k] for k in ks], ground_fn,
+                                        [(idx[cr[0]],) + tuple(cr[1:]) for cr in crossings if cr[0] in idx], clear, None, lift)
+                if bridge_profile_mode() == "curve" and sub is not None and any(
+                        s is None for s in sub):
+                    return None
+            for k, z in zip(ks, sub):
+                out[k] = z
+        return out
+    deg = np.zeros(len(nodes), int)
+    inc = [[] for _ in nodes]
+    for k, (a, b, _) in enumerate(edges):
+        deg[a] += 1
+        deg[b] += 1
+        inc[a].append(k)
+        inc[b].append(k)
+    abut = [i for i in range(len(nodes)) if deg[i] == 1]
+    if not abut:
+        return None
+    out = [None] * len(lines)
+    solved = {}                                 # node -> (z, [(unit tangent arriving, grade along it)])
+
+    def walk(start, done_edges, stop):
+        """Longest path from start through edges not in done_edges, ending at an abutment or a solved node
+        (stop): [(edge, reversed)] (Dijkstra on lengths, the farthest such end)."""
+        import heapq
+        dist, prev = {start: 0.0}, {}
+        q = [(0.0, start)]
+        while q:
+            d, u = heapq.heappop(q)
+            if d > dist.get(u, np.inf):
+                continue
+            if u != start and stop(u):
+                continue
+            for k in inc[u]:
+                if k in done_edges:
+                    continue
+                a, b, s = edges[k]
+                v = b if u == a else a
+                if d + s[-1] < dist.get(v, np.inf):
+                    dist[v] = d + s[-1]
+                    prev[v] = (u, k)
+                    heapq.heappush(q, (d + s[-1], v))
+        ends = [v for v in dist if v != start and stop(v)]
+        if not ends:
+            return None
+        v = max(ends, key=lambda x: dist[x])
+        path = []
+        while v != start:
+            u, k = prev[v]
+            path.append((k, edges[k][0] != u))
+            v = u
+        return path[::-1]
+
+    def record(order, s, z, xy):
+        """The solved path's nodes: their heights and the tangents / grades arriving there both ways."""
+        node_s = 0.0
+        seq = []
+        for k, rev in order:
+            a, b, es = edges[k]
+            seq.append((a if not rev else b, node_s))
+            node_s += es[-1]
+        last_k, last_rev = order[-1]
+        seq.append((edges[last_k][1] if not last_rev else edges[last_k][0], node_s))
+        gr = np.gradient(z, s)
+        tg = np.gradient(xy, s, axis=0)
+        for nd, sn in seq:
+            j = int(np.clip(np.searchsorted(s, sn), 0, len(s) - 1))
+            t = tg[j] / max(np.hypot(*tg[j]), 1e-9)
+            zz, lst = solved.get(nd, (float(np.interp(sn, s, z)), []))
+            lst += [(t, float(gr[j])), (-t, -float(gr[j]))]
+            solved[nd] = (zz, lst)
+
+    def end_of(node, direction):
+        """(z, grade arriving) for a path leaving / reaching a solved node in this unit direction."""
+        z, lst = solved[node]
+        t, gr = max(lst, key=lambda tg: float(np.dot(tg[0], direction)))
+        return (z, gr)
+
+    # the trunk: of the abutment-to-abutment paths, the one carrying the highest requirement (the span over the
+    # river: solved first, so a branch never pins it low), then the longest. (2026-10-19: the Crescent City
+    # Connection's river decks were branches of a longer, low line through the approaches and stayed 17 m up)
+    need = {}
+    for cr in crossings:
+        k, zc = cr[0], cr[2]
+        cl = cr[3] if len(cr) > 3 and cr[3] is not None else clear
+        need[k] = max(need.get(k, -np.inf), zc + cl)
+    for k, _, _, zmin in spans:
+        need[k] = max(need.get(k, -np.inf), zmin)
+    best = None
+    for a0 in abut:
+        for a1 in abut:
+            if a1 <= a0:
+                continue
+            p = walk(a0, set(), lambda v, a1=a1: v == a1)
+            if p is None:
+                continue
+            L = sum(edges[k][2][-1] for k, _ in p)
+            top = max((need.get(k, -np.inf) for k, _ in p), default=-np.inf)
+            key = (top if np.isfinite(top) else -1e9, L)
+            if best is None or key > best[0]:
+                best = (key, p)
+    if best is None:
+        return None
+    done = set()
+    todo = [best[1]]
+    first = True
+    while todo:
+        order = todo.pop()
+        k0, r0 = order[0]
+        start = edges[k0][1] if r0 else edges[k0][0]
+        kl, rl = order[-1]
+        end = edges[kl][0] if rl else edges[kl][1]
+        e0 = e1 = None
+        if not first:
+            ln0 = np.asarray(lines[k0], np.float64)[:, :2]
+            ln0 = ln0[::-1] if r0 else ln0
+            d0 = (ln0[1] - ln0[0]) / max(np.hypot(*(ln0[1] - ln0[0])), 1e-9)
+            e0 = end_of(start, d0)
+            if end in solved:
+                lnl = np.asarray(lines[kl], np.float64)[:, :2]
+                lnl = lnl[::-1] if rl else lnl
+                d1 = (lnl[-1] - lnl[-2]) / max(np.hypot(*(lnl[-1] - lnl[-2])), 1e-9)
+                z1, g1 = end_of(end, d1)
+                e1 = (z1, g1)
+        first = False
+        got = _path_curve(lines, order, *args, ends=(e0, e1))
+        for k, _ in order:
+            done.add(k)
+        if got is None:
+            continue
+        res, xy, s, z = got
+        for k, v in res.items():
+            out[k] = v
+        record(order, s, z, xy)
+        if not todo:                            # the next branch: from any solved node with an open edge
+            for nd in list(solved):
+                if any(k not in done for k in inc[nd]):
+                    p = walk(nd, done, lambda v: deg[v] == 1 or v in solved)
+                    if p:
+                        todo.append(p)
+                        break
+    if any(o is None for o in out):             # parts not reached (should not happen): the legacy answer
+        return None
+    return out
+
+
+DECK_EASE_M = 24.0      # m, the moving average run over each part after the merges (deck_profile, curve mode)
+
+
+def _ease(lines, zs, ground_fn, lift=None):
+    """Each part's heights after _merge_overlaps / the deck-over-deck rounds, run through a DECK_EASE_M moving
+    average on a 1 m grid with its end heights kept (a linear correction) and never under the ground + lift:
+    blending a part with its neighbour where their surfaces overlap left 2.5-4.3 % grade changes between deck
+    points (Steel, Broadway, 2026-10-19). Pure given ground_fn."""
+    lift = DECK_CLEAR if lift is None else lift
+    out = []
+    for ln, z in zip(lines, zs):
+        z = np.asarray(z, np.float64)
+        if len(z) < 3 or not np.isfinite(z).all():
+            out.append(z)
+            continue
+        xy = np.asarray(ln, np.float64)[:, :2]
+        s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
+        L = s[-1]
+        n = int(round(DECK_EASE_M))
+        if L < 2 * n:
+            out.append(z)
+            continue
+        g = np.arange(0.0, L + 1e-9, 1.0)
+        zg = np.interp(g, s, z)
+        r = n // 2
+        ext = np.r_[2 * zg[0] - zg[r:0:-1], zg, 2 * zg[-1] - zg[-2:-r - 2:-1]]
+        sm = np.convolve(ext, np.ones(2 * r + 1) / (2 * r + 1), mode="valid")
+        sm = sm + (zg[0] - sm[0]) + ((zg[-1] - sm[-1]) - (zg[0] - sm[0])) * g / L
+        zz = np.interp(s, g, sm)
+        gz = np.asarray(ground_fn(xy), np.float64) + lift
+        zz[0], zz[-1] = z[0], z[-1]
+        out.append(_lift_smooth(s, zz, gz))
+    return out
+
+
+LIFT_GRADE = 0.03       # _lift_smooth: a lift over the ground is run out along the deck at this grade ...
+LIFT_EASE_M = 40.0      # ... and rounded over this many m
+LIFT_END_GRADE = 0.01   # by an abutment the floor rises from the abutment no faster than this
+
+
+def _lift_smooth(s, z, floor, iters=8):
+    """z (heights at arcs s) raised to at least floor between its ends, the lift run out at LIFT_GRADE and rounded
+    over LIFT_EASE_M, not stepped: clamping each point to the ground left a 0.6-0.9 m step in the last few metres
+    where a deck lands on a bank the DEM shows steep (the Steel and St. Johns bridges' ends: 17-31 % between two deck
+    points). The ends keep their heights; whatever the rounding leaves short is clamped last. Pure."""
+    s = np.asarray(s, np.float64)
+    z = np.array(z, np.float64)
+    floor = np.asarray(floor, np.float64)
+    if len(z) < 3 or s[-1] <= 0:
+        z[1:-1] = np.maximum(z[1:-1], floor[1:-1])
+        return z
+    g = np.arange(0.0, s[-1] + 1e-9, 1.0)
+    if g[-1] < s[-1]:
+        g = np.r_[g, s[-1]]
+    zg = np.interp(g, s, z)
+    # within LIFT_EASE_M / 2 of an abutment the floor is no higher than the abutment allows at LIFT_END_GRADE (a bank
+    # the DEM shows over the road's end: the deck lands on the road, not on the bank's top)
+    d0, d1 = g, g[-1] - g
+    cap = np.minimum(np.where(d0 < LIFT_EASE_M / 2, z[0] + LIFT_END_GRADE * d0, np.inf),
+                     np.where(d1 < LIFT_EASE_M / 2, z[-1] + LIFT_END_GRADE * d1, np.inf))
+    fl = np.interp(g, s, floor)
+    fg = np.maximum(np.minimum(fl, cap), fl - DECK_CLEAR)     # (never under the ground itself)
+    r = int(LIFT_EASE_M // 2)
+    inner = np.ones(len(g), bool)
+    inner[0] = inner[-1] = False
+    if not (fg[inner] > zg[inner] + 0.01).any():
+        out = np.array(z)
+        out[1:-1] = np.maximum(out[1:-1], np.interp(s, g, fg)[1:-1])
+        return out
+    want = fg.copy()
+    zz = zg
+    for _ in range(iters):
+        cone = _tents(g, np.where(inner, want, -np.inf), LIFT_GRADE)
+        tgt = np.maximum(zg, cone)
+        ext = np.r_[np.full(r, tgt[0]), tgt, np.full(r, tgt[-1])]
+        zz = np.convolve(ext, np.ones(2 * r + 1) / (2 * r + 1), mode="valid")
+        zz = np.maximum(zz, zg)
+        zz[0], zz[-1] = zg[0], zg[-1]
+        short = np.where(inner, fg - zz, 0.0)
+        if short.max() <= 0.01:
+            break
+        want = want + np.maximum(short, 0.0)
+    zg = zz
+    out = np.interp(s, g, zg)
+    out[0], out[-1] = z[0], z[-1]
+    ff = np.interp(s, g, fg)
+    out[1:-1] = np.maximum(out[1:-1], ff[1:-1])
+    return out
+
+
+
+
 DECK_SIGMA = 12.0       # m, deck profile smoothing (at least) ...
 DECK_SIGMA_SHARE = 25.0  # ... a 25th of the part's length ...
 DECK_SIGMA_MAX = 40.0   # ... at most
@@ -2797,6 +3379,37 @@ DECK_CLEAR = 0.05       # m a deck stays above the ground under it (no z-fightin
 MIN_BRIDGE_HEADROOM_M = 6.0
 BRIDGE_HEADROOM_MARGIN_M = 0.15   # mesh simplification/float and vehicle clearance tolerance
 DECK_ROAD_CLEAR = MIN_BRIDGE_HEADROOM_M + BRIDGE_HEADROOM_MARGIN_M + roadmesh.DECK_DEPTH + roadmesh.GIRDER_D
+DECK_FULL_DEPTH = roadmesh.DECK_DEPTH + roadmesh.GIRDER_D    # m of slab and girders under a long span's road
+DECK_MIN_DEPTH = 0.9    # m: the thinnest deck (a short slab bridge)
+DECK_SPAN_RATIO = 22.0  # a deck is its main span / this deep (girder bridges run span/20-25), DECK_MIN..FULL_DEPTH
+
+
+def deck_depth(span):
+    """m of structure (slab + girders) under a deck's road for a main span of span m. A short overpass or channel
+    span drew 2.2 m of slab and girders whatever its span, and had to climb that much more to clear what is under it
+    (a crown on 24 m overpasses and 2.7 m humps on the Sunshine Skyway causeway's channel bridges, 2026-10-27). Pure."""
+    return float(np.clip(float(span) / DECK_SPAN_RATIO, DECK_MIN_DEPTH, DECK_FULL_DEPTH))
+
+
+def deck_split(depth):
+    """(slab m, girders m) of a deck depth m: the full deck's 1.2 : 1.0 kept. Pure."""
+    slab = roadmesh.DECK_DEPTH * float(depth) / DECK_FULL_DEPTH
+    return slab, float(depth) - slab
+
+
+def deck_road_clear(depth=None):
+    """m a deck's road stands over a road under it: the headroom, its margin and the deck's depth. Pure."""
+    return MIN_BRIDGE_HEADROOM_M + BRIDGE_HEADROOM_MARGIN_M + (DECK_FULL_DEPTH if depth is None else float(depth))
+
+
+def geom_span(lines):
+    """m: a bridge chain's main span from its geometry alone: its longest part, or (one longer than 1.5 PIER_SPAN_M)
+    that part's pier spacing (pier_sites' PIER_SPAN_M grid). Pure."""
+    L = max((float(np.hypot(*np.diff(np.asarray(ln, np.float64)[:, :2], axis=0).T).sum())
+             for ln in lines if len(ln) >= 2), default=0.0)
+    if L <= 1.5 * PIER_SPAN_M:
+        return L
+    return L / max(1, int(round(L / PIER_SPAN_M)))
 DECK_CLEAR_REACH_M = 20.0   # full headroom either side of a road crossing (matches approach fills' flat reach)
 DECK_GRADE = 0.05       # that requirement falls 5 % along the deck from the crossing
 DECK_MAX_GRADE = 0.06   # a deck climbs no steeper than this from an abutment
@@ -2813,7 +3426,7 @@ def _rail_drawn(feats, i):
     return railways.drawn(feats, i) is not None
 
 
-def _clearance_deficits(lines, zs, crossings):
+def _clearance_deficits(lines, zs, crossings, depth=None):
     """(part, usable m) below the road target in a modelled crossing corridor.
 
     Road heights are the graded lower road's height at the crossing. Keep true
@@ -2826,7 +3439,7 @@ def _clearance_deficits(lines, zs, crossings):
             continue
         lo, hi = max(0.0, sc - DECK_CLEAR_REACH_M), min(s[-1], sc + DECK_CLEAR_REACH_M)
         at = np.r_[lo, s[(s > lo) & (s < hi)], hi]
-        headroom = float(np.min(np.interp(at, s, zs[pi]))) - zc - roadmesh.DECK_DEPTH - roadmesh.GIRDER_D
+        headroom = float(np.min(np.interp(at, s, zs[pi]))) - zc - (DECK_FULL_DEPTH if depth is None else depth)
         if not np.isfinite(headroom) or headroom < MIN_BRIDGE_HEADROOM_M - 1e-6:
             out.append((pi, headroom))
     return out
@@ -2884,7 +3497,7 @@ PIER_CHANNEL_CLEAR = 15.0   # no pier in water whose run wants this much clearan
 PIER_IN_WATER_M = 8.0   # m a pier in water reaches under its surface
 
 
-def pier_sites(xy, z, width, ground_fn, road_lines=(), wet_fn=None):
+def pier_sites(xy, z, width, ground_fn, road_lines=(), wet_fn=None, depth=None):
     """The piers under a bridge deck (xy (k, 2), deck top z (k,), width m): [(x, y, ux, uy, z_top, z_bottom, width)],
     (ux, uy) along the deck, z_top under its girders (roadmesh.DECK_DEPTH + GIRDER_D), z_bottom in the ground (or
     PIER_IN_WATER_M under water); evenly spaced inside the part (its ends are abutments or joints) at PIER_SPAN_M,
@@ -2905,7 +3518,7 @@ def pier_sites(xy, z, width, ground_fn, road_lines=(), wet_fn=None):
     n = int(round(L / span))
     if n < 2:
         return []
-    under = roadmesh.DECK_DEPTH + roadmesh.GIRDER_D
+    under = DECK_FULL_DEPTH if depth is None else float(depth)
     segs = [np.asarray(ln, np.float64) for ln in road_lines if len(ln) >= 2]
     A = np.concatenate([ln[:-1] for ln in segs]) if segs else np.zeros((0, 2))
     B = np.concatenate([ln[1:] for ln in segs]) if segs else np.zeros((0, 2))
@@ -2971,9 +3584,10 @@ class BridgeProfiles:
         self.done = {}                          # (fid, j) -> (spec, xy (k, 2), z (k,), lon)
         self.piers = {}                         # (fid, j) -> pier_sites of its deck
         self.trusses = {}                       # a chain's first part key -> its truss beams (bridgetypes)
+        self.depth = {}                         # (fid, j) -> m of slab and girders under its road (deck_depth)
         self.lock = threading.Lock()
 
-    def _water(self, lines, nav=0.0):
+    def _water(self, lines, nav=0.0, depth=None):
         """Clearance requirements over water (deck_profile_once crossings with their own clearance): every
         WATER_STEP_M along each wet run of each line, water_clear of the run's length over the ground there; over a
         run of NAV_RUN_M or more at least nav (m: the bridge's navigation clearance, bridgetypes.nav_clearance) plus
@@ -2981,8 +3595,7 @@ class BridgeProfiles:
         out = []
         if self.wet is None:
             return out
-        import roadmesh
-        under = roadmesh.DECK_DEPTH + roadmesh.GIRDER_D
+        under = DECK_FULL_DEPTH if depth is None else float(depth)
         for k, ln in enumerate(lines):
             xy = np.asarray(ln, np.float64)[:, :2]
             if len(xy) < 2:
@@ -2993,6 +3606,7 @@ class BridgeProfiles:
             if not w.any():
                 continue
             g = self._ground(xy)
+            sea = self.frame.geodetic_to_enu(la, lo, np.zeros(len(la)))[2]
             i = 0
             while i < len(w):
                 if not w[i]:
@@ -3002,10 +3616,15 @@ class BridgeProfiles:
                 while j + 1 < len(w) and w[j + 1]:
                     j += 1
                 c = water_clear(s[j] - s[i] + (s[1] - s[0]))
-                if nav > 0 and s[j] - s[i] >= NAV_RUN_M:
-                    c = max(c, nav + under)
+                base = g
+                if nav > 0:
+                    # the inventory's clearance decides over the share-of-span rule, from the water's surface (sea
+                    # level) not the carved bed: a causeway's 100 m channel bridge with 3.8 m of clearance was asked
+                    # for 15 m over a 3 m deep bed and humped to its grade cap (the Sunshine Skyway causeway, 2026-10-27)
+                    c = nav + under if s[j] - s[i] >= NAV_RUN_M else min(c, nav + under)
+                    base = np.maximum(g, sea)
                 for sc in np.arange(s[i], s[j] + 1e-6, WATER_STEP_M):
-                    out.append((k, float(sc), float(np.interp(sc, s, g)), c))
+                    out.append((k, float(sc), float(np.interp(sc, s, base)), c))
                 i = j + 1
         return out
 
@@ -3147,17 +3766,68 @@ class BridgeProfiles:
             log.debug("nav clearance: %s: %s", type(ex).__name__, ex)
             nav = 0.0
         required = [(c[0], c[1], z) for c, z in zip(cr, road_z)]
-        rails = [(c[0], c[1], z, DECK_ROAD_CLEAR) for c, z in zip(rcr, rail_z)]
-        zs = deck_profile(lines, self._ground, required + rails + self._water(lines, nav),
+        depth = self._depth(lines) if bridge_profile_mode() == "curve" else None
+        dd = self.__dict__.setdefault("depth", {})
+        for k in comp:
+            dd[k] = DECK_FULL_DEPTH if depth is None else depth
+        water = self._water(lines, nav, depth)
+        if not water and nav > 0 and bridge_profile_mode() == "curve":
+            water = self._gap(lines, nav, depth)
+        rails = [(c[0], c[1], z, deck_road_clear(depth)) for c, z in zip(rcr, rail_z)]
+        zs = deck_profile(lines, self._ground, required + rails + water, clear=deck_road_clear(depth),
                           levels=[pool[k][3] for k in comp], widths=[pool[k][0].width for k in comp],
                           pins=_ground_pins(lines, gl))
-        deficits = _clearance_deficits(lines, zs, required + [r[:3] for r in rails])
+        deficits = _clearance_deficits(lines, zs, required + [r[:3] for r in rails], depth)
         if deficits:
             # (debug: a city has hundreds of such bridges, each solved again in every process and tile; as a warning it
             # filled players' consoles, GitHub #391, TGForever Discord 2026-10-28)
             log.debug("bridge clearance below %.1f m target: %s; abutment/grade or map constraints prevent full headroom",
                       MIN_BRIDGE_HEADROOM_M, [(comp[i], round(h, 2)) for i, h in deficits[:3]])
         return zs
+
+    def _depth(self, lines):
+        """m of slab and girders of a chain: deck_depth of the inventory's main span where a record matches, else of
+        geom_span. Never raises."""
+        span = 0.0
+        try:
+            import bridgetypes
+            got = bridgetypes.matches(self.frame, lines)
+            if got:
+                span = bridgetypes.record(got[0][1])["span"]
+        except Exception as ex:
+            log.debug("deck span: %s: %s", type(ex).__name__, ex)
+        return deck_depth(span if span > 0 else geom_span(lines))
+
+    def depth_of(self, fid):
+        """m of slab and girders under part fid's road (DECK_FULL_DEPTH when not solved here)."""
+        ds = [d for k, d in list(self.__dict__.get("depth", {}).items()) if self._part_id(k) == fid]
+        return max(ds) if ds else DECK_FULL_DEPTH
+
+    def _gap(self, lines, nav, depth=None):
+        """Clearance requirements where the sea's depth knows no water but the inventory gives the bridge a
+        navigation clearance (a river: the Calcasieu, the Mississippi at New Orleans, 2026-10-19 stayed 10-14 m up
+        under a 41-46 m clearance): every WATER_STEP_M along the chain's low stretch (ground within GAP_LOW_M of its
+        lowest point, which lies at sea level, GAP_SEA_M at most, and GAP_DIP_M or more under the chain's highest
+        end), nav plus the slab and girders over it. Only at sea level: up a river the inventory's clearances are
+        often the span raised or measured from another datum (Portland's lift and bascule bridges came out 7-29 m
+        high with it). Pure given the ground."""
+        under = DECK_FULL_DEPTH if depth is None else float(depth)
+        gs = [np.asarray(self._ground(np.asarray(ln, np.float64)[:, :2]), np.float64) for ln in lines]
+        if not gs or not all(len(g) for g in gs):
+            return []
+        lo = float(min(g.min() for g in gs))
+        top = float(max(max(g[0], g[-1]) for g in gs))
+        if lo > GAP_SEA_M or lo > top - GAP_DIP_M:
+            return []
+        out = []
+        for k, (ln, g) in enumerate(zip(lines, gs)):
+            xy = np.asarray(ln, np.float64)[:, :2]
+            s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
+            low = g <= lo + GAP_LOW_M
+            for at in np.arange(0.0, s[-1] + 1e-9, WATER_STEP_M):
+                if low[min(int(np.searchsorted(s, at)), len(s) - 1)]:
+                    out.append((k, float(at), lo, nav + under))
+        return out
 
     def parts(self, cells_feats, box):
         """[(fid, spec, xy, z, lon)] of the bridge parts in these cells that come near box."""
@@ -3225,7 +3895,7 @@ class BridgeProfiles:
         lines = [ln for v in (ground or {}).values() for ln in v]
         try:
             self.piers[k] = pier_sites(np.asarray(xy, np.float64), np.asarray(z, np.float64), spec.width,
-                                       self._ground, lines, self._wet_at)
+                                       self._ground, lines, self._wet_at, self.__dict__.get("depth", {}).get(k))
         except Exception as ex:             # no piers rather than no bridge
             log.debug("piers of %s: %s: %s", k, type(ex).__name__, ex)
             self.piers[k] = []
@@ -4435,8 +5105,10 @@ def _bridge_chunks(frame, bseen, elev, exact, bridges=None, cells=None):
     heights: from `bridges` (BridgeProfiles: whole chains, shared by every tile), else from the
     chains found among the given cells (deck_heights; tests)."""
     if bridges is not None:
-        return _deck_chunks([(fid, spec, np.c_[xy, z], lon) for fid, spec, xy, z, lon in bridges.parts(cells, exact)
-                             if np.isfinite(z).all()], exact)
+        got = [(fid, spec, np.c_[xy, z], lon) for fid, spec, xy, z, lon in bridges.parts(cells, exact)
+               if np.isfinite(z).all()]
+        dd = getattr(bridges, "depth_of", None)
+        return _deck_chunks(got, exact, bridges._ground, {d[0]: dd(d[0]) for d in got} if dd else None)
     if not bseen:
         return []
     parts = []                                  # (fid, spec, xy (k, 2), lon)
@@ -4471,7 +5143,7 @@ def _bridge_chunks(frame, bseen, elev, exact, bridges=None, cells=None):
             import grading
             z = np.maximum(_smooth_pinned(z, DECK_STEP, grading.SIGMA_M), g)
         decks.append((fid, spec, np.c_[xy, z], lon))
-    return _deck_chunks(decks, exact)
+    return _deck_chunks(decks, exact, ground)
 
 
 DECK_CONTEXT_M = 24.0   # m around a tile its bridges' decks are passed as context (roadmesh.deck: whether an edge has
@@ -4499,10 +5171,42 @@ def _corner_look(point, roads):
     return LOOK["paved"]
 
 
-def _deck_chunks(decks, exact):
+DECK_JOIN_M = 1.0       # m: deck parts' ends this close go on one from the other (no parapet end there)
+ABUT_GROUND_M = 1.0     # a deck part's end within this of the ground under it is an abutment (roadmesh.deck: its
+                        # parapets ramp down there to the approach)
+
+
+def _abutments(pts, ground_fn):
+    """[(x, y)] of the ends of a deck part (pts (k, 3)) that land on the ground (within ABUT_GROUND_M); [] without
+    ground_fn. Never raises."""
+    if ground_fn is None or len(pts) < 2:
+        return []
+    try:
+        ends = np.asarray(pts, np.float64)[[0, -1]]
+        g = np.asarray(ground_fn(ends[:, :2]), np.float64)
+        return [(float(e[0]), float(e[1])) for e, gz in zip(ends, g) if e[2] - gz <= ABUT_GROUND_M]
+    except Exception:
+        return []
+
+
+def _deck_chunks(decks, exact, ground_fn=None, depths=None):
     """Deck + line chunks of bridge parts [(fid, spec, pts (k, 3), lon)] clipped to the box `exact`, and their decks
-    within DECK_CONTEXT_M of it as "ctx" chunks (not drawn: build_tile's caller hands them to roadmesh.deck)."""
+    within DECK_CONTEXT_M of it as "ctx" chunks (not drawn: build_tile's caller hands them to roadmesh.deck).
+    ground_fn(xy) -> heights: a part's ends on the ground are its abutments (each deck chunk's "abut" points: the
+    parapets ramp down there)."""
     out = []
+    abut = {}
+    ends = [(i, e, np.asarray(pts, np.float64)[e, :2]) for i, (_, _, pts, _) in enumerate(decks) if len(pts) >= 2
+            for e in (0, -1)]
+    for i, (fid, spec, pts, lon) in enumerate(decks):
+        abut.setdefault(fid, []).extend(_abutments(pts, ground_fn))
+        # an end no other deck part goes on from is an end of its parapets too (it stood there full height, square, on
+        # the slab's edge: a short channel bridge's ends on the Sunshine Skyway causeway, 2026-10-27)
+        for i2, e, q in ends:
+            if i2 != i:
+                continue
+            if not any(j != i and np.hypot(*(q - q2)) < DECK_JOIN_M for j, _, q2 in ends):
+                abut[fid].append((float(q[0]), float(q[1])))
     x0, y0, x1, y1 = exact
     wide = (x0 - DECK_CONTEXT_M, y0 - DECK_CONTEXT_M, x1 + DECK_CONTEXT_M, y1 + DECK_CONTEXT_M)
     for fid, spec, pts, lon in decks:
@@ -4511,6 +5215,8 @@ def _deck_chunks(decks, exact):
                 if len(c) >= 2:
                     ch = _chunk({**_deck_look(spec), "deck": True}, spec.width, c)
                     ch.update(fixed=True, deck=True, fid=fid, ctx=True)
+                    if depths and fid in depths:
+                        ch["dd"] = round(float(depths[fid]), 3)
                     out.append(ch)
     for fid, spec, pts, lon in decks:
         lines = [({**_deck_look(spec), "deck": True}, spec.width, pts)]
@@ -4526,6 +5232,10 @@ def _deck_chunks(decks, exact):
                         if look.get("deck"):
                             ch["deck"] = True
                             ch["fid"] = fid             # (roadmesh.deck: no parapet between parts side by side)
+                            if depths and fid in depths:
+                                ch["dd"] = round(float(depths[fid]), 3)     # (roadmesh.deck: its slab and girders)
+                            if abut.get(fid):
+                                ch["abut"] = abut[fid]
                         out.append(ch)
     return out
 

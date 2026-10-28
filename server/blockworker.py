@@ -621,15 +621,15 @@ def _with_plazas(mesh, frame, tx, ty, elev, origin, surface):
 
 
 def _tile_decks(bridges, cells, tx, ty):
-    """[(xy (k, 2), z (k,))] of the bridge decks over road tile (tx, ty) (the buildings they run through get a way:
-    buildings.road_tile_items), [] without bridge profiles."""
+    """[(xy (k, 2), z (k,), width m)] of the bridge decks over road tile (tx, ty) (the buildings they run through get a
+    way, the ones standing on them their floor on the deck: buildings.road_tile_items), [] without bridge profiles."""
     if bridges is None:
         return []
     import roads as roadsmod
     x0, y0, x1, y1 = roadsmod.tile_bbox(tx, ty)
     try:
-        return [(np.asarray(xy, np.float64)[:, :2], np.asarray(z, np.float64))
-                for _, _, xy, z, _ in bridges.parts(cells, (x0 - 20, y0 - 20, x1 + 20, y1 + 20))]
+        return [(np.asarray(xy, np.float64)[:, :2], np.asarray(z, np.float64), float(spec.width))
+                for _, spec, xy, z, _ in bridges.parts(cells, (x0 - 20, y0 - 20, x1 + 20, y1 + 20))]
     except Exception as e:      # no ways cut rather than no buildings
         log.debug("tile decks: %s: %s", type(e).__name__, e)
         return []
