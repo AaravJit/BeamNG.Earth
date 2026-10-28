@@ -436,6 +436,20 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
 STACK_DUMP_S = float(os.environ.get("BNGE_STACK_DUMP_S", "") or 75.0)   # s before a slow tile's stacks go to the log
 
 
+def signs_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, left_hand=False, mph=True):
+    """signstream.build_tile here: the highway signs of a road tile the mod has (from cody196's PR #363), in a road
+    process: its map cells are warm there. Returns (vfs path of the sign tile's JSON, number of meshes)."""
+    import signstream
+    g, _ = _s.anchor(aid, lat, lon)
+    frame = geodesy.EnuFrame(lat, lon)
+
+    def elev(la, lo):           # the graded ground, as the road tile's
+        z = ground(frame, la, lo, _s.dem.sample(la, lo, zoom))
+        return g.apply(la, lo, z, gradingmod.ROAD_LIFT) if g is not None else z
+    return signstream.build_tile(_s.md, frame, aid, tx, ty, elev, out_dir, vfs_dir,
+                                 _s.surface.urban if _s.surface is not None else None, _s.widths, left_hand, mph)
+
+
 def _stack_watch(what):
     """A timer that writes every thread's stack of this worker to the server log (stderr) when what is still running
     after STACK_DUMP_S: where a hung road tile waits (the server's own stuck warning says only that it waits)."""

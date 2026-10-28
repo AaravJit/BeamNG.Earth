@@ -37,7 +37,12 @@ def materials():
     import roadmesh
     import roads
     import sidewalks
+    import exitsigns
+    import mergesigns
+    import milemarkers
     out = set(buildings.MATERIALS) | set(sidewalks.MATERIALS) | set(EXTRA)
+    # the highway signs' (signstream.py)
+    out |= set(exitsigns.GUIDE_MATERIALS) | set(milemarkers.MATERIALS) | set(mergesigns.MATERIALS)
     for mod in (roads, roadmesh, junctions, airportgrade):
         for name, v in vars(mod).items():
             if name.isupper():

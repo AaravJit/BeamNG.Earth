@@ -972,6 +972,14 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
   re-sends everything. The tile is written as `roads_<a>_<tx>_<ty>.json` in the session folder and
   announced as `roads_tile` {anchorId, key, path, n}, then `roads_drop` {anchorId, key}. The mod
   sends `roads_reset` after the Roads setting is switched back on.
+- Highway signs (`server/signstream.py`, from cody196's PR #363): for each road tile the mod has, the same road
+  processes build a sign tile (exit and overhead panels, merge warnings, Interstate mile markers; render-only
+  shapes `exits` / `mileposts` / `merges`), announced as `roads_tile` with key `s<tx>_<ty>` (one in flight a
+  connection; an empty one is not sent unless it replaces signs). The sources come from the weekly sign shards
+  (`tools/build_sign_tags.py` -> BeamNG.Earth-data Pages `signs/`, read by `railtags.SignTags`; `BNE_SIGNS_DIR`: a
+  local shard folder), placed on the roads' own pavement rows (`signroads.Context`, per map cell); only where a US
+  state is (every face is MUTCD; `BNE_SIGNS_WORLD=1` everywhere). The mod's Highway signs switch sends
+  `highway_signs` {on}: no sign tiles are built while it is off.
 - Build: class and rules give the width (STYLE, or the width rule) and the surface kind (paved /
   gravel / dirt). Footways, paths and steps are left out, and so are segments flagged as bridge or
   tunnel or off ground level. Each road is clipped to the tile plus 2 m, simplified (RDP 0.25 m),

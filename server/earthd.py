@@ -100,6 +100,7 @@ import grading as gradingmod  # noqa: E402
 import roadmesh as roadmeshmod  # noqa: E402
 import roadwidth as roadwidthmod  # noqa: E402
 import revisit as revisitmod  # noqa: E402
+import signstream  # noqa: E402
 import mapdata as mapdatamod  # noqa: E402
 import dem as demmod  # noqa: E402
 import mapcells  # noqa: E402
@@ -686,6 +687,9 @@ class Server:
         # ProcessPoolExecutor of tile_workers, or None (built in tile_pool's threads)
         self.far_pool = far_pool
         self.road_pool = road_pool          # road tiles in processes (blockworker.roads_tile), else threads
+        # the highway signs (signstream.py) in the same processes: no process of their own, their map cells warm there
+        # (at most signstream.WORKERS a connection, only for road tiles sent)
+        self.sign_pool = road_pool
         # far building tiles in a process of their own: in the road pool (first come, first served) a teleport's
         # hundreds of them queued ahead of the road tiles under the car, which drove on bare ground for minutes
         # (Sinaia 2026-10-15); falls back to the road pool
@@ -1167,6 +1171,28 @@ class Server:
         return buildingsmod.far_tile(anchor.frame, tx, ty, self.mapdata,
                                      lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom)),
                                      self.out_dir, self.vfs_dir, aid, self.lamp_region(anchor))
+
+    def build_signs_tile(self, aid, tx, ty):
+        """signstream.build_tile: the highway signs of road tile (tx, ty) of anchor aid (its roads are with the mod
+        already), or None. Worker threads (signstream.Tracker)."""
+        anchor = self.anchors.get(aid)
+        source = getattr(self.mapdata, "highway_signs", None)
+        if anchor is None or source is None:
+            return None
+        source.version()            # (the sign data's build, learnt here off the event loop: Connection.on_pose)
+        if self.sign_pool is not None:
+            return self.sign_pool.submit(blockworker.signs_tile, aid, anchor.lat, anchor.lon, anchor.zooms[0], tx, ty,
+                                         self.out_dir, self.vfs_dir, self.left_hand(anchor),
+                                         self.mph(anchor)).result(timeout=ROAD_TILE_TIMEOUT_S)
+        g = self.grader_for(anchor)
+        zoom = anchor.zooms[0]
+
+        def elev(la, lo):
+            z = self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom))
+            return g.apply(la, lo, z, gradingmod.ROAD_LIFT) if g is not None else z
+        urban = self.surface.urban if self.surface is not None and hasattr(self.surface, "urban") else None
+        return signstream.build_tile(self.mapdata, anchor.frame, aid, tx, ty, elev, self.out_dir, self.vfs_dir,
+                                     urban, self.road_widths, self.left_hand(anchor), self.mph(anchor))
 
     def build_sky_tile(self, aid, ux, uy):
         """buildings.skyline_tile: a skyline (render-only) tile of anchor aid, or None (its cells not at hand: asked
@@ -2939,6 +2965,8 @@ class Connection:
         self.zmax_region = None
         self.weather = weathermod.Tracker()     # real weather: fetch rule, last message sent
         self.roads = roadsmod.Tracker()         # road tiles sent to the mod (--roads on)
+        self.signs = signstream.Tracker()       # their highway signs (key "s<tx>_<ty>")
+        self.signs_on = True                    # the mod's highwaySigns setting (message highway_signs)
         self.refining = set()                   # graded first blocks on their way (refine_first; send_progress)
         self.ground_wait = {}                   # block key -> when its photo was first seen waiting (ground_progress)
         self.veg = vegetationmod.Tracker()      # vegetation tiles sent to the mod (--trees on)
@@ -3346,7 +3374,7 @@ class Connection:
             self.s.connections.discard(self)
             self.s.slots_let_go(list(self.slot_holds))
             self.slot_holds = {}
-            for tr in (self.roads, self.veg, self.bldfar, self.bldsky, self.brfar, self.nav):
+            for tr in (self.roads, self.signs, self.veg, self.bldfar, self.bldsky, self.brfar, self.nav):
                 if tr is not None:
                     tr.close()
             self.s.drop_claims(self)
@@ -3484,6 +3512,10 @@ class Connection:
         elif kind == "roads_reset":             # the mod dropped its roads (settings): send them all again
             self.roads.close()
             self.roads = roadsmod.Tracker()
+            self.signs.close()
+            self.signs = signstream.Tracker()
+        elif kind == "highway_signs":           # the settings page's switch: no sign tiles built while it is off
+            self.signs_on = bool(msg.get("on", True))
         elif kind == "gas_stations":            # the settings page's switch: the road tiles again, with or without
             if self.s.set_gas_stations(msg.get("on")):
                 self.roads.close()
@@ -3931,6 +3963,10 @@ class Connection:
             self.roads.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_roads_tile,
                                vel=self.vel, ground_busy=self.terrain_wait > 0, view=self.view_at,
                                foci=self.foci)
+            source = getattr(self.s.mapdata, "highway_signs", None)
+            if source is not None and self.signs_on:      # (after the roads: signs only for road tiles sent)
+                self.signs.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_signs_tile,
+                                   self.roads.sent, version=source.tags.known())
         if self.s.veg is not None and aid == self.active:
             anchor = self.s.anchors.get(aid)
             if anchor is not None:                            # a teleport's cells built at once, ahead
