@@ -525,6 +525,7 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
         return roadsmod.block_arch_raise(tunnels, cell_fn, frame, la, lo, elev(la, lo),
                                          (box[0] - 8, box[1] - 8, box[2] + 8, box[3] + 8))
     cover = []                          # the ground carriageways for the decks' parapets (roadmesh.deck ground=)
+    marks = []                          # stall lines along parking aisles (parking.finish_markings adds the lot polygons')
     chunks = roadsmod.build_tile(frame, tx, ty, cells, elev, urban, walks=walks, deck_context=ctx, bridges=bridges, widths=_s.widths,
                                  walk_cuts=fuel_cuts,    # (the stations' made-up driveways: no sidewalk across them)
                                  props=props, lines=lines, wires=wires, town=town, park=park,
@@ -532,7 +533,7 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
                                  structures=buildingsmod.centres(items, tx, ty) if items else (),
                                  tunnels=tunnels, walls=rwalls,
                                  ground=lambda x, y: roadmeshmod.drawn_ground(frame, drawn, np.c_[x, y], q),
-                                 terrain_paint=getattr(_s, "surface", None) is not None, cover_out=cover,
+                                 terrain_paint=getattr(_s, "surface", None) is not None, cover_out=cover, marks=marks,
                                  signals=furniture.signals_for(_s.md, frame,
                                                                roadsmod.cells_of_tile(frame, tx, ty, SIGNALS_MARGIN_M)))
     chunks += railsmod.tile_chunks(frame, tx, ty, cells)     # railway and tram tracks on the ground
@@ -551,6 +552,7 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
             import gasstations
             park = gasstations.clear_park(park, fuel)
         buildingsmod.brick_walks(walks, items, lat, lon)
+    chunks += parkingmod.finish_markings(frame, tx, ty, _s.md, elev, items, marks)
     # Share the bridge mesh's exact parapet geometry with the tile builder.
     parapets = roadmeshmod.parapet_runs(chunks, ctx, ground=cover)
     import guardrails as guardrailsmod

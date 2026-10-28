@@ -5277,7 +5277,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                lines=None, wires=None, town=None, park=None, left_hand=False, structures=(), mph=True, tunnels=None,
                buried=0.0, lamp_region=None, country=None,
                walls=None, deck_context=None, ground=None, terrain_paint=True, cover_out=None, walk_cuts=(),
-               signals=None):
+               signals=None, marks=None):
     """The chunks of one tile. cells: the mapgeom.Features of the "roads" layer of every cell touching
     the tile; elev(lat, lon) -> metres (the DEM); urban_fn: as road_specs. Features in several cells are
     taken once (by id). The carriageways, then each road's sidewalks / gutters / markings (extras), cut
@@ -5545,18 +5545,21 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                                      decks=decks, signals=signals, buried=buried, region=lamp_region,
                                      lighting={fid: str(f.attrs["osm_lit"][i]).strip().lower()
                                                for fid, (f, i, _sp) in seen.items() if "osm_lit" in f.attrs}))
-    if park is not None and walks is not None:      # curbside parking spots (parking.py)
+    aisles = {fid for fid, (f, i, sp) in seen.items()
+              if sp.kind == "paved" and _rule_value(f.rules.get("subclass"), i) == "parking_aisle"}
+    if (park is not None and walks is not None) or (marks is not None and aisles):
         import parking
-        dirs = {}
-        for fid, (f, i, sp) in seen.items():
-            if sp.oneway:
-                v = _rule_value(f.rules.get("oneway"), i)
-                dirs[fid] = (-1 if float(v) < 0 else 1) if v is not None else (sp.dir or 1)
-        park.extend(parking.curb_spots(roads, walks, (x0, y0, x1, y1), left_hand, dirs))
-        aisles = {fid for fid, (f, i, sp) in seen.items()
-                  if sp.kind == "paved" and _rule_value(f.rules.get("subclass"), i) == "parking_aisle"}
-        if aisles:
-            park.extend(parking.aisle_spots(roads, aisles, (x0, y0, x1, y1)))
+        if park is not None and walks is not None:      # curbside parking spots (parking.py)
+            dirs = {}
+            for fid, (f, i, sp) in seen.items():
+                if sp.oneway:
+                    v = _rule_value(f.rules.get("oneway"), i)
+                    dirs[fid] = (-1 if float(v) < 0 else 1) if v is not None else (sp.dir or 1)
+            park.extend(parking.curb_spots(roads, walks, (x0, y0, x1, y1), left_hand, dirs))
+            if aisles:
+                park.extend(parking.aisle_spots(roads, aisles, (x0, y0, x1, y1)))
+        if marks is not None and aisles:            # stall lines along the aisles (parking.aisle_markings)
+            marks.extend(parking.aisle_markings(roads, aisles, (x0, y0, x1, y1)))
     return chunks
 
 

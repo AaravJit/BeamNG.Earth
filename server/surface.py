@@ -570,11 +570,28 @@ def enlarge(rgb, px):
     return np.asarray(Image.fromarray(rgb, "RGB").resize((px, px), Image.BILINEAR), np.uint8)
 
 
+def _square_pts(frame, x0, y0, size):
+    gx = x0 + np.array([0.0, size, 0.0, size, size / 2])
+    gy = y0 + np.array([0.0, 0.0, size, size, size / 2])
+    la, lo, _ = frame.enu_to_geodetic(gx, gy, np.zeros(5))
+    return np.asarray(la), np.asarray(lo)
+
+
+def _square_lots(frame, x0, y0, size, surface):
+    """The infrastructure and land-use Features around a photo square (Surface.lots; never waits)."""
+    if surface is None or not hasattr(surface, "lots"):
+        return []
+    la, lo = _square_pts(frame, x0, y0, size)
+    return surface.lots(la, lo)
+
+
 def paint_square(rgb, frame, x0, y0, size, surface, widths=None):
     """photo_roads for a ground photo over [x0, x0 + size]² of frame with the roads of surface's cached cells (a
-    Surface; never waits); as it was when its texels are coarser than PHOTO_ROADS_MAX_TEXEL or no cell is cached."""
+    Surface; never waits); as it was when its texels are coarser than PHOTO_ROADS_MAX_TEXEL or no cell is cached.
+    Parking lots are painted first (photo_lots), then gas-station pads, then the carriageways over both."""
     if surface is None or size / max(rgb.shape[1], 1) > PHOTO_ROADS_MAX_TEXEL:
         return rgb
+    rgb = photo_lots(rgb, frame, x0, y0, size, _square_lots(frame, x0, y0, size, surface))
     rgb = photo_pads(rgb, frame, x0, y0, size, _square_pads(frame, x0, y0, size, surface))     # (under the roads)
     feats = _square_roads(frame, x0, y0, size, surface)
     if not feats:
@@ -624,16 +641,18 @@ def road_mask(frame, x0, y0, size, px, surface, widths=None):
     if surface is None or size / max(px, 1) > ROAD_MASK_MAX_TEXEL:
         return None
     pads = pads_mask(frame, x0, y0, size, px, _square_pads(frame, x0, y0, size, surface))
+    lots = lots_mask(frame, x0, y0, size, px, _square_lots(frame, x0, y0, size, surface))
     feats = _square_roads(frame, x0, y0, size, surface)
     got = _road_segments(frame, x0, y0, size, px, px, feats, surface.urban, widths) if feats else None
-    if got is None:
-        return pads
-    colors = np.array([(255.0, 255.0, 255.0, 1.0 if k in ROAD_MASK_KINDS else 0.0) for k in PHOTO_ROAD_RGBA],
-                      np.float32)
-    out = fast._ef.paint_lines(np.zeros((px, px, 3), np.uint8), *got, colors)[..., 0]
-    if pads is not None:
-        out = np.maximum(out, pads)
-    return out if out.any() else None
+    out = None
+    if got is not None:
+        colors = np.array([(255.0, 255.0, 255.0, 1.0 if k in ROAD_MASK_KINDS else 0.0) for k in PHOTO_ROAD_RGBA],
+                          np.float32)
+        out = fast._ef.paint_lines(np.zeros((px, px, 3), np.uint8), *got, colors)[..., 0]
+    for extra in (pads, lots):
+        if extra is not None:
+            out = extra if out is None else np.maximum(out, extra)
+    return None if out is None or not out.any() else out
 
 
 # A road without sidewalks gets a verge of VERGE_M a side painted bare where the ground would carry grass or shrubs:
@@ -744,9 +763,45 @@ def pads_mask(frame, x0, y0, size, px, pads):
     return None if a is None else np.round(a * 255.0).astype(np.uint8)
 
 
+def lot_pads(feats_list):
+    """Parking-lot outer rings as (lat, lon) pads for the photo painters (class parking, not grass or gravel)."""
+    pads = []
+    for feats in feats_list:
+        if feats is None or len(feats) == 0:
+            continue
+        sel = _parking(feats)
+        if sel is None:
+            continue
+        for i in np.flatnonzero(sel & (feats.kind == 3)):
+            for part in feats.parts(i):
+                if not part or len(part[0]) < 3:
+                    continue
+                ring = np.asarray(part[0], np.float64)
+                pads.append((ring[:, 1], ring[:, 0]))
+    return pads
+
+
+def photo_lots(rgb, frame, x0, y0, size, feats_list):
+    """The photo with parking-lot polygons painted in the paved roads' colour (under the carriageways). Pure."""
+    return photo_pads(rgb, frame, x0, y0, size, lot_pads(feats_list))
+
+
+def lots_mask(frame, x0, y0, size, px, feats_list):
+    """The parking lots' coverage (px x px uint8, 255 inside) of a tile photo's square, or None."""
+    return pads_mask(frame, x0, y0, size, px, lot_pads(feats_list))
+
+
 def _parking(feats):
     cls = feats.attrs.get("class")
-    return None if cls is None else np.isin(cls.astype(str), list(PARKING_CLASSES))
+    if cls is None:
+        return None
+    sel = np.isin(cls.astype(str), list(PARKING_CLASSES))
+    surf = feats.attrs.get("surface")
+    if surf is not None:
+        import parking
+        bare = np.array([str(v or "").strip().lower() in parking.LOT_UNPAVED for v in surf], bool)
+        sel = sel & ~bare
+    return sel
 
 
 def _yards(feats):
