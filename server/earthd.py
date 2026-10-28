@@ -4975,6 +4975,9 @@ def main():
     ap.add_argument("--gravity", choices=("on", "off"), default="on",
                     help="real gravity at the player (gravity.py: WGS84 normal + EGM2008 from <cache-dir>/gravity/, "
                          "every 2 km or 200 m of height; normal gravity while EGM2008 downloads, once, 74 MB)")
+    ap.add_argument("--bridge-profile", choices=("curve", "legacy"), default="curve",
+                    help="bridge decks: curve (grades of 5 %% up to what they must clear, joined by vertical curves, "
+                         "a chain solved as one line) or legacy (deck_heights' line, tents, smoothing)")
     ap.add_argument("--offline", action="store_true",
                     help="no network: serve elevation and imagery from the disk cache only (uncached tiles get "
                          "the palette, uncached terrain fails); the status says 'Offline - using cached data'")
@@ -5047,6 +5050,7 @@ def main():
                          "never what this session used within the hour, the gravity model or netstats/")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
+    os.environ["BNE_BRIDGE_PROFILE"] = args.bridge_profile     # read by roads.py here and in the block workers
     args.cells = resolve_cells(args.cells, args.near_visual)
     args.block = resolve_block(args.block, args.near_visual)
     args.horizon = resolve_horizon(args.horizon, args.near_visual)

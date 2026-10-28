@@ -123,6 +123,9 @@ APPROACH_MIN_CROSS_M = 6.0  # m: a road crossing a deck closer than this to its 
 APPROACH_FLAT_M = 20.0      # m from an abutment the deck needs its full clearance (beyond: it may fall at DECK_GRADE)
 APPROACH_MARGIN_M = 0.3     # m over the clearance (the deck profile's smoothing takes a little off near its ends)
 APPROACH_SKIP = ("motorway", "trunk")   # never raised (their links are: _never_raised); the roads over them rise
+WATER_LIFT_ON = os.environ.get("BNE_WATER_FILL", "on") != "off"
+WATER_CURVE_M = 16.0        # m from an abutment a deck over water spends on its vertical curve before climbing ...
+WATER_MAX_LIFT = 2.0        # ... and its approach fill is raised at most this (any class: a motorway's too)
 APPROACH_GAP_M = 1.0        # m of flat ground kept between a ramp's fill slope and the road beside it
 ENU_CACHE_MAX = 512         # cells' road parts in the anchor frame kept (Grader._cell_enu; ~0.02-0.5 MB each)
 APPROACH_CELL_M = 450.0     # m: a plan's end this far from a cell cannot raise what that cell's queries see
@@ -959,7 +962,7 @@ class Grader:
         raised ground, 2026-10-20 I-20 in Greene County, AL). Major roads (APPROACH_SKIP) are never raised."""
         # every plan end at once: near the cell, and on a bridge end of its own cell (most touch none)
         pe = np.array([[p.xy[0][:2], p.xy[-1][:2]] for _f, p in plans], np.float64).reshape(-1, 2)
-        ok = np.repeat([s is not None and not _never_raised(s) for s in specs], 2)
+        ok = np.repeat([s is not None for s in specs], 2)       # (a motorway's or trunk's: over water only, below)
         touch = self._abut_ends(key, pe, ok).reshape(-1, 2)
         for i, (fid, p) in enumerate(plans):
             if not touch[i].any():
@@ -971,6 +974,8 @@ class Grader:
                     continue
                 got = self._end_lift(e)
                 if got is None:
+                    continue
+                if _never_raised(specs[i]) and not got[3]:
                     continue
                 lift, others = got[0], got[1]
                 a = approach_add(p.xy, at_end, lift, p.half, others)
@@ -1078,13 +1083,16 @@ class Grader:
                 # where along this road (its nearest vertex segment)
                 t = np.clip(((pt - xy[:-1]) * ab).sum(1) / np.maximum((ab * ab).sum(1), 1e-12), 0.0, 1.0)
                 j = int(np.argmin(np.linalg.norm(xy[:-1] + t[:, None] * ab - pt, axis=1)))
-                cands.append((i, float(s[j] + t[j] * (s[j + 1] - s[j])), deck))
+                # (the deck's own clearance: its depth scales with its span, roads.deck_depth; the full-depth
+                # UNDER_CLEAR_M dug the road out under a short overpass that sits lower)
+                clear = roadsmod.deck_road_clear(roadsmod.deck_depth(roadsmod.geom_span([b]))) + ROAD_LIFT
+                cands.append((i, float(s[j] + t[j] * (s[j + 1] - s[j])), deck - clear))
         if not cands:
             return
         zc = self._under_ground(lines, [ground[g][1:] for g in gids], cands)
         requirements = []
-        for (i, sc, deck), z in zip(cands, zc):
-            target = max(deck - UNDER_CLEAR_M, z - UNDER_MAX_DROP_M)
+        for (i, sc, top), z in zip(cands, zc):
+            target = max(top, z - UNDER_MAX_DROP_M)
             if target < z - 0.1:
                 requirements.append((i, sc, z - target))
         if not requirements:
@@ -1174,7 +1182,7 @@ class Grader:
         got = self._end_lift(xy)
         if got is None:
             return 0.0
-        lift, others, approaches = got
+        lift, others, approaches = got[:3]
         best = 0.0
         for line, half in approaches:
             at_end = bool(np.hypot(*(line[-1] - xy)) <= np.hypot(*(line[0] - xy)))
@@ -1393,10 +1401,47 @@ class Grader:
         def z_at(p):
             la_, lo_, _ = self.frame.enu_to_geodetic(p[:, 0], p[:, 1], 0.0)
             return np.asarray(self.elev(la_, lo_), np.float64)
+        best = None
         for end, lift in bridge_lifts(bridge, bridges, ground, z_at, chain, rails):
             if np.hypot(*(end - xy)) <= APPROACH_TOUCH_M:
-                return lift, others, approaches
-        return None
+                best = lift
+                break
+        wl = self._water_lift(bridge, chain, xy, z_at) if bridge_chain_ends_free(bridge, bridges, xy) else 0.0
+        if wl >= APPROACH_MIN_LIFT and (best is None or wl > best):
+            return min(wl, WATER_MAX_LIFT), others, approaches, True
+        return None if best is None else (best, others, approaches, False)
+
+    def _water_lift(self, bridge, chain, xy, z_at):
+        """m the abutment at xy of a bridge over water must be raised for its deck to reach the water's clearance
+        (roads.BridgeProfiles._water, the deck's own depth) at DECK_DESIGN_GRADE after WATER_CURVE_M of vertical curve,
+        0 when it need not. A causeway's 100 m channel bridge over 3.8 m of navigation clearance, its ends 0.7 m short
+        of it 12 m out, humped 1.8 m over a curve squeezed under its grade cap (the Sunshine Skyway, 2026-10-27)."""
+        if self.wet is None or not WATER_LIFT_ON:
+            return 0.0
+        try:
+            import bridgetypes
+            ch = self._chains_for()
+            lines = [roadsmod.densify(np.asarray(c, np.float64)[:, :2], roadsmod.DECK_STEP)       # (as the deck's)
+                     for c in [bridge] + list(chain or ())]
+            try:
+                nav = bridgetypes.nav_clearance(self.frame, lines)
+            except Exception:
+                nav = 0.0
+            req = ch._water(lines, nav, ch._depth(lines))
+            if not req:
+                return 0.0
+            pts, need = [], []
+            for k, arc, base, c in req:
+                ln = lines[k]
+                s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(ln, axis=0).T))]
+                pts.append([np.interp(arc, s, ln[:, 0]), np.interp(arc, s, ln[:, 1])])
+                need.append(base + c)
+            d = np.hypot(*(np.asarray(pts) - np.asarray(xy)[:2]).T)
+            reach = np.asarray(need) - roadsmod.DECK_DESIGN_GRADE * np.maximum(d - roadsmod.DECK_ROAD_HALF - WATER_CURVE_M, 0.0)
+            return max(0.0, float(reach.max() - z_at(np.asarray(xy, np.float64)[None, :2])[0]))
+        except Exception as e:      # no fill rather than no grading
+            log.debug("grading: water lift: %s: %s", type(e).__name__, e)
+            return 0.0
 
     def _longest(self, fid, j, ring, key):
         """Part j of tunnel fid as the cells at its ends have it, the longest (a part comes clipped differently in
@@ -1844,6 +1889,19 @@ def bridge_chain(line, all_bridges):
     return out
 
 
+def bridge_chain_ends_free(line, all_bridges, xy):
+    """Whether the end of bridge line nearest xy is an abutment: no other bridge part ends within 0.75 m. Pure."""
+    line = np.asarray(line, np.float64)
+    end = line[0, :2] if np.hypot(*(line[0, :2] - xy[:2])) <= np.hypot(*(line[-1, :2] - xy[:2])) else line[-1, :2]
+    for o in all_bridges:
+        o = np.asarray(o, np.float64)
+        if len(o) == len(line) and np.array_equal(o, line):
+            continue
+        if min(np.hypot(*(o[0, :2] - end)), np.hypot(*(o[-1, :2] - end))) < 0.75:
+            return False
+    return True
+
+
 def bridge_lifts(line, all_bridges, ground_lines, z_at, chain=None, rail_lines=()):
     """[(end xy (2,), lift m)] of a bridge part (line (k, 2) ENU m): at each of its ends that no other bridge part
     continues from (an abutment), how far the ground there must be raised for the deck to clear every road crossing
@@ -1918,7 +1976,7 @@ def bridge_lifts(line, all_bridges, ground_lines, z_at, chain=None, rail_lines=(
         if not far.any():
             continue
         d, zu_e = d[far], zu[far]
-        need = zu_e + roadsmod.DECK_ROAD_CLEAR + APPROACH_MARGIN_M \
+        need = zu_e + roadsmod.deck_road_clear(roadsmod.deck_depth(roadsmod.geom_span([line] + list(chain or ()))))             + APPROACH_MARGIN_M \
             - roadsmod.DECK_GRADE * np.maximum(d - APPROACH_FLAT_M, 0.0)
         lift = float(need.max() - z_at(end[None])[0])
         if lift >= APPROACH_MIN_LIFT:

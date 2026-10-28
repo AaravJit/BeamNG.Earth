@@ -1728,6 +1728,46 @@ def _clip_half(ring, p0, nrm, keep_ge):
     return r if _area2(r) / 2 >= 2.0 else None
 
 
+DECK_STAND_M = 2.0      # m: a deck this far over the ground under a footprint is what the building stands on ...
+DECK_LANE_M = 1.0       # ... and it is left out where it reaches this far inside the deck's road (its width / 2) ...
+DECK_REACH_M = 6.0      # m past the road's edge a footprint's centre still counts as on its deck
+DECK_SEA_M = 0.5        # ... only over ground this low: water, a beach (a building on dry land under a viaduct stays)
+
+
+def on_deck(ring, decks, ground):
+    """(over the lanes, deck height) when footprint ring (k, 2) has its centre on a deck (decks: [(xy (k, 2), z (k,),
+    width m)], the same frame) standing DECK_STAND_M or more over ground (m, its highest ground, DECK_SEA_M at most:
+    over water), else None. A building
+    on the old Sunshine Skyway span kept as a fishing pier (its bait shop) was raised from the seabed: its top 0.5 m
+    stood over the deck (2026-10-27). Over the lanes: a corner more than DECK_LANE_M inside the road's edge. Pure."""
+    r = np.asarray(ring, np.float64)[:, :2]
+    c = r.mean(0)
+    best = None
+    for d in decks:
+        if len(d) < 3 or len(d[0]) < 2:
+            continue
+        xy, z, w = np.asarray(d[0], np.float64), np.asarray(d[1], np.float64), float(d[2])
+        a, b = xy[:-1], xy[1:]
+        ab = b - a
+        t = np.clip(((c - a) * ab).sum(1) / np.maximum((ab * ab).sum(1), 1e-12), 0.0, 1.0)
+        dist = np.hypot(*(a + t[:, None] * ab - c).T)
+        k = int(np.argmin(dist))
+        half = w / 2 + DECK_REACH_M         # (a pier's map width is its lane: its deck reaches past it)
+        if dist[k] > half:
+            continue
+        zd = float(z[k] + t[k] * (z[k + 1] - z[k]))
+        if zd - ground < DECK_STAND_M:
+            continue
+        if best is None or dist[k] < best[0]:
+            best = (dist[k], zd, a[k], ab[k] / max(float(np.hypot(*ab[k])), 1e-9), w)
+    if best is None or ground > DECK_SEA_M:
+        return None
+    _, zd, p, u, w = best
+    off = (r - p) @ np.array([-u[1], u[0]])            # (signed: a footprint across the lanes has corners both sides)
+    inner = w / 2 - DECK_LANE_M
+    return bool(off.min() < inner and off.max() > -inner), zd
+
+
 def _passages(rings, attrs, looks, mins, bridges_xy, decks=None, ground_at=None):
     """Buildings a road bridge runs through split round a PASSAGE_W wide way (Tower Bridge's road ran into its towers'
     stone and its Southern Gate, the user 2026-10-18: "the buildings are still in the middle of the bridge", "this
@@ -2279,6 +2319,12 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
             cla, clo, _ = frame.enu_to_geodetic(c[0] + x0, c[1] + y0, 0.0)
             if water(float(cla), float(clo)):
                 continue
+        if decks and mh <= 0.5 and not (at.get("bridge_part") or at.get("bridge_masonry")):
+            got = on_deck(ring, decks, float(g.max()))
+            if got is not None:
+                if got[0]:              # over the deck's lanes: a vehicle, a booth on the road
+                    continue
+                g = np.full(len(g), got[1])     # its floor on the deck (a pier's bait shop stood on the seabed)
         spec.gring = g              # the ground at each corner (door_ground: the door's, not the footprint's highest)
         out.append((spec, float(g.min()), float(g.max())))
     lines = roads_xy if roads_xy else ml_roads_xy
@@ -2723,8 +2769,8 @@ def road_tile_items(frame, tx, ty, md, ground, decks=None, skip=frozenset()):
                           supports=support_rings(frame, [c.layers.get("infrastructure") for c in cds], x0, y0),
                           bridges_xy=bridge_lines(frame, [c.layers.get("roads") for c in cds], x0, y0),
                           water_xy=water_rings(frame, [c.layers.get("water") for c in cds], x0, y0),
-                          decks=[(np.asarray(xy, np.float64)[:, :2] - [x0, y0], np.asarray(z, np.float64))
-                                 for xy, z in decks] if decks else None, skip=skip)
+                          decks=[(np.asarray(d[0], np.float64)[:, :2] - [x0, y0], np.asarray(d[1], np.float64))
+                                 + tuple(d[2:3]) for d in decks] if decks else None, skip=skip)
 
 
 TOWN_COVERAGE = 0.16        # a tile whose footprints cover less than this share is a town / suburb (heights)

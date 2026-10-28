@@ -226,9 +226,10 @@ class SpanTest(unittest.TestCase):
             L = bt.SPAN_SHARE * 400
             self.assertAlmostEqual(z.max(), 50.0 + share * L, delta=0.05 * share * L + 1.0)
 
-    def test_movable_and_plain_draw_nothing(self):
-        for info in (None, {"type": bt.NBI_BASCULE, "span": 50.0, "src": "nbi"}):
-            self.assertEqual(bt.structure_members([deck()], info, self.flat, self.wet), ([], []))
+    def test_plain_draws_nothing(self):
+        self.assertEqual(bt.structure_members([deck()], None, self.flat, self.wet), ([], []))
+        self.assertEqual(bt.structure_members([deck()], {"type": bt.PLAIN, "span": 50.0, "src": "nbi"}, self.flat,
+                                              self.wet), ([], []))
 
 
 if __name__ == "__main__":
