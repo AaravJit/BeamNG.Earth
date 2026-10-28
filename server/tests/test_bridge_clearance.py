@@ -112,7 +112,7 @@ class MinimumBridgeClearanceTest(TestCase):
         z, = roads.deck_profile([xy], flat, [(0, 400.0, 10.0, 20.0)])
         self.assertGreaterEqual(float(np.interp(400.0, xy[:, 0], z)) - 10.0, 20.0)
 
-    def test_bridge_profiles_warn_when_constraints_prevent_the_target(self):
+    def test_bridge_profiles_log_when_constraints_prevent_the_target(self):
         xy = line(60.0)
         lower = np.array([[30.0, -50.0], [30.0, 50.0]])
         bp = object.__new__(roads.BridgeProfiles)
@@ -122,7 +122,7 @@ class MinimumBridgeClearanceTest(TestCase):
         key = ("short", 0)
         pool = {key: (mock.Mock(width=12.0), xy, 0.0, 1.0, len(xy))}
         with mock.patch("bridgetypes.nav_clearance", return_value=0.0), \
-                self.assertLogs("earthd.roads", level="WARNING") as messages:
+                self.assertLogs("earthd.roads", level="DEBUG") as messages:     # (debug: GitHub #391)
             bp._solve([key], pool, {("lower", "g"): [lower]})
         self.assertIn("below 6.0 m target", " ".join(messages.output))
 

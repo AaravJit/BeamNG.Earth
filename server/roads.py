@@ -2990,8 +2990,10 @@ class BridgeProfiles:
                           pins=_ground_pins(lines, gl))
         deficits = _clearance_deficits(lines, zs, required + [r[:3] for r in rails])
         if deficits:
-            log.warning("bridge clearance below %.1f m target: %s; abutment/grade or map constraints prevent full headroom",
-                        MIN_BRIDGE_HEADROOM_M, [(comp[i], round(h, 2)) for i, h in deficits[:3]])
+            # (debug: a city has hundreds of such bridges, each solved again in every process and tile; as a warning it
+            # filled players' consoles, GitHub #391, TGForever Discord 2026-10-28)
+            log.debug("bridge clearance below %.1f m target: %s; abutment/grade or map constraints prevent full headroom",
+                      MIN_BRIDGE_HEADROOM_M, [(comp[i], round(h, 2)) for i, h in deficits[:3]])
         return zs
 
     def parts(self, cells_feats, box):
