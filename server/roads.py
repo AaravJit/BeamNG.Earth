@@ -1651,31 +1651,24 @@ def _deck_stacks(lines, levels, widths, step=STACK_STEP_M):
 
 def _deck_beside(lines, widths, step=STACK_STEP_M):
     """(i, j), i < j: deck parts whose surfaces come within MERGE_TOUCH_M of each other in plan (side by side or one
-    over the other: solved together). Pure."""
-    out = []
-    n = len(lines)
+    over the other: solved together): 2 or more of part i's points every `step` m along it within half their widths
+    + MERGE_TOUCH_M of part j's line. earthfast.deck_beside (Rust) on the samples. Pure."""
+    import fast
+    fast.require(89, "deck_beside")
     pts = [np.asarray(ln, np.float64)[:, :2] for ln in lines]
-    lo_b = [p.min(0) if len(p) else np.zeros(2) for p in pts]
-    hi_b = [p.max(0) if len(p) else np.zeros(2) for p in pts]
-    for i in range(n):
-        if len(pts[i]) < 2:
+    qs = []
+    for p in pts:
+        if len(p) < 2:
+            qs.append(np.zeros((0, 2)))
             continue
-        si = np.r_[0.0, np.cumsum(np.hypot(*np.diff(pts[i], axis=0).T))]
+        si = np.r_[0.0, np.cumsum(np.hypot(*np.diff(p, axis=0).T))]
         t = np.arange(0.0, si[-1] + 1e-9, step)
-        q = np.c_[np.interp(t, si, pts[i][:, 0]), np.interp(t, si, pts[i][:, 1])]
-        for j in range(i + 1, n):
-            if len(pts[j]) < 2:
-                continue
-            reach = (float(widths[i]) + float(widths[j])) / 2 + MERGE_TOUCH_M
-            if (hi_b[i] + reach < lo_b[j]).any() or (hi_b[j] + reach < lo_b[i]).any():
-                continue
-            P, ab = pts[j][:-1], np.diff(pts[j], axis=0)
-            L2 = np.maximum((ab * ab).sum(1), 1e-12)
-            tt = np.clip(((q[:, None, :] - P[None]) * ab[None]).sum(2) / L2[None], 0.0, 1.0)
-            d = np.hypot(*(q[:, None, :] - (P[None] + tt[..., None] * ab[None])).transpose(2, 0, 1)).min(1)
-            if (d < reach).sum() >= 2:
-                out.append((i, j))
-    return out
+        qs.append(np.c_[np.interp(t, si, p[:, 0]), np.interp(t, si, p[:, 1])])
+    off = lambda arrs: np.r_[0, np.cumsum([len(a) for a in arrs])].astype(np.int64)      # noqa: E731
+    pairs = fast._ef.deck_beside(np.ascontiguousarray(np.concatenate(qs) if qs else np.zeros((0, 2))), off(qs),
+                                 np.ascontiguousarray(np.concatenate(pts) if pts else np.zeros((0, 2))), off(pts),
+                                 np.asarray(widths, np.float64), float(MERGE_TOUCH_M))
+    return [(int(a), int(b)) for a, b in pairs]
 
 
 def water_clear(w):

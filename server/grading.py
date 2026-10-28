@@ -1440,6 +1440,7 @@ class Grader:
         plans alone): kind 0 an open road at z, 1 a low arch, 2 a full tunnel."""
         out = []
         ts = roadsmod.tunnel_specs(feats)
+        pack = None                     # (the road plans packed once: per tunnel part, ~6 ms each, 0.9 s of 8 tiles)
         for i in range(len(feats)):
             if ts[i] is None:
                 continue
@@ -1461,7 +1462,8 @@ class Grader:
                 g = np.asarray(self.elev(la, lo), np.float64)
                 if road_plans:
                     g = g.copy()
-                    g[[0, -1]] = grade_points(xy[[0, -1], 0], xy[[0, -1], 1], g[[0, -1]], list(road_plans))
+                    pack = PlanPack(list(road_plans)) if pack is None else pack
+                    g[[0, -1]] = grade_points(xy[[0, -1], 0], xy[[0, -1], 1], g[[0, -1]], pack)
                 floor, kinds = roadsmod.tunnel_sections(s, g)
                 i0 = 0
                 while i0 < len(kinds):
