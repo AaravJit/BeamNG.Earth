@@ -1,0 +1,184 @@
+From 2cd7f03244512274e9075e34be3bed84da3243c3 Mon Sep 17 00:00:00 2001
+From: KyzoFox <KyzoFox@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 14:53:28 -0400
+Subject: [PATCH] Road tiles: a hung road worker no longer stops road loading
+ for the session
+
+build_roads_tile waited on the road pool's future with no timeout. A worker
+that hangs (alive, so RespawningPool never sees it as broken) held that thread
+and its roads.Tracker slot forever; with BUILD_PER_POSE = 4, four hung tiles
+meant no road tile again ('roads & buildings 0/26', Lordsburg NM, Windows,
+1.7.0-beta exe).
+
+- earthd: the wait is bounded (ROAD_TILE_TIMEOUT_S, 120 s,
+  BNGE_ROAD_TILE_TIMEOUT); on timeout the road pool is recycled and the tile
+  is retried by Tracker._built like any other failure
+- pools: RespawningPool.recycle() kills the pool's processes and makes it
+  again (at most every RESPAWN_S)
+- blockworker: a road tile still building after STACK_DUMP_S (75 s,
+  BNGE_STACK_DUMP_S) dumps its worker's thread stacks to the server log, to
+  find what the hang waits on
+- tests: test_pools covers a hung worker being restarted
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_015bqtWGA36HhJJLndJKmULa
+---
+ server/blockworker.py      | 36 ++++++++++++++++++++++++++++++++++++
+ server/earthd.py           | 18 ++++++++++++++++--
+ server/pools.py            | 25 +++++++++++++++++++++++++
+ server/tests/test_pools.py | 17 +++++++++++++++++
+ 4 files changed, 94 insertions(+), 2 deletions(-)
+
+diff --git a/server/blockworker.py b/server/blockworker.py
+index 04f6e77..a37927b 100644
+--- a/server/blockworker.py
++++ b/server/blockworker.py
+@@ -403,6 +403,42 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
+     server keeps them for the ground's painters). In the server's process its Python made up
+     ~80 % of the main process's busy threads (in-game profile 2026-10-13): the block photos and far
+     textures waited for the GIL. A tile built in this anchor's place before comes from the revisit cache."""
++    watch = _stack_watch(f"road tile {tx}_{ty}")
++    try:
++        return _roads_tile_cached(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, buildings,
++                                  left_hand, mph, q, gas_stations, buried, lamp_region)
++    finally:
++        watch.cancel()
++
++
++STACK_DUMP_S = float(os.environ.get("BNGE_STACK_DUMP_S", "") or 75.0)   # s before a slow tile's stacks go to the log
++
++
++def _stack_watch(what):
++    """A timer that writes every thread's stack of this worker to the server log (stderr) when what is still running
++    after STACK_DUMP_S: where a hung road tile waits (the server's own stuck warning says only that it waits)."""
++    def dump():
++        import faulthandler
++        import sys
++        out = sys.stderr
++        if out is None:
++            return
++        try:
++            log.warning("%s still building after %.0f s in worker %d: its threads' stacks follow", what,
++                        STACK_DUMP_S, os.getpid())
++            out.flush()
++            faulthandler.dump_traceback(file=out, all_threads=True)
++            out.flush()
++        except Exception:               # (diagnostics only)
++            pass
++    t = threading.Timer(STACK_DUMP_S, dump)
++    t.daemon = True
++    t.start()
++    return t
++
++
++def _roads_tile_cached(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, buildings, left_hand, mph, q,
++                       gas_stations, buried, lamp_region):
+     import revisit
+     k = revisit.key("roads", round(float(lat), 7), round(float(lon), 7), zoom, tx, ty, bool(sidewalks), float(lift),
+                     bool(buildings), bool(left_hand), bool(mph), None if q is None else float(q), bool(gas_stations),
+diff --git a/server/earthd.py b/server/earthd.py
+index 79f2e0c..41ce670 100644
+--- a/server/earthd.py
++++ b/server/earthd.py
+@@ -269,6 +269,9 @@ TILE_CACHE = {32: 6000, 64: 2500}
+ HM_THREADS = 4
+ LAG_TICK_S, LAG_REPORT_S = 0.1, 0.25     # the event-loop stall report (-v)
+ ROAD_PROCESSES = 2              # road-tile processes (--block-process on, --roads on)
++# s a road tile may take in its worker before it is given up and its workers restarted (build_roads_tile): a first
++# visit's slowest tiles take ~1 min on a busy 6-core laptop; BNGE_ROAD_TILE_TIMEOUT=<s> to change it
++ROAD_TILE_TIMEOUT_S = float(os.environ.get("BNGE_ROAD_TILE_TIMEOUT", "") or 120.0)
+ WORKERS = 3                     # far-tile workers (--workers)
+ TRACE_S = 60.0                  # BNGE_TRACEMALLOC: seconds between the memory reports ...
+ TRACE_TOP = 15                  # ... and the allocation sites in each
+@@ -1218,11 +1221,22 @@ class Server:
+             return None
+         if self.road_pool is not None:
+             t0 = time.perf_counter()
+-            res = self.road_pool.submit(
++            fut = self.road_pool.submit(
+                 blockworker.roads_tile, aid, anchor.lat, anchor.lon, anchor.zooms[0], tx, ty, self.out_dir,
+                 self.vfs_dir, self.sidewalks, DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0,
+                 self.buildings, self.left_hand(anchor), self.mph(anchor), self.anchor_q(anchor),
+-                self.gas_stations, self.buried(anchor), self.lamp_region(anchor)).result()
++                self.gas_stations, self.buried(anchor), self.lamp_region(anchor))
++            try:
++                # bounded: a worker that never answered held this thread and its roads.Tracker slot for good (4
++                # slots: four hung tiles and no road tile ever again, the loading line at "roads & buildings 0/26")
++                res = fut.result(timeout=ROAD_TILE_TIMEOUT_S)
++            except concurrent.futures.TimeoutError:
++                fut.cancel()
++                log.warning("road tile %d_%d of anchor %d: no answer from its worker in %.0f s: built again",
++                            tx, ty, aid, ROAD_TILE_TIMEOUT_S)
++                if hasattr(self.road_pool, "recycle"):
++                    self.road_pool.recycle(f"road tile {tx}_{ty} hung for {ROAD_TILE_TIMEOUT_S:.0f} s")
++                raise
+             log.debug("road tile %d_%d: %.2f s (queue + build)", tx, ty, time.perf_counter() - t0)
+             self.keep_fuel_pads(res[2])
+             return res[:2]
+diff --git a/server/pools.py b/server/pools.py
+index 0ea397a..77525d7 100644
+--- a/server/pools.py
++++ b/server/pools.py
+@@ -50,6 +50,31 @@ class RespawningPool:
+                 self._pool = ProcessPoolExecutor(*self._args, **self._kwargs)
+             return self._pool
+ 
++    def recycle(self, why):
++        """The pool's processes killed and the pool made again: for a worker that is alive but never answers (a
++        road tile in flight for minutes left the loading line at "roads & buildings 0/26" for good, Windows,
++        1.7.0-beta, KyzoFox): a dead process makes the pool broken (_renew), a hung one never did. The futures in
++        flight end with BrokenProcessPool (their callers retry). At most every RESPAWN_S. True when recycled."""
++        with self._lock:
++            now = time.monotonic()
++            if now - self._last < RESPAWN_S:
++                return False
++            self._last = now
++            self.respawns += 1
++            old = self._pool
++            self._pool = ProcessPoolExecutor(*self._args, **self._kwargs)
++        log.warning("%s worker processes restarted (%s; %d so far)", self.name, why, self.respawns)
++        for p in list((getattr(old, "_processes", None) or {}).values()):
++            try:
++                p.kill()
++            except Exception:           # (gone already)
++                pass
++        try:
++            old.shutdown(wait=False, cancel_futures=True)
++        except Exception:
++            pass
++        return True
++
+     def shutdown(self, *args, **kwargs):
+         with self._lock:
+             pool = self._pool
+diff --git a/server/tests/test_pools.py b/server/tests/test_pools.py
+index 3526bd0..aa97e91 100644
+--- a/server/tests/test_pools.py
++++ b/server/tests/test_pools.py
+@@ -37,6 +37,23 @@ class RespawnTest(unittest.TestCase):
+         finally:
+             p.shutdown()
+ 
++    def test_a_hung_worker_is_restarted(self):
++        """A worker that never answers (alive, so the pool is not broken) is killed by recycle(): the call in flight
++        ends with BrokenProcessPool and the next one is served (a road tile hung for minutes, 1.7.0-beta)."""
++        import time
++        p = pools.RespawningPool("test", 1)
++        try:
++            hung = p.submit(time.sleep, 3600)
++            time.sleep(0.5)                     # (it is running)
++            with self.assertLogs("earthd.pools", "WARNING"):
++                self.assertTrue(p.recycle("test"))
++            with self.assertRaises(BrokenProcessPool):
++                hung.result(timeout=30)
++            self.assertEqual(p.submit(abs, -5).result(timeout=30), 5)
++            self.assertFalse(p.recycle("again at once"))    # (at most every RESPAWN_S)
++        finally:
++            p.shutdown()
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
+-- 
+2.43.0
+
