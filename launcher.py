@@ -105,6 +105,26 @@ def title(text):
     _out("  " + "-" * max(24, len(text)))
 
 
+DISCORD = "https://discord.gg/tgf"
+
+
+def support_notice(multiplayer=False):
+    """Where to get help (the BeamMP team, 2026-10-27: players kept asking them about BeamNG.Earth): at every start,
+    and set apart once BeamMP is up."""
+    if not multiplayer:
+        say(f"Need help? Join the BeamNG.Earth Discord: {DISCORD}")
+        say("(Multiplayer too: please don't ask the BeamMP team, they can't help with it.)")
+        return
+    _out("")
+    _out("  " + "=" * 78)
+    _out("  For help with BeamNG.Earth on BeamMP, join the BeamNG.Earth Discord:")
+    _out(f"      {DISCORD}")
+    _out("  Do NOT contact the BeamMP developers or open BeamMP support tickets about")
+    _out("  BeamNG.Earth. It is a separate project and they cannot help with it.")
+    _out("  BeamNG.Earth servers are in the \"BeamNG.Earth\" tab of BeamMP's server browser.")
+    _out("  " + "=" * 78)
+
+
 def problem(msg, hint=None):
     """Something that stops the start: set apart, with what to do about it."""
     import textwrap
@@ -1249,6 +1269,7 @@ def beammp_up(user_dir, build, args):
     version = bmplaunch.log_version(bmplaunch.read_log(log_path))
     row("Multiplayer", f"BeamMP{' v' + version if version else ''} ready: in the game, Multiplayer, then a server "
         "running BeamNG.Earth")
+    support_notice(multiplayer=True)
 
     def watch():                            # (a launcher too old for BeamMP's current mod: said once, plainly)
         for _ in range(60):
@@ -1273,6 +1294,7 @@ def beammp_up(user_dir, build, args):
 def run(args):
     import install
     title(f"BeamNG.Earth {install.version()}")
+    support_notice()
     wine = under_wine()
     build = "native"
     if args.user_dir:

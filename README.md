@@ -10,6 +10,10 @@ Status: beta (see VERSION). Tested on BeamNG.drive 0.40.3 on Linux (Vulkan) and 
 **Community:** join the [Discord server](https://discord.gg/tgf) and head to the #beamng-earth channel to talk about
 the mod, report problems, and get an IP to join a BeamMP.Earth server (see [Multiplayer](#multiplayer-beammp)).
 
+> **Need help?** Ask on the BeamNG.Earth Discord: **[discord.gg/tgf](https://discord.gg/tgf)**. This includes help
+> with multiplayer: BeamNG.Earth is not made by the BeamMP team, so please **don't contact the BeamMP developers or
+> open BeamMP support tickets** about it. They can't help with BeamNG.Earth.
+
 You can help support development by reporting [issues](https://github.com/TecnaGamer/BeamNG.Earth/issues), contributing code and sending pull requests, or [donating](https://ko-fi.com/tecnagamer). Thank You!
 
 ## Features (working today)
@@ -34,7 +38,9 @@ You can help support development by reporting [issues](https://github.com/TecnaG
 - Pump jacks at oil wells (OpenStreetMap), animated, with their sounds.
 - High-voltage power lines along their mapped routes (OpenStreetMap), with towers, conductors and fenced substations.
 - The satellite map on cars' own navigation screens.
-- Night lighting: lit windows and street lamps after dusk.
+- Night lighting: lit windows and street lamps after dusk, out to as far as buildings are drawn (about 3 miles),
+  spaced as real street lamps are (North American design standards there, OpenStreetMap's mapped lamps elsewhere),
+  and lit highways in towns and their ramps.
 - Buildings from Overture / OpenStreetMap with regional styles (US siding and brick, Alpine chalets, Nordic
   wood, Mediterranean stucco, East Asian and Latin American looks), real heights, roofs, windows, shopfronts,
   porches, churches with steeples, glass towers. Buildings show out to about 3 miles: simpler versions past 1 mile,
@@ -224,6 +230,16 @@ Tests: `cd server && python3 -m unittest discover -s tests -t tests` and
 ## Multiplayer (BeamMP)
 
 BeamNG.Earth runs on [BeamMP](https://beammp.com/) servers (in testing): drive the real world together.
+
+> **Support for BeamNG.Earth on BeamMP comes from us, not from BeamMP.** For questions or help with joining or hosting
+> a BeamNG.Earth server, join the BeamNG.Earth Discord: **[discord.gg/tgf](https://discord.gg/tgf)**. Please **don't
+> contact the BeamMP developers or open BeamMP support tickets** about BeamNG.Earth: it is a separate project and they
+> can't help with it.
+>
+> **BeamNG.Earth servers are hidden from players who don't run BeamNG.Earth.** BeamMP can't install BeamNG.Earth for
+> a player who joins, because it needs its own app (a launcher and a world server that builds the world on each
+> player's computer). So BeamMP's own server list never shows these servers. Players with the BeamNG.Earth app find
+> them in the BeamNG.Earth category of BeamMP's server browser, or join by Direct Connect.
 
 **Joining a server**
 1. Start the BeamNG.Earth app (the same version as the server's). It starts BeamMP with the game: the official BeamMP

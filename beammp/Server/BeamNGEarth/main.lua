@@ -52,6 +52,28 @@ G.WEATHERS = { clear = true, cloudy = true, rain = true, storm = true, snow = tr
 G.started = os.time()       -- (a running server clock starts here: every player computes the same time from it)
 G.clock = 0
 
+-- The notice printed when the server starts (the BeamMP team, 2026-10-27: players kept asking them for help with
+-- BeamNG.Earth): where to get help, and why players without BeamNG.Earth never see this server.
+G.DISCORD = 'https://discord.gg/tgf'
+function G.supportNotice()
+  local bar = string.rep('=', 78)
+  return {
+    bar,
+    'Need help with BeamNG.Earth or this server? Join the BeamNG.Earth Discord:',
+    '    ' .. G.DISCORD,
+    '',
+    'Do NOT contact the BeamMP developers or open BeamMP support tickets about',
+    'BeamNG.Earth. It is a separate project and they cannot help with it.',
+    '',
+    'This server is hidden from players who do not run BeamNG.Earth. BeamMP cannot',
+    'install BeamNG.Earth for players who join (it needs its own app: a launcher and',
+    'a world server on each player\'s computer), so BeamMP\'s own server list never',
+    'shows it. Players with the BeamNG.Earth app find it in the "BeamNG.Earth" tab of',
+    'BeamMP\'s server browser, or join by Direct Connect.',
+    bar,
+  }
+end
+
 function G.key(aLat, aLon) return string.format('%.6f,%.6f', aLat, aLon) end
 
 -- Metres between two latitude / longitude points (equirectangular: the distances here are a few km).
@@ -282,6 +304,8 @@ if MP and MP.RegisterEvent then
     if f then f:close() end
     return cfg
   end
+
+  for _, line in ipairs(G.supportNotice()) do print('[BeamNG.Earth] ' .. line) end
 
   -- a public server with its key goes on our list and off BeamMP's (its Private setting on while it runs: BeamMP's
   -- heartbeat sends it each time); otherwise direct connect only

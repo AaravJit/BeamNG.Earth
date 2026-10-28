@@ -9,6 +9,12 @@ local M_PER_DEG = 111194.9     -- (G.dist's sphere)
 
 T.check(math.abs(G.dist(0, 0, 1000 / M_PER_DEG, 0) - 1000) < 1, 'dist: 1 km north')
 
+-- the startup notice: the Discord for help, not BeamMP's developers; why the server is hidden from other players
+local notice = table.concat(G.supportNotice(), '\n')
+T.check(notice:find('discord.gg/tgf', 1, true) and notice:find('Do NOT contact the BeamMP developers', 1, true)
+  and notice:find('hidden from players who do not run BeamNG.Earth', 1, true), 'startup notice: ' .. notice)
+for _, line in ipairs(G.supportNotice()) do T.check(#line <= 80, 'notice lines fit a console: ' .. line) end
+
 -- the first player: alone, nowhere to go; its anchor new: sent at once
 G.players, G.clock = {}, 0
 local place, moved = G.onPose(1, { v = G.PROTO, aLat = 36, aLon = -118, lat = 36, lon = -118, joined = true }, 'a')

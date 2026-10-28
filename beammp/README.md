@@ -3,6 +3,17 @@
 This zip turns a BeamMP server into a BeamNG.Earth server: the real world, streamed around every player. Players join
 with the normal BeamMP launcher.
 
+> ## Support: the BeamNG.Earth Discord, not BeamMP
+> **For any question or help with setting this up, join the BeamNG.Earth Discord: [discord.gg/tgf](https://discord.gg/tgf).**
+>
+> BeamNG.Earth is not made by the BeamMP team. Please **don't contact the BeamMP developers, ask in BeamMP's channels
+> or open BeamMP support tickets** about BeamNG.Earth: they can't help with it.
+>
+> **Your server is hidden from players who don't run BeamNG.Earth.** BeamMP can't install BeamNG.Earth for players who
+> join: it needs its own app (a launcher and a world server that builds the world on each player's computer). So
+> BeamMP's own server list never shows a BeamNG.Earth server. Players with the BeamNG.Earth app find it in the
+> BeamNG.Earth tab of BeamMP's server browser, or join by Direct Connect.
+
 ## Quick server setup
 
 1. **Get the BeamMP server** (the latest release from https://github.com/BeamMP/BeamMP-Server/releases; Windows:
