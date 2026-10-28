@@ -300,14 +300,22 @@ def plan_roads(frame, parts, elev, abut=None, ext=None, pins=None, cuts=True):
         if len(xy) < 2:
             prof.append(None)
             continue
-        side = []
+        side, bank_side = [], []
         for out in (ext[j] if ext is not None else (None, None)):
             if out is None or len(out) < 2:
                 side.append(np.zeros((0, 2)))
+                bank_side.append(np.zeros((0, 2)))
             else:                       # (from the node outward; the node is the part's own end sample)
+                bank_side.append(resample(np.asarray(out, np.float64), step)[0][1:])
+                # Extra bank geometry must not change longitudinal DEM sampling
+                # or the bridge solver's established approach/underpass profiles.
+                reach = 3.0 * profile_sigma(spec) + PROFILE_STEP
+                arc = np.r_[0., np.cumsum(np.linalg.norm(np.diff(out, axis=0), axis=1))]
+                if arc[-1] > reach + 1e-8:
+                    out = np.vstack([np.asarray(out)[arc < reach], _point_along(out, reach)])
                 side.append(resample(np.asarray(out, np.float64), step)[0][1:])
-        prof.append((xy, side[0][::-1], side[1], step))
-    pts = [np.concatenate([b, xy, a]) for xy, b, a, _ in (p for p in prof if p is not None)]
+        prof.append((xy, side[0][::-1], side[1], step, bank_side[0][::-1], bank_side[1]))
+    pts = [np.concatenate([b, xy, a]) for xy, b, a, *_ in (p for p in prof if p is not None)]
     if not pts:
         return [None] * len(parts)
     allxy = np.concatenate(pts)
@@ -318,7 +326,7 @@ def plan_roads(frame, parts, elev, abut=None, ext=None, pins=None, cuts=True):
         if pr is None:
             out.append(None)
             continue
-        xy, before, after, step = pr
+        xy, before, after, step, bank_before, bank_after = pr
         nb, na = len(before), len(after)
         zx = zall[k:k + nb + len(xy) + na]
         k += nb + len(xy) + na
@@ -341,7 +349,16 @@ def plan_roads(frame, parts, elev, abut=None, ext=None, pins=None, cuts=True):
         if pin[1] is not None and not na and not ab[1]:
             zx = zx.copy()
             zx[-1] = pin[1]
-        out.append(_plan(xy, zx, spec, ab, (nb, na), step))
+        # Curvature and its runoff need the joined-road context too. Computing
+        # banking on xy alone puts a partial curvature window at every map
+        # segment end, even where the longitudinal profile is continuous.
+        if ab[0]:
+            bank_before = bank_before[:0]
+        if ab[1]:
+            bank_after = bank_after[:0]
+        bank_xy = np.concatenate([bank_before, xy, bank_after])
+        out.append(_plan(xy, zx, spec, ab, (nb, na), step, bank_xy=bank_xy,
+                         bank_ext=(len(bank_before), len(bank_after))))
     if SHARP_ON and cuts:           # (cuts False: the profile alone, Grader._stronger_z)
         _add_cuts(frame, [p if p is not None and sp.kind in roadsmod.BUILT else None
                           for p, (_ll, sp) in zip(out, parts)], elev)
@@ -439,9 +456,9 @@ def profile_sigma(spec):
     return max(SIGMA_M, SIGMA_MAJOR_M) if spec.cls in MAJOR_CLASSES and not getattr(spec, "link", False) else SIGMA_M
 
 
-def _plan(xy, z, spec, abut=(False, False), ext=(0, 0), step=PROFILE_STEP):
+def _plan(xy, z, spec, abut=(False, False), ext=(0, 0), step=PROFILE_STEP, bank_xy=None, bank_ext=None):
     """ext: (before, after), samples of z past the part's ends (plan_roads): smoothed with it, then dropped. step: m
-    between the samples."""
+    between the samples. bank_xy: the matching extended geometry, trimmed after the curvature/runoff pass."""
     built = spec.kind in roadsmod.BUILT
     zs = smooth_profile(median_profile(z, step, MEDIAN_M if built else DIRT_MEDIAN_M), step,
                         profile_sigma(spec))[ext[0]:len(z) - ext[1]]
@@ -454,8 +471,11 @@ def _plan(xy, z, spec, abut=(False, False), ext=(0, 0), step=PROFILE_STEP):
         width = max(spec.width, roadsmod.dual_cap(spec.median, width))
     plan = Plan(xy[keep], zs[keep], width / 2 + shoulder(spec), abut, road_half=width / 2)
     plan.max_wall = wall_max_h(spec)
-    b = bank(xy, spec, abut, ext)
+    bext = ext if bank_ext is None else bank_ext
+    b = bank(xy if bank_xy is None else bank_xy, spec, abut, bext)
     if b is not None:
+        if bank_xy is not None:
+            b = b[bext[0]:len(bank_xy) - bext[1]]
         plan.bank = b[keep]
     return plan
 
@@ -470,10 +490,14 @@ BANK_ON = os.environ.get("BNE_BANK", "on") != "off"
 BANK_E_MAX = 0.08
 BANK_DESIGN = {"motorway": (110.0, 0.10), "trunk": (90.0, 0.12)}     # km/h, side friction
 BANK_LINK = (60.0, 0.16)                                              # their slip roads
-BANK_STENCIL_M = 50.0       # the curve's mean curvature over this far either side (map lines turn at vertices ~100 m
-                            # apart on rural interstates: 12 m saw a bump at each, Discord 2026-10-28)
-BANK_RUNOFF_M = 60.0        # (AASHTO's runoff for 6-8 % at 70 mph: 200-300 ft)
-BANK_FADE_M = 30.0
+# Sparse motorway map lines are straight chords, often ~100 m between vertices: a 12 m stencil saw each chord as level
+# and each corner as a tight bend, 8 % bank pulses (I-80, 41.41135, -105.83960; Discord 2026-10-28 and PR #410). The
+# curvature is the road's mean turning over this far either side (earthfast.bank_profile), its context the joined
+# roads' too (plan_roads bank_xy), then smoothed.
+BANK_STENCIL_M = 100.0      # 200 m baseline
+BANK_RUNOFF_M = 100.0       # full 8 % transition at <= 0.08 / 100 m away from ends
+BANK_FADE_M = 100.0         # smoothstep to level at a bridge / loose end; no deck-height changes
+BANK_SIGMA_M = 12.0         # remove discrete box-window steps in cross slope, not road elevation
 
 
 def bank(xy, spec, abut=(False, False), ext=(0, 0)):
@@ -488,6 +512,13 @@ def bank(xy, spec, abut=(False, False), ext=(0, 0)):
     b = np.asarray(fast._ef.bank_profile(np.ascontiguousarray(np.asarray(xy, np.float64)[:, :2]), float(BANK_E_MAX),
                                          float(r_min), float(BANK_STENCIL_M), float(BANK_RUNOFF_M),
                                          float(fade[0]), float(fade[1])), np.float64)
+    step = float(np.median(np.linalg.norm(np.diff(np.asarray(xy)[:, :2], axis=0), axis=1)))
+    if step > 0.0:
+        b = smooth_profile(b, step, BANK_SIGMA_M)  # pinned ends keep bridge abutments level
+    if fade[0]:
+        b[0] = 0.0
+    if fade[1]:
+        b[-1] = 0.0
     return b if np.any(b != 0.0) else None
 
 
@@ -748,7 +779,12 @@ class Grader:
                 q_dir.append(line[0] - p)                    # the way the road goes on out of this end
                 q_class.append(int(round(sg * 1000)))
                 q_road.append(road_id(fid))
-                q_reach.append(3.0 * sg + PROFILE_STEP)
+                reach = 3.0 * sg + PROFILE_STEP
+                if BANK_ON and spec.kind in roadsmod.BUILT and spec.cls in BANK_DESIGN:
+                    # Runoff averages curvature beyond the join, and that
+                    # curvature needs its own stencil on either side too.
+                    reach = max(reach, BANK_STENCIL_M + BANK_RUNOFF_M / 2 + 3 * BANK_SIGMA_M + PROFILE_STEP)
+                q_reach.append(reach)
                 q_cell.append(lonlat[0] if end == 0 else lonlat[-1])
         if q_cell:                  # (the ends' cells at once)
             qll = np.asarray(q_cell, np.float64).reshape(-1, 2)
