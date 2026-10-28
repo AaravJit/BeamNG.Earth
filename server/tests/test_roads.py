@@ -1153,6 +1153,33 @@ class InGroundTest(unittest.TestCase):
         self.assertTrue([c for c in chunks if c["m"] not in surfaces], "its lines stay")
 
 
+class NearNodePairsTest(unittest.TestCase):
+    def test_the_grid_gives_the_all_pairs_scans_pairs_in_its_order(self):
+        import math
+        import junctions
+        rng = np.random.default_rng(3)
+        pos = rng.uniform(0.0, 200.0, (500, 2))
+        r = junctions.MERGE_M
+        scan = [(a, b) for a in range(len(pos)) for b in range(a + 1, len(pos))
+                if math.hypot(*(pos[a] - pos[b])) < r]
+        self.assertTrue(scan)
+        self.assertEqual(list(junctions._near_node_pairs(pos, r)), scan)
+
+
+class RingWidthTest(unittest.TestCase):
+    def test_a_mapped_roundabout_is_as_wide_as_the_guides_make_it(self):
+        ring = [(30 * np.cos(a), 30 * np.sin(a)) for a in np.linspace(0, 2 * np.pi, 25)]
+        f = features([ring, ring, [(-100, 80), (100, 80)]], ["residential", "tertiary", "residential"])
+        f.attrs["osm_junction"] = np.array(["roundabout", "roundabout", ""], object)
+        f.attrs["osm_lanes"] = np.array([np.nan, 2.0, np.nan])
+        sp = roads.road_specs(f, lambda la, lo: np.ones(np.shape(la), bool))
+        self.assertAlmostEqual(sp[0].width, roads.RING_LANE_M)
+        self.assertAlmostEqual(sp[1].width, roads.RING_LANE_M + roads.RING_EXTRA_LANE_M)
+        self.assertFalse(sp[0].urban)                   # no parking lanes on the ring
+        self.assertFalse(roads.has_sidewalks(sp[0]))
+        self.assertTrue(sp[2].urban)                    # a street beside it as before
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -172,7 +172,8 @@ LANES_ON = os.environ.get("BNE_LANETAGS", "on") != "off"
 LANE_COLUMNS = ("turn:lanes", "turn:lanes:forward", "turn:lanes:backward", "turn:lanes:both_ways", "change:lanes",
                 "change:lanes:forward", "change:lanes:backward", "placement", "placement:forward", "placement:backward",
                 "lanes:forward", "lanes:backward", "lanes:both_ways", "overtaking", "overtaking:forward",
-                "overtaking:backward", "divider", "lane_markings", "bus:lanes", "busway", "hov:lanes")
+                "overtaking:backward", "divider", "lane_markings", "bus:lanes", "busway", "hov:lanes",
+                "junction")     # (roundabout rings: roads._rings, attrs osm_junction)
 
 
 def lane_attr(key):

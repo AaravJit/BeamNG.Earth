@@ -1291,8 +1291,47 @@ def _road_specs(feats, urban_fn, left_hand):
             k += b - a
             out[j] = Spec(carriageway(cls, kind, urban, None, ow, lanes), kind, urban, cls, ow, 2.5, *dk, lanes=lanes,
                           surf=token, link=link)
+    out = _rings(feats, out)
     out = dual_carriageways(feats, out, left_hand)
     return _osm_sidewalks(feats, out)
+
+
+# Roundabouts (OpenStreetMap junction=roundabout / circular: osmtags osm_junction): the circulatory roadway as wide as
+# the design guides make it, not a one-way street's lane (3.5-4 m: cars clipped the central island's curb). FHWA /
+# NCHRP Report 672 (Roundabouts: An Informational Guide, 2nd ed., 6.4.5 / 6.5.5): single-lane 16-20 ft (4.9-6.1 m),
+# two-lane 29-32 ft (8.8-9.8 m). No parking lanes or inferred sidewalks on the ring (urban False; mapped sidewalks
+# stay). (cody196's PR #363 took 9 m a lane: twice the guides.)
+RING_LANE_M = 5.5               # m: a single-lane ring
+RING_EXTRA_LANE_M = 4.3         # m per further circulating lane
+RING_JUNCTIONS = ("roundabout", "circular")
+
+
+def ring_width(lanes):
+    """The circulatory roadway's width for its lane count (None: one)."""
+    return RING_LANE_M + RING_EXTRA_LANE_M * (max(1, int(lanes or 1)) - 1)
+
+
+def is_ring(feats, i):
+    """Is feature i a mapped roundabout ring (osmtags osm_junction)?"""
+    col = feats.attrs.get("osm_junction")
+    return col is not None and str(col[i]) in RING_JUNCTIONS
+
+
+def _rings(feats, specs):
+    """specs with the mapped roundabout rings widened to ring_width (or their mapped width, if wider). Pure."""
+    if feats.attrs.get("osm_junction") is None:
+        return specs
+    out = list(specs)
+    rules = feats.rules
+    for i, sp in enumerate(out):
+        if sp is None or sp.kind not in BUILT or not is_ring(feats, i):
+            continue
+        width = _rule_value(rules.get("width"), i)
+        mapped = float(width) if width is not None and 1.0 <= float(width) <= 40.0 else None
+        if mapped is None:
+            mapped = _osm(feats, "width", i, *OSM_WIDTH_M)
+        out[i] = sp._replace(width=max(mapped or 0.0, ring_width(sp.lanes)), urban=False, median=None)
+    return out
 
 
 def _measured_widths(feats, specs, widths):
@@ -1307,6 +1346,8 @@ def _measured_widths(feats, specs, widths):
             continue
         if sp.median:       # one carriageway of a divided road: the width between the buildings is both of them
             continue        # and the median (each took all of it, one wide road over Boston Street's median)
+        if is_ring(feats, j):
+            continue        # (a roundabout: _rings' circulatory width; the buildings stand round the whole circle)
         a = feats.coord_off[feats.ring_off[feats.part_off[j]]]
         b = feats.coord_off[feats.ring_off[feats.part_off[j + 1]]]
         if _osm(feats, "width", j, *OSM_WIDTH_M) is not None or sp.lanes:
@@ -3356,6 +3397,8 @@ def lane_tags(feats, i):
     import railtags
     out = {}
     for k in railtags.LANE_COLUMNS:
+        if k == "junction":
+            continue                            # (a ring's tag, not lane data: roads._rings reads it)
         col = feats.attrs.get(railtags.lane_attr(k))
         if col is not None and col[i] is not None:
             out[k] = col[i]
