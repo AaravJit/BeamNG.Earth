@@ -130,6 +130,35 @@ class OsmAheadOfClassTest(unittest.TestCase):
             self.assertFalse(sp.oneway)
             self.assertEqual(navgraph._lanes(navgraph.driving_width(sp), False, sp.lanes), (1, 1))
 
+    def test_bridge_without_lanes_takes_the_same_named_way_count(self):
+        """GitHub #378: a bridge drawn at its class's 8 m instead of OSM's 4 lanes. Here the bridge's own way has no
+        lane count; it takes the street's (4), and the deck is as wide as 4 lanes."""
+        f = features([[(-300, 0), (-100, 0)], [(-100, 0), (100, 0)]], ["primary"] * 2,
+                     levels=[(1, 1.0, 0.0, 1.0)])
+        f.attrs["src_record"] = np.array(["w1@1", "w2@1"])
+        f.attrs["name"] = np.array(["Kommunalny"] * 2)
+        osmtags.join(f, {1: dict(self.box(-300, -90), name="Kommunalny", lanes=4),
+                         2: dict(self.box(-100, 100), name="Kommunalny")})
+        sp = roads.bridge_specs(f)[1]
+        self.assertEqual(sp.lanes, 4)
+        self.assertGreaterEqual(sp.width, 4 * roads.LANE_W.get("primary", roads.LANE_W_DEFAULT))
+
+    def test_relation_segment_takes_the_two_way_count_not_split(self):
+        """GitHub #175 (Kostiantynivka, vul. Konrada Hampera): a relation segment (no way id) beside the same street's
+        two-way 4-lane way, a one-way 1-lane ramp and an untagged side piece was drawn as one 3.5 m one-way lane: the road narrowed
+        sharply. It takes the two-way's 4 lanes and stays two-way."""
+        f = features([[(0, 0), (100, 0), (200, 0)], [(200, 0), (400, 0)], [(0, 10), (200, 10)], [(50, 0), (150, 0)]],
+                     ["secondary", "secondary", "secondary", "unclassified"])
+        f.attrs["src_record"] = np.array(["r9@1", "w1@1", "w2@1", "w3@1"])
+        f.attrs["name"] = np.array(["Hampera"] * 4)
+        osmtags.join(f, {1: dict(self.box(0, 400), name="Hampera", lanes=4),
+                         2: dict(self.box(0, 200, 10), name="Hampera", lanes=1, osm_oneway="yes"),
+                         3: dict(self.box(50, 150), name="Hampera")})    # (the smallest around it: no count)
+        self.assertEqual(f.attrs["osm_lanes"][0], 4)
+        sp = roads.road_specs(f)[0]
+        self.assertFalse(sp.oneway)
+        self.assertGreaterEqual(sp.width, 4 * roads.LANE_W.get("secondary", roads.LANE_W_DEFAULT))
+
     def test_driving_width_follows_the_lane_count(self):
         sp = tagged([[(0, 0), (200, 0)]], ["residential"], ["w1@1"], {1: {"lanes": 4}})
         sp = roads.road_specs(sp)[0]
