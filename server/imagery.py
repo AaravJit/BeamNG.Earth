@@ -170,7 +170,8 @@ for _n, (_url, _attr, _bounds, _kind, _leaf) in imagery_regional.REGIONAL.items(
 # fetched as images): after the regional services, like an export source
 SOURCES["bcortho"] = Source("bcortho", bcorthomod.URL, 17, bcorthomod.ATTRIBUTION, min_zoom=17, export=2, lazy=True,
                             bounds=(47.9, -130.1, 51.1, -121.9), nodata="black")
-DEFAULT_CHAIN = ("md6in", *imagery_regional.REGIONAL, "bcortho", "naipusda", "naip", "usgs", "eox2023", "eox2016")
+DEFAULT_CHAIN = ("md6in", *imagery_regional.REGIONAL, *(("bcortho",) if os.environ.get("BNE_BCORTHO", "1") != "0" else ()),
+                 "naipusda", "naip", "usgs", "eox2023", "eox2016")
 # The line the mod shows (V1_3_SPEC §C), for the default chain: every source's own credit, EOX's in
 # its June 2026 wording (docs/research/2026-10-10-rate-limits.md: "EOxCloudless https://cloudless.eox.at
 # by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2023)", 2016: "... 2016 & 2017").

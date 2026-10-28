@@ -44,6 +44,7 @@ NODATA_LIMIT = -1000.0          # heights below this are nodata (the files' -327
 BOUNDS = (41.6, -141.1, 62.0, -52.5)
 TILE = 512                      # dem.py's tile size
 TILE_CACHE_BYTES = 256 * 1024 * 1024
+LATTICE_M = 2.0                 # m: the terrain's lattice; finer mosaic pixels are not read (z16's 0.8 m: the 2 m overview)
 MAX_LEVEL = 8                   # overviews asked down to 2^8 = 256 m pixels (dem.py asks z13 and deeper: <= 12 m)
 
 # EPSG:3979: NAD83(CSRS) / Canada Atlas Lambert
@@ -137,7 +138,7 @@ class Hrdem:
                 self._cogs.popitem(last=False)
         return c
 
-    def tile(self, z, x, y, size=TILE):
+    def tile(self, z, x, y, size=TILE, min_px=LATTICE_M):
         """Heights and their validity on dem.py's tile (z, x, y), or None where the mosaic has nothing there.
         Network failures raise netfetch.FetchError (the caller keeps its own heights)."""
         if not covers(z, x, y):
@@ -147,7 +148,7 @@ class Hrdem:
         # the tile's ground pixel (m) at its centre: the mosaic level that is as fine as that or one finer
         clat = math.radians(float(lat[size // 2, 0]))
         px = 40075016.686 * math.cos(clat) / 2 ** z / size
-        want = max(0, min(MAX_LEVEL, int(math.floor(math.log2(max(px, 1.0))))))
+        want = max(0, min(MAX_LEVEL, int(math.floor(math.log2(max(px, min_px, 1.0))))))
         out = np.zeros((size, size), np.float32)
         ok = np.zeros((size, size), bool)
         ix = np.floor(ex / ITEM_M).astype(np.int64)

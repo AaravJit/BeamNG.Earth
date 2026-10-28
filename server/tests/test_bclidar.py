@@ -444,3 +444,26 @@ class BCCanopyTest(unittest.TestCase):
         self.assertIn("lidarbc:k100", out.files)
         far = mapcells.CellKey(14, 100, 100)
         self.assertIs(r.bc_canopy(far, base)[0], base)      # outside BC: as it was
+
+
+class LazyTileTableTest(unittest.TestCase):
+    """cog._Table: a long tile table read in pieces gives what the whole array would."""
+
+    def test_pieces_match_the_whole_table(self):
+        full = np.arange(200000, dtype="<u8") * 7 + 3
+        raw = full.tobytes()
+        reads = []
+
+        class FakeCog:
+            def _bytes(self, off, n):
+                reads.append(n)
+                return raw[off - 100:off - 100 + n]
+
+        t = cog._Table(FakeCog(), 100, np.dtype("<u8"), len(full))
+        self.assertEqual(len(t), len(full))
+        self.assertEqual(t[5], full[5])
+        self.assertEqual(t[-1], full[-1])
+        idx = np.array([[0, 199999], [32768, 70000]])
+        np.testing.assert_array_equal(t[idx], full[idx].astype(np.int64))
+        self.assertLessEqual(max(reads), cog.TABLE_PIECE)
+        self.assertLess(sum(reads), len(raw))           # only the pieces asked for were read

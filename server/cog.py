@@ -51,6 +51,48 @@ class _Lazy:
         self.off, self.typ, self.cnt = off, typ, cnt
 
 
+TABLE_PIECE = 256 * 1024    # bytes of a long tile table read at a time (rangeread's block)
+
+
+class _Table:
+    """A long tile table read in TABLE_PIECE pieces as they are indexed (an int or an int array, like the int64
+    array it stands for): HRDEM's 1 m mosaic item has ~950k tiles, 15 MB of offsets and counts per place otherwise
+    (2026-10-28: 24 MB fetched for one z15 terrain tile)."""
+
+    def __init__(self, cog, off, dtype, cnt):
+        self._cog, self._off, self._dt, self._n = cog, off, dtype, cnt
+        self._per = max(1, TABLE_PIECE // dtype.itemsize)
+        self._pieces = {}
+
+    def __len__(self):
+        return self._n
+
+    def _piece(self, k):
+        a = self._pieces.get(k)
+        if a is None:
+            i0 = k * self._per
+            n = min(self._per, self._n - i0)
+            data = self._cog._bytes(self._off + i0 * self._dt.itemsize, n * self._dt.itemsize)
+            a = self._pieces[k] = np.frombuffer(data, self._dt, count=n).astype(np.int64)
+        return a
+
+    def __getitem__(self, i):
+        if isinstance(i, (int, np.integer)):
+            i = int(i)
+            if i < 0:
+                i += self._n
+            if not 0 <= i < self._n:
+                raise IndexError(i)
+            return self._piece(i // self._per)[i % self._per]
+        idx = np.asarray(i, np.int64)
+        out = np.empty(idx.shape, np.int64)
+        flat, res = idx.ravel(), out.ravel()
+        for k in np.unique(flat // self._per):
+            m = flat // self._per == k
+            res[m] = self._piece(int(k))[flat[m] - int(k) * self._per]
+        return out
+
+
 class CogError(ValueError):
     """Not a TIFF this reader supports (or a corrupt one)."""
 
@@ -240,9 +282,12 @@ class Cog:
         return tags
 
     def _array(self, v):
-        """A tile table as int64 (a _Lazy one read now)."""
+        """A tile table as int64: a short one read now, a long one (a national mosaic's: ~15 MB at full resolution,
+        while a place needs a few rows of it) as a _Table that reads the pieces asked for."""
         if isinstance(v, _Lazy):
             fmt, sz = TYPES[v.typ]
+            if sz * v.cnt > TABLE_PIECE:
+                return _Table(self, v.off, np.dtype(self.bo + fmt), v.cnt)
             data = self._bytes(v.off, sz * v.cnt)
             return np.frombuffer(data, np.dtype(self.bo + fmt), count=v.cnt).astype(np.int64)
         return np.asarray(v, np.int64)

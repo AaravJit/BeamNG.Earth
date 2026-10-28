@@ -20,7 +20,8 @@ You can help support development by reporting [issues](https://github.com/TecnaG
 ## Features (working today)
 **The world**
 - The whole planet at 1:1 scale on real elevation: national lidar where it exists (Mapterhorn: much of
-  Europe, the US and more), Copernicus 30 m elsewhere with buildings and small tree stands filtered out of it.
+  Europe, the US and more; in Canada NRCan's 1 m HRDEM, and British Columbia's LidarBC on Vancouver Island),
+  Copernicus 30 m elsewhere with buildings and small tree stands filtered out of it.
 - Aerial and satellite imagery on the ground: open state and national orthophotos (Maryland's 15 cm photos,
   a dozen more US states, NAIP across the US, Switzerland, France, Spain, the Netherlands, Germany's states,
   Austria, Poland, Czechia, Japan, parts of Australia and Canada, and more), Sentinel-2 cloudless everywhere else; shadows and
@@ -306,6 +307,9 @@ The repository contains only code; all map data is downloaded at runtime and cac
 - Elevation: Mapterhorn (see https://mapterhorn.com/attribution), AWS Terrain Tiles / Mapzen; the polar caps from
   85 deg on: Copernicus DEM GLO-30 (produced using Copernicus WorldDEM-30 (c) DLR e.V. 2010-2014 and (c) Airbus
   Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA).
+- Canada: HRDEM (contains information licensed under the Open Government Licence - Canada, Natural Resources
+  Canada); British Columbia: LidarBC terrain, surface models (tree heights) and orthophotos (contains
+  information licensed under the Open Government Licence - British Columbia).
 - Roads, buildings, water and places: Overture Maps / OpenStreetMap contributors (lane counts, widths and speed limits from OpenStreetMap via OSM US Layercake); trees from a
   canopy height model; airports from OurAirports.
 - Oil wells and refineries: OpenStreetMap contributors (ODbL; the bundled `oil_wells.npz` and `refineries.npz`).

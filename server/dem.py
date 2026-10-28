@@ -68,6 +68,14 @@ MAX_ZOOM = 15               # AWS stops at z15 (the far field's zooms: zoom_for'
 FINE_ZOOM = int(os.environ.get("BNE_DEM_ZOOM", "16"))
 GLOBAL_ZOOM = 12            # Mapterhorn is complete on land up to here
 HRDEM = os.environ.get("BNE_HRDEM", "1") != "0"
+# British Columbia's own lidar (lidarbc.py): opt-in. Its 1 m files have no overviews and are read in full-width rows:
+# ~15 MB a square km of near terrain, and a first visit on Vancouver Island took ~60 s longer to its roads (four
+# fresh towns, 2026-10-28: all 36 road tiles at 85-88 s against 23-26 s). HRDEM (its overviews) stays on.
+LIDARBC = HRDEM and os.environ.get("BNE_LIDARBC", "0") == "1"
+# HRDEM read whole for the near terrain (z15 and deeper, 2 m): opt-in too (2026-10-28, four fresh Vancouver Island
+# towns: all road tiles at 33-53 s against 20-22 s without, 61-72 MB a place). Its coarse overview still lines the
+# far tiles up with the lidar ground (_hrdem_bias: a few MB).
+HRDEM_NEAR = HRDEM and os.environ.get("BNE_HRDEM_NEAR", "0") == "1"
 HRDEM_FEATHER_M = 60.0      # m over which HRDEM's edge blends into Mapterhorn's heights
 HRDEM_FEATHER_MAX_PX = 48
 # The distant terrain (z12 / z13: the far field's L2 / L3 rings, 1-4 km out): reading BC's 1 m lidar whole for it would
@@ -77,7 +85,13 @@ HRDEM_FEATHER_MAX_PX = 48
 # BIAS_GRID x BIAS_GRID grid
 # measures Mapterhorn's offset there, smoothed over BIAS_SMOOTH grid cells, and the tile is shifted by it: Mapterhorn's
 # shape at the lidar's level, fading out where the lidar ends.
-BIAS_ZOOMS = (12, 13)
+BIAS_ZOOMS = (12, 13, 14)
+# The lidar itself (HRDEM, LidarBC) only from this zoom on: the near terrain (z15: ~1.6 m pixels at 49 N, the
+# terrain's 2 m lattice). Read whole, the far rings' z13 / z14 tiles cost ~10 MB each (2026-10-28, Port Alberni: 440 MB
+# of lidar for one first visit, against Overture's 84 MB); there HRDEM's coarse overview shifts Mapterhorn instead.
+FINE_MIN_ZOOM = 15
+HRDEM_BIAS_PX = 64          # the far tile's grid the HRDEM overview is read on ...
+HRDEM_BIAS_M = 32.0         # ... from the overview with pixels this size (a 16 km file tile serves a whole region)
 BIAS_GRID = 32
 BIAS_SMOOTH = 2.0           # grid cells (Gaussian sigma)
 BIAS_BLOCK = 16 * 1024
@@ -210,10 +224,10 @@ class Dem:
         # data, zeros), for the data credits (credits.py). A few bytes per tile ever loaded.
         self.served = {}
         self.hrdem = hrdemmod.Hrdem(os.path.join(cache_dir, "hrdem"), self.fetcher) if HRDEM else None
-        self.lidarbc = lidarbcmod.LidarBC(os.path.join(cache_dir, "lidarbc"), self.fetcher) if HRDEM else None
+        self.lidarbc = lidarbcmod.LidarBC(os.path.join(cache_dir, "lidarbc"), self.fetcher) if LIDARBC else None
         self.lidarbc_served = set()     # tile keys with LidarBC heights in them
         self.lidarbc_sparse = (lidarbcmod.LidarBC(os.path.join(cache_dir, "lidarbc-sparse"), self.fetcher,
-                                                  block=BIAS_BLOCK) if HRDEM else None)
+                                                  block=BIAS_BLOCK) if LIDARBC else None)
         self.hrdem_served = set()       # tile keys with HRDEM heights in them (the data credits)
 
     def _canada(self, key, a):
@@ -221,10 +235,35 @@ class Dem:
         z, x, y = key
         if a is None or z < GLOBAL_ZOOM:
             return a
-        if z <= GLOBAL_ZOOM:
-            return self._bc_bias(key, a)
-        a = self._canada_fine(key, a)
-        return self._bc_bias(key, a) if z in BIAS_ZOOMS else a
+        if z < FINE_MIN_ZOOM:
+            return self._bc_bias(key, self._hrdem_bias(key, a))
+        if not (HRDEM_NEAR or LIDARBC):
+            return a
+        return self._canada_fine(key, a)
+
+    def _hrdem_bias(self, key, a):
+        """Distant tile key's heights a shifted to HRDEM's ground (read from a coarse overview) where Mapterhorn's sit
+        off it: its forests and drawn-out coarse model, at the lidar's level, for a few hundred kB a region."""
+        z, x, y = key
+        if self.hrdem is None or z not in BIAS_ZOOMS or not hrdemmod.covers(z, x, y):
+            return a
+        try:
+            got = self.hrdem.tile(z, x, y, size=HRDEM_BIAS_PX, min_px=HRDEM_BIAS_M)
+        except (netfetch.FetchError, OSError, ValueError) as e:
+            self._count("hrdem-bias:error")
+            self._partial()
+            log.debug("hrdem bias %s: %s", key, e)
+            return a
+        if got is None:
+            return a
+        h, ok = got
+        lat, lon = hrdemmod.tile_lat_lon(z, x, y, HRDEM_BIAS_PX)
+        out = self._shift_to(key, a, lat[ok], lon[ok], h[ok])
+        if out is not a:
+            self._count("hrdem-bias:tile")
+            with self._lock:
+                self.hrdem_served.add(key)
+        return out
 
     def _bc_bias(self, key, a):
         """Distant tile key's heights a shifted to BC's lidar ground where Mapterhorn's sit off it (BIAS_* above)."""
@@ -245,6 +284,16 @@ class Dem:
             self._partial()
             log.debug("lidarbc bias %s: %s", key, e)
             return a
+        out = self._shift_to(key, a, plat, plon, ph)
+        if out is not a:
+            self._count("lidarbc-bias:tile")
+        return out
+
+    def _shift_to(self, key, a, plat, plon, ph):
+        """Tile key's heights a shifted by the smoothed offset between them and ground points (plat, plon, ph): a
+        new array, or a itself where there is too little to go on or the shift is under a quarter metre."""
+        z, x, y = key
+        n = 2 ** z
         if len(ph) < 16:
             return a
         # the tile's own heights at the lidar points (bilinear on its pixel grid)
@@ -282,7 +331,6 @@ class Dem:
             return a
         out = (a - field).astype(np.float32)
         out[a == 0.0] = 0.0                          # the sea stays the sea
-        self._count("lidarbc-bias:tile")
         return out
 
     def _canada_fine(self, key, a):
