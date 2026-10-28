@@ -45,7 +45,10 @@ SIGMA_MAJOR_M = float(os.environ.get("BNE_GRADE_MAJOR", "40"))
 # and walls on flat land, GitHub #335. Not secondary yet: Otto Road's junction with I-80's ramps came out 0.29 m apart
 # once its dip under I-80 (underpass_offsets) was laid on the longer smoothing; the ramps' pins need a look first)
 MAJOR_CLASSES = ("motorway", "trunk", "primary")      # (not their slip roads: Overture's subclass "link", Spec.link)
-DIRT_SIGMA_M = 5.0          # m, profile smoothing of gravel / dirt roads
+DIRT_SIGMA_M = 8.0          # m, profile smoothing of gravel / dirt roads (5 followed the DEM's bumps: GitHub #414)
+# longer smoothing for the mid classes too (mpsteppe's PR #289: real roads have long vertical curves, the larger the
+# longer; 12 m left bumps the roads do not have); MAJOR_CLASSES keep SIGMA_MAJOR_M
+CLASS_SIGMA_M = {"secondary": 25.0, "tertiary": 20.0, "unclassified": 16.0, "residential": 14.0}
 # A running median before the smoothing (median_profile): a bridge deck left in the elevation data where it crosses
 # over a road is a spike a few samples wide, and the Gaussian spread it into a hump in the road under (GitHub #271, an
 # 8.5 m spike near Thetford: a 3.2 m hump). Slopes, crests and steps longer than the window stay.
@@ -463,7 +466,9 @@ def profile_sigma(spec):
     """m: the profile smoothing of a road of this spec."""
     if spec.kind not in roadsmod.BUILT:
         return DIRT_SIGMA_M
-    return max(SIGMA_M, SIGMA_MAJOR_M) if spec.cls in MAJOR_CLASSES and not getattr(spec, "link", False) else SIGMA_M
+    if spec.cls in MAJOR_CLASSES and not getattr(spec, "link", False):
+        return max(SIGMA_M, SIGMA_MAJOR_M)
+    return max(SIGMA_M, CLASS_SIGMA_M.get(spec.cls, SIGMA_M)) if not getattr(spec, "link", False) else SIGMA_M
 
 
 def _plan(xy, z, spec, abut=(False, False), ext=(0, 0), step=PROFILE_STEP, bank_xy=None, bank_ext=None):
