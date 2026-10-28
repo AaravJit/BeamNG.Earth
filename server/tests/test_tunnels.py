@@ -55,6 +55,23 @@ class Profile(unittest.TestCase):
 
 
 class Holes(unittest.TestCase):
+    def test_a_cut_into_a_cliff_opens(self):
+        # GitHub #403 (Malibu Canyon Road): the road at the cliff's foot, the next sample far over the vault: no sample
+        # between floor and vault, yet the square from the road up the cliff stood across the opening. The squares
+        # crossing the opening are cut, the road in front stays, the rock over the vault stays.
+        n, sq = 64, 2.0
+        x0 = -n * sq / 2
+        xs = x0 + np.arange(n) * sq
+        X, Y = np.meshgrid(xs, xs)
+        u = np.where(X <= 0, 10.0, 40.0)
+        part = ("t", Spec(7.0, "paved", False, "primary", False), line(0, 40), np.full(11, 10.0), 0.0)
+        m = roads.tunnel_hole_mask([part], u, 0.0, 0.0, sq)
+        ix0 = int(np.flatnonzero(xs == 0.0)[0])
+        on = np.abs(xs + sq / 2) <= 3.5          # squares across the carriageway
+        self.assertTrue(m[on, ix0].all())         # the square from x 0 (the road) to 2 (the cliff): cut
+        self.assertFalse(m[:, :ix0 - 1].any())    # the road in front: kept
+        self.assertFalse(m[:, ix0 + 1:].any())    # the rock over the vault: kept
+
     def test_portal_opening_only(self):
         n, sq = 256, 2.0
         cx = cy = 0.0
@@ -66,8 +83,8 @@ class Holes(unittest.TestCase):
         m = roads.tunnel_hole_mask([part], u, cx, cy, sq)
         hit = np.argwhere(m)
         self.assertTrue(len(hit) > 0)
-        hx = xs[hit[:, 1]]
-        hy = xs[hit[:, 0]]
+        hx = xs[hit[:, 1]] + sq / 2         # (a hole sample cuts the engine square it is the south-west corner of)
+        hy = xs[hit[:, 0]] + sq / 2
         self.assertTrue((hx >= -2.0).all() and (hx <= 2 * (roadmesh.TUNNEL_H + 1.0)).all())   # the mouth only
         self.assertTrue((np.abs(hy) <= 7.0 / 2 + roadmesh.TUNNEL_SHOULDER + 1.0).all())        # the tube's width
         self.assertFalse(m[:, xs > 40].any())                    # rock over the vault stays

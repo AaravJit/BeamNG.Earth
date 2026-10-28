@@ -3742,16 +3742,20 @@ fn points_near_segments<'py>(py: Python<'py>, p: PyReadonlyArray2<'py, f64>, a: 
     numpy::ndarray::Array1::from(out).into_pyarray(py)
 }
 
+/// m a square just past a tube's end rises over its floor to be cut (tunnel_holes): a wedge into the opening
+const TUNNEL_WEDGE_M: f64 = 1.5;
+
 /// roads.tunnel_hole_mask for one tunnel part, into mask (n, n) in place: the samples (ix, iy) of the block (heights u,
 /// sample at (x0 + ix * square, y0 + iy * square)) over the tube's footprint (half width hw) beside a segment of xy
 /// (k, 2) whose ground lies between its floor z (k,) and the vault th (+- margin); for a low arch (low) instead its
-/// mouths (arc within end_m of a portal end flagged m0 / m1) out to hw + side_extra, whatever the height. The same
-/// float64 sums as the numpy version, sample for sample.
+/// mouths (arc within end_m of a portal end flagged m0 / m1) out to hw + side_extra, whatever the height. A tube's
+/// test (and with squares a mouth's) is per engine square (the hole flag of a sample cuts the square it is the
+/// south-west corner of): any of it within hw, its four corners' ground reaching between the floor and the vault.
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 fn tunnel_holes(py: Python<'_>, mut mask: numpy::PyReadwriteArray2<'_, bool>, u: PyReadonlyArray2<'_, f64>, x0: f64, y0: f64,
                 square: f64, xy: PyReadonlyArray2<'_, f64>, z: PyReadonlyArray1<'_, f64>, hw: f64, th: f64, low: bool,
-                m0: bool, m1: bool, margin: f64, end_m: f64, side_extra: f64) {
+                m0: bool, m1: bool, margin: f64, end_m: f64, side_extra: f64, squares: bool) {
     let (uv, xv, zv) = (u.as_array(), xy.as_array(), z.as_array());
     let mut mv = mask.as_array_mut();
     py.allow_threads(|| {
@@ -3765,28 +3769,47 @@ fn tunnel_holes(py: Python<'_>, mut mask: numpy::PyReadwriteArray2<'_, bool>, u:
         for j in 0..k - 1 {
             let (ax, ay, bx, by) = (xv[[j, 0]], xv[[j, 1]], xv[[j + 1, 0]], xv[[j + 1, 1]]);
             let (lox, loy, hix, hiy) = (ax.min(bx) - hw, ay.min(by) - hw, ax.max(bx) + hw, ay.max(by) + hw);
-            let ix0 = (((lox - x0) / square).floor() as i64).max(0);
-            let iy0 = (((loy - y0) / square).floor() as i64).max(0);
+            let ix0 = (((lox - x0) / square).floor() as i64 - 2).max(0);     // (squares reaching in from beyond)
+            let iy0 = (((loy - y0) / square).floor() as i64 - 2).max(0);
             let ix1 = (((hix - x0) / square).ceil() as i64).min(n - 1);
             let iy1 = (((hiy - y0) / square).ceil() as i64).min(n - 1);
             if ix0 > ix1 || iy0 > iy1 { continue; }
             let (abx, aby) = (bx - ax, by - ay);
             let l2 = (abx * abx + aby * aby).max(1e-12);
             for iy in iy0..=iy1 {
-                let yy = y0 + iy as f64 * square;
                 for ix in ix0..=ix1 {
-                    let xx = x0 + ix as f64 * square;
+                    // squares (a tube, a twin tube's mouths): the engine's square (ix, iy) (the hole flag of its
+                    // origin sample) at its centre; a low arch's mouth at the sample (arch_raise flattens samples)
+                    let c = if squares { 0.5 * square } else { 0.0 };
+                    let (xx, yy) = (x0 + ix as f64 * square + c, y0 + iy as f64 * square + c);
                     let t0 = ((xx - ax) * abx + (yy - ay) * aby) / l2;
-                    if !(0.0..=1.0).contains(&t0) { continue; }
-                    let t = t0;
+                    // a tube's squares reach half a diagonal past its ends too, there only those rising into the
+                    // opening (a wedge from the road up the cliff beside the mouth; the road in front stays)
+                    let ext = if low { 0.0 } else { std::f64::consts::FRAC_1_SQRT_2 * square / l2.sqrt() };
+                    let (lo_t, hi_t) = (if j == 0 { -ext } else { 0.0 }, if j == k - 2 { 1.0 + ext } else { 1.0 });
+                    if t0 < lo_t || t0 > hi_t { continue; }
+                    let beyond = !(0.0..=1.0).contains(&t0);
+                    let t = t0.clamp(0.0, 1.0);
                     let d = (xx - (ax + t * abx)).hypot(yy - (ay + t * aby));
                     let hit = if low {
                         let s = sj[j] + t * (sj[j + 1] - sj[j]);
-                        d <= reach && ((s <= end_m && m0) || (s >= total - end_m && m1))
+                        let over = if squares { std::f64::consts::FRAC_1_SQRT_2 * square } else { 0.0 };
+                        d <= reach + over && ((s <= end_m && m0) || (s >= total - end_m && m1))
                     } else {
+                        // the square's ground (its four corners) reaching between the floor and the vault: a cut
+                        // into a cliff (the road at its foot, the next sample over the vault: Malibu Canyon Road's
+                        // south portal, GitHub #403) drew one square from the road up the cliff across the opening
                         let floor = zv[j] + t * (zv[j + 1] - zv[j]);
-                        let g = uv[[iy as usize, ix as usize]];
-                        d <= hw && g > floor - margin && g < floor + th + margin
+                        let (x1, y1) = ((ix + 1).min(n - 1) as usize, (iy + 1).min(n - 1) as usize);
+                        let (xa, ya) = (ix as usize, iy as usize);
+                        let g = [uv[[ya, xa]], uv[[ya, x1]], uv[[y1, xa]], uv[[y1, x1]]];
+                        let (glo, ghi) = (g.iter().cloned().fold(f64::INFINITY, f64::min),
+                                          g.iter().cloned().fold(f64::NEG_INFINITY, f64::max));
+                        // (any of the square within hw: its centre within hw + half its diagonal; a square astride
+                        // the tube's wall stood a wedge in the opening's side)
+                        let rise = if beyond { TUNNEL_WEDGE_M } else { 0.0 };
+                        d <= hw + std::f64::consts::FRAC_1_SQRT_2 * square && ghi > floor - margin + rise
+                            && glo < floor + th + margin
                     };
                     if hit { mv[[iy as usize, ix as usize]] = true; }
                 }
@@ -5182,6 +5205,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(photofill::fill_photo, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 87)?;
+    m.add("VERSION", 88)?;
     Ok(())
 }
