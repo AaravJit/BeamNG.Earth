@@ -612,7 +612,7 @@ def under_decks(rows, decks, wires=None):
 
 
 def place(roads, walks, box, curb_h=0.15, wires=None, town=False, left_hand=False, speeds=None, mph=True, decks=(),
-          signals=None, buried=0.0, region=None):
+          signals=None, buried=0.0, region=None, lighting=None):
     """Rows [group, x, y, z, yaw, scale, height, rank] (trees.lua's tile rows) of the lamps and poles of a
     tile box (x0, y0, x1, y1). roads: build_tile's (fid, spec, centreline (k, 3), lon); walks: its sidewalk
     runs (dicts with fid, pts, side, w); decks: the bridge decks over the tile [(centreline (k, 3), half
@@ -620,6 +620,7 @@ def place(roads, walks, box, curb_h=0.15, wires=None, town=False, left_hand=Fals
     underground (buried_share): that share of the roads (hashed) get no utility poles (a town's street its lamps
     instead). region: lamp_region's (the lamps' spacing)."""
     spacing_of = lamp_spacing(region, dense=not town)
+    lighting = lighting or {}  # OSM way lighting; absent/unknown keeps the inferred rule
     x0, y0, x1, y1 = box
     by_fid = {fid: (spec, pts) for fid, spec, pts, _ in roads}
 
@@ -664,13 +665,13 @@ def place(roads, walks, box, curb_h=0.15, wires=None, town=False, left_hand=Fals
                         rows.append([G_POLE, round(float(q[0]), 2), round(float(q[1]), 2), round(float(p[2]), 2),
                                      round(yaw, 1), 1.0, 9.2, 0.0])
                         k = int(round((float(_project(line, q[None])[0]) - ph) / TOWN_POLE_SPACING))
-                        if pole_lamp(spec.cls, k, region):
+                        if lighting.get(fid) != "no" and pole_lamp(spec.cls, k, region):
                             rows.append([G_POLELAMP, round(float(q[0]), 2), round(float(q[1]), 2),
                                          round(float(p[2]) + POLE_LAMP_Z, 2), round(yaw, 1), 1.0, 1.1, 0.0])
                 if wires is not None and len(run_poles) > 1:
                     wires.extend(_own_spans(run_poles, box))
             rule = None
-        if rule is not None:
+        if rule is not None and lighting.get(fid) != "no":
             spacing, both = rule
             lamp_side = 1 if _h01(fid, "side") < 0.5 else -1
             if both or side == lamp_side:
@@ -705,8 +706,11 @@ def place(roads, walks, box, curb_h=0.15, wires=None, town=False, left_hand=Fals
             continue
         # a street in built-up land (spec.urban: the land cover; the tile's `town` is only "not a dense core", true in
         # the countryside too) with no sidewalk run: lit from its edge; a country road: utility poles alone
-        highway = spec.cls in HIGHWAY_CLASSES and highway_lit(region, spec.link, spec.urban)
-        lamps = highway or (spec.urban and spec.cls in TOWN_POLE_CLASSES)
+        highway = spec.cls in HIGHWAY_CLASSES and (lighting.get(fid) == "yes"
+                                                   or highway_lit(region, spec.link, spec.urban))
+        lamps = lighting.get(fid) != "no" and (highway or lighting.get(fid) == "yes"
+                                                or (spec.urban and spec.cls in TOWN_POLE_CLASSES))
+        highway = highway and lamps
         poles = not highway and overhead(fid) and (lamps or (not spec.urban and spec.cls in POLE_CLASSES))
         if not (lamps or poles):
             continue
@@ -716,7 +720,8 @@ def place(roads, walks, box, curb_h=0.15, wires=None, town=False, left_hand=Fals
         if highway:
             spacing = (LINK_LAMP_SPACING if spec.link else HIGHWAY_LAMP_SPACING)["na" if _na(region) else None]
         else:
-            spacing = (TOWN_POLE_SPACING if lamps else POLE_SPACING) if poles else spacing_of[spec.cls][0]
+            spacing = ((TOWN_POLE_SPACING if lamps else POLE_SPACING) if poles
+                       else spacing_of.get(spec.cls, (HIGHWAY_LAMP_SPACING[None], False))[0])
         phase = _h01(fid, "pphase") * spacing
         L = _arclen(line)[-1]
         s = phase + spacing * np.arange(0, int((L - phase) // spacing) + 1)
