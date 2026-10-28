@@ -2774,6 +2774,20 @@ class _BoundedLru:
             self.od.popitem(last=False)
 
 
+def route_profile_smooth(z):
+    """A route's elevation samples (even steps) as the road climbs them: a running median of 5 (the ground under a
+    bridge, a dip or bump of one or two samples where the road crosses a valley or an embankment, drew spikes: the
+    user, 2026-10-27, "way to spikey even for a short drive"), then a running mean of 3. Pure."""
+    z = np.asarray(z, np.float64)
+    n = len(z)
+    if n < 5:
+        return z
+    p = np.r_[z[:1], z[:1], z, z[-1:], z[-1:]]
+    med = np.median(np.stack([p[k:k + n] for k in range(5)]), axis=0)
+    q = np.r_[med[:1], med, med[-1:]]
+    return (q[:-2] + q[1:-1] + q[2:]) / 3.0
+
+
 class Connection:
     """One mod connection. Far-field state for the active anchor A:
         desired  D: the selected tiles (farfield.select)
@@ -2951,7 +2965,7 @@ class Connection:
         if step > 0:
             tile_m = 40075016.7 * max(math.cos(math.radians(float(np.mean(lats)))), 0.05)
             zoom = int(min(zoom, max(8, math.floor(math.log2(tile_m / (4 * step))))))
-        elev = self.s.dem.sample(lats, lons, zoom)
+        elev = route_profile_smooth(self.s.dem.sample(lats, lons, zoom))
         return [[round(p[2], 1), round(float(e), 1)] for p, e in zip(pts, elev)]
 
     def route_download(self, version, points):

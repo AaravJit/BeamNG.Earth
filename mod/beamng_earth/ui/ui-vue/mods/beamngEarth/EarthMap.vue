@@ -158,7 +158,8 @@
     </div>
 
     <!-- the GPS destination -->
-    <div v-if="state.gps" class="gps-chip" @mousedown.stop>
+    <div v-if="state.gps" class="gps-stack" @mousedown.stop>
+    <div class="gps-chip">
       <div class="gps-chip-row">
         <span>GPS: {{ state.gps.name || fmtLatLon(state.gps.lat, state.gps.lon) }}</span>
         <span v-if="state.gps.planning && !routePts.length" class="gps-dist">planning route…</span>
@@ -179,8 +180,13 @@
         </button>
         <button class="map-btn small" @click="clearGps">Clear</button>
       </div>
-      <!-- the route's elevation profile (server routing.resample + dem.sample), with where the car is on it -->
-      <div v-if="elevStats" class="elev-profile" title="Elevation along the route">
+    </div>
+    <!-- the route's elevation profile (server routing.resample + dem.sample, smoothed), with where the car is on it: a
+         box of its own under the GPS box (the user, 2026-10-27) -->
+    <div v-if="elevStats" class="elev-box" title="Elevation along the route">
+      <div class="elev-title">Elevation <span class="elev-climb">&#8599; {{ fmtHeight(elevStats.up) }}
+        &nbsp;&#8600; {{ fmtHeight(elevStats.down) }}</span></div>
+      <div class="elev-profile">
         <svg :width="ELEV_W" :height="ELEV_H" class="elev-svg">
           <polygon :points="elevStats.area" class="elev-area" />
           <polyline :points="elevStats.line" class="elev-line" />
@@ -188,6 +194,7 @@
         </svg>
         <div class="elev-minmax"><span>{{ fmtHeight(elevStats.maxE) }}</span><span>{{ fmtHeight(elevStats.minE) }}</span></div>
       </div>
+    </div>
     </div>
 
     <!-- the confirmation -->
@@ -984,21 +991,29 @@ watch(() => state.value.gps, g => { if (!g) { routePts.value = []; routeElev.val
 
 // the elevation chart (a sparkline + fill, under the GPS box): min/max over the whole route, a marker at the
 // car's current distance along it (from the remaining distance, same as the route-ahead/done split above)
-const ELEV_W = 220, ELEV_H = 46
+const ELEV_W = 220, ELEV_H = 46, ELEV_MIN_SPAN_M = 30
 const elevStats = computed(() => {
   const pts = routeElev.value
   if (pts.length < 2) return null
   const total = pts[pts.length - 1][0]
   if (!(total > 0)) return null
-  let minE = Infinity, maxE = -Infinity
-  for (const p of pts) { if (p[1] < minE) minE = p[1]; if (p[1] > maxE) maxE = p[1] }
-  const span = Math.max(1, maxE - minE)
+  let minE = Infinity, maxE = -Infinity, up = 0, down = 0
+  for (let i = 0; i < pts.length; i++) {
+    const e = pts[i][1]
+    if (e < minE) minE = e
+    if (e > maxE) maxE = e
+    if (i > 0) { const d = e - pts[i - 1][1]; if (d > 0) up += d; else down -= d }
+  }
+  // at least ELEV_MIN_SPAN_M tall, centred: a short, flat drive's few metres filled the whole chart and looked like
+  // mountains (the user, 2026-10-27: "way to spikey even for a short drive")
+  const span = Math.max(ELEV_MIN_SPAN_M, maxE - minE)
+  const lo = (minE + maxE) / 2 - span / 2
   const xs = d => (d / total) * ELEV_W
-  const ys = e => ELEV_H - ((e - minE) / span) * ELEV_H
+  const ys = e => ELEV_H - ((e - lo) / span) * ELEV_H
   const line = pts.map(p => `${xs(p[0]).toFixed(1)},${ys(p[1]).toFixed(1)}`).join(" ")
   const remaining = state.value.gps && state.value.gps.remaining
   const frac = remaining != null ? Math.max(0, Math.min(1, 1 - remaining / total)) : 0
-  return { line, area: `0,${ELEV_H} ${line} ${ELEV_W},${ELEV_H}`, minE, maxE, markerX: xs(frac * total) }
+  return { line, area: `0,${ELEV_H} ${line} ${ELEV_W},${ELEV_H}`, minE, maxE, up, down, markerX: xs(frac * total) }
 })
 function routePath(from, to) {
   const pts = routePts.value.slice(from, to)
@@ -1396,10 +1411,20 @@ const fmtLatLon = mm.fmtLatLon
 .ctx-item:hover { background: rgba(224, 118, 28, 0.85); }
 .ctx-item.disabled { opacity: 0.45; cursor: default; }
 .ctx-item.disabled:hover { background: none; }
-.gps-chip {
+.gps-stack {
   position: absolute; left: 10px; top: 56px; z-index: 6; display: flex; flex-direction: column; gap: 6px;
+  align-items: flex-start;
+}
+.gps-chip {
+  display: flex; flex-direction: column; gap: 6px;
   padding: 5px 8px 5px 12px; font-size: 13px; background: rgba(15, 18, 22, 0.88); border: 1px solid #36a3ff; border-radius: 5px;
 }
+.elev-box {
+  display: flex; flex-direction: column; gap: 4px; padding: 5px 8px 6px 10px;
+  background: rgba(15, 18, 22, 0.88); border: 1px solid #2a3a4a; border-radius: 5px;
+}
+.elev-title { font-size: 12px; color: #c8d2dc; }
+.elev-climb { margin-left: 6px; color: #9aa4ae; }
 .gps-chip-row { display: flex; gap: 8px; align-items: center; }
 .gps-dist { color: #9fd3ff; }
 .elev-profile { display: flex; gap: 8px; align-items: flex-end; }
