@@ -5461,6 +5461,10 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                 if len(c) >= 2:
                     chunks.append(_chunk(gore_look, gw, c))
     runs_near = []                              # sidewalk runs near the tile, before clipping (walks: below)
+    # a parking aisle lies in a paved lot (painted asphalt: surface.photo_lots): no gravel edge along it (a dirt strip
+    # stood across the asphalt between the stall rows, Canton, 2026-10-28)
+    lot_aisles = {fid for fid, (f, i, sp) in seen.items()
+                  if sp.kind == "paved" and _rule_value(f.rules.get("subclass"), i) == "parking_aisle"}
     for fid, spec, pts, lon in roads:
         ex = extras(spec, pts, lon, left_hand, country, lane_tags(*seen[fid][:2]) if fid in seen else None) \
             if fid not in jinternal else []    # inside a junction: none
@@ -5502,6 +5506,8 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
             else:
                 pieces = clip_polyline(line, *box)
             if look["m"] == EDGE_DECAL["m"]:
+                if fid in lot_aisles:
+                    continue
                 # no gravel edge where another carriageway is near: a ramp's gore and a narrow median are paved
                 pieces = [r for pc in pieces for r in cut_outside(pc, decal_blockers, 0.5)]
             for piece in pieces:

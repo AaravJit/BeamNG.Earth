@@ -233,6 +233,18 @@ class MarkTest(unittest.TestCase):
         bare = roads.build_tile(FRAME, 0, 0, [f], flat)
         self.assertEqual([c.get("m") for c in bare], [c.get("m") for c in chunks])
 
+    def test_a_parking_aisle_has_no_gravel_edge(self):
+        # (it runs through a paved lot: a dirt strip stood on the asphalt between the stall rows)
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from test_roads import FRAME, features, flat, rules
+        f = features([[(0, 50), (80, 50)]], ["service"], ids=["a"])
+        plain = roads.build_tile(FRAME, 0, 0, [f], flat)
+        f.rules["subclass"] = rules([(0, "parking_aisle")])
+        aisle = roads.build_tile(FRAME, 0, 0, [f], flat)
+        edge = roads.EDGE_DECAL["m"]
+        self.assertTrue([c for c in plain if c.get("m") == edge])
+        self.assertFalse([c for c in aisle if c.get("m") == edge])
+
 
 if __name__ == "__main__":
     unittest.main()
