@@ -249,6 +249,43 @@ M.forests = 0
 -- MihneaTeodorStoica's PR #321.)
 -- (lampglow: the lamps' far glow, night only: nightlights.lua turns it on after dusk)
 M.groupOff = { lampglow = true }
+-- The quality setting's tree levels (settings.lua 'trees', the quality presets): scales of the rings' ranks (density),
+-- the tiles' item caps and the rings' distances, from the defaults above ('normal': as they are).
+M.QUALITY_LEVELS = {
+  low = { rank = 0.5, cap = 0.5, dist = 0.75 },
+  normal = { rank = 1.0, cap = 1.0, dist = 1.0 },
+  high = { rank = 1.35, cap = 1.5, dist = 1.3 },
+  ultra = { rank = 1.7, cap = 2.2, dist = 1.6 },
+}
+local BASE_RINGS, BASE_CAP = nil, nil   -- (the defaults, copied at the first setQuality)
+M.quality = 'normal'
+
+-- Pure: the rings and caps of a quality level from the base ones.
+function M.scaledRings(level, rings, caps)
+  local q = M.QUALITY_LEVELS[level] or M.QUALITY_LEVELS.normal
+  local r, c = {}, {}
+  for i, v in ipairs(rings) do
+    r[i] = { v[1] >= 1e8 and v[1] or math.floor(v[1] * q.dist + 0.5), math.min(1.0, v[2] * q.rank) }
+  end
+  for i, v in ipairs(caps) do
+    c[i] = { v[1] >= 1e8 and v[1] or math.floor(v[1] * q.dist + 0.5), math.floor(v[2] * q.cap + 0.5) }
+  end
+  return r, c
+end
+
+function M.setQuality(level)
+  if not M.QUALITY_LEVELS[level] or level == M.quality then return false end
+  if not BASE_RINGS then
+    BASE_RINGS, BASE_CAP = {}, {}
+    for i, v in ipairs(M.RINGS) do BASE_RINGS[i] = { v[1], v[2] } end
+    for i, v in ipairs(M.TILE_CAP) do BASE_CAP[i] = { v[1], v[2] } end
+  end
+  M.RINGS, M.TILE_CAP = M.scaledRings(level, BASE_RINGS, BASE_CAP)
+  M.quality = level
+  M.refresh()
+  return true
+end
+
 function M.setGroupEnabled(groups, on)
   local changed = false
   for _, g in ipairs(groups) do

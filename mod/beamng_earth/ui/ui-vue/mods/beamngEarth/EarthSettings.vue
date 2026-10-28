@@ -1,250 +1,151 @@
 <template>
-  <div class="earth-bng-options">
+  <!-- BeamNG.Earth's settings: a page of its own (the user, 2026-10-28: "a whole separate page like how BeamMP's
+       settings page is", "use beam's native ui ... when possible"): the game's LayoutMenu (its tabs, cards, back
+       handling and controller hints, as the pause menu and Options use), BngRow rows with the native controls. -->
+  <LayoutMenu
+    class="earth-settings"
+    :tabs="tabs"
+    v-model:selected-tab="section"
+    main-card-class="menu-content-card-1--extra-wide"
+    side-card-class="menu-content-card-2--wide"
+  >
+    <template #card1>
+      <div class="earth-main">
+        <BngCardHeading>{{ category.name }}</BngCardHeading>
+        <div v-if="category.intro" class="earth-intro">{{ category.intro }}</div>
 
-    <!-- Master Header: connection / session status -->
-    <div class="options-header">
-      <div class="header-title">BeamNG.Earth</div>
-      <button class="header-welcome" @click="showWelcome" title="What BeamNG.Earth is, the keys, the credits">Welcome page</button>
-      <div class="header-status" :class="{ 'is-connected': status.connection === 'connected' }">
-        {{ connectionText }}
-      </div>
-    </div>
-
-    <!-- Connection state: the same line as the on-screen banner (banner.lua; docs/ROADMAP.md "Robustness") -->
-    <div v-if="bannerText" class="options-presets state-bar" :class="'state-' + bannerLevel">
-      <span class="state-text">{{ bannerText }}</span>
-    </div>
-
-    <!-- A newer version on GitHub (server updates.py) -->
-    <div v-if="update" class="options-presets state-bar state-ok update-bar">
-      <span class="state-text">Update available: BeamNG.Earth {{ update.latest }} (you have {{ update.current }})</span>
-      <button class="update-link" @click="openUpdate">Download page</button>
-    </div>
-
-    <!-- Status line -->
-    <div class="options-presets status-bar">
-      <span class="status-text">{{ statusText }}</span>
-    </div>
-
-    <!-- Main Scrollable List -->
-    <div class="options-list-scroll">
-
-      <details
-        v-for="(category, catIndex) in settingsSchema"
-        :key="category.name"
-        class="category-block"
-        :open="catIndex === 0"
-      >
-        <!-- Collapsible Category Header -->
-        <summary class="category-title"><span class="category-arrow"></span>{{ category.name }}</summary>
-
-        <div class="category-items">
-
-          <!-- Dev tools presets (session only) -->
-          <div v-if="category.devPresets" class="options-presets dev-presets">
+        <!-- Quality presets: one press sets every setting below; changing one makes it Custom -->
+        <template v-if="category.presets">
+          <div class="earth-presets">
             <BngButton
-              v-for="p in devPresets"
+              v-for="p in qualityPresets"
               :key="p.id"
-              class="preset-btn"
-              :accent="dev.lastPreset === p.id && dev.active ? ACCENTS.main : ACCENTS.outlined"
-              @click="applyDevPreset(p.id)"
-            >{{ p.label }}</BngButton>
+              class="earth-preset"
+              :accent="config.quality === p.id ? ACCENTS.main : ACCENTS.outlined"
+              @click="setQuality(p.id)"
+              @mouseenter="help = p"
+              @focusin="help = p"
+            >{{ p.name }}</BngButton>
+          </div>
+          <div class="earth-intro">
+            {{ config.quality === "custom" ? "Custom: your own mix of the settings below." : presetLine }}
+            <template v-if="detectedPick"> Recommended for this computer: {{ presetName(detectedPick) }}.</template>
+          </div>
+        </template>
+
+        <BngRow
+          v-for="item in visibleItems"
+          :key="item.id"
+          class="earth-row"
+          :vertical="item.type === 'text' || item.type === 'path'"
+          @mouseenter="help = item"
+          @focusin="help = item"
+        >
+          <template #label>{{ item.name }}</template>
+
+          <BngSelect
+            v-if="item.type === 'select'"
+            :value="valueOf(item)"
+            :options="item.options"
+            :config="optionConfig"
+            @valueChanged="val => selectOption(item, val)"
+          />
+          <BngSwitch
+            v-else-if="item.type === 'bool'"
+            :modelValue="config[item.id] === true"
+            @update:modelValue="val => onSwitchChange(item, val)"
+          />
+          <BngSlider
+            v-else-if="item.type === 'float'"
+            :min="item.min"
+            :max="item.max"
+            :step="item.step || 0.01"
+            :modelValue="config[item.id]"
+            @update:modelValue="val => onSliderChange(item, val)"
+            :with-input="true"
+          />
+          <BngSwitch
+            v-else-if="item.type === 'dev'"
+            :modelValue="dev.on[item.id] === true"
+            @update:modelValue="val => onDevChange(item, val)"
+          />
+          <span v-else-if="item.type === 'info'" class="earth-value">{{ infoValue(item) }}</span>
+          <div v-else-if="item.type === 'text'" class="earth-text">{{ infoValue(item) }}</div>
+          <BngButton v-else-if="item.type === 'feedback'" :accent="ACCENTS.outlined" @click="openFeedback(item.what)">{{ item.label }}</BngButton>
+
+          <!-- Clear cache: asks in the row first -->
+          <div v-else-if="item.type === 'action'" class="earth-inline">
+            <span v-if="cacheConfirm" class="earth-value">Delete the downloaded elevation and imagery?</span>
+            <span v-else-if="cacheResult" class="earth-value">{{ cacheResult }}</span>
+            <BngButton v-if="cacheConfirm" :accent="ACCENTS.main" @click="confirmClearCache">Clear</BngButton>
+            <BngButton v-if="cacheConfirm" :accent="ACCENTS.outlined" @click="cacheConfirm = false">Cancel</BngButton>
+            <BngButton v-else :accent="ACCENTS.outlined" :disabled="cacheBusy" @click="askClearCache">{{ cacheBusy ? "Clearing..." : "Clear cache" }}</BngButton>
           </div>
 
-          <div
-            v-for="item in category.items"
-            :key="item.id"
-            class="options-item-row"
-            @mouseenter="hoveredItem = item"
-            @mouseleave="hoveredItem = null"
-          >
-            <!-- Top Half: Label & Switches -->
-            <div class="row-header">
-              <div class="option-label">{{ item.name }}</div>
-
-              <!-- Read-only info -->
-              <div v-if="item.type === 'info'" class="info-value">{{ infoValue(item) }}</div>
-
-              <!-- Inline Switch for Booleans (persisted settings) -->
-              <div v-if="item.type === 'bool'" class="inline-controls">
-                <BngSwitch
-                  :modelValue="config[item.id] === true"
-                  @update:modelValue="val => onSwitchChange(item, val)"
-                  :disabled="item.disabled"
-                />
-                <div class="option-reset">
-                  <BngButton
-                    :icon="icons.undo"
-                    :accent="ACCENTS.outlined"
-                    @click="resetSetting(item)"
-                    class="bng-reset-btn"
-                    :style="{ visibility: config[item.id] !== item.default ? 'visible' : 'hidden' }"
-                    title="Reset to default"
-                  />
-                </div>
-              </div>
-
-              <!-- A button that acts at once (Clear cache: asks first, below) -->
-              <div v-if="item.type === 'action'" class="inline-controls">
-                <span v-if="cacheResult" class="action-result">{{ cacheResult }}</span>
-                <BngButton
-                  :accent="ACCENTS.outlined"
-                  :disabled="cacheBusy || cacheConfirm"
-                  @click="askClearCache"
-                >{{ cacheBusy ? "Clearing..." : "Clear cache" }}</BngButton>
-                <div class="option-reset"></div>
-              </div>
-
-              <!-- A path (the cache folder, the BeamMP launcher): the system's own window; typed below as the fallback -->
-              <div v-if="item.type === 'path'" class="inline-controls">
-                <BngButton
-                  :accent="ACCENTS.outlined"
-                  :disabled="!!pathBusy"
-                  @click="sendPath(item, true)"
-                >{{ pathBusy === item.what && pathPick ? "Window open..." : "Change..." }}</BngButton>
-                <div class="option-reset"></div>
-              </div>
-
-              <!-- Feedback: the report window or the profiler (the menu closes first: settings.lua M.feedback) -->
-              <div v-if="item.type === 'feedback'" class="inline-controls">
-                <BngButton :accent="ACCENTS.outlined" @click="openFeedback(item.what)">{{ item.label }}</BngButton>
-                <div class="option-reset"></div>
-              </div>
-
-              <!-- Inline Switch for dev tools (session only, not saved) -->
-              <div v-if="item.type === 'dev'" class="inline-controls">
-                <BngSwitch
-                  :modelValue="dev.on[item.id] === true"
-                  @update:modelValue="val => onDevChange(item, val)"
-                />
-                <div class="option-reset"></div>
-              </div>
-            </div>
-
-            <!-- Bottom Half: Native BngSlider -->
-            <div v-if="item.type === 'float'" class="stacked-controls">
-              <BngSlider
-                class="native-slider"
-                :min="item.min"
-                :max="item.max"
-                :step="item.step || 0.01"
-                :modelValue="config[item.id]"
-                @update:modelValue="val => onSliderChange(item, val)"
-                :with-input="true"
-                :disabled="item.disabled"
-              />
-              <div class="option-reset">
-                <BngButton
-                  :icon="icons.undo"
-                  :accent="ACCENTS.outlined"
-                  @click="resetSetting(item)"
-                  class="bng-reset-btn"
-                  :style="{ visibility: config[item.id] !== item.default ? 'visible' : 'hidden' }"
-                  title="Reset to default"
-                />
-              </div>
-            </div>
-
-            <!-- Bottom Half: Custom Dropdown Select -->
-            <div v-if="item.type === 'select'" class="stacked-controls select-control">
-              <!-- Invisible overlay to close dropdown when clicking outside -->
-              <div v-if="openDropdown === item.id" class="dropdown-backdrop" @click="openDropdown = null"></div>
-
-              <div class="custom-dropdown-container" :class="{ 'is-open': openDropdown === item.id }">
-                <div class="dropdown-selected" @click="toggleDropdown(item.id)">
-                  <span>{{ getOptionLabel(item, config[item.id]) }}</span>
-                  <span class="dropdown-arrow"></span>
-                </div>
-
-                <div class="dropdown-list" v-if="openDropdown === item.id">
-                  <div
-                    v-for="opt in item.options"
-                    :key="opt.value"
-                    class="dropdown-option"
-                    :class="{ 'is-active': config[item.id] === opt.value }"
-                    @click="selectOption(item, opt.value)"
-                  >
-                    {{ opt.label }}
-                  </div>
-                </div>
-              </div>
-
-              <div class="option-reset">
-                <BngButton
-                  :icon="icons.undo"
-                  :accent="ACCENTS.outlined"
-                  @click="resetSetting(item)"
-                  class="bng-reset-btn"
-                  :style="{ visibility: config[item.id] !== item.default ? 'visible' : 'hidden' }"
-                  title="Reset to default"
-                />
-              </div>
-            </div>
-
-            <!-- Clear cache: the confirmation, in the page -->
-            <div v-if="item.type === 'action' && cacheConfirm" class="stacked-controls confirm-block">
-              <span class="confirm-text">Delete the downloaded elevation and imagery? What this session used and the gravity model stay; the rest is downloaded again when needed.</span>
-              <BngButton :accent="ACCENTS.main" @click="confirmClearCache">Clear</BngButton>
-              <BngButton :accent="ACCENTS.outlined" @click="cacheConfirm = false">Cancel</BngButton>
-            </div>
-
-            <!-- A path typed or pasted (the fallback to the system's window), and where it stands -->
-            <div v-if="item.type === 'path'" class="stacked-controls path-control">
-              <input
+          <!-- A path: the system's window, or typed -->
+          <div v-else-if="item.type === 'path'" class="earth-path">
+            <div class="earth-inline">
+              <BngInput
+                class="earth-path-input"
                 v-model="pathText[item.what]"
-                class="path-input"
                 :placeholder="item.placeholder"
-                maxlength="1000"
                 @focus="typing(true)"
                 @blur="typing(false)"
                 @keydown.enter.stop.prevent="usePath(item)"
               />
-              <BngButton
-                :accent="ACCENTS.outlined"
-                :disabled="!!pathBusy || !(pathText[item.what] || '').trim()"
-                @click="usePath(item)"
-              >Use</BngButton>
-              <div class="option-reset"></div>
+              <BngButton :accent="ACCENTS.outlined" :disabled="!!pathBusy || !(pathText[item.what] || '').trim()" @click="usePath(item)">Use</BngButton>
+              <BngButton :accent="ACCENTS.outlined" :disabled="!!pathBusy" @click="sendPath(item, true)">{{ pathBusy === item.what && pathPick ? "Window open..." : "Change..." }}</BngButton>
             </div>
-            <div v-if="item.type === 'path'" class="option-note" :class="{ 'is-error': pathMsg[item.what] && !pathMsg[item.what].ok }">{{ pathNote(item) }}</div>
-
-            <!-- Short help under a control (always shown, not only on hover) -->
-            <div v-if="item.note" class="option-note">{{ item.note }}</div>
-
-            <!-- Bottom Half: wrapped text (attribution) -->
-            <div v-if="item.type === 'text'" class="stacked-controls text-block">{{ infoValue(item) }}</div>
-
+            <div class="earth-note" :class="{ 'is-error': pathMsg[item.what] && !pathMsg[item.what].ok }">{{ pathNote(item) }}</div>
           </div>
-        </div>
-      </details>
-    </div>
+        </BngRow>
 
-    <!-- Dynamic Info Panel (Always Visible at Bottom) -->
-    <div class="options-info-panel">
-      <template v-if="hoveredItem">
-        <div class="info-header">
-          <span class="info-title">{{ hoveredItem.name }}</span>
-          <span class="info-default" v-if="hoveredItem.default !== undefined">Default: {{ formatDefault(hoveredItem) }}</span>
+        <!-- Developer: the overlay presets (session only) -->
+        <div v-if="category.devPresets" class="earth-presets">
+          <BngButton
+            v-for="p in devPresets"
+            :key="p.id"
+            :accent="dev.lastPreset === p.id && dev.active ? ACCENTS.main : ACCENTS.outlined"
+            @click="applyDevPreset(p.id)"
+          >{{ p.label }}</BngButton>
         </div>
-        <div class="info-desc">{{ hoveredItem.desc }}</div>
-      </template>
-      <div v-else class="info-empty">
-        Hover over a setting to see details.
       </div>
-    </div>
+    </template>
 
-  </div>
+    <template #card2>
+      <div class="earth-side">
+        <BngCardHeading>BeamNG.Earth</BngCardHeading>
+        <div class="earth-status" :class="'is-' + bannerLevel">{{ bannerText || connectionText }}</div>
+        <div v-if="update" class="earth-update">
+          <span>Update: {{ update.latest }} (you have {{ update.current }})</span>
+          <BngButton :accent="ACCENTS.outlined" @click="openUpdate">Download page</BngButton>
+        </div>
+        <div class="earth-loading">{{ statusText }}</div>
+
+        <div class="earth-help">
+          <div class="earth-help-title">{{ help ? help.name : "" }}</div>
+          <div class="earth-help-text">{{ help ? help.desc : "Point at a setting to see what it does." }}</div>
+          <div v-if="help && help.note" class="earth-note">{{ help.note }}</div>
+        </div>
+
+        <div class="earth-side-buttons">
+          <BngButton :accent="ACCENTS.outlined" @click="showWelcome">Welcome page</BngButton>
+          <BngButton :accent="ACCENTS.main" @click="close">Back</BngButton>
+        </div>
+      </div>
+    </template>
+  </LayoutMenu>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from "vue"
-import { BngButton, BngSwitch, BngSlider, BngInput, icons, ACCENTS } from "@/common/components/base"
+import { LayoutMenu } from "@/common/layouts"
+import { BngButton, BngSwitch, BngSlider, BngInput, BngSelect, BngRow, BngCardHeading, icons, ACCENTS } from "@/common/components/base"
 
 const config = ref({})
 const status = ref({})
 const dev = ref({ on: {}, lastPreset: "lod", active: false })
-const hoveredItem = ref(null)
-const openDropdown = ref(null) // Tracks which dropdown is currently open
+const help = ref(null)          // the setting pointed at (the side card's help)
 let pollTimer = null
 const cacheConfirm = ref(false) // Clear cache: the confirmation is showing
 const cacheBusy = ref(false)    // Clear cache: sent, waiting for the server's answer
@@ -259,78 +160,100 @@ const pathMsg = ref({})    // path -> the server's last answer { ok, text }
 let pathAnswers = 0        // status.paths.answers when it was sent
 let pathSentAt = 0
 
-// Mirrors lua/ge/extensions/beamngEarth/settings.lua SCHEMA (the Lua side validates and clamps).
+// Mirrors lua/ge/extensions/beamngEarth/settings.lua SCHEMA (the Lua side validates and clamps). Sections down the
+// left; Graphics first (the quality presets: settings.lua PRESETS).
 const settingsSchema = [
   {
-    name: "Connection",
+    name: "Graphics",
+    presets: true,
+    intro: "Pick a preset, then fine-tune the settings below if you like. Each change applies at once.",
     items: [
-      { id: "connection", type: "info", name: "Companion server", desc: "State of the connection to the BeamNG.Earth companion server (127.0.0.1:47613) and the session id it gave this game." },
-      { id: "anchor", type: "info", name: "Anchor", desc: "The current world origin (anchor) and its latitude / longitude. A rebase moves it under the player." },
-      { id: "player", type: "info", name: "Player", desc: "The player's latitude / longitude and the distance from the anchor origin." },
-      { id: "weather", type: "info", name: "Weather", desc: "Real weather from the server (Open-Meteo.com, every 10 min or 25 km; the server's --weather on|off)." },
-      { id: "gravity", type: "info", name: "Gravity", desc: "The gravity in use: the server's real value (WGS84 normal + EGM2008, every 2 km or 200 m of height; the server's --gravity on|off) or normal gravity by latitude." },
-      { id: "deshadow", type: "info", name: "Imagery de-shadowing", desc: "Server-side relighting of the baked terrain shadows in the USGS imagery (the server's --deshadow off|lambert|full)." },
-      { id: "colormatch", type: "info", name: "Imagery colour seams", desc: "Server-side removal of the colour steps between survey flights in the USGS imagery, e.g. at state lines (the server's --colormatch off|s2)." },
+      { id: "trees", type: "select", default: "normal", name: "Trees", desc: "How many trees and how far out they are drawn. Low: thinner forests and a shorter reach (the most frame time saved in wooded places). Ultra: denser and farther forests (strong GPUs).",
+        options: [ { label: "Low", value: "low" }, { label: "Normal", value: "normal" }, { label: "High", value: "high" }, { label: "Ultra", value: "ultra" } ] },
+      { id: "grass", type: "select", virtual: true, default: "normal", name: "Grass and shrubs", desc: "3D grass and scrub near the car (the game's own Hirochi Raceway and West Coast USA plants). Off saves the most on handhelds. Without the optional grass patch (tools/gcpatch, Linux) the game regrows the grass in one slower frame each time the ground under the car moves; denser grass makes that frame longer.",
+        options: [ { label: "Off", value: "off" }, { label: "Low", value: "low" }, { label: "Normal", value: "normal" }, { label: "High", value: "high" } ] },
+      { id: "rocks", type: "bool", default: true, name: "Rocks", desc: "Rocks and boulders on bare, rocky and steep ground. Off removes them (and their collision)." },
+      { id: "nightLights", type: "select", default: "normal", name: "Street lamp lights", desc: "How many street lamps near you cast real light on the road at night (the lamps further out still glow). Fewer: cheaper nights.",
+        options: [ { label: "Few", value: "few" }, { label: "Normal", value: "normal" }, { label: "Many", value: "many" } ] },
+      { id: "viewDistanceMode", type: "select", default: "horizon", name: "View distance", desc: "Real horizon (the default): the land reaches the true horizon. Fixed: the view ends at the distance below (cheaper on weak hardware).",
+        options: [ { label: "Real horizon", value: "horizon" }, { label: "Fixed distance", value: "fixed" } ] },
+      { id: "viewDistanceKm", type: "float", min: 20, max: 1000, step: 10, default: 100, name: "Fixed view distance (km)", desc: "How far you can see with a fixed view distance.", showIf: c => c.viewDistanceMode === "fixed" },
     ],
   },
   {
     name: "World",
     items: [
-      { id: "rebaseDistance", type: "float", min: 2000, max: 16000, step: 100, default: 15000, name: "Rebase distance (m)", desc: "How far from the anchor origin the world moves under the player (origin rebase). 15 km keeps float precision at ~1 mm; beyond 16 km precision halves." },
-      { id: "viewDistanceMode", type: "select", default: "horizon", name: "View distance", desc: "Real horizon (the default): the far field reaches the true line-of-sight horizon and the view distance follows it (the server's --horizon, on by default in mesh mode). Fixed: the renderer's view distance below.",
-        options: [ { label: "Fixed distance", value: "fixed" }, { label: "Real horizon (v1.4 M1h)", value: "horizon" } ] },
-      { id: "viewDistanceKm", type: "float", min: 20, max: 1000, step: 10, default: 100, name: "Fixed view distance (km)", desc: "The renderer's view distance in km (LevelInfo visibleDistance) in fixed mode. The far field itself extends 80 km today." },
-      { id: "hazeStrength", type: "float", min: 0, max: 1, step: 0.05, default: 0, name: "Distance haze (placeholder)", desc: "Strength of the distance haze. Placeholder: the haze comes with the real-horizon far field (v1.4 M1h); this value is saved but has no effect yet.", disabled: true },
-      { id: "skyMode", type: "select", default: "real", name: "Sky", desc: "Real time: the sun, moon and stars follow the real clock and date at the player's position. Manual: hands off, use the game's own Time & Weather controls. Changing the time in the pause menu (or another mod changing it) switches this to Manual by itself; choose Real time to go back.",
+      { id: "skyMode", type: "select", default: "real", name: "Sun and stars", desc: "Real time: the sun, moon and stars follow the real clock and date where you are. Manual: use the game's own Time & Weather controls. Changing the time in the pause menu switches this to Manual by itself; choose Real time to go back.",
         note: "Changing the time in the pause menu switches this to Manual.",
         options: [ { label: "Real time", value: "real" }, { label: "Manual", value: "manual" } ] },
-      { id: "clouds", type: "bool", default: true, name: "Clouds", desc: "A volumetric cloud layer that follows the ground under the player." },
-      { id: "weatherMode", type: "select", default: "real", name: "Weather", desc: "Real: clouds, fog, wind, rain, snow and temperature follow the real weather at the player's position. Manual: hands off, use the game's own Time & Weather controls. Changing the weather in the pause menu (or another mod such as BWM_Weather changing it) switches this to Manual by itself; choose Real weather to go back.",
+      { id: "weatherMode", type: "select", default: "real", name: "Weather", desc: "Real: clouds, fog, wind, rain, snow and temperature follow the real weather where you are. Manual: use the game's own Time & Weather controls. Changing the weather in the pause menu (or another weather mod) switches this to Manual by itself; choose Real weather to go back.",
         note: "Changing the weather in the pause menu switches this to Manual.",
         options: [ { label: "Real weather", value: "real" }, { label: "Manual", value: "manual" } ] },
-      { id: "realGravity", type: "bool", default: true, name: "Real gravity", desc: "Gravity follows the player: the server's real value (normal gravity plus the EGM2008 anomalies) or normal gravity by latitude and height. Off: the level's 9.81 m/s2." },
-      { id: "groundCover", type: "bool", default: true, name: "Grass and shrubs", desc: "3D grass where the land cover is grassland or forest floor, and scrub with sparse grass on shrubland, near the car (the game's own Hirochi Raceway and West Coast USA plants). Needs ground surfaces from the world server (on by default)." },
-      { id: "rocks", type: "bool", default: true, name: "Rocks", desc: "Rocks and boulders on bare, rocky and steep ground. Off removes them (and their collision)." },
-      { id: "groundCoverDensity", type: "select", default: "normal", name: "Grass density", desc: "How dense the grass and shrubs are. Without the optional grass patch (tools/gcpatch, Linux) the game regrows the grass in one slower frame each time the ground under the car moves (every ~130-190 m); higher density makes that frame longer.",
-        options: [ { label: "Low", value: "low" }, { label: "Normal", value: "normal" }, { label: "High", value: "high" } ] },
-      { id: "roads", type: "bool", default: true, name: "Roads", desc: "Real roads from OpenStreetMap / Overture within about 600 m of the car: paved roads as asphalt, gravel and dirt roads and tracks as worn dirt tracks, and the same surfaces under the tyres. Bridges, tunnels, markings and junction shapes come later." },
+      { id: "clouds", type: "bool", default: true, name: "Clouds", desc: "A volumetric cloud layer that follows the ground under you." },
+      { id: "realGravity", type: "bool", default: true, name: "Real gravity", desc: "Gravity as it really is where you are (it varies a little with latitude, height and the ground below). Off: the usual 9.81 m/s2." },
+      { id: "roads", type: "bool", default: true, name: "Roads", desc: "Real roads, bridges and buildings near you from OpenStreetMap and Overture. Off: bare terrain only." },
+      { id: "rebaseDistance", type: "float", min: 2000, max: 16000, step: 100, default: 15000, name: "Rebase distance (m)", desc: "Advanced. How far you drive before the world quietly moves back under you (keeps the physics precise). 15 km keeps precision at about 1 mm." },
     ],
   },
   {
     name: "Interface",
     items: [
-      { id: "hudVisible", type: "bool", default: false, name: "Status HUD", desc: "Show the compact BeamNG.Earth status window (connection, anchor, far field, quick buttons). Also whether it opens at level start." },
-      { id: "dashboardSatellite", type: "bool", default: true, name: "Satellite map on dashboard", desc: "Show BeamNG.Earth satellite imagery on compatible vehicle dashboard screens. Off restores the stock dashboard page." },
-      { id: "creditsVisible", type: "bool", default: true, name: "Data credits on screen", desc: "Small text in a screen corner naming the sources of the imagery, elevation and weather around you right now (the far field's own sources on a second line). On by default: CC BY and similar licences ask for visible attribution. Hidden in the pause menu and the big map." },
-      { id: "creditsCorner", type: "select", default: "bottom-left", name: "Data credits corner", desc: "The screen corner of the data credits.",
+      { id: "statusBar", type: "bool", default: true, name: "Status bar", desc: "The bar at the top of the screen: the street and town you are in, loading progress and the frame rate." },
+      { id: "placeNamesOnline", type: "bool", default: true, name: "Place names (online)", desc: "Town, state and country names in the status bar, looked up online (Photon by komoot, sent your position rounded to about 1 km)." },
+      { id: "hudVisible", type: "bool", default: false, name: "Status window", desc: "The compact BeamNG.Earth status window (connection, location, loading, quick buttons). Also whether it opens at level start." },
+      { id: "dashboardSatellite", type: "bool", default: true, name: "Satellite map on dashboards", desc: "BeamNG.Earth's satellite map on vehicles with dashboard screens. Off: the stock dashboard page." },
+      { id: "creditsVisible", type: "bool", default: true, name: "Data credits on screen", desc: "Small text in a corner naming the sources of the imagery, elevation and weather around you. On by default: many of the data licences ask for visible credit. Hidden in the pause menu and the big map." },
+      { id: "creditsCorner", type: "select", default: "bottom-left", name: "Data credits corner", desc: "The screen corner of the data credits.", showIf: c => c.creditsVisible !== false,
         options: [ { label: "Bottom left", value: "bottom-left" }, { label: "Bottom right", value: "bottom-right" }, { label: "Top left", value: "top-left" }, { label: "Top right", value: "top-right" } ] },
-      { id: "creditsSize", type: "select", default: "small", name: "Data credits size", desc: "Text size of the data credits: small (11 px) or normal (14 px).",
+      { id: "creditsSize", type: "select", default: "small", name: "Data credits size", desc: "Text size of the data credits.", showIf: c => c.creditsVisible !== false,
         options: [ { label: "Small", value: "small" }, { label: "Normal", value: "normal" } ] },
     ],
   },
   {
     name: "Multiplayer",
     items: [
-      { id: "beammpOnLaunch", type: "bool", default: true, name: "Start BeamMP with BeamNG.Earth", desc: "The BeamNG.Earth app starts BeamMP (multiplayer) with the game, so BeamNG.Earth servers show in BeamMP's server browser (main menu, More, BeamMP, the BeamNG.Earth category). Off: BeamMP isn't started or offered. Takes effect at the next start of the app." },
-      { id: "beammpLauncher", type: "path", what: "beammp", name: "BeamMP launcher", placeholder: "Path to BeamMP-Launcher (the program or its folder)", desc: "The BeamMP launcher the app starts: the one you chose, else the one it found. Change... opens your system's file window to pick your own (it may open behind the game: Alt+Tab to it); or type or paste its path below and press Use. Used from the next start of the app." },
+      { id: "beammpOnLaunch", type: "bool", default: true, name: "Start BeamMP with BeamNG.Earth", desc: "The BeamNG.Earth app starts BeamMP (multiplayer) with the game, so BeamNG.Earth servers show in BeamMP's server browser (main menu, More, BeamMP, the BeamNG.Earth category). Takes effect at the next start of the app." },
+      { id: "beammpLauncher", type: "path", what: "beammp", name: "BeamMP launcher", placeholder: "Path to BeamMP-Launcher (the program or its folder)", desc: "The BeamMP launcher the app starts: the one you chose, else the one it found. Change... opens your system's file window (it may open behind the game: Alt+Tab to it); or type or paste its path below and press Use. Used from the next start of the app." },
     ],
   },
   {
-    name: "Download cache",
+    name: "Storage",
     items: [
-      { id: "cacheUsage", type: "info", name: "Download cache", desc: "Elevation and imagery the server downloaded and keeps on disk (in the cache folder below), so revisited places load without downloading again: the space in use, the size limit and the number of files." },
-      { id: "cacheDir", type: "path", what: "cache", name: "Cache folder", placeholder: "Folder for the download cache, or default", desc: "Where the download cache is kept, e.g. on another drive. Change... opens your system's folder window (it may open behind the game: Alt+Tab to it); or type or paste a folder below and press Use (default: back to .cache/beamng-earth in your home folder). Used from the next start of the app; move the old folder's contents there first to keep what is already downloaded." },
-      { id: "cacheCapGb", type: "select", default: "20", name: "Download cache size", desc: "The most the download cache may use. Over the limit, the server removes the files used longest ago (every few minutes, down to 90 % of the limit); never what this session used in the last hour or the gravity model. Kept by the server for its next start.",
+      { id: "cacheUsage", type: "info", name: "Download cache", desc: "Elevation, imagery and map data kept on disk so places you visited load without downloading again: the space in use, the limit and the number of files." },
+      { id: "cacheCapGb", type: "select", default: "20", name: "Cache size limit", desc: "The most the download cache may use. Over the limit the files used longest ago are removed (never what this session used in the last hour).",
         options: [ { label: "5 GB", value: "5" }, { label: "10 GB", value: "10" }, { label: "20 GB", value: "20" }, { label: "50 GB", value: "50" }, { label: "Unlimited", value: "unlimited" } ] },
-      { id: "cacheClear", type: "action", name: "Clear cache", desc: "Deletes the downloaded elevation and imagery (and the server's de-shadowing and colour-seam data). What this session used and the gravity model stay. Places are downloaded again when you visit them." },
+      { id: "cacheDir", type: "path", what: "cache", name: "Cache folder", placeholder: "Folder for the download cache, or default", desc: "Where the download cache is kept, e.g. on another drive. Change... opens your system's folder window (it may open behind the game: Alt+Tab to it); or type or paste a folder below and press Use (default: .cache/beamng-earth in your home folder). Used from the next start of the app; move the old folder's contents there first to keep what is downloaded." },
+      { id: "cacheClear", type: "action", name: "Clear cache", desc: "Deletes the downloaded elevation and imagery. What this session used and the gravity model stay. Places are downloaded again when you visit them." },
     ],
   },
   {
-    name: "Dev Tools",
+    name: "Feedback",
+    items: [
+      { id: "reportOpen", type: "feedback", what: "report", label: "Report", name: "Report an issue or idea", desc: "Closes this page, takes a screenshot, the location, the frame rate and your hardware and graphics settings, then opens a window to pick the kind (map issue, performance issue, bug, idea), give a title and describe it. Saves a ready-to-post GitHub issue (issue.md). Also Ctrl+Shift+E while driving." },
+      { id: "profilerOpen", type: "feedback", what: "profiler", label: "Start profiler", name: "Performance profiler", desc: "Closes this page and records 30 s of frame times while you drive (every hitch with its place), then opens the same window as a performance issue. Also Ctrl+Shift+Y while driving." },
+      { id: "reportPost", type: "text", name: "Posting it", desc: "After saving, the window shows the folder and opens the GitHub new-issue page. Edit issue.md and drag screenshot.jpg into the issue." },
+    ],
+  },
+  {
+    name: "About",
+    items: [
+      { id: "connection", type: "info", name: "Companion app", desc: "The connection to the BeamNG.Earth app (127.0.0.1:47613) that builds the world, and the session id it gave this game." },
+      { id: "anchor", type: "info", name: "World origin", desc: "The current world origin (anchor) and its latitude / longitude. A rebase moves it under you." },
+      { id: "player", type: "info", name: "Your position", desc: "Your latitude / longitude and the distance from the world origin." },
+      { id: "weather", type: "info", name: "Weather data", desc: "Real weather from Open-Meteo.com, every 10 min or 25 km." },
+      { id: "gravity", type: "info", name: "Gravity", desc: "The gravity in use: the real value (WGS84 normal plus EGM2008) or normal gravity by latitude." },
+      { id: "deshadow", type: "info", name: "Imagery de-shadowing", desc: "The app's relighting of the shadows baked into the aerial photos." },
+      { id: "colormatch", type: "info", name: "Imagery colour seams", desc: "The app's removal of the colour steps between photo flights, e.g. at state lines." },
+      { id: "credits", type: "text", name: "Data credits now", desc: "The data credits for what is around you now, as drawn in the screen corner." },
+      { id: "attribution", type: "text", name: "Data sources", desc: "Credits for the elevation and imagery sources in use." },
+    ],
+  },
+  {
+    name: "Developer",
     devPresets: true,
     items: [
-      { id: "tint", type: "dev", name: "LOD tint", desc: "Tints every far tile by its level: green = matches the physics ground, cyan L0, blue L1, purple L2, orange to red coarser. Applied in small batches per frame. Session only." },
-      { id: "outlines", type: "dev", name: "Tile outlines", desc: "Outlines of the tiles near the player, coloured by level (shown) or state: grey hidden-loaded, yellow in a crossover, magenta previous anchor, red doomed. Session only." },
+      { id: "tint", type: "dev", name: "LOD tint", desc: "Tints every far tile by its level: green = matches the physics ground, cyan L0, blue L1, purple L2, orange to red coarser. Session only." },
+      { id: "outlines", type: "dev", name: "Tile outlines", desc: "Outlines of the tiles near you, coloured by level or state: grey hidden-loaded, yellow in a crossover, magenta previous anchor, red doomed. Session only." },
       { id: "loading", type: "dev", name: "Loading heat", desc: "Queued tiles flash; the next 10 imports are numbered in the order they will load. Session only." },
       { id: "physics", type: "dev", name: "Physics block", desc: "The collidable terrain square, the pending one (dashed) and the terrain-follow prepare / commit squares. Session only." },
       { id: "physicsTerrain", type: "dev", name: "Show physics terrain", desc: "Renders the invisible physics terrain so it can be compared with the visible tiles. Session only." },
@@ -338,29 +261,35 @@ const settingsSchema = [
       { id: "probe", type: "dev", name: "Under-car probe", desc: "A line at the car: physics ground vs the visible tile; red when the tile under the car is not the exact level or is more than 5 cm off. Session only." },
       { id: "stats", type: "dev", name: "Stats panel", desc: "Frame times, governor budget, imports and deletes per second, queue, objects, pops, failures, server backlog. Session only." },
       { id: "graphs", type: "dev", name: "Graphs panel", desc: "60 s plots of frame time, queue length, imports per second and speed. Session only." },
-      { id: "map", type: "dev", name: "Mini-map panel", desc: "Top-down map of the tiles around the player; click a tile to inspect it. Session only." },
+      { id: "map", type: "dev", name: "Mini-map panel", desc: "Top-down map of the tiles around you; click a tile to inspect it. Session only." },
       { id: "controls", type: "dev", name: "Controls panel", desc: "Overlay toggles, freeze LOD, force rebase, streaming budget, sky mode. Session only." },
       { id: "log", type: "dev", name: "Event log", desc: "The last 50 mod events (terrain commits, rebases, pops, failures, status). Session only." },
-      { id: "devOutlineKm", type: "float", min: 0.5, max: 20, step: 0.5, default: 3, name: "Outline radius (km)", desc: "Tile outlines and loading heat are drawn within this distance of the player." },
+      { id: "devOutlineKm", type: "float", min: 0.5, max: 20, step: 0.5, default: 3, name: "Outline radius (km)", desc: "Tile outlines and loading heat are drawn within this distance of you." },
       { id: "devMapKm", type: "float", min: 1, max: 80, step: 1, default: 10, name: "Mini-map radius (km)", desc: "The mini-map's initial zoom." },
     ],
   },
-  {
-    name: "Feedback",
-    items: [
-      { id: "reportOpen", type: "feedback", what: "report", label: "Report", name: "Report an issue or idea", desc: "Closes this menu, takes a screenshot, the location, the frame rate and your hardware and graphics settings, then opens a window to pick the kind (map issue, performance issue, bug, idea), give a title and describe it. Saves a ready-to-post GitHub issue (issue.md) in the report folder. Also Ctrl+Shift+E while driving." },
-      { id: "profilerOpen", type: "feedback", what: "profiler", label: "Start profiler", name: "Performance profiler", desc: "Closes this menu and records 30 s of frame times while you drive (every hitch with its place), then opens the same window as a performance issue. Also Ctrl+Shift+Y while driving." },
-      { id: "reportPost", type: "text", name: "Posting it", desc: "After saving, the window shows the folder and opens the GitHub new-issue page; or run python3 tools/reports.py issue in the mod's folder. Edit issue.md and drag screenshot.jpg into the issue." },
-    ],
-  },
-  {
-    name: "Attribution",
-    items: [
-      { id: "credits", type: "text", name: "On screen now", desc: "The data credits for what is around you now, as drawn in the screen corner (sent by the server whenever they change)." },
-      { id: "attribution", type: "text", name: "Data sources", desc: "Credits for the elevation and imagery sources in use." },
-    ],
-  },
 ]
+
+// The quality presets' cards (settings.lua PRESETS: what each sets)
+const qualityPresets = [
+  { id: "low", name: "Low", short: "Thin forests, no grass, 40 km view", desc: "For older laptops and weak GPUs: fewer, nearer trees, no grass, few lamp lights at night and a 40 km view distance." },
+  { id: "medium", name: "Medium", short: "Normal trees, light grass", desc: "Normal trees, light grass and few lamp lights at night, the real horizon. The Steam Deck's preset." },
+  { id: "high", name: "High", short: "The full look", desc: "Normal trees and grass, all lamp lights, the real horizon (BeamNG.Earth's look before presets existed)." },
+  { id: "ultra", name: "Ultra", short: "Denser, farther forests", desc: "Denser and farther forests, thick grass and more lamp lights at night. For strong GPUs." },
+]
+const section = ref(0)        // the tab shown
+
+// LayoutMenu's tabs (its own tab bar: Q / E on a controller), one per section
+const TAB_ICONS = { Graphics: icons.eyeOutlineOpened, World: icons.globe, Interface: icons.cogOutline,
+  Multiplayer: icons.peopleOutline, Storage: icons.floppyDisk, Feedback: icons.bug, About: icons.info, Developer: icons.code }
+const tabs = settingsSchema.map(c => ({ id: c.name, label: c.name, icon: TAB_ICONS[c.name] }))
+const category = computed(() => settingsSchema[section.value] || settingsSchema[0])
+const visibleItems = computed(() => category.value.items.filter(it => !it.showIf || it.showIf(config.value)))
+const optionConfig = { value: o => o.value, label: o => o.label }    // (BngSelect: our options' fields)
+const presetLine = computed(() => {
+  const p = qualityPresets.find(q => q.id === config.value.quality)
+  return p ? `${p.name}: ${p.desc}` : ""
+})
 
 const devPresets = [
   { id: "off", label: "Off" },
@@ -373,7 +302,7 @@ const devPresets = [
 // Extract global defaults (persisted settings only)
 const defaultSettings = {}
 settingsSchema.forEach(cat => {
-  cat.items.forEach(item => { if (item.default !== undefined) defaultSettings[item.id] = item.default })
+  cat.items.forEach(item => { if (item.default !== undefined && !item.virtual) defaultSettings[item.id] = item.default })
 })
 
 const connectionText = computed(() => {
@@ -416,15 +345,6 @@ function infoValue(item) {
   if (item.id === "colormatch") return s.colormatch || "off"
   if (item.id === "cacheUsage") return (s.cache && s.cache.line) || "-"
   return ""
-}
-
-function formatDefault(item) {
-  if (item.type === "bool") return item.default ? "Enabled" : "Disabled"
-  if (item.type === "select") {
-    const opt = item.options.find(o => o.value === item.default)
-    return opt ? opt.label : item.default
-  }
-  return item.default
 }
 
 function luaValue(val) {
@@ -513,6 +433,7 @@ function updateSetting(key) {
   lastWriteAt = Date.now()
   engineLua(script, res => {
     if (res && res.value !== undefined) config.value[key] = res.value // the Lua side clamps
+    if (res && res.quality) config.value.quality = res.quality         // (a graphics knob moved: Custom, or a preset)
   })
 }
 
@@ -559,20 +480,54 @@ function confirmClearCache() {
   })
 }
 
-// Custom Dropdown Functions
-function toggleDropdown(id) {
-  openDropdown.value = openDropdown.value === id ? null : id
-}
-
 function selectOption(item, val) {
+  if (item.id === "grass") { setGrass(val); return }
   config.value[item.id] = val
   updateSetting(item.id)
-  openDropdown.value = null // Close menu after selection
 }
 
-function getOptionLabel(item, val) {
-  const opt = item.options.find(o => o.value === val)
-  return opt ? opt.label : val
+// A select's value: the Grass control is two settings (groundCover on / off and groundCoverDensity)
+function valueOf(item) {
+  if (item.id === "grass") return config.value.groundCover === false ? "off" : (config.value.groundCoverDensity || "normal")
+  return config.value[item.id]
+}
+
+function setGrass(val) {
+  if (val === "off") {
+    config.value.groundCover = false
+    updateSetting("groundCover")
+  } else {
+    config.value.groundCover = true
+    config.value.groundCoverDensity = val
+    updateSetting("groundCoverDensity")
+    updateSetting("groundCover")
+  }
+}
+
+// A preset card: settings.lua setQuality sets its knobs and answers with every value
+function setQuality(id) {
+  lastWriteAt = Date.now()
+  config.value.quality = id
+  engineLua(`beamngEarth_settings and beamngEarth_settings.uiSet("quality", ${JSON.stringify(id)}) or nil`, res => {
+    if (res && res.settings) config.value = { ...defaultSettings, ...res.settings }
+  })
+}
+
+function presetName(id) {
+  const p = qualityPresets.find(q => q.id === id)
+  return p ? p.name : id
+}
+
+// the preset the first run's detection picked ("Steam Deck: medium")
+const detectedPick = computed(() => {
+  const d = config.value.qualityDetected || ""
+  const k = d.lastIndexOf(": ")
+  return k >= 0 ? d.slice(k + 2) : ""
+})
+
+// Back: to the menu the page was opened from (the pause menu in a level, else the main menu)
+function close() {
+  engineLua("if beamngEarth_settings and beamngEarth_settings.closeSettings then beamngEarth_settings.closeSettings() end")
 }
 
 onMounted(() => {
@@ -588,415 +543,87 @@ onUnmounted(() => {
 </script>
 
 <style scoped lang="scss">
-* {
-  box-sizing: border-box;
+/* Only spacing: the cards, rows and controls are the game's own (LayoutMenu, BngRow, BngSelect ...) */
+.earth-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25em;
+  max-height: 80vh;
+  overflow-y: auto;
+  padding: 0.5em 0.75em 1em;
 }
 
-.earth-bng-options {
+.earth-intro,
+.earth-note,
+.earth-loading {
+  font-size: 0.9em;
+  color: var(--bng-cool-gray-300, #bbb);
+  padding: 0.2em 0.25em 0.5em;
+}
+
+.earth-note.is-error { color: var(--bng-add-red-400, #f88); }
+
+.earth-presets {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.5em;
+  padding: 0.25em 0 0.5em;
+}
+
+.earth-value { color: var(--bng-cool-gray-200, #ccc); text-align: right; }
+
+.earth-text {
+  white-space: pre-wrap;
+  font-size: 0.9em;
+  line-height: 1.35;
+  color: var(--bng-cool-gray-200, #ccc);
+}
+
+.earth-inline {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+}
+
+.earth-path {
   display: flex;
   flex-direction: column;
   width: 100%;
+
+  .earth-path-input { flex: 1 1 auto; min-width: 0; }
+}
+
+.earth-side {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5em;
   height: 100%;
-  min-height: 65vh;
-  overflow: hidden;
-  font-family: 'Overpass', sans-serif;
-  color: #fff;
-  background-color: var(--bng-off-black, rgba(15, 15, 15, 0.95));
-  border-radius: 6px;
+  padding: 0.5em 0.75em 1em;
 }
 
-/* Header */
-.options-header {
-  flex: 0 0 auto;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.5em 1em 0.8em;
-  background-color: rgba(0, 0, 0, 0.2);
-  border-bottom: 2px solid var(--bng-orange-550, #f60);
-
-  .header-title {
-    font-size: 1.3rem;
-    font-weight: 600;
-  }
-
-  .header-welcome {
-    margin-left: auto;
-    margin-right: 1em;
-    padding: 0.25em 0.8em;
-    font-size: 0.9rem;
-    color: #fff;
-    background: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.25);
-    border-radius: 4px;
-    cursor: pointer;
-  }
-
-  .header-status {
-    font-weight: 600;
-    color: #f88;
-
-    &.is-connected { color: #8f8; }
-  }
-}
-
-/* The update line: its text and a button to the download page */
-.update-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1em;
-  .update-link { padding: 0.2em 0.8em; }
-}
-
-/* Connection state line (the on-screen banner's text); a plain div, nothing focusable */
-.state-bar {
-  border-left: 4px solid #6af;
-
-  .state-text {
-    font-size: 0.95em;
-    font-weight: 600;
-    white-space: pre-line;
-  }
-
-  &.state-ok { border-left-color: #4c4; }
-  &.state-warn { border-left-color: #fa3; background-color: rgba(255, 170, 51, 0.10); }
-  &.state-error { border-left-color: #f54; background-color: rgba(255, 85, 68, 0.12); }
-}
-
-/* Presets / status bar */
-.options-presets {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  padding: 0.5em 1em;
-  background-color: rgba(255, 255, 255, 0.03);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-
-  .preset-btn {
-    flex: 1;
-    margin: 0 0.25em;
-    --bng-button-padding-y: 0.3em;
-    font-size: 0.9em;
-  }
-
-  .status-text {
-    font-size: 0.9em;
-    color: #ccc;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-}
-
-/* Main List Array */
-.options-list-scroll {
-  flex: 1 1 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  width: 100%;
-  padding: 0.5em;
-
-  &::-webkit-scrollbar { width: 8px; }
-  &::-webkit-scrollbar-track { background: transparent; }
-  &::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 4px; }
-  &::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.4); }
-}
-
-/* Collapsible Details Styles */
-details.category-block {
-  margin-bottom: 0.5em;
-  width: 100%;
-  background: rgba(0, 0, 0, 0.15);
-  border-radius: 4px;
-}
-
-summary.category-title {
-  display: flex;
-  align-items: center;
-  padding: 0.5em 0.75em;
-  font-size: 1.05rem;
+.earth-status {
   font-weight: 600;
-  color: #ddd;
-  background: rgba(255, 255, 255, 0.05);
-  cursor: pointer;
-  list-style: none;
-  user-select: none;
-  border-radius: 4px;
-  transition: background-color 0.1s ease;
+  white-space: pre-line;
 
-  &::-webkit-details-marker { display: none; }
-  &:hover { background: rgba(255, 255, 255, 0.08); }
-
-  // the arrow is its own element: the game draws its orange focus frame with ::before on the
-  // selected item (ours was rotated with it, then replaced by it); a CSS triangle, not a glyph
-  .category-arrow {
-    display: inline-block;
-    flex: none;
-    width: 0;
-    height: 0;
-    margin-right: 0.6em;
-    border-top: 0.3em solid transparent;
-    border-bottom: 0.3em solid transparent;
-    border-left: 0.45em solid var(--bng-orange-550, #f60);
-    transition: transform 0.2s ease;
-  }
+  &.is-ok { color: var(--bng-add-green-400, #8f8); }
+  &.is-warn { color: var(--bng-orange-300, #fa3); }
+  &.is-error { color: var(--bng-add-red-400, #f88); }
 }
 
-details[open] > summary.category-title {
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-  .category-arrow { transform: rotate(90deg); }
-}
+.earth-update { display: flex; align-items: center; justify-content: space-between; gap: 0.5em; }
 
-.category-items {
-  padding: 0.25em 0;
-}
-
-/* Item Rows */
-.options-item-row {
-  display: flex;
-  flex-direction: column;
-  background-color: rgba(0, 0, 0, 0.2);
-  margin-bottom: 2px;
-  padding: 0.6em 0.8em;
-  width: 100%;
-
-  &:nth-child(even) {
-    background-color: transparent;
-  }
-
-  .row-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    width: 100%;
-
-    .option-label {
-      flex: 1 1 auto;
-      font-size: 0.95rem;
-      padding-right: 0.5em;
-    }
-
-    .info-value {
-      flex: 0 1 auto;
-      font-size: 0.9rem;
-      color: #ccc;
-      text-align: right;
-    }
-
-    .inline-controls {
-      flex: 0 0 auto;
-      display: flex;
-      align-items: center;
-      gap: 0.75em;
-    }
-  }
-
-  .stacked-controls {
-    display: flex;
-    align-items: center;
-    width: 100%;
-    margin-top: 0.6em;
-    gap: 0.75em;
-
-    .native-slider {
-      flex: 1 1 auto;
-      min-width: 0;
-    }
-  }
-
-  .text-block {
-    font-size: 0.85rem;
-    color: #ccc;
-    line-height: 1.35;
-    white-space: pre-wrap;
-  }
-
-  .action-result {
-    font-size: 0.85rem;
-    color: #ccc;
-  }
-
-  .confirm-block {
-    .confirm-text {
-      flex: 1 1 auto;
-      font-size: 0.85rem;
-      color: #ccc;
-      line-height: 1.3;
-    }
-  }
-
-  .option-note {
-    margin-top: 0.35em;
-    font-size: 0.8rem;
-    color: rgba(255, 255, 255, 0.55);
-    line-height: 1.3;
-    overflow-wrap: anywhere;
-
-    &.is-error { color: #ffb08a; }
-  }
-
-  .path-input {
-    flex: 1 1 auto;
-    min-width: 0;
-    padding: 0.35em 0.6em;
-    font-size: 0.9rem;
-    color: #fff;
-    background: rgba(0, 0, 0, 0.55);
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    border-radius: 4px;
-  }
-}
-
-/* ==============================================================
-   Custom Dropdown CSS (Bypasses CEF OSR restrictions)
-   ============================================================== */
-
-.dropdown-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 9998;
-  cursor: default;
-}
-
-.custom-dropdown-container {
-  position: relative;
+.earth-help {
   flex: 1 1 auto;
-  font-size: 0.95rem;
-  z-index: 1;
+  padding-top: 0.5em;
+  border-top: 1px solid rgba(255, 255, 255, 0.15);
 
-  &.is-open {
-    z-index: 9999; /* Lift above the backdrop */
-  }
+  .earth-help-title { font-weight: 600; padding-bottom: 0.3em; }
+  .earth-help-text { font-size: 0.95em; line-height: 1.4; color: var(--bng-cool-gray-200, #ccc); }
 }
 
-.dropdown-selected {
-  background: rgba(0, 0, 0, 0.4);
-  color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 4px;
-  padding: 0.45em 0.75em;
+.earth-side-buttons {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  cursor: pointer;
-  transition: border-color 0.15s ease;
-  user-select: none;
-
-  &:hover {
-    border-color: rgba(255, 255, 255, 0.4);
-  }
-
-  .dropdown-arrow {             // a CSS triangle in the text colour (no '▼' glyph in the UI font)
-    flex: none;
-    width: 0;
-    height: 0;
-    margin-left: 0.5em;
-    color: rgba(255, 255, 255, 0.5);
-    border-left: 0.3em solid transparent;
-    border-right: 0.3em solid transparent;
-    border-top: 0.4em solid currentColor;
-  }
-}
-
-.custom-dropdown-container.is-open .dropdown-selected {
-  border-color: var(--bng-orange-550, #f60);
-  .dropdown-arrow { color: var(--bng-orange-550, #f60); }
-}
-
-.dropdown-list {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
-  background: #1a1a1a;
-  border: 1px solid var(--bng-orange-550, #f60);
-  border-radius: 4px;
-  overflow: hidden;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
-}
-
-.dropdown-option {
-  padding: 0.5em 0.75em;
-  cursor: pointer;
-  color: #ddd;
-  transition: background-color 0.1s;
-
-  &:hover {
-    background: rgba(255, 102, 0, 0.2);
-    color: #fff;
-  }
-
-  &.is-active {
-    background: var(--bng-orange-550, #f60);
-    color: #fff;
-    font-weight: 600;
-  }
-}
-
-/* Reset Button Space */
-.option-reset {
-  flex: 0 0 2.5em;
-  width: 2.5em;
-  display: flex;
+  gap: 0.5em;
   justify-content: flex-end;
-  padding-left: 0.5em;
-
-  .bng-reset-btn {
-    --bng-button-padding-x: 0.3em;
-    --bng-button-padding-y: 0.15em;
-    opacity: 0.8;
-    &:hover { opacity: 1; }
-  }
-}
-
-/* Info Panel at Bottom */
-.options-info-panel {
-  flex: 0 0 8.0em;
-  min-height: 8.0em;
-  max-height: 8.0em;
-  width: 100%;
-  background-color: rgba(0, 0, 0, 0.6);
-  border-top: 2px solid var(--bng-orange-550, #f60);
-  padding: 0.6em 1.2em;
-  overflow-y: auto;
-  overflow-x: hidden;
-
-  .info-empty {
-    height: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: rgba(255, 255, 255, 0.4);
-    font-size: 0.95em;
-    font-style: italic;
-  }
-
-  .info-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    margin-bottom: 0.2em;
-
-    .info-title {
-      font-weight: 700;
-      font-size: 1.05rem;
-      color: #fff;
-    }
-    .info-default {
-      font-family: monospace;
-      font-size: 0.9em;
-      color: rgba(255, 255, 255, 0.5);
-    }
-  }
-
-  .info-desc {
-    font-size: 0.9rem;
-    color: #ccc;
-    line-height: 1.35;
-    white-space: pre-wrap;
-  }
 }
 </style>

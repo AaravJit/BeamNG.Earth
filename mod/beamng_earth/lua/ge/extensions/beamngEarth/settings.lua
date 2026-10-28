@@ -37,6 +37,14 @@ M.LEVEL_ID = 'beamng_earth'
 
 -- key -> { kind = 'number'|'bool'|'enum', default, min, max, values, label }. Order = ORDER.
 M.SCHEMA = {
+  -- the quality presets (M.PRESETS; the user, 2026-10-28: "proper quality presets", picked from the hardware on the
+  -- first run: M.detectQuality); 'custom' once a knob is changed away from every preset
+  quality = { kind = 'enum', default = 'auto', values = { 'auto', 'low', 'medium', 'high', 'ultra', 'custom' },
+    label = 'Quality' },
+  trees = { kind = 'enum', default = 'normal', values = { 'low', 'normal', 'high', 'ultra' }, label = 'Trees' },
+  nightLights = { kind = 'enum', default = 'normal', values = { 'few', 'normal', 'many' }, label = 'Street lamp lights' },
+  -- not on the page: what the first run's detection found ("Steam Deck: Medium")
+  qualityDetected = { kind = 'string', default = '', maxLen = 120, label = 'Detected hardware' },
   rebaseDistance = { kind = 'number', default = rebase.DEFAULT_DISTANCE, min = rebase.MIN_DISTANCE,
     max = rebase.MAX_DISTANCE, label = 'Rebase distance (m)' },
   viewDistanceMode = { kind = 'enum', default = 'horizon', values = { 'fixed', 'horizon' }, label = 'View distance' },
@@ -77,14 +85,44 @@ M.SCHEMA = {
   -- not on the page: the newer version whose update notice the player dismissed (core.lua drawUpdateNotice)
   updateDismissed = { kind = 'string', default = '', maxLen = 40, label = 'Update notice dismissed (version)' },
 }
-M.ORDER = { 'rebaseDistance', 'viewDistanceMode', 'viewDistanceKm', 'hazeStrength', 'skyMode', 'clouds',
+M.ORDER = { 'quality', 'trees', 'nightLights', 'rebaseDistance', 'viewDistanceMode', 'viewDistanceKm', 'hazeStrength', 'skyMode', 'clouds',
   'weatherMode', 'realGravity', 'groundCover', 'groundCoverDensity', 'rocks', 'roads', 'dashboardSatellite',
   'hudVisible', 'statusBar',
   'placeNamesOnline', 'creditsVisible', 'beammpOnLaunch',
   'creditsCorner', 'creditsSize', 'cacheCapGb', 'devOutlineKm', 'devMapKm' }
 
 -- Stored but not on the settings page
-M.HIDDEN = { welcomeSeen = true, updateDismissed = true }
+M.HIDDEN = { welcomeSeen = true, updateDismissed = true, qualityDetected = true }
+
+-- The quality presets: each sets these knobs at once ('high' = the defaults before presets existed, 2026-10-28). A
+-- Steam Deck on Handheld held ~33 fps on 'high' (Baltimore drives, 2026-10-28); 'medium' is its first-run pick.
+M.PRESET_KEYS = { 'trees', 'groundCover', 'groundCoverDensity', 'rocks', 'nightLights', 'viewDistanceMode',
+  'viewDistanceKm' }
+M.PRESETS = {
+  low = { trees = 'low', groundCover = false, groundCoverDensity = 'low', rocks = true, nightLights = 'few',
+    viewDistanceMode = 'fixed', viewDistanceKm = 40 },
+  medium = { trees = 'normal', groundCover = true, groundCoverDensity = 'low', rocks = true, nightLights = 'few',
+    viewDistanceMode = 'horizon', viewDistanceKm = 100 },
+  high = { trees = 'normal', groundCover = true, groundCoverDensity = 'normal', rocks = true, nightLights = 'normal',
+    viewDistanceMode = 'horizon', viewDistanceKm = 100 },
+  ultra = { trees = 'high', groundCover = true, groundCoverDensity = 'high', rocks = true, nightLights = 'many',
+    viewDistanceMode = 'horizon', viewDistanceKm = 100 },
+}
+M.PRESET_ORDER = { 'low', 'medium', 'high', 'ultra' }
+
+-- Pure: the preset a first run picks for this hardware (Engine.Platform.getGPUInfo: { name, memoryMB }) and why.
+-- A Steam Deck (its APU: "AMD Custom GPU 0405 / 0932 (RADV VANGOGH)") or a GPU with under 3 GB: medium / low.
+function M.detectQuality(gpu)
+  local name = type(gpu) == 'table' and tostring(gpu.name or '') or ''
+  local mem = type(gpu) == 'table' and tonumber(gpu.memoryMB) or nil
+  local up = name:upper()
+  if up:find('VANGOGH', 1, true) or up:find('CUSTOM GPU 0405', 1, true) or up:find('CUSTOM GPU 0932', 1, true) then
+    return 'medium', 'Steam Deck'
+  end
+  if mem and mem > 0 and mem < 3072 then return 'low', string.format('%s, %d MB', name, mem) end
+  if mem and mem > 0 and mem < 6144 then return 'medium', string.format('%s, %d MB', name, mem) end
+  return 'high', name ~= '' and name or 'this PC'
+end
 
 -- Old values that still load (and set) as their replacement, without a warning: 'auto' weather
 -- (real unless BWM_Weather was changing the weather) is Real now, which switches itself to Manual
@@ -153,7 +191,56 @@ function M.load(path)
     warnings[#warnings + 1] = 'settings file unreadable: ' .. tostring(data)
   end
   for _, w in ipairs(warnings) do log('W', 'beamngEarth', 'settings: ' .. w) end
+  if values.quality == 'auto' then M.resolveAuto() end
   return values, warnings
+end
+
+-- Pure-ish: the preset whose knobs all equal the current values, or nil.
+function M.matchingPreset()
+  for _, p in ipairs(M.PRESET_ORDER) do
+    local all = true
+    for _, k in ipairs(M.PRESET_KEYS) do
+      if M.PRESETS[p][k] ~= values[k] then all = false; break end
+    end
+    if all then return p end
+  end
+  return nil
+end
+
+-- The first run (quality 'auto'): the hardware's preset, unless the player changed one of its knobs before presets
+-- existed (then 'custom', theirs kept). Saved by the caller's next save (and here, when the file can be written).
+function M.resolveAuto(gpu)
+  if gpu == nil then
+    local P = rawget(_G, 'Engine') and Engine.Platform
+    if P and P.getGPUInfo then
+      local ok, g = pcall(P.getGPUInfo)
+      if ok then gpu = g end
+    end
+  end
+  local pick, why = M.detectQuality(gpu)
+  values.qualityDetected = why .. ': ' .. pick
+  local changed = false
+  for _, k in ipairs(M.PRESET_KEYS) do
+    if values[k] ~= M.SCHEMA[k].default then changed = true end
+  end
+  if changed then
+    values.quality = M.matchingPreset() or 'custom'
+  else
+    for _, k in ipairs(M.PRESET_KEYS) do values[k] = M.PRESETS[pick][k] end
+    values.quality = pick
+  end
+  log('I', 'beamngEarth', 'settings: quality ' .. values.quality .. ' (detected ' .. values.qualityDetected .. ')')
+  if rawget(_G, 'jsonWriteFile') then M.save() end
+end
+
+-- Pick a preset: its knobs set, saved and applied. Returns { ok, settings, error }.
+function M.setQuality(p)
+  if not M.PRESETS[p] then return { ok = false, error = 'unknown preset ' .. tostring(p) } end
+  for _, k in ipairs(M.PRESET_KEYS) do values[k] = M.PRESETS[p][k] end
+  values.quality = p
+  M.save()
+  for _, k in ipairs(M.PRESET_KEYS) do M.apply(k) end
+  return { ok = true, settings = M.getAll() }
 end
 
 -- Write every value (and the version) to the file. Returns true on success.
@@ -252,6 +339,8 @@ M.APPLY = {
     local w = ext('beamngEarth_weather')
     if w and w.setGravityEnabled and w.GRAVITY_ENABLED ~= v then w.setGravityEnabled(v) end
   end,
+  trees = function(v) require('beamngEarth/trees').setQuality(v) end,
+  nightLights = function(v) require('beamngEarth/nightlights').setLightCount(v) end,
   groundCover = function(v) require('beamngEarth/groundcover').setEnabled(v) end,
   groundCoverDensity = function(v) require('beamngEarth/groundcover').setDensity(v) end,
   rocks = function(v) require('beamngEarth/trees').setGroupEnabled({ 'rock', 'desert_rock' }, v) end,
@@ -300,10 +389,17 @@ end
 function M.set(key, v)
   local val, err = M.validate(key, v)
   if val == nil then return { ok = false, error = err, value = values[key] } end
+  if key == 'quality' then
+    if M.PRESETS[val] then return M.setQuality(val) end
+    if val == 'auto' then M.resolveAuto(); M.applyAll(); return { ok = true, value = values.quality, settings = M.getAll() } end
+  end
   values[key] = val
+  local follows = false
+  for _, k in ipairs(M.PRESET_KEYS) do if k == key then follows = true end end
+  if follows then values.quality = M.matchingPreset() or 'custom' end     -- (a knob moved: Custom, or the preset it now is)
   M.save()
   M.apply(key)
-  return { ok = true, value = val }
+  return { ok = true, value = val, quality = values.quality }
 end
 
 ------------------------------------------------------------------------------------------
@@ -391,6 +487,7 @@ function M.uiSet(key, v) return M.set(key, v) end
 
 function M.uiReset()
   values = defaults()
+  M.resolveAuto()                               -- (quality 'auto': the hardware's preset again)
   M.save()
   M.applyAll()
   return M.getAll()
@@ -457,6 +554,16 @@ function M.uiPlaceGoRecent(i, lat, lon) return placesCall(places.uiGoRecent, i, 
 -- button; tiles from the server's 127.0.0.1 endpoint, server/maptiles.py, port in hello.mapPort).
 
 M.MAP_ROUTE = 'beamngEarthMap' -- index.js registers the route under this name
+M.SETTINGS_ROUTE = 'beamngEarthSettings' -- the full settings page (index.js; the pause menu's card opens it)
+
+function M.openSettings()
+  return M.navigate(M.SETTINGS_ROUTE)
+end
+
+-- The page's Back (and Esc): the menu it was opened from (the pause menu in a level, the main menu outside one)
+function M.closeSettings()
+  return M.navigate('menu')
+end
 local mapOpen = false
 
 -- The player's heading in degrees clockwise from north (the bubble's +y is north, +x east), or nil.

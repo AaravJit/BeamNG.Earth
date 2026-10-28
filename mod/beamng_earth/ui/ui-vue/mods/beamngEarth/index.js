@@ -1,15 +1,28 @@
 import { lua } from "@/bridge"
 
-// BeamNG.Earth: a button in the shared "Mods" tab of the Pause Menu opening the settings page
-// (same pattern as the taa_standalone mod). Lua side: lua/ge/extensions/beamngEarth/settings.lua.
+// BeamNG.Earth: a button in the shared "Mods" tab of the Pause Menu showing its card (EarthSettingsCard.vue: the
+// quality presets and a button to the full settings page, a route of its own like the map's). Lua side: lua/ge/extensions/beamngEarth/settings.lua.
 //
 // The world map (EarthMap.vue): a full-screen route of its own ("beamngEarthMap", opened by the
 // map key (M, the pause menu Map, or a bound key) through beamngEarth_settings.toggleMap). No Mods-tab button of its own
 // (the user, 2026-10-16: "move the map out of the mods tab"; the stock Map entry opens it). The route follows ui/ui-vue/mods/README.md "Standalone routes"; any failure
 // there is logged and leaves the settings button alone.
 const MAP_SOURCE = "beamngEarth.routes"
-function mapRoutes(EarthMap, EarthWelcome) {
+function mapRoutes(EarthMap, EarthWelcome, EarthSettings) {
   return [
+  {
+    // the full settings page (the user, 2026-10-28: "a whole separate page like how BeamMP's settings page is"),
+    // opened by the pause menu's card (EarthSettingsCard.vue: beamngEarth_settings.openSettings)
+    path: "/beamng-earth-settings",
+    name: "beamngEarthSettings",
+    component: EarthSettings,
+    meta: {
+      luaRoute: {
+        title: "BeamNG.Earth settings",
+        backTarget: "menu",
+      },
+    },
+  },
   {
     // the one-time welcome (settings.lua shows it once per WELCOME_VERSION in our level)
     path: "/beamng-earth-welcome",
@@ -44,7 +57,8 @@ async function registerMapRoute() {
   try {
     if (!window.bngRoutes || !lua.extensions.ui_router_routeManager) return
     // imported here, not at the top: a map that fails to compile must not cost the settings button
-    const routes = mapRoutes((await import("./EarthMap.vue")).default, (await import("./EarthWelcome.vue")).default)
+    const routes = mapRoutes((await import("./EarthMap.vue")).default, (await import("./EarthWelcome.vue")).default,
+                             (await import("./EarthSettings.vue")).default)
     window.bngRoutes.add([{ path: MAP_SOURCE, routes }])
     const result = await lua.extensions.ui_router_routeManager.registerModRoutes(MAP_SOURCE, toLuaRoutes(routes))
     if (!result?.success) {
@@ -62,7 +76,7 @@ export async function onLoad() {
     tabId: "mods",
     label: "BeamNG.Earth",
     icon: "globe",
-    componentName: "/ui/ui-vue/mods/beamngEarth/EarthSettings.vue",
+    componentName: "/ui/ui-vue/mods/beamngEarth/EarthSettingsCard.vue",
   })
   // tell the mod the page exists: its imgui window becomes a compact HUD (settings.lua)
   if (window.bngApi && window.bngApi.engineLua) {

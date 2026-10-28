@@ -132,6 +132,9 @@ You can help support development by reporting [issues](https://github.com/TecnaG
 - Easy setup: one download per system (Windows .exe, Linux AppImage) that installs the mod and starts the server
   and the game; from the source, `install.py` installs everything and `start.py` keeps the mod in sync.
 - Runs on a Steam Deck (aim: 30 fps on the Handheld graphics preset).
+- Quality presets (Low / Medium / High / Ultra) on BeamNG.Earth's own settings page (pause menu > Mods > BeamNG.Earth >
+  Open BeamNG.Earth settings): trees, grass, rocks, street-lamp lights and view distance at one press, each
+  fine-tunable; the first start picks one for your hardware (Medium on a Steam Deck).
 - Uses your graphics card for some of the world server's work (colour matching of the photos, compressing the distant
   textures) when it can, so the server needs less of your CPU; without a usable one the CPU does it as before.
 - Offline play from the download cache (with a size cap and "clear cache").

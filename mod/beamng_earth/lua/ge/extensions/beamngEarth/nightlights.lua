@@ -26,6 +26,11 @@ M.MATERIALS = {
 -- pool is made once (a few a frame) and only switched off by day. (After MihneaTeodorStoica's PR #340, which kept 24
 -- point lights within 90 m.) Farther lamps show their glow (furniture.py G_GLOW, out to where the road tiles end).
 M.LIGHTS_MAX = 128
+-- the quality setting's lamp light counts (settings.lua 'nightLights')
+M.QUALITY_LIGHTS = { few = 48, normal = 128, many = 256 }
+function M.setLightCount(level)
+  M.LIGHTS_MAX = M.QUALITY_LIGHTS[level] or M.QUALITY_LIGHTS.normal
+end
 M.LIGHTS_S = 0.25
 M.NEAR_M = 900
 M.AROUND_M = 60
