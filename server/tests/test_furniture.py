@@ -125,9 +125,15 @@ class PoleTest(unittest.TestCase):
                                - furniture.LENS_DROP_M, places=1)
         self.assertEqual([x for x in furniture.place([road("m", "motorway", False)], [], (0, 0, 256, 256))
                           if x[0] == furniture.G_LAMP], [])
-        ramp = road("r", "motorway", False)
+        ramp = road("r", "motorway", False, 20.0, 230.0)
         ramp = (ramp[0], ramp[1]._replace(link=True), ramp[2], ramp[3])
         self.assertTrue(any(x[0] == furniture.G_LAMP for x in furniture.place([ramp], [], (0, 0, 256, 256))))
+        # a rural ramp: lamps at its ends only (partial interchange lighting), an urban one along it
+        rural = [x for x in furniture.place([ramp], [], (0, 0, 256, 256)) if x[0] == furniture.G_LAMP]
+        urban = road("u", "motorway", True, 20.0, 230.0)
+        urban = (urban[0], urban[1]._replace(link=True), urban[2], urban[3])
+        self.assertEqual(len(rural), 2)
+        self.assertGreater(sum(x[0] == furniture.G_LAMP for x in furniture.place([urban], [], (0, 0, 256, 256))), 2)
         # the states' practice: California lights its interchanges only, Utah its side streets sparsely
         self.assertEqual(furniture.lamp_region("US", "US-CA"), "na:ramps")
         self.assertEqual(furniture.lamp_region("US", "US-UT"), "na:sparse")

@@ -71,8 +71,8 @@ def lamp_spacing(region, dense=False):
 
 
 def highway_lit(region, link, urban):
-    """Is a highway (HIGHWAY_CLASSES) lit: every ramp; the mainline in built-up land, except where the state lights
-    its interchanges only."""
+    """Is a highway (HIGHWAY_CLASSES) lit: every ramp (in the country only at its ends: PARTIAL_END_M); the mainline in
+    built-up land, except where the state lights its interchanges only."""
     return bool(link) or (bool(urban) and region != "na:ramps")
 LAMP_CURB_M = 0.5           # m from the curb onto the sidewalk
 POLE_SPACING = 45.0
@@ -510,6 +510,9 @@ LAMP_EDGE_M = 1.2
 HIGHWAY_CLASSES = {"motorway", "trunk"}
 HIGHWAY_LAMP_SPACING = {"na": 70.0, None: 45.0}
 LINK_LAMP_SPACING = {"na": 60.0, None: 40.0}
+PARTIAL_END_M = 15.0        # m from a rural ramp's ends its two lamps stand (partial interchange lighting, FHWA Lighting
+                            # Handbook 2012 / AASHTO: luminaires at the gores and the ramp terminals only; every rural
+                            # ramp lit end to end put 27 lamps on a Wyoming interchange of I-80, Discord 2026-10-28)
 HIGHWAY_LAMP_H = {"na": 13.5, None: 11.0}         # (ramps: the street post, NJDOT's 26 ft on ramps)
 LAMP_H = {G_LAMP: 9.0, "polelamp": 1.1}    # the catalog's heights (trees.lua CATALOG): a row's height over it, its scale
 POLE_LAMP_Z = 7.0           # m above the pole's base
@@ -720,6 +723,9 @@ def place(roads, walks, box, curb_h=0.15, wires=None, town=False, left_hand=Fals
         phase = _h01(fid, "pphase") * spacing
         L = _arclen(line)[-1]
         s = phase + spacing * np.arange(0, int((L - phase) // spacing) + 1)
+        if highway and spec.link and not spec.urban:    # a rural ramp: partial interchange lighting, at its ends
+            s = (np.array([PARTIAL_END_M, L - PARTIAL_END_M]) if L > 2 * PARTIAL_END_M + spacing / 2
+                 else np.array([L / 2]))
         if not len(s):
             continue
         P, D = _at(line, s)
