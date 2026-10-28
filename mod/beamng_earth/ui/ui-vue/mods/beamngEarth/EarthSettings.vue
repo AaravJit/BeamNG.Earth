@@ -169,7 +169,7 @@ const settingsSchema = [
     intro: "Pick a preset, then fine-tune the settings below if you like. Each change applies at once.",
     items: [
       { id: "trees", type: "select", default: "normal", name: "Trees", desc: "How many trees and how far out they are drawn. Low: thinner forests and a shorter reach (the most frame time saved in wooded places). Ultra: denser and farther forests (strong GPUs).",
-        options: [ { label: "Low", value: "low" }, { label: "Normal", value: "normal" }, { label: "High", value: "high" }, { label: "Ultra", value: "ultra" } ] },
+        options: [ { label: "Low", value: "low" }, { label: "Medium", value: "medium" }, { label: "Normal", value: "normal" }, { label: "High", value: "high" }, { label: "Ultra", value: "ultra" } ] },
       { id: "grass", type: "select", virtual: true, default: "normal", name: "Grass and shrubs", desc: "3D grass and scrub near the car (the game's own Hirochi Raceway and West Coast USA plants). Off saves the most on handhelds. Without the optional grass patch (tools/gcpatch, Linux) the game regrows the grass in one slower frame each time the ground under the car moves; denser grass makes that frame longer.",
         options: [ { label: "Off", value: "off" }, { label: "Low", value: "low" }, { label: "Normal", value: "normal" }, { label: "High", value: "high" } ] },
       { id: "rocks", type: "bool", default: true, name: "Rocks", desc: "Rocks and boulders on bare, rocky and steep ground. Off removes them (and their collision)." },
@@ -273,7 +273,7 @@ const settingsSchema = [
 // The quality presets' cards (settings.lua PRESETS: what each sets)
 const qualityPresets = [
   { id: "low", name: "Low", short: "Thin forests, no grass, 40 km view", desc: "For older laptops and weak GPUs: fewer, nearer trees, no grass, few lamp lights at night and a 40 km view distance." },
-  { id: "medium", name: "Medium", short: "Normal trees, light grass", desc: "Normal trees, light grass and few lamp lights at night, the real horizon. The Steam Deck's preset." },
+  { id: "medium", name: "Medium", short: "Lighter forests, light grass", desc: "Somewhat thinner forests, light grass and few lamp lights at night, the real horizon. The Steam Deck's preset." },
   { id: "high", name: "High", short: "The full look", desc: "Normal trees and grass, all lamp lights, the real horizon (BeamNG.Earth's look before presets existed)." },
   { id: "ultra", name: "Ultra", short: "Denser, farther forests", desc: "Denser and farther forests, thick grass and more lamp lights at night. For strong GPUs." },
 ]

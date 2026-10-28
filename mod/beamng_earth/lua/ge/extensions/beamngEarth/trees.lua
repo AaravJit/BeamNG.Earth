@@ -253,6 +253,7 @@ M.groupOff = { lampglow = true }
 -- the tiles' item caps and the rings' distances, from the defaults above ('normal': as they are).
 M.QUALITY_LEVELS = {
   low = { rank = 0.5, cap = 0.5, dist = 0.75 },
+  medium = { rank = 0.7, cap = 0.7, dist = 0.9 },
   normal = { rank = 1.0, cap = 1.0, dist = 1.0 },
   high = { rank = 1.35, cap = 1.5, dist = 1.3 },
   ultra = { rank = 1.7, cap = 2.2, dist = 1.6 },

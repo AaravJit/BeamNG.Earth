@@ -41,7 +41,7 @@ M.SCHEMA = {
   -- first run: M.detectQuality); 'custom' once a knob is changed away from every preset
   quality = { kind = 'enum', default = 'auto', values = { 'auto', 'low', 'medium', 'high', 'ultra', 'custom' },
     label = 'Quality' },
-  trees = { kind = 'enum', default = 'normal', values = { 'low', 'normal', 'high', 'ultra' }, label = 'Trees' },
+  trees = { kind = 'enum', default = 'normal', values = { 'low', 'medium', 'normal', 'high', 'ultra' }, label = 'Trees' },
   nightLights = { kind = 'enum', default = 'normal', values = { 'few', 'normal', 'many' }, label = 'Street lamp lights' },
   -- not on the page: what the first run's detection found ("Steam Deck: Medium")
   qualityDetected = { kind = 'string', default = '', maxLen = 120, label = 'Detected hardware' },
@@ -95,13 +95,14 @@ M.ORDER = { 'quality', 'trees', 'nightLights', 'rebaseDistance', 'viewDistanceMo
 M.HIDDEN = { welcomeSeen = true, updateDismissed = true, qualityDetected = true }
 
 -- The quality presets: each sets these knobs at once ('high' = the defaults before presets existed, 2026-10-28). A
--- Steam Deck on Handheld held ~33 fps on 'high' (Baltimore drives, 2026-10-28); 'medium' is its first-run pick.
+-- Steam Deck on Handheld in a forest (Patapsco, 2026-10-28): low 37.0 fps, high 31.5, ultra 30.9; 'medium' (its first-run
+-- pick) thins the trees too: the same trees as 'high' gave it only 32.2.
 M.PRESET_KEYS = { 'trees', 'groundCover', 'groundCoverDensity', 'rocks', 'nightLights', 'viewDistanceMode',
   'viewDistanceKm' }
 M.PRESETS = {
   low = { trees = 'low', groundCover = false, groundCoverDensity = 'low', rocks = true, nightLights = 'few',
     viewDistanceMode = 'fixed', viewDistanceKm = 40 },
-  medium = { trees = 'normal', groundCover = true, groundCoverDensity = 'low', rocks = true, nightLights = 'few',
+  medium = { trees = 'medium', groundCover = true, groundCoverDensity = 'low', rocks = true, nightLights = 'few',
     viewDistanceMode = 'horizon', viewDistanceKm = 100 },
   high = { trees = 'normal', groundCover = true, groundCoverDensity = 'normal', rocks = true, nightLights = 'normal',
     viewDistanceMode = 'horizon', viewDistanceKm = 100 },
