@@ -2026,8 +2026,9 @@ class Server:
             return netfetch.OFFLINE_TEXT
         parts = []
         down = self.net.unavailable_hosts(optional=False)
-        if down:
-            parts.append(", ".join(down) + " unreachable")
+        if down:            # each with what it affects (netfetch.ROLES: the user, 2026-10-27)
+            parts.append("; ".join(f"{h} unreachable ({netfetch.role_of(h)})" if netfetch.role_of(h)
+                                   else f"{h} unreachable" for h in down))
         if self.degraded:
             parts.append(f"{len(self.degraded)} tiles without imagery")
         return "Degraded: " + "; ".join(parts) if parts else ""

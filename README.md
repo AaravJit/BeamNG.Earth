@@ -293,7 +293,9 @@ The repository contains only code; all map data is downloaded at runtime and cac
   1901–2099, Scientific Data 10, 724 (CC BY 4.0).
 Each source's terms apply to the downloaded data; the in-game window shows the attribution line.
 The full list of data sources, services, libraries, tools and references, with licences and the
-credit each one asks for, is in [CREDITS.md](CREDITS.md).
+credit each one asks for, is in [CREDITS.md](CREDITS.md). [SOURCES.md](SOURCES.md) explains what each source does in
+the game, what it is sent, and what you see while it does not answer (the status line names such a source and what
+it affects).
 
 ## License
 Code: MIT, see [LICENSE](LICENSE). BeamNG.drive is a trademark of BeamNG GmbH; this is an unofficial

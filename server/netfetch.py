@@ -247,6 +247,56 @@ def _regional_policies():
 POLICIES.update(_regional_policies())
 DEFAULT_POLICY = HostPolicy()
 
+# What each source gives the world, and what the player gets while it does not answer (the user, 2026-10-27: "in case
+# a certain source is not responding ... tell the player what that source effects"). Shown after the host in the
+# status line (Server.net_note); SOURCES.md says more about each.
+ROLES = {
+    "basemap.nationalmap.gov": "US aerial photos; coarser satellite photos meanwhile",
+    "imagery.nationalmap.gov": "detailed US aerial photos (NAIP); coarser photos meanwhile",
+    "apps.geo.fpac.usda.gov": "detailed US aerial photos (NAIP, second source); coarser photos meanwhile",
+    "mdgeodata.md.gov": "Maryland's 6-inch aerial photos; coarser photos meanwhile",
+    "tiles.maps.eox.at": "worldwide satellite photos; new ground outside the detailed-photo regions may stay plain",
+    "tiles.mapterhorn.com": "terrain heights; new places use the coarser backup meanwhile",
+    "download.mapterhorn.com": "the list of where detailed terrain heights exist; new places may load slower",
+    "s3.amazonaws.com": "terrain heights (backup source); only matters while the main one is down too",
+    "copernicus-dem-30m.s3.amazonaws.com": "terrain heights near the poles",
+    "stac.overturemaps.org": "the map data's file list; the copy that comes with the app is used meanwhile",
+    "overturemaps-us-west-2.s3.us-west-2.amazonaws.com":
+        "roads, buildings, water and land use; places not visited before may come without them",
+    "overturemapswestus2.blob.core.windows.net":
+        "roads, buildings, water and land use (second source); only matters while the first is down too",
+    "esa-worldcover.s3.eu-central-1.amazonaws.com":
+        "land cover (ground materials, rocks, town streets); places not visited before get a plain ground meanwhile",
+    "dataforgood-fb-data.s3.amazonaws.com": "the trees; places not visited before have none meanwhile",
+    "gis.ngdc.noaa.gov": "sea depths; new coasts get a plain sloping sea floor meanwhile",
+    "davidmegginson.github.io": "the airport list; the copy on disk is used meanwhile",
+    "data.openstreetmap.us": "road details from OpenStreetMap (lanes, widths, sidewalks); estimated meanwhile",
+    "tecnagamer.github.io": "railway details and US railroad crossing equipment; estimated meanwhile",
+    "api.open-meteo.com": "live weather; the weather stays as it is meanwhile",
+    "downloads.sourceforge.net": "the gravity model; standard gravity meanwhile",
+    "photon.komoot.io": "the map's address search",
+    "routing.openstreetmap.de": "GPS routes",
+    "earth.tgforever.net": "the BeamNG.Earth server list in BeamMP",
+    "raw.githubusercontent.com": "the update check",
+    "api.github.com": "one-click updates",
+    "github.com": "one-click updates",
+}
+
+
+def role_of(host):
+    """What host gives the world and what is missing while it does not answer (ROLES; a regional photo source by its
+    place), or None for a host not known here."""
+    host = host.split("#", 1)[0]
+    got = ROLES.get(host)
+    if got is not None:
+        return got
+    import urllib.parse
+    import imagery_regional
+    for name, (url, *_rest) in imagery_regional.REGIONAL.items():
+        if urllib.parse.urlsplit(url).hostname == host:
+            return f"{imagery_regional.PLACE.get(name, name)}'s detailed aerial photos; coarser photos meanwhile"
+    return None
+
 
 # --- errors ------------------------------------------------------------------------------------
 class FetchError(IOError):
