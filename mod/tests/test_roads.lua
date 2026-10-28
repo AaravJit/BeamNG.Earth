@@ -202,12 +202,9 @@ getPlayerVehicle = function() return car end
 roads.onTile({ anchorId = 2, key = '0_0', path = '/t/h.json', n = 0 }, 2)
 roads.update(gov, 2)
 T.check(#statics() == 0, 'not made with the car on it')
-car.pos = vec3(122, 105, 0.5)          -- within PLAYER_R of the box
+car.pos = vec3(120.5, 105, 0.5)        -- just past its box (the box's own margin covers the curb)
 roads.update(gov, 2)
-T.check(#statics() == 0, 'still held next to it')
-car.pos = vec3(200, 105, 0.5)
-roads.update(gov, 2)
-T.check(#statics() == 1, 'made once the car is clear')
+T.check(#statics() == 1, 'made with the car beside it (only the car over a sidewalk holds it)')
 -- made, then the car drives into it before collision is rebuilt: removed, made again once clear
 roads.onDrop({ anchorId = 2, key = '0_0' })
 roads.update(gov, 2)

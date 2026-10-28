@@ -830,6 +830,11 @@ end
 -- the last reloadCollision, is removed again before it, and made once the car is clear.
 M.PLAYER_R = 3.0    -- m around the player's position (half a car's length, and some)
 M.PLAYER_DZ = 2.5   -- m above / below
+-- a sidewalk's boxes already reach past its slab by about 1 m (server roads.collider_boxes: half its width + 0.5 m
+-- + COLLIDER_MARGIN_M): only the car over the sidewalk itself holds it. With PLAYER_R a car anywhere within ~4 m of a
+-- curb held the whole tile's sidewalk collision (one mesh a tile), and a tile made again while the car drove its
+-- streets had no solid sidewalks at all (the user, 2026-10-27: "sidewalks are missing collision", Fells Point)
+M.WALK_PLAYER_R = 0.0
 M.DECK_BOX_BELOW_M = 2.2    -- a deck box's floor is this far under its lowest surface (server roads.collider_boxes:
                             -- roadmesh.DECK_DEPTH 1.2 + 1.0)
 M.DECK_ON_M = 0.2           -- the car's position this far under that surface or less: on the deck (not held)
@@ -849,7 +854,7 @@ playerIn = function(boxes, what)
   local veh = getPlayerVehicle and getPlayerVehicle(0)
   if not veh then return false end
   local p = veh:getPosition()
-  local r, dz = M.PLAYER_R, M.PLAYER_DZ
+  local r, dz = (what == 'walk' or what == 'walkcol') and M.WALK_PLAYER_R or M.PLAYER_R, M.PLAYER_DZ
   for _, b in ipairs(boxes) do
     if p.x >= b[1] - r and p.x <= b[4] + r and p.y >= b[2] - r and p.y <= b[5] + r then
       if what == 'deck' then
