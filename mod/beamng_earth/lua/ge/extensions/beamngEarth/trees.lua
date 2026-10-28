@@ -26,7 +26,8 @@ M.GROUP_MAX_M = { shrub = 250, desert_shrub = 250, rock = 400, desert_rock = 400
   sub_transformer = 500, sub_fence = 200, lamplens = 800, lampglow = 6000, rrcross = 300, rrcross_eu = 300, rrflash = 400,
   rrflash_eu = 400, rrgate = 400, rrgate_l = 400, rrgate_eu = 400, rrgate_eu_l = 400, door = 120, hydrant = 200, bin = 200, bench = 200, polelamp = 400,
   stop = 300, giveway = 300, signal = 500, fence = 150, wallsign_logistics = 800, wallsign_rentabox = 800, wallsign_lemon = 800, wallsign_turboburger = 500,
-  speed30 = 300, speed40 = 300, speed50 = 300, speed60 = 300, speed70 = 300 }
+  speed30 = 300, speed40 = 300, speed50 = 300, speed60 = 300, speed70 = 300, guardrail = 4000, guardrail_start = 4000, guardrail_end = 4000,
+  guardrail_back = 4000, guardrail_back_start = 4000, guardrail_back_end = 4000 }
 M.FOREST_NAME = 'bngEarthForest'      -- a prefix: small Forests from a pool ('bngEarthForest_<n>')
 -- A small Forest per tile, from a pool (2026-10-15, 100 mph drives: one shared Forest with ~240k items made and ~220k
 -- removed over a session made frames with any tree change cost ~100 ms in the engine's tick, and a fresh game ran the
@@ -193,6 +194,22 @@ M.CATALOG = {
     { JRI .. 'trees/trees_tropical_1/tro_tree_1_filler', 33.0 },
   },
 }
+-- Italy's authored three-metre crash barrier and two end treatments. The back-facing variants reuse
+-- the same mesh with its longitudinal/lateral axes reversed; the caps are swapped to flare outwards.
+M.CATALOG.guardrail = { { '/art/shapes/objects/italy_guardrails_basic', 0.9 } }
+M.CATALOG.guardrail_start = { { '/art/shapes/objects/italy_guardrails_basic_end_cw', 0.9 } }
+M.CATALOG.guardrail_end = { { '/art/shapes/objects/italy_guardrails_basic_end_ccw', 0.9 } }
+M.CATALOG.guardrail_back = { { '/art/shapes/objects/italy_guardrails_basic', 0.9 } }
+M.CATALOG.guardrail_back_start = { { '/art/shapes/objects/italy_guardrails_basic_end_ccw', 0.9 } }
+M.CATALOG.guardrail_back_end = { { '/art/shapes/objects/italy_guardrails_basic_end_cw', 0.9 } }
+-- Collision is enabled only inside M.SOLID_M by the common Forest-item path; farther rails stay render-only.
+M.GROUP_MAX_M.guardrail = 4000
+M.GROUP_MAX_M.guardrail_start = 4000
+M.GROUP_MAX_M.guardrail_end = 4000
+M.GROUP_MAX_M.guardrail_back = 4000
+M.GROUP_MAX_M.guardrail_back_start = 4000
+M.GROUP_MAX_M.guardrail_back_end = 4000
+
 -- the Vienna Convention's round km/h signs: their shapes and how far out they show (CATALOG, GROUP_MAX_M)
 vienna.install(M)
 local MATERIALS = {
@@ -399,8 +416,9 @@ end)()
 
 -- Pure: rows packed into a flat array (STRIDE numbers a row). A missing yaw, scale, height or rank is 0, 1, 10, 0 (as
 -- the rows were read); a row that is not a table or has no position is never shown (HIDDEN).
-function M.flatten(rows)
-  local n, s = type(rows) == 'table' and #rows or 0, M.STRIDE
+function M.flatten(rows, stride)
+  local n, s = type(rows) == 'table' and #rows or 0, math.floor(tonumber(stride) or M.STRIDE)
+  if s < M.STRIDE then s = M.STRIDE end
   local f = newTable(n * s, 0)
   for i = 1, n do
     local r, b = rows[i], (i - 1) * s
@@ -408,6 +426,9 @@ function M.flatten(rows)
     f[b + F_GROUP], f[b + F_X], f[b + F_Y], f[b + F_Z] = r[F_GROUP] or 0, r[F_X], r[F_Y], r[F_Z]
     f[b + F_YAW], f[b + F_SCALE], f[b + F_HEIGHT], f[b + F_RANK] = r[F_YAW] or 0, r[F_SCALE] or 1, r[F_HEIGHT] or 10,
       r[F_RANK] or 0
+    if s > M.STRIDE and type(r) == 'table' then
+      for j = M.STRIDE + 1, s do f[b + j] = type(r[j]) == 'number' and r[j] or 0 end
+    end
   end
   return f
 end
@@ -457,8 +478,17 @@ local function makeItem(fd, t, i, shape, sc, solid, group, variant)
   -- given negated. Positive, every prop was mirrored about the x axis: doors on north-south walls backwards, on
   -- diagonal walls askew, benches and lamps turned (read back in-game 2026-10-17: rows at 141.6 rendered at -141.6)
   local f, b = t.f, (i - 1) * t.s
-  m:setFromEuler(vec3(0, 0, -math.rad(f[b + F_YAW])))
-  m:setPosition(vec3(f[b + F_X], f[b + F_Y], f[b + F_Z]))
+  if t.s >= 17 and type(f[b + 17]) == 'number' then
+    -- Guardrails carry their orthonormal world-space basis; local X follows the road chord.
+    m:setColumn(0, vec3(f[b + 9], f[b + 10], f[b + 11]))
+    m:setColumn(1, vec3(f[b + 12], f[b + 13], f[b + 14]))
+    m:setColumn(2, vec3(f[b + 15], f[b + 16], f[b + 17]))
+    m:setPosition(vec3(f[b + F_X], f[b + F_Y], f[b + F_Z]))
+  else
+    -- Existing props use a flat yaw (counter-clockwise in server coordinates).
+    m:setFromEuler(vec3(0, 0, -math.rad(f[b + F_YAW])))
+    m:setPosition(vec3(f[b + F_X], f[b + F_Y], f[b + F_Z]))
+  end
   local ok, it = pcall(function() return fd:createNewItem(d, m, sc) end)
   if not ok then M.errors = M.errors + 1; return nil end
   local body = vienna.body(group)
@@ -524,8 +554,10 @@ end
 
 -- Rows of a tile ({ { group, x, y, z, yaw, scale, height, rank }, ... }): an older server's vegetation tile, a road
 -- tile's street furniture (roads.lua, key "p<tx>_<ty>").
-function M.onRows(anchorId, tileKey, rows, groups)
-  addTile(anchorId, tileKey, M.flatten(rows), M.STRIDE, groups)
+function M.onRows(anchorId, tileKey, rows, groups, stride)
+  stride = math.floor(tonumber(stride) or M.STRIDE)
+  if stride < M.STRIDE then stride = M.STRIDE end
+  addTile(anchorId, tileKey, M.flatten(rows, stride), stride, groups)
 end
 
 -- The tile "anchorId:key" goes (roads.lua's furniture).
@@ -764,7 +796,21 @@ function M.update(anchorId, player, view, frameMs)
         local r = f[b + F_RANK]
         local g = names[f[b + F_GROUP] + 1]
         local cap = g and M.GROUP_MAX_M[g]
-        if cap and o[2] > cap then r = 2 end     -- this group is not shown this far out
+        local isGuardrail = g and g:sub(1, 9) == 'guardrail'
+        if isGuardrail then
+          -- Preserve continuous 3 m runs until a tile cap actually requires thinning.
+          local rowCap
+          for _, limit in ipairs(M.TILE_CAP) do
+            if o[2] <= limit[1] then rowCap = limit[2]; break end
+          end
+          if cap and o[2] > cap then
+            r = 2
+          elseif not rowCap or t.n <= rowCap then
+            r = 0
+          end
+        elseif cap and o[2] > cap then
+          r = 2     -- this group is not shown this far out
+        end
         if g and M.groupOff[g] then r = 2 end    -- a group the player turned off (setGroupEnabled)
         -- a group this mod has no shapes for (a newer server's): left out, not drawn as a tree
         if g and not M.CATALOG[g] then

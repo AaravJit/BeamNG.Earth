@@ -5775,7 +5775,7 @@ def sound_boxes(chunks):
 
 def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None, deck_mesh=None, bld=None,
                props=None, wires=None, park=None, tunnel_mesh=None, fuel=None,
-               rail_mesh=None, garage_sound=(), wells=()):
+               rail_mesh=None, garage_sound=(), wells=(), guardrail_rows=None):
     """Write a tile's chunks (atomically), its sidewalk mesh (walks: build_tile's runs, if any:
     `walks_<a>_<tx>_<ty>.cdae`, announced in the tile as "walk": {shape, pos}) and its road mesh
     (road_mesh: roadmesh.build's result: `road_<a>_<tx>_<ty>.cdae`, "road": {shape, pos}; the mod then
@@ -5808,6 +5808,9 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
         shape = f"tunnel_{aid}_{tx}_{ty}.cdae"
         roadmesh.write(os.path.join(out_dir, shape), tunnel_mesh)
         data["tunnel"] = {"shape": f"{vfs_dir}/{shape}", "pos": [x0, y0, 0.0]}
+    if guardrail_rows:
+        data["guardrails"] = {"items": guardrail_rows, "groups": ["guardrail", "guardrail_start", "guardrail_end",
+                                                                "guardrail_back", "guardrail_back_start", "guardrail_back_end"]}
     if rail_mesh is not None:       # railways.tile_mesh: ballast, sleepers and rails (colliding)
         x0, y0, _, _ = tile_bbox(tx, ty)
         shape = f"rail_{aid}_{tx}_{ty}.cdae"

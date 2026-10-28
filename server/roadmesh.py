@@ -464,6 +464,8 @@ GIRDER_EVERY = 3.0      # m between girders across the deck
 PARAPET_W = 0.45        # m: the slab reaches this far past the road's edge, a parapet on it ...
 PARAPET_H = 0.84        # ... this high over the road (a jersey barrier's: JERSEY_H)
 PARAPET_COVER_DZ = 2.0  # m: another deck's surface within this height at an edge point: no parapet there
+BRIDGE_RAILS = True     # stock rail modules on decks with mapped support; unsupported decks keep full parapets
+BRIDGE_CURB_H = 0.3     # m curb under generated guardrails, only on decks supported by mapped data
 PARAPET_MIN_M = 8.0     # m: a parapet run shorter than this is left out (stubs stood in the Queensboro Bridge's lanes
                         # where its two directions' decks meet and the cover test missed a few points, 2026-10-17)
 MEDIAN_JOIN_M = 6.0     # m: two decks' edges closer than this (a divided road's carriageways on one bridge) face a
@@ -575,7 +577,8 @@ def barrier_solid(edge, inward, z, h, v=None, section=JERSEY):
     return P, T, UV
 
 
-def deck(chunks, origin, piers=(), context=(), beams=(), ground=()):
+def deck(chunks, origin, piers=(), context=(), beams=(), ground=(), parapets=None, parapet_h=PARAPET_H,
+         low_parapet_decks=()):
     """The bridge decks of a tile as one colliding mesh: per "deck" chunk a slab of opaque concrete
     (DECK_SIDE) whose top is at the chunk's fixed heights (the road surface, drawn DECK_SKIN above it
     by build()), with sides and underside DECK_DEPTH below; the piers, and the truss beams (p, q, width, height:
@@ -587,6 +590,12 @@ def deck(chunks, origin, piers=(), context=(), beams=(), ground=()):
     rb = trim_overlaps([(r, c) for r, c in ribbon_pairs(dch) if r[5] is not None], cr_all)
     if not rb and not piers and not beams:
         return None
+    low_parapet_decks = set(low_parapet_decks or ())
+    if parapets is None:
+        parapets = parapet_runs(chunks, context, _rb=rb, ground=ground)
+    parapets_by_deck = {}
+    for parapet in parapets:
+        parapets_by_deck.setdefault(parapet["deck"], []).append(parapet)
     mats, P, UV, T, M = [], [], [], [], []
     nv = 0
 
@@ -658,33 +667,17 @@ def deck(chunks, origin, piers=(), context=(), beams=(), ground=()):
             quads(GL, GLb, 0.0, 0.1, v, v, side, out_l)
             quads(GR, GRb, 0.0, 0.1, v, v, side, -out_l)
             quads(GLb, GRb, 0.0, 0.05, v, v, side, np.array([0.0, 0.0, -1.0]))
-        # a parapet on each free edge (not where another deck goes on beside it: a ramp leaving, a carriageway)
-        for sgn, edge, inner, cov in ((1, el, left, covered[n][0]), (-1, er, right, covered[n][1])):
-            i = 0
-            while i < k:
-                if cov[i]:
-                    i += 1
-                    continue
-                j = i
-                while j + 1 < k and not cov[j + 1]:
-                    j += 1
-                run_len = float(np.hypot(*np.diff(edge[i:j + 1], axis=0).T).sum()) if j > i else 0.0
-                if j > i and (run_len >= PARAPET_MIN_M or i == 0 or j == k - 1):    # (a piece's ends: tile seams)
-                    sl = slice(i, j + 1)
-                    mid_ = (left + right) / 2
-                    ends = list(c.get("abut") or [])
-                    if i > 0:                                       # the run stops there (a gap, a gore)
-                        ends.append(tuple(mid_[i]))
-                    if j < k - 1:
-                        ends.append(tuple(mid_[j]))
-                    bp, bt_, buv = barrier_solid(edge[sl], -out_l[sl, :2] * sgn, z[sl],
-                                                 parapet_heights(mid_[sl], ends), v[sl])
-                    P.append(bp - origin)
-                    UV.append(buv)
-                    T.append(bt_ + nv)
-                    M.append(np.full(len(bt_), side))
-                    nv += len(bp)
-                i = j + 1
+        # a parapet on each free edge (parapet_runs: not where another deck goes on beside it, a ramp leaving, a
+        # carriageway); a low curb under the rail where mapped guard rails put stock rail modules on it (guardrails)
+        for parapet in parapets_by_deck.get(n, ()):
+            h = parapet_heights(parapet["mid"], parapet["ends"])
+            h = np.minimum(h, BRIDGE_CURB_H if BRIDGE_RAILS and n in low_parapet_decks else parapet_h)
+            bp, bt_, buv = barrier_solid(parapet["edge"], -parapet["out"], parapet["z"], h, parapet["v"])
+            P.append(bp - origin)
+            UV.append(buv)
+            T.append(bt_ + nv)
+            M.append(np.full(len(bt_), side))
+            nv += len(bp)
     for p in _piers_clear(piers, rb):
         _pier(p, origin, P, T, UV, M, side)
         nv = sum(len(a) for a in P)
@@ -891,6 +884,75 @@ def _parapet_cover(rb, context=()):
         k = len(z)
         out.append((cov[k0:k0 + k], cov[k0 + k:k0 + 2 * k]))
         k0 += 2 * k
+    return out
+
+
+
+def parapet_runs(chunks, context=(), _rb=None, ground=()):
+    """Actual generated bridge parapets as XY centre lines plus the mesh geometry.
+
+    Uses the same coverage masks, edge offsets, tunnel exclusion, and minimum-run rule as deck().
+    _rb lets deck() share its already-computed ribbons. Returned dictionaries are ordered by deck
+    chunk and edge, and include the points deck() uses verbatim.
+    """
+    if _rb is None:
+        dch = [c for c in chunks if c.get("deck")]
+        cr_all = [(r, c) for r, c in ribbon_pairs(list(context)) if r[5] is not None]
+        rb = trim_overlaps([(r, c) for r, c in ribbon_pairs(dch) if r[5] is not None], cr_all)
+    else:
+        rb = _rb
+    if not rb:
+        return []
+
+    cr = [r for r in ribbons(list(context)) if r[5] is not None]
+    cov_ctx = [(r, c) for r, c in zip(cr, context)] + _ground_carriageways(list(chunks) + list(ground))
+    covered = _parapet_cover([(r, c) for r, c in rb], cov_ctx)
+    medians = _median_gaps([(r, c) for r, c in rb],
+                           [(r, c) for r, c in zip(ribbons(list(context)), context) if r[5] is not None])
+    out = []
+    for n, ((left, right, v, _m, _layer, z), c) in enumerate(rb):
+        if c.get("tunnel"):       # deck() draws the tunnel floor without parapets
+            continue
+        lat = left - right
+        u = lat / np.maximum(np.hypot(lat[:, 0], lat[:, 1]), 1e-9)[:, None]
+        wide = 0.0 if c.get("tunnel") else PARAPET_W
+        gl, gr = medians[n]
+        covered[n] = (covered[n][0] | (gl > 0), covered[n][1] | (gr > 0))
+        el = left + u * np.maximum(wide, gl / 2 + 0.05)[:, None]
+        er = right - u * np.maximum(wide, gr / 2 + 0.05)[:, None]
+        k = len(z)
+        for sgn, edge, inner, cov in ((1, el, left, covered[n][0]),
+                                      (-1, er, right, covered[n][1])):
+            i = 0
+            while i < k:
+                if cov[i]:
+                    i += 1
+                    continue
+                j = i
+                while j + 1 < k and not cov[j + 1]:
+                    j += 1
+                run_len = float(np.hypot(*np.diff(edge[i:j + 1], axis=0).T).sum()) if j > i else 0.0
+                if j > i and (run_len >= PARAPET_MIN_M or i == 0 or j == k - 1):
+                    sl = slice(i, j + 1)
+                    edge_run, inner_run = edge[sl], inner[sl]
+                    mid_ = (left + right) / 2
+                    ends = list(c.get("abut") or [])
+                    if i > 0:                                       # the run stops there (a gap, a gore)
+                        ends.append(tuple(mid_[i]))
+                    if j < k - 1:
+                        ends.append(tuple(mid_[j]))
+                    out.append({
+                        "mid": mid_[sl],
+                        "ends": ends,
+                        "deck": n,
+                        "line": (edge_run + inner_run) * 0.5,
+                        "edge": edge_run,
+                        "inner": inner_run,
+                        "z": z[sl],
+                        "v": v[sl],
+                        "out": u[sl] * sgn,
+                    })
+                i = j + 1
     return out
 
 
