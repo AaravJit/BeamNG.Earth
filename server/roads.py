@@ -158,6 +158,7 @@ EDGE_LINE = {"m": "line_white", "tl": 6.4, "p": 2, "w": 0.15, "inset": 0.3}
 # (the user, 2026-10-28: "the edge of the road is blurry and slightly jagged").
 EDGE_DECAL = {"m": "ECA_road_edge_dirt", "tl": 6.4, "p": 1, "w": 1.6, "layer": "edge"}
 EDGE_DECAL_AT = 0.95
+EDGE_DECAL_GAP_M = 1.5          # ... none where another carriageway's edge is this near past the decal (gores, medians)
 MEASURE_SKIP = {"service"}      # classes not measured between buildings (lots, alleys: far walls)
 MEASURE_MAX = 3.0               # a measured carriageway at most this times the class default
 SIDEWALK_CLASSES = {"residential", "tertiary", "secondary", "primary", "unclassified", "living_street"}
@@ -2329,7 +2330,8 @@ def extras(spec, pts, lon, left_hand=False, country=None, osm=None):
             # (u runs from the ribbon's left to its right: the road is on the right of the left side's, so the right
             # side's runs backwards)
             out.append(({**EDGE_DECAL, "side": side}, dw, line if side > 0 else line[::-1].copy()))
-    if kind == "paved" and (not urban or not has_sidewalks(spec)) and cls in EDGE_LINE_CLASSES:   # no curb: edge lines
+    if kind == "paved" and (not urban or not has_sidewalks(spec)) and cls in (st.edge_classes or EDGE_LINE_CLASSES):
+        # no curb: edge lines
         # the right edge white; a one-way carriageway's left edge yellow where the country says so (MUTCD 3B.09:
         # divided roads, ramps); wider on motorways (TSRGD 1012, RMS: 0.20-0.30 m)
         ew = st.edge_motorway if motorway else st.edge
@@ -4704,6 +4706,20 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
             if x0 <= mid[0] < x1 and y0 <= mid[1] < y1:
                 look = junctions.STOP_LINE if cw.get("stop") else junctions.CROSSWALK
                 chunks.append(_chunk(look, cw["w"], np.array([cw["a"], cw["b"]])))
+    import markings
+    gore_look = {"m": "line_white", "tl": EDGE_LINE["tl"], "p": CENTRE["p"]}
+    for kind_, gw, gl in markings.gores(roads):     # ramp gores: channelizing lines and stripes (MUTCD 3B.08 / 3B.25)
+        if kind_ == "fill":
+            continue                                # (painted into the ground: surface.photo_roads)
+        if kind_ == "stripe":
+            mid = 0.5 * (gl[0] + gl[-1])
+            if x0 <= mid[0] < x1 and y0 <= mid[1] < y1:
+                chunks.append(_chunk(gore_look, gw, gl))
+            continue
+        for piece in clip_polyline(gl, x0, y0, x1, y1):
+            for c in split(densify(simplify(piece))):
+                if len(c) >= 2:
+                    chunks.append(_chunk(gore_look, gw, c))
     runs_near = []                              # sidewalk runs near the tile, before clipping (walks: below)
     for fid, spec, pts, lon in roads:
         ex = extras(spec, pts, lon, left_hand, country, lane_tags(*seen[fid][:2]) if fid in seen else None) \
@@ -4711,6 +4727,8 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         if not ex:
             continue
         blockers = [(p2[:, :2], s2.width / 2 + CUT_MARGIN) for f2, s2, p2, _ in roads if f2 != fid]
+        decal_blockers = [(p2[:, :2], s2.width / 2 + EDGE_DECAL["w"] + EDGE_DECAL_GAP_M) for f2, s2, p2, _ in roads
+                          if f2 != fid and s2.kind in BUILT]
         walk_blockers = [(p2[:, :2], s2.width / 2 if (fid, f2) in cornered else sidewalk_stop(spec, fid, s2, f2))
                          for f2, s2, p2, _ in roads if f2 != fid] + list(walk_cuts)
         # a median's band stops at the other carriageways' curbs only (their sidewalk is on their far side: it cut
@@ -4743,6 +4761,9 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                 pieces = [cp for p in clip_polyline(line, *box) for cp, _ in junctions.apply_cuts(p, jlines[fid])]
             else:
                 pieces = clip_polyline(line, *box)
+            if look["m"] == EDGE_DECAL["m"]:
+                # no gravel edge where another carriageway is near: a ramp's gore and a narrow median are paved
+                pieces = [r for pc in pieces for r in cut_outside(pc, decal_blockers, 0.5)]
             for piece in pieces:
                 for run in cut_outside(piece, wb if walk else blockers, 0.5 if walk else 2.0):
                     for c in split(densify(simplify(run))):

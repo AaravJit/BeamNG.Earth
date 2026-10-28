@@ -73,3 +73,21 @@ class AiLanesTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GoreTest(unittest.TestCase):
+    def test_an_exit_gets_chevrons_pointing_back_at_traffic(self):
+        main = roads.Spec(11.0, "paved", False, "motorway", True, 2.5, 1)
+        ramp = roads.Spec(6.0, "paved", False, "motorway", True, 2.5, 1, link=True)
+        mpts = np.array([[0.0, 0, 0], [400, 0, 0]])
+        # the ramp leaves the carriageway's centre line at x = 100 and drifts right (south) by 1 m every 10 m
+        rx = np.arange(100.0, 401.0, 10.0)
+        rpts = np.c_[rx, -(rx - 100) / 10.0, np.zeros(len(rx))]
+        g = markings.gores([("m", main, mpts, 0.0), ("r", ramp, rpts, 0.0)])
+        stripes = [l for k, _, l in g if k == "stripe"]
+        self.assertTrue(any(k == "channel" for k, _, _ in g))
+        self.assertGreater(len(stripes), 4)
+        a, apex = stripes[0]
+        self.assertLess(apex[0], a[0], "the point toward the traffic coming from the split")
+        for l in stripes:
+            self.assertTrue(np.all(l[:, 1] <= -main.width / 2 + 1e-6), "in the wedge, off the carriageway")

@@ -17,6 +17,7 @@ the same every time.
 """
 import logging
 import math
+from collections import OrderedDict
 import os
 import struct
 import threading
@@ -348,6 +349,20 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, e
                     add(lawn, np.asarray(c, np.float64), np.asarray(r, np.float64), mw / 2)
     for la, lo, spec in extra:
         line(np.asarray(lo), np.asarray(la), spec, False)
+    # ramp gores, paved (gore_fills, in a frame at the grid's middle)
+    import geodesy
+    gfr = geodesy.EnuFrame(la_c, lo_c)
+    gb = gfr.geodetic_to_enu(np.array([float(np.min(lat)), float(np.max(lat))]),
+                             np.array([float(np.min(lon)), float(np.max(lon))]), np.zeros(2))
+    for hw_, mid in gore_fills(gfr, feats_list, (float(np.min(gb[0])) - 300, float(np.min(gb[1])) - 300,
+                                                 float(np.max(gb[0])) + 300, float(np.max(gb[1])) + 300), urban_fn, widths):
+        gla, glo, _ = gfr.enu_to_geodetic(mid[:, 0], mid[:, 1], np.zeros(len(mid)))
+        c, r = to_px(np.asarray(glo), np.asarray(gla))
+        c, r = np.asarray(c, np.float64), np.asarray(r, np.float64)
+        sk = segs.setdefault("paved", ([], [])) if "paved" in segs else None
+        if sk is not None:
+            sk[0].append(np.stack([c[:-1], r[:-1], c[1:], r[1:]], axis=1))
+            sk[1].append(np.maximum(hw_[:-1], hw_[1:]) / square)
     fast.require(91, "mask_segments")
 
     def mask(dst):
@@ -417,9 +432,60 @@ def _road_segments(frame, x0, y0, size, w, h, feats_list, urban_fn=None, widths=
                     roads_of.append((np.full(len(c) - 1, nroad, np.int64),
                                      np.full(len(c) - 1, not roadsmod.has_sidewalks(sp) and sp.kind == "paved")))
             nroad += 1
+    # ramp gores (markings.gores: the wedge between a ramp and its motorway is paved): as more paved segments
+    for hw_, mid in gore_fills(frame, feats_list, (x0 - 300, y0 - 300, x0 + size + 300, y0 + size + 300), urban_fn,
+                               widths):
+        c = (mid[:, 0] - x0) * px_m
+        r = (y0 + size - mid[:, 1]) * px_m
+        segs.append(np.stack([c[:-1], r[:-1], c[1:], r[1:]], axis=1))
+        hws.append(np.maximum(hw_[:-1], hw_[1:]) * px_m)
+        kind.append(np.full(len(c) - 1, kinds.index("paved"), np.uint8))
+        if roads_of is not None:
+            roads_of.append((np.full(len(c) - 1, nroad, np.int64), np.zeros(len(c) - 1, bool)))
+            nroad += 1
     if not segs:
         return None
     return np.concatenate(segs), np.concatenate(hws), np.concatenate(kind)
+
+
+_GORE_MEMO = OrderedDict()
+
+
+def gore_fills(frame, feats_list, box, urban_fn=None, widths=None):
+    """[(half widths (k,), middle line (k, 3) in frame)] of the paved wedges between ramps and their motorways
+    (markings.gores) whose roads come near box (x0, y0, x1, y1) of frame. Kept for a few calls with the same features
+    and square (a block photo asks twice: unghost_square, paint_square)."""
+    key = (tuple(getattr(f, "__dict__", {}).get("_bnge_cell") or id(f) for f in feats_list), frame.lat0, frame.lon0,
+           tuple(round(float(v), 1) for v in box))
+    got = _GORE_MEMO.get(key)
+    if got is None:
+        got = _gore_fills(frame, feats_list, box, urban_fn, widths)
+        _GORE_MEMO[key] = got
+        while len(_GORE_MEMO) > 8:
+            _GORE_MEMO.popitem(last=False)
+    return got
+
+
+def _gore_fills(frame, feats_list, box, urban_fn=None, widths=None):
+    import markings
+    near, seen = [], set()
+    for feats in feats_list:
+        if feats is None or len(feats) == 0:
+            continue
+        specs = roadsmod.road_specs(feats, urban_fn, widths)
+        for i in range(len(feats)):
+            sp = specs[i]
+            fid = str(feats.ids[i])
+            if sp is None or fid in seen or not sp.oneway or sp.kind != "paved" or \
+                    (sp.cls not in markings.GORE_MAJOR and not sp.link):
+                continue
+            seen.add(fid)
+            for k, ring in enumerate(roadsmod.ground_parts(feats, i)):
+                e, n = mapgeom.enu_xy(feats, frame, ring)
+                if e.max() < box[0] or e.min() > box[2] or n.max() < box[1] or n.min() > box[3]:
+                    continue
+                near.append((f"{fid}:{k}", sp, np.c_[e, n, np.zeros(len(e))], 0.0))
+    return [(hw_, mid) for kind_, hw_, mid in (markings.gores(near) if near else ()) if kind_ == "fill" and len(mid) >= 2]
 
 
 def _feature_boxes(feats, frame):

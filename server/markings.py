@@ -18,12 +18,16 @@ import fast
 # double_centre_urban: a town's two-way road gets a double solid centre line (the US practice on arterials) instead of
 # a broken one; double_gap: the space between the two lines of a double line.
 Style = namedtuple("Style", "centre w w_motorway edge edge_motorway centre_rural centre_urban lane_rural lane_urban "
-                            "lane_motorway left_edge double_centre_urban double_gap min_centre_m")
+                            "lane_motorway left_edge double_centre_urban double_gap min_centre_m edge_classes",
+                   defaults=(None,))
 
 _US = Style(centre="line_yellow", w=0.12, w_motorway=0.15, edge=0.12, edge_motorway=0.15,
             centre_rural=(3.05, 9.14), centre_urban=(3.05, 9.14), lane_rural=(3.05, 9.14), lane_urban=(3.05, 9.14),
             lane_motorway=(3.05, 9.14), left_edge="line_yellow", double_centre_urban=True, double_gap=0.12,
-            min_centre_m=4.9)
+            min_centre_m=4.9,
+            # edge lines on arterials (MUTCD 3B.10: rural arterials 20 ft and wider); local and collector roads mostly
+            # have none (PEMA 6-inch aerials, Lancaster County, 2026-10-28: tertiary roads with a centre line only)
+            edge_classes=frozenset({"motorway", "trunk", "primary", "secondary"}))
 _CA = _US._replace(centre_rural=(3.0, 6.0), centre_urban=(3.0, 6.0), lane_rural=(3.0, 6.0), lane_urban=(3.0, 6.0),
                    lane_motorway=(3.0, 6.0))
 _GB = Style(centre="line_white", w=0.10, w_motorway=0.15, edge=0.15, edge_motorway=0.20,
@@ -166,4 +170,97 @@ def lane_plan(osm, two_way, drive, lanes, left_hand=False):
         off = c_right - k * lw
         solid = ch_r is not None and len(ch_r) == right_n and _no_change(ch_r[k - 1], ch_r[k])
         out.append((off, "lane", solid))
+    return out
+
+
+GORE_MAJOR = {"motorway", "trunk"}
+GORE_MIN_M, GORE_MAX_M = 0.4, 9.0       # the gap between the two edges where the gore is painted (beyond: the nose)
+GORE_STEP_M = 12.0                      # m between stripes (MUTCD practice on freeways: 20-50 ft)
+GORE_REACH_M = 300.0                    # m of the ramp looked along from the shared end
+GORE_W = 0.30                           # stripe width (MUTCD 3B.25: at least 12 in at 45 mph and over)
+GORE_CHANNEL_W = 0.20                   # the channelizing line (wide: 8 in)
+
+
+def _nearest(poly, p):
+    a, b = poly[:-1, :2], poly[1:, :2]
+    ab = b - a
+    L2 = np.maximum((ab * ab).sum(1), 1e-12)
+    t = np.clip(((p[:2] - a) * ab).sum(1) / L2, 0, 1)
+    q = a + t[:, None] * ab
+    d = np.hypot(*(q - p[:2]).T)
+    k = int(np.argmin(d))
+    return q[k], float(d[k])
+
+
+def _resample(pts, step):
+    seg = np.hypot(*np.diff(pts[:, :2], axis=0).T)
+    s = np.r_[0.0, np.cumsum(seg)]
+    if s[-1] < step:
+        return pts.copy(), s
+    t = np.arange(0.0, s[-1], step)
+    return np.stack([np.interp(t, s, pts[:, c]) for c in range(3)], 1), t
+
+
+def gores(roads_):
+    """The painted gores where a one-way ramp (spec.link) leaves or joins a motorway / trunk carriageway at a shared
+    end: [(kind, width, line (2+, 3))] with kind "stripe" (an arm of a chevron across the wedge between the two edges,
+    every GORE_STEP_M where the gap is GORE_MIN_M .. GORE_MAX_M), "channel" (the ramp's edge along it, wide) and "fill"
+    (width: half widths per point of the wedge's middle line: it is paved) and "channel" (the ramp's edge along it, wide). roads_:
+    build_tile's (fid, spec, centreline (k, 3), lon). Pure."""
+    majors = [(fid, sp, np.asarray(p, np.float64)) for fid, sp, p, _ in roads_
+              if sp.cls in GORE_MAJOR and sp.oneway and not getattr(sp, "link", False) and len(p) >= 2]
+    out = []
+    if not majors:
+        return out
+    for fid, sp, p, _ in roads_:
+        if not getattr(sp, "link", False) or not sp.oneway or len(p) < 2:
+            continue
+        p = np.asarray(p, np.float64)
+        for end in (0, -1):
+            e = p[end]
+            hit = None
+            for mf, ms, mp in majors:
+                if mf == fid:
+                    continue
+                _, d = _nearest(mp, e)
+                if d < 1.5 and (hit is None or d < hit[2]):
+                    hit = (ms, mp, d)
+            if hit is None:
+                continue
+            ms, mp, _ = hit
+            q, s = _resample(p if end == 0 else p[::-1], 1.0)
+            q = q[s <= GORE_REACH_M]
+            gaps, sides = [], []
+            for x in q:
+                m, d = _nearest(mp, x)
+                gaps.append(d - ms.width / 2 - sp.width / 2)
+                sides.append((x[:2] - m) / max(d, 1e-9))
+            gaps = np.asarray(gaps)
+            inside = np.flatnonzero((gaps >= GORE_MIN_M) & (gaps <= GORE_MAX_M))
+            if len(inside) < 3:
+                continue
+            k0 = int(inside[0])
+            k1 = k0
+            while k1 + 1 < len(q) and GORE_MIN_M <= gaps[k1 + 1] <= GORE_MAX_M:
+                k1 += 1
+            eL = np.array([np.r_[q[k][:2] - sides[k] * sp.width / 2, q[k][2]] for k in range(k0, k1 + 1)])
+            out.append(("channel", GORE_CHANNEL_W, eL))
+            # the wedge itself, paved (surface.photo_roads / paint_roads): its middle line and half width per point
+            mids = np.array([np.r_[q[k][:2] - sides[k] * (sp.width / 2 + gaps[k] / 2), q[k][2]]
+                             for k in range(max(k0 - 3, 0), k1 + 1)])
+            out.append(("fill", np.array([gaps[k] / 2 + 0.5 for k in range(max(k0 - 3, 0), k1 + 1)]), mids))
+            # chevrons (MUTCD 3B.25): a V across the wedge, its point toward the traffic coming at it: at an exit
+            # (the ramp starts at the shared end) toward that end, at an entrance away from it
+            up = -1.0 if end == 0 else 1.0
+            for k in range(k0, k1 + 1, int(GORE_STEP_M)):
+                a = np.r_[q[k][:2] - sides[k] * sp.width / 2, q[k][2]]
+                m, _ = _nearest(mp, q[k])
+                b = np.r_[m + sides[k] * ms.width / 2, q[k][2]]
+                kk = min(k + 1, len(q) - 1)
+                t = q[kk][:2] - q[max(kk - 1, 0)][:2]
+                t = t / max(float(np.hypot(*t)), 1e-9)
+                apex = 0.5 * (a + b)
+                apex[:2] += up * t * float(np.hypot(*(a - b)[:2])) / 2      # (45 degrees each arm)
+                out.append(("stripe", GORE_W, np.stack([a, apex])))
+                out.append(("stripe", GORE_W, np.stack([apex, b])))
     return out
