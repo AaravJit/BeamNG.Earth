@@ -20,7 +20,7 @@ You can help support development by reporting [issues](https://github.com/TecnaG
 ## Features (working today)
 **The world**
 - The whole planet at 1:1 scale on real elevation: national lidar where it exists (Mapterhorn: much of
-  Europe, the US and more; in Canada NRCan's 1 m HRDEM, and British Columbia's LidarBC on Vancouver Island),
+  Europe, the US and more; in Canada the distant terrain lined up with NRCan's HRDEM lidar ground),
   Copernicus 30 m elsewhere with buildings and small tree stands filtered out of it.
 - Aerial and satellite imagery on the ground: open state and national orthophotos (Maryland's 15 cm photos,
   a dozen more US states, NAIP across the US, Switzerland, France, Spain, the Netherlands, Germany's states,
