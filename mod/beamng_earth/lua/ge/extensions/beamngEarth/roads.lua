@@ -269,6 +269,35 @@ local function dropTile(key)
   tiles[key] = nil
 end
 
+-- A far tile's street lamps (server buildings.far_lamps: { {x, y, z}, ... }, the far and skyline tiles' streets past
+-- the road tiles; the user, 2026-10-27: "extend the street and window lights as far as the buildings render"): glow
+-- rows of trees.lua's lampglow group (drawn at night only) while the tile shows, one trees tile per 256 m square
+-- (its distance rings and caps; ranks hashed under the farthest ring's 0.2: every one shown, a cap thinning evenly).
+M.FAR_LAMP_GROUPS = { 'lampglow' }
+local function farLamps(key, f, on)
+  if on == (f.lampKeys ~= nil) then return end
+  local ok, trees = pcall(require, 'beamngEarth/trees')
+  if not ok then return end
+  if not on then
+    for _, k in ipairs(f.lampKeys) do trees.dropKey(k) end
+    f.lampKeys = nil
+    return
+  end
+  local by, tag = {}, 'FL' .. tostring(key):gsub('[^%w]', '') .. '|'
+  for i, p in ipairs(f.lamps) do
+    if type(p) == 'table' and p[1] and p[2] and p[3] then
+      local k = tag .. math.floor(p[1] / 256) .. '_' .. math.floor(p[2] / 256)
+      by[k] = by[k] or {}
+      by[k][#by[k] + 1] = { 0, p[1], p[2], p[3], 0, 1, 1, ((i * 7919) % 997) / 997 * 0.19 }
+    end
+  end
+  f.lampKeys = {}
+  for k, rows in pairs(by) do
+    trees.onRows(f.anchor, k, rows, M.FAR_LAMP_GROUPS)
+    f.lampKeys[#f.lampKeys + 1] = f.anchor .. ':' .. k
+  end
+end
+
 -- Every road not of anchor aid goes (a new anchor: the server re-sends its tiles).
 local function switchAnchor(aid)
   if aid == anchorId then return end
@@ -278,6 +307,7 @@ local function switchAnchor(aid)
   end
   for key, f in pairs(far) do
     if f.anchor ~= aid and not f.ghost then
+      farLamps(key, f, false)
       if f.id then deleteQ[#deleteQ + 1] = f.id end
       slotDrop(f.slot)
       far[key] = nil
@@ -503,6 +533,7 @@ function M.onFarTile(msg, currentAnchor, kind)
   local key = tileKey(msg.anchorId, (kind or '') .. msg.key)
   if not kind then farSeen[key] = true end
   local old = far[key]
+  if old then farLamps(key, old, false) end
   if old and old.id then deleteQ[#deleteQ + 1] = old.id end
   if old then slotDrop(old.slot) end
   far[key] = nil
@@ -512,7 +543,8 @@ function M.onFarTile(msg, currentAnchor, kind)
     if sky then ux, uy = string.match(tostring(msg.key), '^(-?%d+)_(-?%d+)$') end
     far[key] = { anchor = msg.anchorId, shape = sl and sl.path or data.shape, pos = data.pos, slot = sl,
                  sky = sky and { tonumber(ux), tonumber(uy) } or nil,
-                 deckOf = kind == 'B' and tileKey(msg.anchorId, msg.key) or nil }
+                 deckOf = kind == 'B' and tileKey(msg.anchorId, msg.key) or nil,
+                 lamps = type(data.lamps) == 'table' and #data.lamps > 0 and data.lamps or nil }
     farQ[#farQ + 1] = key
   else
     slotDrop(sl)
@@ -527,6 +559,7 @@ function M.onFarDrop(msg, kind)
   if not kind then farSeen[key] = nil end
   local f = far[key]
   if f and f.ghost then return end
+  if f then farLamps(key, f, false) end
   if f and f.id then deleteQ[#deleteQ + 1] = f.id end
   if f then slotDrop(f.slot) end
   far[key] = nil
@@ -562,6 +595,7 @@ local function updateFar(gov)
         f.hidden = hide
       end
     end
+    if f.lamps then farLamps(key, f, f.id ~= nil and not f.hidden) end
   end
   while #farQ > 0 and #walkQ == 0 and gov:try('roadWalk') do
     local key = table.remove(farQ, 1)
@@ -705,6 +739,7 @@ local function releaseGhosts(player)
   for key, f in pairs(far) do
     if f.ghost then
       if all then
+        farLamps(key, f, false)
         if f.id then deleteQ[#deleteQ + 1] = f.id end
         slotDrop(f.slot)
         far[key] = nil

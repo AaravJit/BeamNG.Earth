@@ -73,8 +73,9 @@ BARN_CLASSES = {"barn", "farm_auxiliary", "stable", "cowshed"}
 MARBLE = "bne_bld_marble"   # cut white marble (the stock m_marble_cut): Baltimore's row house steps
 BRICK_WALL = "bne_bld_brick"    # plain red brick (the stock brick_plain): a garage's skin
 CONCRETE = "bne_bridge_concrete"  # plain concrete (tunnel.materials.json): a precast garage's skin
+SKY_WALL = "bne_bld_sky"    # the skyline's walls: plain (vertex colours), their windows lit at night (_sky_mesh)
 MATERIALS = (FACADE, SHOP, OFFICE, ROOF_FLAT, ROOF_SLATE, ROOF_SHINGLE, SIDING, STUCCO, ROOF_METAL, PANEL, METALWALL,
-             STONE, MARBLE, BRICK_WALL, CONCRETE)
+             STONE, MARBLE, BRICK_WALL, CONCRETE, SKY_WALL)
 LOOKS = {
     "bne_bridge_steel": (METALWALL, (0.50, 0.52, 0.54)),
     "bne_marble": (MARBLE, (1.0, 1.0, 1.0)),
@@ -2767,7 +2768,7 @@ def road_tile(frame, tx, ty, md, ground, lines=None, props=None, items=None):
     return meshes, collider_boxes(items, x0, y0), collision_mesh(items)
 
 
-def far_tile(frame, tx, ty, md, ground, out_dir, vfs_dir, aid):
+def far_tile(frame, tx, ty, md, ground, out_dir, vfs_dir, aid, lamp_region=None):
     """A far (render-only) building tile written to the session folder: (vfs path of its JSON, building
     count) or None. The lite mesh of the same buildings as road_tile's."""
     import json
@@ -2787,6 +2788,10 @@ def far_tile(frame, tx, ty, md, ground, out_dir, vfs_dir, aid):
                            ways_xy=way_lines(frame, [c.layers.get("roads") for c in cds], x0, y0, size=x1 - x0))
     mesh = build(items, lite=True)
     data = {"v": 1}
+    lamps = far_lamps(frame, [c.layers.get("roads") for c in cds], x0, y0, x1 - x0,
+                      built_squares(items, 0.0, 0.0, x1 - x0), ground, lamp_region)
+    if lamps:
+        data["lamps"] = lamps
     if mesh is not None:
         shape = f"bldfar_{aid}_{tx}_{ty}.cdae"
         write(os.path.join(out_dir, shape), mesh)
@@ -2799,6 +2804,101 @@ def far_tile(frame, tx, ty, md, ground, out_dir, vfs_dir, aid):
         f.write(json.dumps(data))       # (json.dump to a file: the pure-Python encoder)
     staging.replace(tmp, path)
     return f"{vfs_dir}/{name}", len(items)
+
+
+# ------------------------------------------------------------------------------------------- far street lamps
+# The street lamps past the road tiles (the user, 2026-10-27: "extend the street and window lights as far as the
+# buildings render"): the far and skyline tiles carry their streets' lamps as glow points (trees.lua's lampglow group,
+# night only), placed along the mapped roads by furniture.py's spacing: the town streets in built-up squares (at least
+# FAR_LAMP_MIN_BLD buildings in its 256 m square: the near rule's land cover is not at hand here), the highways there
+# and every ramp. FAR_LAMP_Z over the ground, over the carriageway's edge.
+FAR_LAMP_MIN_BLD = 8
+FAR_LAMP_Z = 8.0
+FAR_LAMP_MAX = 4000         # a tile's most (the skyline's 1 km squares: a dense city's ~3000)
+
+
+def built_squares(items, x0, y0, size, sq=256.0):
+    """The set of (i, j) 256 m squares of a tile (x0, y0 its corner; items' rings tile-relative) holding at least
+    FAR_LAMP_MIN_BLD buildings."""
+    import collections
+    n = collections.Counter()
+    for spec, _gmin, _gmax in items:
+        c = np.asarray(spec.ring, np.float64)[:, :2].mean(0)
+        n[(int(c[0] // sq), int(c[1] // sq))] += 1
+    return {k for k, v in n.items() if v >= FAR_LAMP_MIN_BLD}
+
+
+def far_lamps(frame, road_layers, x0, y0, size, built, ground, region=None, sq=256.0):
+    """The lamps of a far tile's streets: [x, y, z] in the anchor frame (rounded), at most FAR_LAMP_MAX. built: the
+    tile's built-up 256 m squares (built_squares); ground(lat, lon) the ground (arrays); region: furniture.lamp_region's
+    (the spacing)."""
+    import furniture
+    import roads as roadsmod
+    import fast
+    if not built:
+        return []
+    table = furniture.lamp_spacing(region)
+    hw = "na" if furniture._na(region) else None
+    pts, off, spacing, phase, side, lit_any = [], [0], [], [], [], []
+    for f in road_layers:
+        if f is None or len(f.kind) == 0:
+            continue
+        specs = roadsmod.road_specs(f)
+        bb = f.boxes(frame)
+        near = np.flatnonzero((bb[:, 2] - x0 >= -20) & (bb[:, 0] - x0 <= size + 20)
+                              & (bb[:, 3] - y0 >= -20) & (bb[:, 1] - y0 <= size + 20))
+        for i in near.tolist():
+            sp = specs[i]
+            if sp is None:
+                continue
+            highway = sp.cls in furniture.HIGHWAY_CLASSES
+            if highway and not furniture.highway_lit(region, sp.link, True):
+                continue
+            if highway:
+                every = (furniture.LINK_LAMP_SPACING if sp.link else furniture.HIGHWAY_LAMP_SPACING)[hw]
+                rules = [(every, -float(sp.dir) if sp.dir else (1.0 if furniture._h01(str(f.ids[i]), "pside") < 0.5
+                                                               else -1.0), 0.0)]
+            elif sp.cls in table:
+                every, both = table[sp.cls]
+                sd = 1.0 if furniture._h01(str(f.ids[i]), "side") < 0.5 else -1.0
+                rules = [(every, sd, 0.0)] + ([(every, -sd, every / 2)] if both else [])
+            else:
+                continue
+            ph0 = furniture._h01(str(f.ids[i]), "pphase")
+            reach = max(1.0, sp.width / 2 - 1.0)
+            parts = roadsmod.ground_parts(f, i) if roadsmod.level_ranges(f, i) else [None]
+            for part in parts:
+                if part is None:
+                    a = f.coord_off[f.ring_off[f.part_off[i]]]
+                    b = f.coord_off[f.ring_off[f.part_off[i + 1]]]
+                    part = f.lonlat[a:b]
+                if len(part) < 2:
+                    continue
+                e, n = mapgeom.enu_xy(f, frame, np.asarray(part, np.float64))
+                xy = np.stack([np.asarray(e, np.float64), np.asarray(n, np.float64)], 1)
+                for every, sd, shift in rules:
+                    pts.append(xy)
+                    off.append(off[-1] + len(xy))
+                    spacing.append(every)
+                    phase.append(ph0 * every + shift)
+                    side.append(sd * reach)
+                    lit_any.append(bool(highway and sp.link))
+    if not pts:
+        return []
+    fast.require(87, "lamp_stations")
+    st = fast._ef.lamp_stations(np.ascontiguousarray(np.concatenate(pts)), np.asarray(off, np.int64),
+                                np.asarray(spacing, np.float64), np.asarray(phase, np.float64),
+                                np.asarray(side, np.float64), [x0, y0, x0 + size, y0 + size])
+    if not len(st):
+        return []
+    keep = [k for k in range(len(st)) if lit_any[int(st[k, 2])]
+            or (int((st[k, 0] - x0) // sq), int((st[k, 1] - y0) // sq)) in built]
+    st = st[keep][:FAR_LAMP_MAX]
+    if not len(st):
+        return []
+    lat, lon, _ = frame.enu_to_geodetic(st[:, 0], st[:, 1], 0.0)
+    z = np.asarray(ground(np.asarray(lat), np.asarray(lon)), np.float64) + FAR_LAMP_Z
+    return np.round(np.c_[st[:, 0], st[:, 1], z], 1).tolist()
 
 
 # ------------------------------------------------------------------------------------------- the skyline
@@ -2829,6 +2929,10 @@ MAT_MEAN = {"bne_bld_facade": (0.679, 0.676, 0.683), "bne_bld_shop": (0.669, 0.6
             "bne_bld_metalwall": (0.841, 0.841, 0.841), "bne_bld_stone": (0.83, 0.818, 0.803),
             "bne_bld_marble": (0.978, 0.978, 0.978), "bne_bld_brick": (0.717, 0.569, 0.513)}
 SKY_UV = (0.5, 0.5)
+# the skyline walls' windows (tools/build_sky_windows.py: SKY_WIN_BAYS x SKY_WIN_FLOORS of them in its map), lit at
+# night (nightlights.lua; the user, 2026-10-27: "extend the street and window lights as far as the buildings render")
+SKY_BAY_M = 3.5
+SKY_WIN_BAYS = SKY_WIN_FLOORS = 16
 
 
 def _sky_colour(look, f):
@@ -2846,6 +2950,7 @@ def _sky_mesh(items):
     (positions, uvs, tris, tri material indices, MATERIALS, colours) as build, or None."""
     m = Mesh()
     mi = MATERIALS.index(MARBLE)
+    ms = MATERIALS.index(SKY_WALL)
     uv = SKY_UV
     for spec, gmin, gmax in items:
         ring = np.asarray(spec.ring, np.float64)[:, :2]
@@ -2854,16 +2959,29 @@ def _sky_mesh(items):
         if _area2(ring) < 0:
             ring = ring[::-1]
         f = 1.0 + JITTER * (2.0 * _hash01(spec.seed, "jit") - 1.0)
-        wall = (mi, _sky_colour(spec.facade, f))
+        windows = spec.windows is not False
+        wall = (ms if windows else mi, _sky_colour(spec.facade, f))
         roof = (mi, _sky_colour(spec.roof_mat or ROOF_FLAT, f))
         z0 = gmin - SKIRT_LITE_M
         z1 = base_z(spec, gmin, gmax) + float(spec.min_h or 0.0) + float(spec.height or 0.0)
         if z1 <= z0 + 0.5:
             continue
         n = len(ring)
+        # (windows: u along the walls in bays, v up in storeys from the ground, both over the map's count)
+        zb = gmin
+        fh = float(spec.floor_h or FLOOR_M) * SKY_WIN_FLOORS
+        bw = SKY_BAY_M * SKY_WIN_BAYS
+        v0, v1 = (z0 - zb) / fh, (z1 - zb) / fh
+        u = 0.0
         for i in range(n):
             a, b = ring[i], ring[(i + 1) % n]
-            m.quad((a[0], a[1], z0), (b[0], b[1], z0), (b[0], b[1], z1), (a[0], a[1], z1), uv, uv, uv, uv, wall)
+            if windows:
+                du = float(math.hypot(*(b - a))) / bw
+                m.quad((a[0], a[1], z0), (b[0], b[1], z0), (b[0], b[1], z1), (a[0], a[1], z1),
+                       (u, v0), (u + du, v0), (u + du, v1), (u, v1), wall)
+                u += du
+            else:
+                m.quad((a[0], a[1], z0), (b[0], b[1], z0), (b[0], b[1], z1), (a[0], a[1], z1), uv, uv, uv, uv, wall)
         m.poly([(p[0], p[1], z1) for p in ring], [uv] * n, roof)
     if not m.n:
         return None
@@ -2871,7 +2989,7 @@ def _sky_mesh(items):
     return P, UV, T, M, MATERIALS, C
 
 
-def skyline_tile(frame, ux, uy, md, ground, out_dir, vfs_dir, aid):
+def skyline_tile(frame, ux, uy, md, ground, out_dir, vfs_dir, aid, lamp_region=None):
     """A skyline tile (render-only) written to the session folder: (vfs path of its JSON, building count) or None
     when its cells are not at hand (fetched in the background: asked again later). Key (ux, uy): SKY_UNIT x SKY_UNIT
     road tiles from road tile (ux * SKY_UNIT, uy * SKY_UNIT)."""
@@ -2881,12 +2999,16 @@ def skyline_tile(frame, ux, uy, md, ground, out_dir, vfs_dir, aid):
     x1, y1 = x0 + SKY_UNIT * roads.TILE, y0 + SKY_UNIT * roads.TILE
     keys = sorted({k for i in range(SKY_UNIT) for j in range(SKY_UNIT)
                    for k in roads.cells_of_tile(frame, ux * SKY_UNIT + i, uy * SKY_UNIT + j, margin=0.0)}, key=str)
-    if not all(md.has(k, "buildings") for k in keys):
+    # (and the roads: their street lamps, far_lamps)
+    if not all(md.has(k, "buildings") and md.has(k, "roads") for k in keys):
         for k in keys:                      # (the background lane: never before what the player is near)
-            md.prefetch(k, layers=("buildings",))
+            md.prefetch(k, layers=("buildings", "roads"))
         return None
-    layers = [md.cell(k, layers=("buildings",), kind="background").layers.get("buildings") for k in keys]
+    cds = [md.cell(k, layers=("buildings", "roads"), kind="background") for k in keys]
+    layers = [c.layers.get("buildings") for c in cds]
     items = tile_buildings(frame, x0, y0, x1, y1, layers, ground, min_size=(1e9, SKY_MIN_AREA_M2))
+    lamps = far_lamps(frame, [c.layers.get("roads") for c in cds], x0, y0, x1 - x0,
+                      built_squares(items, 0.0, 0.0, x1 - x0), ground, lamp_region)
     for spec, _gmin, _gmax in items:        # (the simplest shape: a box or a few corners, a flat roof, nothing on it)
         ring = np.asarray(spec.ring, np.float64)
         if len(ring) > 4 and abs(_area2(ring)) / 2 < SKY_BOX_AREA_M2:
@@ -2909,6 +3031,8 @@ def skyline_tile(frame, ux, uy, md, ground, out_dir, vfs_dir, aid):
     data = {"v": 1}
     if mesh is not None:
         shape = f"bldsky_{aid}_{ux}_{uy}.cdae"
+        if lamps:
+            data["lamps"] = lamps
         write(os.path.join(out_dir, shape), mesh)
         data["shape"] = f"{vfs_dir}/{shape}"
         data["pos"] = [x0, y0, 0.0]

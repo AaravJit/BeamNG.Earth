@@ -4406,7 +4406,7 @@ def drains(run, side, caps, walk_w=None):
 
 def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=None, widths=None, props=None,
                lines=None, wires=None, town=None, park=None, left_hand=False, structures=(), mph=True, tunnels=None,
-               buried=0.0,
+               buried=0.0, lamp_region=None,
                walls=None, deck_context=None, ground=None, terrain_paint=True, cover_out=None, walk_cuts=(),
                signals=None):
     """The chunks of one tile. cells: the mapgeom.Features of the "roads" layer of every cell touching
@@ -4633,7 +4633,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         decks = [(np.asarray(ch["n"], np.float64), ch["w"] / 2) for ch in chunks if ch.get("deck")]
         props.extend(furniture.place(roads, walks, (x0, y0, x1, y1), wires=wires, town=bool(town), left_hand=left_hand,
                                      speeds={k: v for k, v in speeds.items() if v is not None}, mph=mph,
-                                     decks=decks, signals=signals, buried=buried))
+                                     decks=decks, signals=signals, buried=buried, region=lamp_region))
     if park is not None and walks is not None:      # curbside parking spots (parking.py)
         import parking
         dirs = {}

@@ -1021,6 +1021,15 @@ class Server:
             anchor._buried = v
         return v
 
+    def lamp_region(self, anchor):
+        """The anchor's street lamp rules (furniture.lamp_region: their spacing)."""
+        v = getattr(anchor, "_lamp_region", "")
+        if v == "":
+            v = furnituremod.lamp_region(navgraphmod.country_near(self.airports_db, anchor.lat, anchor.lon),
+                                         navgraphmod.region_near(self.airports_db, anchor.lat, anchor.lon))
+            anchor._lamp_region = v
+        return v
+
     def mph(self, anchor):
         """Whether speed limits are posted in mph at the anchor (its country, navgraph.road_rules)."""
         v = getattr(anchor, "_mph", None)
@@ -1125,13 +1134,13 @@ class Server:
         if self.far_bld_pool is not None:
             t0 = time.perf_counter()
             fut = self.far_bld_pool.submit(blockworker.far_buildings_tile, aid, anchor.lat, anchor.lon, zoom, tx, ty,
-                                           self.out_dir, self.vfs_dir)
+                                           self.out_dir, self.vfs_dir, self.lamp_region(anchor))
             res = fut.result()
             log.debug("far buildings tile %d_%d: %.2f s (queue + build)", tx, ty, time.perf_counter() - t0)
             return res
         return buildingsmod.far_tile(anchor.frame, tx, ty, self.mapdata,
                                      lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom)),
-                                     self.out_dir, self.vfs_dir, aid)
+                                     self.out_dir, self.vfs_dir, aid, self.lamp_region(anchor))
 
     def build_sky_tile(self, aid, ux, uy):
         """buildings.skyline_tile: a skyline (render-only) tile of anchor aid, or None (its cells not at hand: asked
@@ -1142,10 +1151,10 @@ class Server:
         zoom = anchor.zooms[0]
         if self.far_bld_pool is not None:
             return self.far_bld_pool.submit(blockworker.skyline_tile, aid, anchor.lat, anchor.lon, zoom, ux, uy,
-                                            self.out_dir, self.vfs_dir).result()
+                                            self.out_dir, self.vfs_dir, self.lamp_region(anchor)).result()
         return buildingsmod.skyline_tile(anchor.frame, ux, uy, self.mapdata,
                                          lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom)),
-                                         self.out_dir, self.vfs_dir, aid)
+                                         self.out_dir, self.vfs_dir, aid, self.lamp_region(anchor))
 
     def build_far_bridge_tile(self, aid, tx, ty):
         """buildings.far_bridge_tile: a far bridge (render-only) tile of anchor aid, or None (its road cells not at
@@ -1213,7 +1222,7 @@ class Server:
                 blockworker.roads_tile, aid, anchor.lat, anchor.lon, anchor.zooms[0], tx, ty, self.out_dir,
                 self.vfs_dir, self.sidewalks, DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0,
                 self.buildings, self.left_hand(anchor), self.mph(anchor), self.anchor_q(anchor),
-                self.gas_stations, self.buried(anchor)).result()
+                self.gas_stations, self.buried(anchor), self.lamp_region(anchor)).result()
             log.debug("road tile %d_%d: %.2f s (queue + build)", tx, ty, time.perf_counter() - t0)
             self.keep_fuel_pads(res[2])
             return res[:2]
@@ -1271,6 +1280,7 @@ class Server:
                                      walk_cuts=fuel_cuts,    # (the stations' made-up driveways: no sidewalk across them)
                                      widths=self.road_widths, props=props, lines=lines, wires=wires, town=town, park=park,
                                      left_hand=self.left_hand(anchor), mph=self.mph(anchor), buried=self.buried(anchor),
+                                     lamp_region=self.lamp_region(anchor),
                                      structures=buildingsmod.centres(items, tx, ty) if items else (),
                                      tunnels=anchor.tunnels, walls=rwalls,
                                      ground=lambda x, y: roadmeshmod.drawn_ground(anchor.frame, drawn, np.c_[x, y],

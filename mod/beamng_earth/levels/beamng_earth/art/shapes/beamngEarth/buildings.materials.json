@@ -436,5 +436,35 @@
       {}
     ],
     "translucent": false
+  },
+  "bne_bld_sky": {
+    "name": "bne_bld_sky",
+    "mapTo": "bne_bld_sky",
+    "class": "Material",
+    "version": 1.5,
+    "persistentId": "783d5210-bddc-5fcc-93c3-dfadba4d7ace",
+    "Stages": [
+      {
+        "baseColorFactor": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "roughnessFactor": 0.9,
+        "metallicFactor": 0,
+        "vertColor": true,
+        "emissiveMap": "/levels/beamng_earth/art/shapes/beamngEarth/bne_sky_night_e.png",
+        "emissiveFactor": [
+          0,
+          0,
+          0
+        ]
+      },
+      {},
+      {},
+      {}
+    ],
+    "translucent": false
   }
 }

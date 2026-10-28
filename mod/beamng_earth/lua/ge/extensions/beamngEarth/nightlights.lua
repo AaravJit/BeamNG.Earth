@@ -12,20 +12,30 @@ M.MATERIALS = {
   bne_bld_office = { '0.95 0.97 1', 150 },
   -- (shopfronts: their whole band lights up; at 320 nits, then 90, a grey-white strip along every street)
   bne_bld_shop = { '1 0.80 0.58', 30 },
+  -- the skyline's walls (buildings.py _sky_mesh, tools/build_sky_windows.py: 1-3 miles off)
+  bne_bld_sky = { '1 1 1', 200 },
   -- the street lamps' lenses (furniture.py G_LENS; tools/build_lamp_lens.py): sodium-warm, bright
   bne_lamp_lens = { '1 0.66 0.33', 4000 },
 }
 
 -- The street lamps' light: a pool of LIGHTS_MAX spot lights (no shadows), every LIGHTS_S moved to the lamps nearest
--- the camera within NEAR_M (their lenses: the road tiles' lamplens rows, furniture.py), pointing down. A moved light
--- costs nothing new: the pool is made once (a few a frame) and only switched off by day. (After MihneaTeodorStoica's
--- PR #340, which kept 24 point lights within 90 m.)
-M.LIGHTS_MAX = 40
+-- the camera (their lenses: the road tiles' lamplens rows, furniture.py), pointing down: within AROUND_M all round, and
+-- out to NEAR_M in front of the camera (within VIEW_COS of its heading; the user, 2026-10-27: "at night street lamps
+-- only turn on when close to the camera", the pool had 40 within 180 m all round). A moved light costs nothing new: the
+-- pool is made once (a few a frame) and only switched off by day. (After MihneaTeodorStoica's PR #340, which kept 24
+-- point lights within 90 m.) Farther lamps show their glow (furniture.py G_GLOW, out to where the road tiles end).
+M.LIGHTS_MAX = 128
 M.LIGHTS_S = 0.25
-M.NEAR_M = 180
+M.NEAR_M = 900
+M.AROUND_M = 60
+M.VIEW_COS = 0.42           -- (65 degrees off the heading: a wide picture's side, and a little more)
 M.MAKE_PER_STEP = 4
--- (sodium orange, as West Coast USA's night streets)
-M.LIGHT = { range = 34, inner = 80, outer = 140, brightness = 8.0, color = '1 0.66 0.33 1', drop = 0.12 }
+-- (sodium orange, as West Coast USA's night streets.) A real street lamp's light is not a disc under it (the user,
+-- 2026-10-27: "see how wide the light from real street lights are"): the IES distributions road lamps use reach 1.75-2.75
+-- mounting heights across the street (types II / III: ~16-25 m from a 9 m head), little behind the pole, and throw
+-- their peak 2.25-3.75 heights along the road (medium): aimed tilt degrees toward the road (the lens row's yaw: the
+-- lamp's arm), a soft edge (inner .. outer); before, a hard-edged 50 m disc centred under the head.
+M.LIGHT = { range = 36, inner = 50, outer = 130, brightness = 8.0, color = '1 0.66 0.33 1', drop = 0.12, tilt = 12 }
 
 local lastCheck = -1e9
 local lastLights = -1e9
@@ -58,6 +68,9 @@ local function apply(night)
       if not ok then M.errors = M.errors + 1 end
     end
   end
+  -- the lamps' far glow (trees.lua's lampglow group, off by day)
+  local okt, trees = pcall(require, 'beamngEarth/trees')
+  if okt and trees.setGroupEnabled then pcall(trees.setGroupEnabled, { 'lampglow' }, night) end
   M.night = night
 end
 
@@ -68,7 +81,7 @@ function M.onRows(key, items, groups)
   if gi == nil or type(items) ~= 'table' then lenses[key] = nil; return end
   local out = {}
   for _, r in ipairs(items) do
-    if type(r) == 'table' and r[1] == gi and r[2] and r[3] and r[4] then out[#out + 1] = { r[2], r[3], r[4] } end
+    if type(r) == 'table' and r[1] == gi and r[2] and r[3] and r[4] then out[#out + 1] = { r[2], r[3], r[4], r[5] } end
   end
   lenses[key] = #out > 0 and out or nil
 end
@@ -83,12 +96,15 @@ function M.transform(xf)
   for _, e in ipairs(pool) do e.at = nil end           -- (placed again at the next step)
 end
 
--- Pure: the n nearest lenses (and providers' places) to (x, y) within r (their tables, nearest first).
-function M.nearest(x, y, r, n)
+-- Pure: the n nearest lenses (and providers' places) to (x, y) within r (their tables, nearest first). With a heading
+-- (fx, fy) (unit): those within `around` all round, the others only within VIEW_COS of it.
+function M.nearest(x, y, r, n, fx, fy, around)
   local cand, r2 = {}, r * r
+  local a2 = (around or r) ^ 2
   local function consider(l)
-    local d = (l[1] - x) ^ 2 + (l[2] - y) ^ 2
-    if d <= r2 then cand[#cand + 1] = { l, d } end
+    local dx, dy = l[1] - x, l[2] - y
+    local d = dx * dx + dy * dy
+    if d <= r2 and (d <= a2 or not fx or dx * fx + dy * fy >= M.VIEW_COS * math.sqrt(d)) then cand[#cand + 1] = { l, d } end
   end
   for _, list in pairs(lenses) do
     for _, l in ipairs(list) do consider(l) end
@@ -124,10 +140,17 @@ local function place(e, l)
   local o = scenetree.findObjectById(e.id)
   if not o then return end
   if l then
-    local m = MatrixF(true)
-    m:setFromEuler(vec3(math.pi / 2, 0, 0))           -- (its forward, local y, down: -pi/2 pointed it up)
-    m:setPosition(vec3(l[1], l[2], l[3] - M.LIGHT.drop))
-    o:setTransform(m)
+    if l[4] then                                        -- (its forward, local y: down, tilted toward the road)
+      local a, t = math.rad(l[4]), math.rad(M.LIGHT.tilt)
+      local c, s = math.cos(a), math.sin(a)
+      local q = quatFromDir(vec3(c * math.sin(t), s * math.sin(t), -math.cos(t)), vec3(c, s, 0))
+      o:setPosRot(l[1], l[2], l[3] - M.LIGHT.drop, q.x, q.y, q.z, q.w)
+    else
+      local m = MatrixF(true)
+      m:setFromEuler(vec3(math.pi / 2, 0, 0))           -- (straight down: -pi/2 pointed it up)
+      m:setPosition(vec3(l[1], l[2], l[3] - M.LIGHT.drop))
+      o:setTransform(m)
+    end
   end
   if (l ~= nil) ~= (e.at ~= nil) then o:setField('isEnabled', 0, l and 'true' or 'false') end
   e.at = l
@@ -138,10 +161,15 @@ local function stepLights(night)
     for _, e in ipairs(pool) do if e.at then place(e, nil) end end
     return
   end
-  local cx, cy = 0, 0
+  local cx, cy, fx, fy = 0, 0, nil, nil
   local ok, p = pcall(core_camera.getPosition)
   if ok and p then cx, cy = p.x, p.y end
-  local want = M.nearest(cx, cy, M.NEAR_M, M.LIGHTS_MAX)
+  local okf, f = pcall(core_camera.getForward)
+  if okf and f then
+    local h = math.sqrt(f.x * f.x + f.y * f.y)
+    if h > 0.3 then fx, fy = f.x / h, f.y / h end     -- (looking nearly straight down: all round)
+  end
+  local want = M.nearest(cx, cy, M.NEAR_M, M.LIGHTS_MAX, fx, fy, M.AROUND_M)
   local made = 0
   while #pool < #want and made < M.MAKE_PER_STEP do
     local id = newLight()
