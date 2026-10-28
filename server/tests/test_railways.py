@@ -520,3 +520,26 @@ class UnderpassNeighbourTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CoarseUnderpassTest(unittest.TestCase):
+    """GitHub #414: on coarse elevation a rail bridge over a ground road rises over it (railways.coarse_underpasses)."""
+
+    def test_crossings_are_found_along_the_road(self):
+        road = np.array([[0.0, 0.0], [100.0, 0.0]])
+        rail = np.array([[40.0, -20.0], [40.0, 20.0]])
+        self.assertEqual([round(v, 6) for v in railways._seg_hits(road, rail)], [40.0])
+        self.assertEqual(railways._seg_hits(road, rail + [0.0, 50.0]), [])
+
+    def test_only_on_coarse_elevation(self):
+        import geodesy
+        frame = geodesy.EnuFrame(58.1, 56.4, 0.0)
+        saved = railways.COARSE_AT
+        try:
+            railways.COARSE_AT = None
+            self.assertFalse(railways._coarse_here(frame, (0, 0, 10, 10)))
+            railways.COARSE_AT = lambda la, lo: True
+            self.assertTrue(railways._coarse_here(frame, (0, 0, 10, 10)))
+            self.assertEqual(railways.coarse_underpasses(frame, [], (0, 0, 10, 10), []), [])   # no rail bridge
+        finally:
+            railways.COARSE_AT = saved

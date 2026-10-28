@@ -151,6 +151,7 @@ def grade_plans(frame, cells, box, elev):
         return out
     pad = GRADE_HALF_M + 15.0
     out = []
+    tunnels = tunnels + coarse_underpasses(frame, cells, box, rails, GRADE_REACH_M)
     for (fid, _c, kind, xy), (zb, _zg) in zip(rails, profile(rails, ground, tunnels)):
         if kind != "ground":
             continue
@@ -250,6 +251,65 @@ def road_underpasses(frame, cells, box, reach=REACH_M):
                 if key not in seen:
                     seen.add(key)
                     out.append((xy, sp.width / 2 + UNDERPASS_SIDE_M))
+    return out
+
+
+# Where the elevation is only the coarse global model (dem.coarse_at; the server sets COARSE_AT to its Dem's), a rail
+# bridge over a ground road stands on an embankment the 30 m data smeared away: the track is raised over the road (its
+# piece COARSE_PIECE_M either side of the crossing, as a tunnel's mouths) and ramps at GRADE, and the road stays at
+# grade (grading leaves rail spans alone there). Perm, GitHub #414: the underpass rule dug Первомайская улица 7.5 m
+# under the Балмошная–Лёвшино line, a walled trench 400 m long where the street is at grade under an embankment.
+COARSE_AT = None
+COARSE_PIECE_M = 25.0
+
+
+def _coarse_here(frame, box):
+    if COARSE_AT is None:
+        return False
+    try:
+        la, lo, _ = frame.enu_to_geodetic(0.5 * (box[0] + box[2]), 0.5 * (box[1] + box[3]), 0.0)
+        return bool(COARSE_AT(float(la), float(lo)))
+    except Exception:
+        return False
+
+
+def _seg_hits(a, b):
+    """Arc positions along polyline a where it crosses polyline b (proper segment intersections). Pure."""
+    out = []
+    sa = _arc(a)
+    for i in range(len(a) - 1):
+        p, r = a[i], a[i + 1] - a[i]
+        for j in range(len(b) - 1):
+            q, t = b[j], b[j + 1] - b[j]
+            den = r[0] * t[1] - r[1] * t[0]
+            if abs(den) < 1e-12:
+                continue
+            u = ((q[0] - p[0]) * t[1] - (q[1] - p[1]) * t[0]) / den
+            v = ((q[0] - p[0]) * r[1] - (q[1] - p[1]) * r[0]) / den
+            if 0.0 <= u <= 1.0 and 0.0 <= v <= 1.0:
+                out.append(float(sa[i] + u * (sa[i + 1] - sa[i])))
+    return out
+
+
+def coarse_underpasses(frame, cells, box, rails, reach=REACH_M):
+    """[(xy, half width)] (as road_underpasses): on coarse elevation (COARSE_AT), each ground road's piece
+    COARSE_PIECE_M either side of where a rail bridge part crosses it."""
+    bridges = [xy for (_fid, _c, kind, xy) in rails if kind == "bridge" and len(xy) >= 2]
+    if not bridges or not _coarse_here(frame, box):
+        return []
+    out = []
+    for line, half in crossings(frame, cells, box, reach):
+        if len(line) < 2:
+            continue
+        sl = _arc(line)
+        for b in bridges:
+            for sc in _seg_hits(line, b):
+                a0, a1 = max(0.0, sc - COARSE_PIECE_M), min(float(sl[-1]), sc + COARSE_PIECE_M)
+                if a1 - a0 < 1.0:
+                    continue
+                ss = np.linspace(a0, a1, max(3, int((a1 - a0) / STEP_M) + 1))
+                piece = np.c_[np.interp(ss, sl, line[:, 0]), np.interp(ss, sl, line[:, 1])]
+                out.append((piece, half + UNDERPASS_SIDE_M))
     return out
 
 
@@ -1026,7 +1086,7 @@ def tile_mesh(frame, tx, ty, cells, ground, sign_style=None, far_ground=None):
     if not any(_box_hit((xy[:, 0].min(), xy[:, 1].min(), xy[:, 0].max(), xy[:, 1].max()),
                         (ex[0] - STEP_M, ex[1] - STEP_M, ex[2] + STEP_M, ex[3] + STEP_M)) for *_, xy in rails):
         return None
-    prof = profile(rails, ground, tunnels)
+    prof = profile(rails, ground, tunnels + coarse_underpasses(frame, cells, box, rails))
     cr = crossings(frame, cells, box, reach=50.0) + tunnels
     crossers = []
     if cr:                                          # (one ground call for all of them: its cost is per call)

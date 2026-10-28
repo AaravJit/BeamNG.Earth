@@ -1280,7 +1280,10 @@ class Grader:
                 uniq.append((b, fixed, rail))
         spans = []
         ue = np.array([[b[0, :2], b[-1, :2]] for b, _f, _r in uniq], f64)        # (n, 2 ends, 2)
+        coarse = self._coarse(key)      # (there the railway rises over the road: railways.coarse_underpasses)
         for n, (b, fixed, rail) in enumerate(uniq):
+            if rail and coarse:
+                continue
             L = float(np.hypot(*np.diff(b, axis=0).T).sum())
             if L < 2 * APPROACH_MIN_CROSS_M or (L > UNDER_MAX_BRIDGE_M and not rail):
                 continue

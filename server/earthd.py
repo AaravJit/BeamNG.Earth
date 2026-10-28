@@ -600,6 +600,8 @@ class Server:
         self.tile_cache = TILE_CACHE[cells]
         self.net = net if net is not None else netfetch.Fetcher()
         self.dem = demmod.Dem(os.path.join(cache_dir, "dem"), fetcher=self.net)
+        import railways as _railways    # (coarse elevation: rail decks raised over the roads under them)
+        _railways.COARSE_AT = self.dem.coarse_at
         # runways graded in (--airports on: main() loads the OurAirports copy before the worker processes)
         self.airports = airportgrademod.AirportGrader(airports_db, self.dem) if airports_db is not None else None
         self.airports_db = airports_db  # (also the road rules' country: navgraph.country_near)
