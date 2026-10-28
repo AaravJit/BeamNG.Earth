@@ -33,8 +33,9 @@ MAX_EDGE_M = 80.0           # long straight edges are split (the AI and the spaw
 WINDOW_M = 1100.0           # half size of the square around the player the graph covers
 CURVE_ACCEL = 2.0           # m/s^2: comfortable lateral acceleration, a driving target rather than a posted limit
 BRAKE_ACCEL = 2.5           # m/s^2: spread a tight bend's target back along its approaches
-NARROW_M = 5.5              # narrower two-way streets need slower encounters with oncoming traffic
-NARROW_MS = 30.0 / 3.6
+NARROW_M = 5.5              # narrower two-way town streets need slower encounters with oncoming traffic (parked cars,
+NARROW_MS = 30.0 / 3.6      # doors); a narrow rural road keeps its limit (the Netherlands' 60 km/h country roads, ~5 m
+                            # wide: the AI held 30 km/h on all of them, GitHub #451)
 RING_MS = 30.0 / 3.6
 ENTRY_DRIVABILITY = 0.9     # stock AI yields to the ring's 1.0, even on a tangential entry
 
@@ -82,10 +83,10 @@ def _rdp(p, tol):
     return np.flatnonzero(keep)
 
 
-def _speed_profile(xy, width, oneway, limit=math.inf):
+def _speed_profile(xy, width, oneway, limit=math.inf, urban=True):
     """Advisory speeds at graph points. Both directions can brake before a bend; legal limits stay in road_mph.
     No curve is invented between separate roads, and straight wide roads keep their original target."""
-    target = min(limit, NARROW_MS) if not oneway and width < NARROW_M else limit
+    target = min(limit, NARROW_MS) if urban and not oneway and width < NARROW_M else limit
     v2 = np.full(len(xy), target * target, np.float64)
     lengths = np.hypot(*np.diff(xy, axis=0).T)
     if len(xy) > 2:
@@ -289,7 +290,7 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
                     lo, li = f_, b_         # (an uneven split: markings.lane_plan moves the centre line the same)
             else:
                 lo, li = _lanes(w, direction != 0, spec.lanes)
-            profile = _speed_profile(xy, w, direction != 0)
+            profile = _speed_profile(xy, w, direction != 0, urban=bool(getattr(spec, "urban", True)))
             # this road's approaches at its two ends (the graph node next to the junction, whether traffic comes in)
             for end in (0, -1):
                 j, nb = (0, 1) if end == 0 else (len(names) - 1, len(names) - 2)
