@@ -94,7 +94,8 @@ VERSION = 2                     # pipeline version: bump when what a cell's laye
 # (osmtags osm_highway, construction/proposed roads left out, GitHub #184: only cells fetched after it; the cached
 # ones get it with the next Overture release bump, not a roads 7 here: every player's roads fetched again)
 # roads 7: a way without lanes takes the same-named way's (osmtags.join); one-way ends at their own lane (oneway_joins)
-LAYER_VERSIONS = {"roads": 7}
+LAYER_VERSIONS = {"roads": 7, "canopy": 2}
+# canopy 2: LidarBC's measured canopy height in British Columbia (maprasters.bc_canopy)
                                 # (2: clipped polygon pieces `own`ed by their cell, exact cell edges,
                                 # the exact no-area test of clipped rings)
 VECTOR_LAYERS = ("roads", "connectors", "buildings", "water", "land_use", "infrastructure", "building_parts", "places")
@@ -121,12 +122,20 @@ CANOPY = {
     "licence": "CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)",
     "url": "https://registry.opendata.aws/dataforgood-fb-forests/",
 }
+LIDAR_CANOPY = {
+    "id": "lidarbc-chm", "name": "LidarBC surface and terrain models (canopy height = DSM - DEM), Meta / WRI elsewhere",
+    "release": "lidarbc",
+    "attribution": "Canopy height: contains information licensed under the Open Government Licence - British Columbia "
+                   "(LidarBC); Meta and World Resources Institute (WRI)",
+    "licence": "Open Government Licence - British Columbia; CC BY 4.0", "url": "https://lidar.gov.bc.ca",
+}
 # Short overlay wordings per provenance id (credits.py can take them when the map data is shown)
 CREDIT_LINES = {
     "overture": overture.ATTRIBUTION,
     "esa-worldcover": "© ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) "
                       "processed by ESA WorldCover consortium",
     "meta-wri-chm": "Canopy height: Meta & WRI",
+    "lidarbc-chm": "Canopy height: LidarBC (OGL-BC), Meta & WRI",
 }
 THEME_OF = {name: spec["theme"] for name, spec in overture.LAYERS.items()}
 
@@ -241,7 +250,7 @@ class MapData:
         self.release = release
         self.raw_dir = os.path.join(cache_dir, "mapdata", "raw")
         self.overture = overture.Reader(self.raw_dir, self.fetcher, release, threads)
-        self.rasters = maprasters.Rasters(self.raw_dir, self.fetcher)
+        self.rasters = maprasters.Rasters(self.raw_dir, self.fetcher, os.path.join(cache_dir, "dem", "lidarbc"))
         import railtags                 # (OSM's railway tags joined to the roads layer's rail segments)
         self.rail_tags = railtags.RailTags(cache_dir, self.fetcher) if railtags.ON else None
         self.lane_tags = railtags.LaneTags(cache_dir, self.fetcher) if railtags.LANES_ON else None   # (markings.py)
@@ -399,8 +408,11 @@ class MapData:
             prov = dict(WORLDCOVER, files=r.files) if r.files else None
         else:
             r = self.rasters.canopy(key, kind)
+            r, bc_files = self.rasters.bc_canopy(key, r)
             arrays = _layer_arrays(r)
             prov = dict(CANOPY, files=r.files) if r is not None else None
+            if bc_files:
+                prov = dict(LIDAR_CANOPY, files=r.files, also=CANOPY["id"])
         arrays["provenance"] = np.array(json.dumps(prov, sort_keys=True))
         return arrays
 

@@ -33,8 +33,8 @@ import staging
 
 log = logging.getLogger("earthd.vegetation")
 
-VERSION = 16          # (the cached cells hold their groups: 14 for the regional rules of GitHub #110; 16: the roads'
-                      # drawn widths and sidewalks kept clear)
+VERSION = 17          # (the cached cells hold their groups: 14 for the regional rules of GitHub #110; 16: the roads'
+                      # drawn widths and sidewalks kept clear; 17: BC's lidar canopy heights, mapdata's canopy layer 2)
 TREE_MIN_M = 3.0
 CROWN_SPACING = 0.5          # tops kept this many crown radii apart (0.8 looked sparse: the user, 2026-10-13)
 BUSH_MIN_M = 1.0
