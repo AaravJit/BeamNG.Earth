@@ -7,13 +7,13 @@ real curvature of the Earth.
 Status: beta (see VERSION). Tested on BeamNG.drive 0.40.3 on Linux (Vulkan) and the Steam Deck. See
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is coming.
 
-**Community:** join the [Discord server](https://discord.gg/tgf) and head to the #beamng-earth channel to talk about
-the mod, report problems, and get an IP to join a BeamMP.Earth server (see [Multiplayer](#multiplayer-beammp)).
+**Community:** join the BeamNG.Earth Discord, **[discord.gg/tgf](https://discord.gg/tgf)**, and head to the
+#beamng-earth channel to chat about the mod, get help, report bugs, help with its development, and get an IP to join a
+BeamMP.Earth server (see [Multiplayer](#multiplayer-beammp)).
 
-> **Need help?** Ask on the BeamNG.Earth Discord: **[discord.gg/tgf](https://discord.gg/tgf)**. This includes help
-> with multiplayer: BeamNG.Earth isn't like a normal BeamNG mod (it runs its own app next to the game), so if something
-> isn't working with BeamMP, it's almost certainly a BeamNG.Earth problem, not a BeamMP one. Please **don't contact
-> the BeamMP team or open BeamMP support tickets** about it.
+> **Help with multiplayer comes from the BeamNG.Earth Discord too.** BeamNG.Earth isn't like a normal BeamNG mod (it
+> runs its own app next to the game), so if something isn't working with BeamMP, it's almost certainly a BeamNG.Earth
+> problem, not a BeamMP one. Please **don't contact the BeamMP team or open BeamMP support tickets** about it.
 
 You can help support development by reporting [issues](https://github.com/TecnaGamer/BeamNG.Earth/issues), contributing code and sending pull requests, or [donating](https://ko-fi.com/tecnagamer). Thank You!
 

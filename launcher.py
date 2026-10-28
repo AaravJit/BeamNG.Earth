@@ -112,7 +112,8 @@ def support_notice(multiplayer=False):
     """Where to get help (the BeamMP team, 2026-10-27: players kept asking them about BeamNG.Earth): the Discord once at
     every start; once BeamMP is up, what it means for multiplayer (said once each: the user, 2026-10-27)."""
     if not multiplayer:
-        say(f"Need help? Join the BeamNG.Earth Discord: {DISCORD}")
+        say("Join the BeamNG.Earth Discord to chat, get help, report bugs or help develop")
+        say(f"the mod: {DISCORD}")
         return
     _out("")
     _out("  " + "=" * 78)

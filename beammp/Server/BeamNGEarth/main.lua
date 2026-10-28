@@ -59,7 +59,8 @@ function G.supportNotice()
   local bar = string.rep('=', 78)
   return {
     bar,
-    'Need help with BeamNG.Earth or this server? Join the BeamNG.Earth Discord:',
+    'Join the BeamNG.Earth Discord to get help with this server, ask questions,',
+    'report bugs, chat with other players or help develop the mod:',
     '    ' .. G.DISCORD,
     '',
     'BeamNG.Earth is not like a normal BeamNG mod: it needs its own app running',
