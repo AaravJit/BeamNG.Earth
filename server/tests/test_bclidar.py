@@ -212,6 +212,7 @@ class CanadaBlendTest(unittest.TestCase):
         d.stats = Counter()
         d.lidarbc, d.hrdem, d.lidarbc_sparse = lidar, hrd, sparse
         d.lidarbc_served, d.hrdem_served = set(), set()
+        d.hrdem_near = True                 # (opt-in: BNE_HRDEM_NEAR)
         return d
 
     def key(self):

@@ -268,6 +268,8 @@ ROLES = {
     "download.mapterhorn.com": "the list of where detailed terrain heights exist; new places may load slower",
     "s3.amazonaws.com": "terrain heights (backup source); only matters while the main one is down too",
     "copernicus-dem-30m.s3.amazonaws.com": "terrain heights near the poles",
+    "canelevation-dem.s3.ca-central-1.amazonaws.com": "Canada's lidar ground under the distant terrain; as before meanwhile",
+    "nrs.objectstore.gov.bc.ca": "British Columbia's detailed aerial photos (and its lidar, if on); coarser photos meanwhile",
     "stac.overturemaps.org": "the map data's file list; the copy that comes with the app is used meanwhile",
     "overturemaps-us-west-2.s3.us-west-2.amazonaws.com":
         "roads, buildings, water and land use; places not visited before may come without them",

@@ -237,8 +237,6 @@ class Dem:
             return a
         if z < FINE_MIN_ZOOM:
             return self._bc_bias(key, self._hrdem_bias(key, a))
-        if not (HRDEM_NEAR or LIDARBC):
-            return a
         return self._canada_fine(key, a)
 
     def _hrdem_bias(self, key, a):
@@ -337,7 +335,8 @@ class Dem:
         z, x, y = key
         h = ok = None
         used = []
-        for name, src in (("lidarbc", self.lidarbc), ("hrdem", self.hrdem)):
+        near_hrdem = self.hrdem if getattr(self, "hrdem_near", HRDEM_NEAR) else None
+        for name, src in (("lidarbc", self.lidarbc), ("hrdem", near_hrdem)):
             if src is None or (ok is not None and ok.all()):
                 continue
             if name == "lidarbc" and not src.covers(z, x, y):
