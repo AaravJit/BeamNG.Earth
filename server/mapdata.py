@@ -82,6 +82,8 @@ OSM_THREADS = 8                 # cells whose OpenStreetMap tags are read at onc
 # (all 36 of a fresh place: 122 s -> 145-181 s over 8 places, 2026-10-25); on a 16-thread PC they came 2-10 s sooner.
 _CPUS = os.cpu_count() or 4
 WARM_THREADS = min(8, _CPUS // 2) if _CPUS > 8 else 0
+BUILDING_MAX_M2 = 2.0e6     # m2: a building footprint larger than this is a mapping error (the largest real ones are
+                            # ~1 km2; an OpenStreetMap one of 15.8 km2 roofed a city in Egypt, GitHub #413)
 VERSION = 2                     # pipeline version: bump when what a cell's layers contain changes
 # per layer, on top of VERSION (a layer's own change without re-fetching the others): roads 2 adds
 # the "oneway" rule (Overture access_restrictions by heading)
@@ -589,6 +591,8 @@ class MapData:
                         cd.layers[layer] = f.localize(frame)
                     # (which cell's layer: the per-cell facts the server's processes share, roads.cell_facts)
                     self._rails(key, layer, cd.layers[layer])
+                    if layer == "buildings":    # (a "building" of a whole city's size: left out, GitHub #413)
+                        cd.layers[layer] = mapgeom.drop_huge(cd.layers[layer], BUILDING_MAX_M2)
                     if layer == "roads":        # (the bridges the map lacks, found when its ranges are first asked)
                         cd.layers[layer].__dict__["_bnge_gradesep"] = gradesep.hook(self, key)
                     cd.layers[layer].__dict__["_bnge_cell"] = (str(key), layer, json.dumps(self.versions(),
