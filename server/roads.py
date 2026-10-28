@@ -1708,6 +1708,34 @@ GAP_LOW_M = 1.5             # ... the stretch within this of it is the water
 GAP_SEA_M = 1.0             # ... and at most this high (a river at sea level)
 
 
+def _curve_grade(lines, zs):
+    """The steepest grade (rise / run) between consecutive points of any part of a deck profile. Pure."""
+    g = 0.0
+    for ln, z in zip(lines, zs):
+        if len(ln) < 2:
+            continue
+        run = np.maximum(np.hypot(*np.diff(np.asarray(ln, np.float64)[:, :2], axis=0).T), 0.5)
+        g = max(g, float(np.max(np.abs(np.diff(np.asarray(z, np.float64))) / run)))
+    return g
+
+
+def _end_step(lines, zs):
+    """The steepest grade of a deck's first or last segment at a free end (an abutment: no other part ends within
+    0.75 m), where a curve that cannot meet its end leaves a step. Pure."""
+    ends = [np.asarray(ln, np.float64)[k, :2] for ln in lines for k in (0, -1)]
+    g = 0.0
+    for ln, z in zip(lines, zs):
+        ln = np.asarray(ln, np.float64)
+        if len(ln) < 2:
+            continue
+        for a, b in ((0, 1), (-1, -2)):
+            if sum(np.hypot(*(e - ln[a, :2])) < 0.75 for e in ends) > 1:
+                continue
+            run = max(float(np.hypot(*(ln[b, :2] - ln[a, :2]))), 0.5)
+            g = max(g, abs(float(z[b]) - float(z[a])) / run)
+    return g
+
+
 def _curve_crossings(crossings, n_road=None, levels=None):
     """deck_profile_once's crossings for deck_curve: (part, arc, height under it, its clearance or None). A
     deck-over-deck requirement holds on the upper part itself (deck_curve applies a requirement where it is, not
@@ -1716,7 +1744,7 @@ def _curve_crossings(crossings, n_road=None, levels=None):
 
 
 def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, lift=None, n_road=None, levels=None,
-                      pins=None):
+                      pins=None, curve=True):
     """Deck heights (one array per part) of a bridge chain: deck_heights between the abutments, at
     least `lift` over the ground under it, and at least `clear` over each crossing road below
     ((part index, arc m, road height)), the requirement falling at `grade` along the chain; then
@@ -1728,10 +1756,16 @@ def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, li
     lift = DECK_CLEAR if lift is None else lift
     # (curve mode for a deck that clears something; one over nothing but the ground keeps the ground envelope's rounded
     # crest: Lombard Street, Baltimore's deck over its embankment, test_no_step_onto_a_steep_abutment)
-    if lines and bridge_profile_mode() == "curve" and len(crossings):
+    if curve and lines and bridge_profile_mode() == "curve" and len(crossings):
         got = deck_curve(lines, ground_fn, _curve_crossings(crossings, n_road, levels), (), clear, lift)
         if got is not None:
-            return got
+            g = _curve_grade(lines, got)
+            if g <= DECK_STEEP_GRADE or _end_step(lines, got) <= DECK_STEEP_GRADE:
+                return got
+            # (a curve steeper than that may not meet its ends: a "bridge" mapped along a hillside stepped 40 m at
+            # its abutment, GitHub #382 near Tata. The ground envelope's profile when it is the gentler one)
+            old = deck_profile_once(lines, ground_fn, crossings, clear, grade, lift, n_road, levels, pins, False)
+            return got if not old or _end_step(lines, got) <= _end_step(lines, old) + 0.05 else old
     zs = deck_heights(lines, ground_fn, pins)
     if not zs:
         return zs
