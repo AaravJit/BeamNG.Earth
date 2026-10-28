@@ -77,6 +77,19 @@ class SpecTest(unittest.TestCase):
         g = features([[(0, 0), (200, 0)]], ["unknown"])
         self.assertIsNotNone(roads.road_specs(g)[0])
 
+    def test_overture_s_under_construction_flag_over_most_of_it_is_not_built(self):
+        """The Gotthard road tunnel's second bore (highway=construction until ~2029) came with the open tunnel's tags
+        (Layercake has no construction ways) and Overture's is_under_construction flag: it was drawn beside the real
+        bore, its portal in the A2's lanes. Flagged over a short stretch (roadworks): drawn."""
+        f = features([[(0, 0), (200, 0)], [(0, 30), (200, 30)], [(0, 60), (200, 60)]], ["trunk"] * 3,
+                     flags=[(0, "is_under_construction"), (1, "is_under_construction", 0.1, 0.2), (2, "is_tunnel")])
+        self.assertTrue(roads.unbuilt(f, 0))
+        self.assertFalse(roads.unbuilt(f, 1))
+        self.assertFalse(roads.unbuilt(f, 2))
+        specs = roads.road_specs(f)
+        self.assertIsNone(specs[0])
+        self.assertIsNotNone(specs[1])
+
     def test_osm_width_is_the_width(self):
         f = tagged([[(0, 0), (200, 0)]], ["residential"], ["w1@1"], {1: {"width": 9.0, "lanes": 2}})
         self.assertAlmostEqual(roads.road_specs(f)[0].width, 9.0)

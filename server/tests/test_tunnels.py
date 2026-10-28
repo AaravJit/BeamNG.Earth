@@ -171,6 +171,24 @@ class LowArch(unittest.TestCase):
         self.assertLess(P[:, 2].max(), 15.0 + roads.PORTAL_GROUND_M + 0.01)
 
 
+    def test_a_motorway_s_low_arch_is_concrete(self):
+        # the Gotthard road tunnel's portal at Goeschenen (a cut-and-cover box under a meadow) stood as a park's stone arch
+        from test_roads import features, FRAME, LON, M_LON
+        f = features([[(-20, 0), (20, 0)]], ["motorway"], flags=[(0, "is_tunnel")])
+
+        def arch(la, lo):
+            e = (np.asarray(lo) - LON) * M_LON
+            return 10.0 + np.where(np.abs(e) < 15.0, 5.0, 0.0)
+        tp = roads.TunnelProfiles(FRAME, lambda key: f, arch)
+        tube = [c for c in roads._tunnel_chunks(tp, [f], (-128.0, -128.0, 128.0, 128.0)) if c.get("tunnel")]
+        self.assertTrue(tube and all(c.get("concrete") for c in tube))
+        for c in tube:
+            c["portal"] = [True, True]
+        _P, _T, _UV, mats, M = roadmesh.tunnel(tube, (0.0, 0.0, 0.0))
+        used = {mats[i] for i in set(M.tolist())}
+        self.assertFalse(used & {roadmesh.TUNNEL_STONE, roadmesh.TUNNEL_STONE_IN}, used)
+
+
 class ArchRaise(unittest.TestCase):
     def test_ground_over_a_low_arch_stays_over_its_vault(self):
         xy = np.array([[0.0, 0.0], [30.0, 0.0]])
@@ -243,9 +261,25 @@ class Sections(unittest.TestCase):
         m_both = roads.tunnel_hole_mask([part], u, 15.0, 0.0, sq, {"a": 4.0})
         m_one = roads.tunnel_hole_mask([part], u, 15.0, 0.0, sq, {"a": 4.0}, {"a": (True, False)})
         xs = 15.0 - n * sq / 2 + np.arange(n) * sq
-        self.assertTrue(m_both[:, xs > 28].any())
-        self.assertFalse(m_one[:, xs > 28].any())
-        self.assertTrue(m_one[:, xs < 2].any())
+        # (the squares from the flat mouth band, LOW_HOLE_M, up to the soil: about LOW_HOLE_M in from each portal)
+        self.assertTrue(m_both[:, xs > 25].any())
+        self.assertFalse(m_one[:, xs > 25].any())
+        self.assertTrue(m_one[:, xs < 4].any())
+
+    def test_a_low_arch_s_mouth_cuts_no_square_past_its_portal(self):
+        # GitHub #450 (Malaga): a portal facing +x had the squares of its last samples cut, reaching a grid step out
+        # past the face into the open road in front (a hole cars fell through)
+        for sq in (1.0, 2.0):
+            xy = np.array([[0.0, 0.0], [30.0, 0.0]])
+            part = ("a", Spec(7.0, "paved", False, "residential"), xy, np.array([10.0, 10.0]), 0.0)
+            n = 64
+            u = np.full((n, n), 10.0)
+            m = roads.tunnel_hole_mask([part], u, 15.0, 0.0, sq, {"a": 4.0})
+            xs = 15.0 - n * sq / 2 + np.arange(n) * sq
+            iy, ix = np.nonzero(m)
+            self.assertTrue(len(ix))
+            self.assertLessEqual((xs[ix] + sq).max(), 30.0 + 1e-6, sq)      # (a square spans [x, x + sq])
+            self.assertGreaterEqual(xs[ix].min(), 0.0 - 1e-6, sq)
 
 
 class TwinTunnels(unittest.TestCase):

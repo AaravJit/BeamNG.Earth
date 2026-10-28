@@ -308,7 +308,7 @@ class MapData:
         return {"pipeline": VERSION, "overture": self.release, "worldcover": maprasters.WORLDCOVER_RELEASE,
                 "canopy": maprasters.CHM_RELEASE, "rails": rails.known() if rails is not None else None,
                 "lanes": lanes.known() if lanes is not None else None,
-                "gradesep": gradesep.VERSION if gradesep.ON else None}
+                "gradesep": (gradesep.VERSION, gradesep.MODE) if gradesep.TUNNELS else None}
 
     def path(self, key, layer):
         source, release = _source(layer, self.release)

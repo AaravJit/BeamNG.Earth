@@ -1277,6 +1277,31 @@ class ChainResolveTest(unittest.TestCase):
             self.assertEqual(float(pool[("b", 0)][1][-1][0]), 300.0)
 
 
+class TunnelReachTest(unittest.TestCase):
+    """GitHub #450: a tunnel's portal inside the carriageway of a road crossing over it moves out past that road."""
+
+    def _ranges(self, lines, classes, flags):
+        return roads.level_ranges(features(lines, classes, flags=flags), 0)
+
+    def test_a_portal_in_a_carriageway_moves_past_it(self):
+        # the tunnel road east-west, 400 m, its tunnel -20 .. +20 m; a motorway crossing at +18 m
+        got = self._ranges([[(-200.0, 0.0), (200.0, 0.0)], [(18.0, -100.0), (18.0, 100.0)]],
+                           ["unclassified", "motorway"], [(0, "is_tunnel", 0.45, 0.55)])
+        (a, b, k), = got
+        self.assertEqual(k, "tunnel")
+        self.assertAlmostEqual(a, 0.45, places=4)                # (the other portal: no road there)
+        half = roads.road_specs(features([[(18.0, -100.0), (18.0, 100.0)]], ["motorway"]))[0].width / 2
+        self.assertGreaterEqual(b * 400.0 - 200.0, 18.0 + half + roads.TUNNEL_PORTAL_CLEAR_M - 0.01)
+
+    def test_a_road_away_from_the_portal_or_joined_there_moves_nothing(self):
+        for other in ([(60.0, -100.0), (60.0, 100.0)],     # 40 m outside the portal
+                      [(0.0, -100.0), (0.0, 100.0)],       # over the middle, its carriageway inside
+                      [(21.0, 0.0), (21.0, 100.0)]):       # a side road joining the approach (its end there)
+            got = self._ranges([[(-200.0, 0.0), (200.0, 0.0)], other], ["unclassified", "motorway"],
+                               [(0, "is_tunnel", 0.45, 0.55)])
+            self.assertEqual([(round(a, 4), round(b, 4), k) for a, b, k in got], [(0.45, 0.55, "tunnel")], other)
+
+
 class TunnelCoverRoadsTest(unittest.TestCase):
     """GitHub #450: a covered tunnel section goes on until the road crossing over it is covered."""
 

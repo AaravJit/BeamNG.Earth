@@ -1730,6 +1730,7 @@ class Grader:
         out = []
         ts = roadsmod.tunnel_specs(feats)
         pack = None                     # (the road plans packed once: per tunnel part, ~6 ms each, 0.9 s of 8 tiles)
+        over = None                     # (the ground roads near the tunnels, as roads.TunnelProfiles covers them)
         for i in range(len(feats)):
             if ts[i] is None:
                 continue
@@ -1754,6 +1755,9 @@ class Grader:
                     pack = PlanPack(list(road_plans)) if pack is None else pack
                     g[[0, -1]] = grade_points(xy[[0, -1], 0], xy[[0, -1], 1], g[[0, -1]], pack)
                 floor, kinds = roadsmod.tunnel_sections(s, g)
+                if over is None:
+                    over = self._roads_over_tunnels(feats, ts)
+                kinds = roadsmod.cover_roads(xy, s, kinds, *over)
                 i0 = 0
                 while i0 < len(kinds):
                     i1 = i0
@@ -1764,6 +1768,32 @@ class Grader:
                         out.append((str(feats.ids[i]), ts[i], xy[a:i1 + 1], floor[a:i1 + 1], int(kinds[i0])))
                     i0 = i1 + 1
         return out
+
+    def _roads_over_tunnels(self, feats, ts):
+        """([ground lines (k, 2) in the frame], [carriageway half widths]) of the roads near feats' tunnels (ts:
+        tunnel_specs), as roads.TunnelProfiles._cover_roads has them."""
+        import mapgeom
+        tun = [i for i in range(len(feats)) if ts[i] is not None]
+        boxes = roadsmod._feature_boxes(feats)
+        if not tun:
+            return [], []
+        pad = (roadsmod.TUNNEL_ROAD_REACH_M + 40.0) / 111320.0      # (lon/lat degrees, generous at high latitudes)
+        tb = boxes[tun]
+        rs = roadsmod.road_specs(feats)
+        lines, halves = [], []
+        for i in range(len(feats)):
+            if rs[i] is None:
+                continue
+            b = boxes[i]
+            k = 1.0 / max(math.cos(math.radians(0.5 * (b[1] + b[3]))), 0.05)
+            if not ((tb[:, 0] - pad * k <= b[2]) & (tb[:, 2] + pad * k >= b[0]) & (tb[:, 1] - pad <= b[3]) &
+                    (tb[:, 3] + pad >= b[1])).any():
+                continue
+            for ring in roadsmod.ground_parts(feats, i):
+                e, n = mapgeom.enu_xy(feats, self.frame, ring)
+                lines.append(np.stack([e, n], axis=1))
+                halves.append(rs[i].width / 2)
+        return lines, halves
 
     @staticmethod
     def _mouth_plans(secs):

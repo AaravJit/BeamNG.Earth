@@ -511,6 +511,64 @@ def _bridge_reach(feats, i):
     return got
 
 
+# A tunnel's portal moved out past a ground road crossing over the tunnel's road at it (earthfast.tunnel_reach): its
+# carriageway and TUNNEL_PORTAL_CLEAR_M past it (along the road: / the sine of the crossing, at least TUNNEL_ROAD_MIN_SIN),
+# a crossing up to TUNNEL_PORTAL_REACH_M outside the portal, TUNNEL_PORTAL_GROW_M at most. OSM often ends an underpass's
+# tunnel inside the carriageway over it: the portal's approach cut ran through the A-7's lanes near Malaga (GitHub #450).
+TUNNEL_PORTAL_CLEAR_M = 3.0
+TUNNEL_PORTAL_REACH_M = 10.0
+TUNNEL_PORTAL_GROW_M = 30.0
+TUNNEL_PORTAL_END_M = 2.0   # m: a crossing this close to the other road's end is a junction
+
+
+def _tunnel_reach(feats, i, rngs):
+    """rngs with feature i's tunnel ranges grown over the ground roads crossing it at their portals
+    (TUNNEL_PORTAL_*), never into a neighbouring range. Pure given feats."""
+    specs = road_specs(feats)
+    rings = [np.asarray(r, np.float64) for part in feats.parts(i) for r in part if len(r) >= 2]
+    if specs[i] is None or not rings:
+        return rngs
+    ring = rings[0]
+    kx, ky = 111320.0 * math.cos(math.radians(float(ring[0, 1]))), 111320.0
+    m = (ring - ring[0]) * [kx, ky]
+    sm = np.r_[0.0, np.cumsum(np.hypot(*np.diff(m, axis=0).T))]
+    L = float(sm[-1])
+    if L <= 0:
+        return rngs
+    tun = [n for n, (_, _, k) in enumerate(rngs) if k == "tunnel"]
+    pad = (TUNNEL_PORTAL_REACH_M + TUNNEL_PORTAL_GROW_M + 1.0) / np.array([kx, ky])
+    boxes = _feature_boxes(feats)
+    near = np.zeros(len(boxes), bool)
+    for n in tun:                   # (the roads near the portals only)
+        for f in rngs[n][:2]:
+            p = (np.array([np.interp(f * L, sm, m[:, 0]), np.interp(f * L, sm, m[:, 1])]) / [kx, ky]) + ring[0]
+            near |= ((boxes[:, 0] <= p[0] + pad[0]) & (boxes[:, 2] >= p[0] - pad[0]) & (boxes[:, 1] <= p[1] + pad[1]) &
+                     (boxes[:, 3] >= p[1] - pad[1]))
+    gl, hw = [], []
+    for j in np.flatnonzero(near):
+        if j == i or specs[j] is None:
+            continue
+        for g in _raw_ground_parts(feats, j):
+            gl.append((np.asarray(g, np.float64)[:, :2] - ring[0]) * [kx, ky])
+            hw.append(specs[j].width / 2)
+    if not gl:
+        return rngs
+    import fast
+    fast.require(96, "tunnel_reach")
+    got = fast._ef.tunnel_reach(
+        np.ascontiguousarray(m), np.ascontiguousarray(sm),
+        np.ascontiguousarray([[rngs[n][0] * L, rngs[n][1] * L] for n in tun], np.float64),
+        np.ascontiguousarray(np.concatenate(gl)), np.r_[0, np.cumsum([len(g) for g in gl])].astype(np.int64),
+        np.asarray(hw, np.float64), np.array([TUNNEL_PORTAL_CLEAR_M, TUNNEL_ROAD_MIN_SIN, TUNNEL_PORTAL_REACH_M,
+                                              TUNNEL_PORTAL_GROW_M, TUNNEL_PORTAL_END_M], np.float64))
+    out = list(rngs)
+    for q, n in enumerate(tun):
+        prev = out[n - 1][1] if n > 0 else 0.0
+        nxt = out[n + 1][0] if n + 1 < len(out) else 1.0
+        out[n] = (max(float(got[q, 0]) / L, prev), min(float(got[q, 1]) / L, nxt), "tunnel")
+    return out
+
+
 def _bridge_ends(feats):
     """(indices (k,), end points lon/lat (k, 2, 2)) of the features with a bridge range, once per cell."""
     got = feats.__dict__.get("_bridge_ends")
@@ -567,6 +625,8 @@ def _skew_decks(feats, i, rngs):
     """rngs (feature i's raw_level_ranges) with its bridge ranges lengthened over the roads crossing under them
     (_bridge_reach), and a bridge range at an end of i where a bridge feature joined there reaches past its own end
     onto i (Overture makes most short bridges a segment of their own). Pure given feats."""
+    if any(k == "tunnel" for _, _, k in rngs):
+        rngs = _tunnel_reach(feats, i, rngs)
     if not SKEW_ON:
         return rngs
     if any(k == "bridge" for _, _, k in rngs):
@@ -1226,11 +1286,26 @@ def _osm_sidewalks(feats, specs):
     return out
 
 
+UNBUILT_SHARE = 0.5     # a feature Overture flags is_under_construction over this share of its length is not built
+
+
 def unbuilt(feats, i):
-    """Is feature i a road not built yet (OpenStreetMap's highway=construction / proposed: osmtags osm_highway)? Not
-    drawn, as on the stock map views (GitHub #184)."""
+    """Is feature i a road not built yet (OpenStreetMap's highway=construction / proposed: osmtags osm_highway, or
+    Overture's is_under_construction flag over most of it)? Not drawn, as on the stock map views (GitHub #184). (The
+    Gotthard road tunnel's second bore, highway=construction until ~2029, was built beside the real one, its portal in
+    the A2's lanes: Layercake leaves construction ways out, and the join took the open tunnel's tags, 2026-10-28.)"""
     col = feats.attrs.get("osm_highway")
-    return col is not None and str(col[i]) in ("construction", "proposed")
+    if col is not None and str(col[i]) in ("construction", "proposed"):
+        return True
+    t = feats.rules.get("flags")
+    if t is None or len(t.feature) == 0:
+        return False
+    share = 0.0
+    for j in t.rows(i):
+        if "is_under_construction" in str(t.value[j]):
+            a, b = float(t.start[j]), float(t.end[j])
+            share += (b - a) if b > a else 1.0      # (no range: the whole feature)
+    return share >= UNBUILT_SHARE
 
 
 def _road_specs(feats, urban_fn, left_hand):
@@ -2656,6 +2731,24 @@ TUNNEL_LOW_H = 3.6      # m: the lowest tube (floor to vault)
 TUNNEL_ROAD_CLEAR_M = 2.0
 TUNNEL_ROAD_MIN_SIN = 0.35
 TUNNEL_ROAD_REACH_M = 15.0
+
+
+def cover_roads(xy, s, kinds, lines, halves):
+    """kinds (tunnel_sections') with each covered section carried on until the ground roads crossing over it (lines
+    (k, 2) in xy's frame, carriageway half widths) are covered, TUNNEL_ROAD_*: earthfast.tunnel_cover_roads. The
+    road meshes (TunnelProfiles) and the grading (grading._tunnel_sections) both: an open section the grading did
+    not know of cut its trench through the A-7's lanes near Malaga (GitHub #450)."""
+    kinds = np.asarray(kinds, np.int64)
+    if not lines or not (kinds > 0).any() or len(xy) < 2:
+        return kinds
+    import fast
+    fast.require(95, "tunnel_cover_roads")
+    pts = np.ascontiguousarray(np.concatenate(lines))
+    starts = np.concatenate([[0], np.cumsum([len(ln) for ln in lines])]).astype(np.int64)
+    return np.asarray(fast._ef.tunnel_cover_roads(
+        np.ascontiguousarray(np.asarray(xy, np.float64)[:, :2]), np.ascontiguousarray(s, np.float64),
+        np.ascontiguousarray(kinds), pts, starts, np.asarray(halves, np.float64), TUNNEL_ROAD_CLEAR_M,
+        TUNNEL_ROAD_MIN_SIN, TUNNEL_ROAD_REACH_M, SECTION_MIN_M), np.int64)
 
 
 def tunnel_profile(lines, ground_fn):
@@ -4277,17 +4370,7 @@ class TunnelProfiles(BridgeProfiles):
                 if len(ln) >= 2:
                     lines.append(ln)
                     halves.append(hw)
-        kinds = np.asarray(kinds, np.int64)
-        if not lines or not (kinds > 0).any() or len(xy) < 2:
-            return kinds
-        import fast
-        fast.require(95, "tunnel_cover_roads")
-        pts = np.ascontiguousarray(np.concatenate(lines))
-        starts = np.concatenate([[0], np.cumsum([len(ln) for ln in lines])]).astype(np.int64)
-        return np.asarray(fast._ef.tunnel_cover_roads(
-            np.ascontiguousarray(np.asarray(xy, np.float64)[:, :2]), np.ascontiguousarray(s, np.float64),
-            np.ascontiguousarray(kinds), pts, starts, np.asarray(halves, np.float64), TUNNEL_ROAD_CLEAR_M,
-            TUNNEL_ROAD_MIN_SIN, TUNNEL_ROAD_REACH_M, SECTION_MIN_M), np.int64)
+        return cover_roads(xy, s, kinds, lines, halves)
 
     def _road_caps(self, xy, floor, th, ups, mouths, width, ground):
         """A low arch's stone tops (roadmesh.LOW_CAP_M back from each portal face over its mouth) and face reaches where
@@ -4461,10 +4544,11 @@ def tunnel_hole_mask(parts, u, cx, cy, square, heights=None, mouths=None):
             mask |= mouth_mask
         # the Rust kernel: the samples over the part between its floor and vault (a low arch: its mouths only)
         m0, m1 = (mouths or {}).get(_fid, (True, True))
+        # (a low arch: the squares from its flat mouth band, LOW_HOLE_M, up to the soil over its vault)
         fast._ef.tunnel_holes(mask, u, float(x0), float(y0), float(square), np.ascontiguousarray(xy),
                               np.ascontiguousarray(z), float(hw), float(th), bool(low), bool(m0), bool(m1),
-                              float(TUNNEL_HOLE_MARGIN), float(LOW_HOLE_M + LOW_HOLE_STEP), float(ARCH_SIDE_M + 1.0),
-                              not low)
+                              float(TUNNEL_HOLE_MARGIN), float(LOW_HOLE_M if low else LOW_HOLE_M + LOW_HOLE_STEP),
+                              float(ARCH_SIDE_M + 1.0), not low)
     return mask
 
 
@@ -5197,7 +5281,8 @@ def _tunnel_chunks(tunnels, cells, exact, terrain_paint=True):
     jobs = []                                   # (fid, its ends, [(look, width, line)])
     for i, j, mid, width in twins:              # the tube round both, with the first's portals
         if len(mid) >= 2:
-            jobs.append((parts[i][0], (mid[0, :2], mid[-1, :2]), [({**TUNNEL, "tunnel": True, "tube_only": True}, width, mid)]))
+            jobs.append((parts[i][0], (mid[0, :2], mid[-1, :2]), [({**TUNNEL, "tunnel": True, "tube_only": True}, width, mid)],
+                         parts[i][1]))
     for n, (fid, spec, xy, z, lon) in enumerate(parts):
         pts = np.c_[xy, z]
         look = _deck_look(spec) if not terrain_surface(spec) else None
@@ -5207,8 +5292,8 @@ def _tunnel_chunks(tunnels, cells, exact, terrain_paint=True):
         for look, w, line in extras(spec, pts, lon):
             if look["m"] not in (SIDEWALK["m"], GUTTER["m"], EDGE_DECAL["m"]):     # (no ground beside a deck)
                 lines.append((look, w, line))
-        jobs.append((fid, (pts[0, :2], pts[-1, :2]), lines))
-    for fid, ends, lines in jobs:
+        jobs.append((fid, (pts[0, :2], pts[-1, :2]), lines, spec))
+    for fid, ends, lines, spec in jobs:
         length = max((float(np.hypot(*np.diff(np.asarray(ln)[:, :2], axis=0).T).sum()) for _, _, ln in lines
                       if len(ln) >= 2), default=0.0)
         for look, w, line in lines:
@@ -5221,6 +5306,8 @@ def _tunnel_chunks(tunnels, cells, exact, terrain_paint=True):
                             ch["tunnel"] = True
                             ch["deck"] = not look.get("tube_only")      # (a twin's tube: no floor, no road surface)
                             ch["tunnel_len"] = round(length, 1)             # (the whole sub-part's: sound_boxes)
+                            if spec.cls in CONCRETE_WALL_CLASSES:
+                                ch["concrete"] = True   # (a major road's low arch: concrete, as its cutting's walls)
                             for flag in ("no_tube", "tube_only"):
                                 if look.get(flag):
                                     ch[flag] = True

@@ -1167,7 +1167,10 @@ def tunnel(chunks, origin, walls=()):
         hw = float(np.median(lw)) / 2 + TUNNEL_SHOULDER
         th = float(c.get("tunnel_h") or TUNNEL_H)
         low = th < TUNNEL_H - 0.05                          # a low arch: stone, a short portal face
-        mat = 3 if low else 5                               # (its portal faces: 2, the stone in daylight; a full
+        # (a major road's low arch in concrete, as its cutting's walls: the Gotthard road tunnel's portal, a cut-and-cover
+        # box under the meadow at Goeschenen, stood as a park's stone arch, 2026-10-28)
+        stone = low and not c.get("concrete")
+        mat = 3 if stone else 5                               # (its portal faces: 2, the stone in daylight; a full
                                                             # tube's inside: 5, TUNNEL_INNER)
         sec = _tunnel_section(hw, th, low)
         k, m = len(mid), len(sec)
@@ -1181,7 +1184,7 @@ def tunnel(chunks, origin, walls=()):
         for j in range(m - 1):
             a, b = rows[j], rows[j + 1]
             P.append(np.concatenate([a, b]))
-            if low:                                         # the stone at its scale: around the section, along
+            if stone:                                       # the stone at its scale: around the section, along
                 sj = float(np.hypot(*(sec[min(j + 1, m - 1)] - sec[j])))
                 s0 = float(np.sum(np.hypot(*np.diff(sec[:j + 1], axis=0).T))) if j else 0.0
                 along = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(mid, axis=0).T))))
@@ -1228,17 +1231,17 @@ def tunnel(chunks, origin, walls=()):
             outer[:, 2] = z[at] + o[:, 1]
             outer -= origin
             P.append(np.concatenate([inner, outer]))
-            sc = STONE_UV_M if low else 4.0
+            sc = STONE_UV_M if stone else 4.0
             UV.append(np.column_stack((np.concatenate((sec[:, 0], o[:, 0])) / sc, np.concatenate((sec[:, 1], o[:, 1])) / sc)))
             i = np.arange(m - 1)
             A, A1, B, B1 = nv + i, nv + i + 1, nv + m + i, nv + m + i + 1
             tri = np.concatenate([np.stack([A, B, B1], 1), np.stack([A, B1, A1], 1)])
             T.append(np.concatenate([tri, tri[:, ::-1]]))   # seen from outside and from in the tube
-            M.append(2 if low else 0)
+            M.append(2 if stone else 0)
             nv += 2 * m
             if low and (cap_m is None or cap_m >= LOW_CAP_MIN):
                 nv = _arch_cap(P, T, UV, M, nv, mid, u, z, at, k, float(np.max(o[:, 0])), float(o[:, 1].max()), th, origin,
-                               LOW_CAP_M if cap_m is None else min(LOW_CAP_M, float(cap_m)))
+                               LOW_CAP_M if cap_m is None else min(LOW_CAP_M, float(cap_m)), 2 if stone else 0)
     allm = [TUNNEL_SIDE, TUNNEL_LIGHT, TUNNEL_STONE, TUNNEL_STONE_IN, TUNNEL_SOIL, TUNNEL_INNER]
     Tall = np.concatenate(T)
     Mall = np.concatenate([np.full(len(t), m, np.int64) for t, m in zip(T, M)]) if M else np.zeros(len(Tall), np.int64)
@@ -1248,7 +1251,7 @@ def tunnel(chunks, origin, walls=()):
     return (np.concatenate(P), Tall, np.concatenate(UV), [allm[i] for i in used], remap[Mall])
 
 
-def _arch_cap(P, T, UV, M, nv, mid, u, z, at, k, side, top, th, origin, depth=None):
+def _arch_cap(P, T, UV, M, nv, mid, u, z, at, k, side, top, th, origin, depth=None, side_mat=2):
     """A low arch's stone top over its mouth (LOW_CAP_M back from the portal face at row `at`, side either way of
     the centre, `top` over the floor): its top, its sides down to the floor's level (outside the tube's walls) and
     its back down to just over the vault (th), seen from both sides. Appended to P, T, UV, M; returns the new vertex count."""
@@ -1275,7 +1278,7 @@ def _arch_cap(P, T, UV, M, nv, mid, u, z, at, k, side, top, th, origin, depth=No
         UV.append(np.array([[0, 0], [w, 0], [w, h], [0, h]], np.float64) / (SOIL_UV_M if qi == 0 else STONE_UV_M))
         tri = np.array([[nv, nv + 1, nv + 2], [nv, nv + 2, nv + 3]], np.int64)
         T.append(np.concatenate([tri, tri[:, ::-1]]))
-        M.append(4 if qi == 0 else 2)                   # its top grass, its sides stone
+        M.append(4 if qi == 0 else side_mat)            # its top grass, its sides stone (concrete: side_mat 0)
         nv += 4
     return nv
 
