@@ -243,6 +243,7 @@ class MapData:
         self.rasters = maprasters.Rasters(self.raw_dir, self.fetcher)
         import railtags                 # (OSM's railway tags joined to the roads layer's rail segments)
         self.rail_tags = railtags.RailTags(cache_dir, self.fetcher) if railtags.ON else None
+        self.lane_tags = railtags.LaneTags(cache_dir, self.fetcher) if railtags.LANES_ON else None   # (markings.py)
         self.dem = None                 # (gradesep's ground: the server's dem.Dem, set by its owner, else its own)
         self._locks = {}
         self._lock = threading.Lock()
@@ -276,10 +277,26 @@ class MapData:
         except Exception as e:      # (Overture's classes alone)
             log.debug("railtags join %s: %s: %s", key, type(e).__name__, e)
 
+    def _lanes(self, key, layer, feats):
+        """The roads layer's road segments with OSM's lane tags (railtags.LaneTags), once per build of them."""
+        lt = getattr(self, "lane_tags", None)
+        if lt is None or layer != "roads" or feats is None or not len(feats):
+            return
+        built = lt.version()
+        if built is None or feats.__dict__.get("_lanes_built") == built:
+            return
+        try:
+            lt.join(feats, key)
+            feats.__dict__["_lanes_built"] = built
+        except Exception as e:      # (no lane data: the markings' guesses)
+            log.debug("lanetags join %s: %s: %s", key, type(e).__name__, e)
+
     def versions(self):
         rails = getattr(self, "rail_tags", None)
+        lanes = getattr(self, "lane_tags", None)
         return {"pipeline": VERSION, "overture": self.release, "worldcover": maprasters.WORLDCOVER_RELEASE,
                 "canopy": maprasters.CHM_RELEASE, "rails": rails.known() if rails is not None else None,
+                "lanes": lanes.known() if lanes is not None else None,
                 "gradesep": gradesep.VERSION if gradesep.ON else None}
 
     def path(self, key, layer):
@@ -577,6 +594,7 @@ class MapData:
                 cd.layers[layer], prov, _ = mem[layer]
                 dt, hit = 0.0, True
                 self._rails(key, layer, cd.layers[layer])
+                self._lanes(key, layer, cd.layers[layer])
             else:
                 arrays, hit, dt = results[layer]
                 arrays = dict(arrays)
@@ -591,6 +609,7 @@ class MapData:
                         cd.layers[layer] = f.localize(frame)
                     # (which cell's layer: the per-cell facts the server's processes share, roads.cell_facts)
                     self._rails(key, layer, cd.layers[layer])
+                    self._lanes(key, layer, cd.layers[layer])
                     if layer == "buildings":    # (a "building" of a whole city's size: left out, GitHub #413)
                         cd.layers[layer] = mapgeom.drop_huge(cd.layers[layer], BUILDING_MAX_M2)
                     if layer == "roads":        # (the bridges the map lacks, found when its ranges are first asked)

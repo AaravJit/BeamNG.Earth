@@ -79,3 +79,91 @@ def dashes(pts, pattern, phase=0.0):
     fast.require(93, "dash_pieces")
     P, starts = fast._ef.dash_pieces(pts, float(pattern[0]), float(pattern[1]), float(phase))
     return [P[a:b] for a, b in zip(starts[:-1], starts[1:]) if b - a >= 2]
+
+
+def _count(v):
+    try:
+        n = int(str(v).split(";")[0].strip())
+        return n if 0 <= n <= 12 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _vals(v):
+    return [p.strip() for p in str(v).split("|")] if v not in (None, "") else None
+
+
+def _no_change(a, b):
+    """change:lanes values of two neighbouring lanes (a left of b, in their travel direction): is crossing between
+    them not allowed? (only_left / not_right on a, only_right / not_left on b, or no)"""
+    a, b = (a or "yes"), (b or "yes")
+    return a in ("no", "not_right", "only_left") or b in ("no", "not_left", "only_right")
+
+
+def lane_plan(osm, two_way, drive, lanes, left_hand=False):
+    """The lines across a carriageway from OpenStreetMap's lane tags (osm: {key: value} of railtags.LANE_COLUMNS, may
+    be empty): [(offset m, left of the line's direction, positive left; role, solid)]. role: "centre" (between the
+    directions), "twltl" (a two-way turn lane's edge: solid outside, broken inside), "lane" (between lanes of one
+    direction). solid: for "lane" True / False; for "centre" None (broken), "double", "solid_right" / "solid_left" (the
+    side that may not pass); for "twltl" the through lanes' side (+1 left, -1 right). Without lane tags: None
+    (roads.extras' own count). Pure."""
+    osm = {k: v for k, v in (osm or {}).items() if v not in (None, "")}
+    if not osm:
+        return None
+    fwd, bwd, both = _count(osm.get("lanes:forward")), _count(osm.get("lanes:backward")), \
+        _count(osm.get("lanes:both_ways")) or 0
+    if not two_way:
+        n = lanes
+        ch = _vals(osm.get("change:lanes"))
+        lw = drive / max(n, 1)
+        out = []
+        for k in range(1, n):
+            solid = ch is not None and len(ch) == n and _no_change(ch[k - 1], ch[k])
+            # lanes left to right in travel: lane k's left edge at -drive/2 + k * lw from the right? (offsets are left
+            # positive: the leftmost lane starts at +drive/2)
+            out.append((drive / 2 - k * lw, "lane", solid))
+        return out
+    if fwd is None and bwd is None:
+        if lanes and lanes - both >= 2:
+            fwd = bwd = None
+            half = (lanes - both) / 2
+            fwd, bwd = int(round(half + 0.25)), int(lanes - both - int(round(half + 0.25)))
+        else:
+            return None
+    if fwd is None:
+        fwd = max(1, (lanes or 2) - both - bwd)
+    if bwd is None:
+        bwd = max(1, (lanes or 2) - both - fwd)
+    n = fwd + bwd + both
+    lw = drive / max(n, 1)
+    # right-hand traffic: the backward lanes on the left of the way's direction (offsets positive), then the turn lane,
+    # then the forward lanes; left-hand traffic the other way round
+    left_n, right_n = (bwd, fwd) if not left_hand else (fwd, bwd)
+    out = []
+    edge = drive / 2
+    ch_l = _vals(osm.get("change:lanes:backward" if not left_hand else "change:lanes:forward"))
+    ch_r = _vals(osm.get("change:lanes:forward" if not left_hand else "change:lanes:backward"))
+    # the left-side lanes (travel against the way in right-hand traffic: their left to right is the way's right to left)
+    for k in range(1, left_n):
+        off = edge - k * lw
+        solid = ch_l is not None and len(ch_l) == left_n and _no_change(ch_l[left_n - k - 1], ch_l[left_n - k])
+        out.append((off, "lane", solid))
+    c_left = edge - left_n * lw
+    no_pass = osm.get("overtaking") == "no"
+    pass_f = osm.get("overtaking:forward", osm.get("overtaking"))
+    pass_b = osm.get("overtaking:backward", osm.get("overtaking"))
+    if both:
+        out.append((c_left, "twltl", 1))                # (how: the through lanes' side, +1 left)
+        out.append((c_left - both * lw, "twltl", -1))
+    else:
+        # the centre: solid where nobody may pass, solid on one side where one direction may not (the forward side is
+        # the right of the line in right-hand traffic)
+        out.append((c_left, "centre", ("double" if no_pass or (pass_f == "no" and pass_b == "no") else
+                                       "solid_right" if pass_f == "no" else "solid_left" if pass_b == "no" else
+                                       None)))
+    c_right = c_left - both * lw
+    for k in range(1, right_n):
+        off = c_right - k * lw
+        solid = ch_r is not None and len(ch_r) == right_n and _no_change(ch_r[k - 1], ch_r[k])
+        out.append((off, "lane", solid))
+    return out

@@ -109,7 +109,11 @@ def _speed_profile(xy, width, oneway, limit=math.inf):
 def driving_width(spec):
     """The width of a road's driving lanes: the drawn carriageway (spec.width) less its parking lanes and edge
     strips (roads.carriageway adds them), i.e. the class's driving width capped by the drawn one; a four-lane
-    urban arterial is all lanes."""
+    urban arterial is all lanes. Where lane lines are painted (roads.LANE_CLASSES, paved) the painted lanes'
+    (roads.lane_layout): the AI in the lanes it sees (a measured 12.8 m tertiary: 8.2 m painted, 6.5 m driven; the
+    user, 2026-10-28: "make sure all elements of the road are properly aligned (markers, materials, ai paths)")."""
+    if spec.kind == "paved" and spec.cls in roads.LANE_CLASSES:
+        return float(roads.lane_layout(spec)[0])
     if spec.urban and not spec.oneway and spec.cls in roads.URBAN_ARTERIAL:
         return float(spec.width)
     w = roads.STYLE.get(spec.cls, roads.STYLE["unknown"])[0]
@@ -118,6 +122,14 @@ def driving_width(spec):
     if roads.rural_motorway(spec):      # two lanes between the shoulders (a ramp: one, roads.motorway_shoulder)
         w = min(roads.MOTORWAY_RURAL_M, spec.width - 2 * roads.motorway_shoulder(spec))
     return float(min(spec.width, w))
+
+
+def _osm_count(v):
+    try:
+        n = int(str(v).split(";")[0])
+        return n if 1 <= n <= 8 else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _lanes(width, oneway, known=None):
@@ -266,7 +278,15 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
                         direction = int(ow.value[r])
             if direction == 0 and spec.oneway and spec.dir:     # a divided road's carriageway (roads.dual_carriageways)
                 direction = int(spec.dir)
-            lo, li = _lanes(w, direction != 0, spec.lanes)
+            if spec.kind == "paved" and spec.cls in roads.LANE_CLASSES:     # (the painted lanes: roads.lane_layout)
+                n = roads.lane_layout(spec)[1]
+                lo, li = (n, 0) if direction != 0 else (max(1, n // 2), max(1, n // 2))
+                tags = roads.lane_tags(feats, i) or {}
+                f_, b_ = _osm_count(tags.get("lanes:forward")), _osm_count(tags.get("lanes:backward"))
+                if direction == 0 and f_ and b_ and not tags.get("lanes:both_ways"):
+                    lo, li = f_, b_         # (an uneven split: markings.lane_plan moves the centre line the same)
+            else:
+                lo, li = _lanes(w, direction != 0, spec.lanes)
             profile = _speed_profile(xy, w, direction != 0)
             # this road's approaches at its two ends (the graph node next to the junction, whether traffic comes in)
             for end in (0, -1):

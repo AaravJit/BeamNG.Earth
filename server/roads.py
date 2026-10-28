@@ -2219,11 +2219,12 @@ def sidewalk_stop(spec, fid, other, ofid):
     return other.width / 2
 
 
-def extras(spec, pts, lon, left_hand=False, country=None):
+def extras(spec, pts, lon, left_hand=False, country=None, osm=None):
     """The sidewalk / gutter / marking polylines of one road: [(look dict with m / tl / p, width, pts)].
     pts: its centreline (k, 3) in the anchor frame (a whole ground part: its broken lines' dashes start their cycle at
     its start, so they meet across tiles); lon: its longitude; country: ISO code (markings.style: the country's line
-    colours, widths and dash patterns; by longitude when unknown). Pure."""
+    colours, widths and dash patterns; by longitude when unknown); osm: OpenStreetMap's lane tags of the road
+    (railtags.LANE_COLUMNS: the lines lane by lane, markings.lane_plan). Pure."""
     import markings
     out = []
     st = markings.style(country, lon)
@@ -2264,9 +2265,38 @@ def extras(spec, pts, lon, left_hand=False, country=None):
     # the driving width (a town street's parking lanes and a rural road's edge strips left out: three lanes on every
     # rural Interstate, GitHub #43) and its lanes (OpenStreetMap's count where known)
     parked = urban and cls in PARKING_CLASSES and not (not spec.oneway and cls in URBAN_ARTERIAL)
-    drive = w - ((PARKING_M if spec.oneway else 2 * PARKING_M) if parked else 2 * edge_margin(spec))
-    lanes = spec.lanes if spec.lanes else int(drive // LANE_M)
-    if kind == "paved" and cls in CENTRE_CLASSES and w - (2 * PARKING_M if parked else 0.0) >= st.min_centre_m \
+    drive, lanes = lane_layout(spec)
+    plan = markings.lane_plan(osm, not spec.oneway, drive, lanes, left_hand) \
+        if kind == "paved" and (cls in CENTRE_CLASSES or cls in LANE_CLASSES) else None
+    if plan is not None:
+        # the map's lanes: each line where its lanes meet (OpenStreetMap lanes:forward / backward / both_ways,
+        # overtaking, change:lanes; research §5)
+        pat = st.lane_motorway if motorway else (st.lane_urban if urban else st.lane_rural)
+        cpat = st.centre_urban if urban else st.centre_rural
+        d = (st.double_gap + lw_) / 2
+
+        def at(off):
+            return offset_polyline(pts, off) if abs(off) > 1e-6 else pts.copy()
+        for off, role, how in plan:
+            if role == "lane":
+                mark("lane", "line_white", lw_, at(off), None if how else pat)
+            elif role == "twltl":           # solid on the through side, broken on the turn lane's (MUTCD 3B.05)
+                mark("centre", st.centre, lw_, at(off + how * d))
+                mark("centre", st.centre, lw_, at(off - how * d), cpat)
+            elif how == "double":
+                if st.centre == "line_yellow" or st is markings.STYLES.get("GB"):
+                    for sd in (1, -1):
+                        mark("centre", st.centre, lw_, at(off + sd * d))
+                else:
+                    mark("centre", st.centre, lw_, at(off))
+            elif how in ("solid_right", "solid_left"):
+                sd = -1 if how == "solid_right" else 1
+                mark("centre", st.centre, lw_, at(off + sd * d))
+                mark("centre", st.centre, lw_, at(off - sd * d), cpat)
+            else:
+                mark("centre", st.centre, lw_, at(off), cpat)
+    if plan is None and kind == "paved" and cls in CENTRE_CLASSES \
+            and w - (2 * PARKING_M if parked else 0.0) >= st.min_centre_m \
             and not spec.oneway:   # no paint on cobbles (the width between the parking lanes, edge strips included)
         # the centre line (MUTCD 3B.01-02, TSRGD / RMS / IISR centre lines): too narrow a road has none; four lanes or
         # more get a solid line (the Americas: double solid yellow), and in the US a town's street a double solid one;
@@ -2279,7 +2309,7 @@ def extras(spec, pts, lon, left_hand=False, country=None):
             mark("centre", st.centre, lw_, pts.copy())
         else:
             mark("centre", st.centre, lw_, pts.copy(), st.centre_urban if urban else st.centre_rural)
-    if kind == "paved" and cls in LANE_CLASSES:
+    if plan is None and kind == "paved" and cls in LANE_CLASSES:
         # lane lines between the lanes of one direction, broken in the country's pattern
         pat = st.lane_motorway if motorway else (st.lane_urban if urban else st.lane_rural)
         if spec.oneway and lanes >= 2:
@@ -2714,6 +2744,28 @@ def tile_needs(frame, tx, ty, buildings=True, widths=True, water_ring=0):
 
 
 COVER_MARGIN_M = 30.0   # m past the tile: the ground carriageways a deck's parapet is tested against (build_tile cover_out)
+
+
+def lane_layout(spec):
+    """(driving width m, lanes) of a road as its lane lines are painted (extras) and the AI drives it (navgraph): the
+    carriageway less a town street's parking lanes or a rural road's edge strips (counted as lanes, every rural
+    Interstate had three, GitHub #43), its lanes OpenStreetMap's count or as many LANE_M as fit (at least 1). Pure."""
+    w, cls = spec.width, spec.cls
+    parked = spec.urban and cls in PARKING_CLASSES and not (not spec.oneway and cls in URBAN_ARTERIAL)
+    drive = w - ((PARKING_M if spec.oneway else 2 * PARKING_M) if parked else 2 * edge_margin(spec))
+    lanes = int(spec.lanes) if spec.lanes else int(drive // LANE_M)
+    return drive, max(1, lanes)
+
+
+def lane_tags(feats, i):
+    """OpenStreetMap's lane tags of feature i ({key: value}, railtags.LANE_COLUMNS joined by MapData), or None."""
+    import railtags
+    out = {}
+    for k in railtags.LANE_COLUMNS:
+        col = feats.attrs.get(railtags.lane_attr(k))
+        if col is not None and col[i] is not None:
+            out[k] = col[i]
+    return out or None
 
 
 def _chunk(look, w, c):
@@ -4654,7 +4706,8 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                 chunks.append(_chunk(look, cw["w"], np.array([cw["a"], cw["b"]])))
     runs_near = []                              # sidewalk runs near the tile, before clipping (walks: below)
     for fid, spec, pts, lon in roads:
-        ex = extras(spec, pts, lon, left_hand, country) if fid not in jinternal else []    # inside a junction: none
+        ex = extras(spec, pts, lon, left_hand, country, lane_tags(*seen[fid][:2]) if fid in seen else None) \
+            if fid not in jinternal else []    # inside a junction: none
         if not ex:
             continue
         blockers = [(p2[:, :2], s2.width / 2 + CUT_MARGIN) for f2, s2, p2, _ in roads if f2 != fid]

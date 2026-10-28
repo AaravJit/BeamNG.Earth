@@ -164,3 +164,46 @@ class RailTags(Shards):
         pad = 0.002
         feats.__dict__["_rail_nodes"] = [(lo, la, t) for _id, lo, la, t in sh.get("nodes", ())
                                          if lon0 - pad <= lo <= lon1 + pad and lat0 - pad <= la <= lat1 + pad]
+
+
+LANES_ON = os.environ.get("BNE_LANETAGS", "on") != "off"
+# OpenStreetMap's lane-level road tags (tools/build_lane_tags.py), attrs osm_<key with ':' as '_'>: the road markings'
+# lane-by-lane data (markings.py)
+LANE_COLUMNS = ("turn:lanes", "turn:lanes:forward", "turn:lanes:backward", "turn:lanes:both_ways", "change:lanes",
+                "change:lanes:forward", "change:lanes:backward", "placement", "placement:forward", "placement:backward",
+                "lanes:forward", "lanes:backward", "lanes:both_ways", "overtaking", "overtaking:forward",
+                "overtaking:backward", "divider", "lane_markings", "bus:lanes", "busway", "hov:lanes")
+
+
+def lane_attr(key):
+    return "osm_" + key.replace(":", "_")
+
+
+class LaneTags(Shards):
+    def __init__(self, cache_dir, fetcher):
+        super().__init__(cache_dir, fetcher, "lanes")
+
+    def join(self, feats, key):
+        """Add OSM's lane tags (attrs lane_attr(k) for k in LANE_COLUMNS, None where absent) to cell key's road
+        segments, in place, joined by way id. Nothing when the shard cannot be had."""
+        sub = feats.attrs.get("subtype")
+        if sub is None or not len(feats):
+            return
+        road = np.flatnonzero(np.asarray(sub).astype(str) == "road")
+        if not len(road):
+            return
+        sh = self.of_cell(key)
+        if sh is None:
+            return
+        ways = sh.get("ways", {})
+        rec = feats.attrs.get("src_record")
+        cols = {c: np.full(len(feats), None, object) for c in LANE_COLUMNS}
+        if rec is not None and ways:
+            for i in road:
+                t = ways.get(way_id(str(rec[i])) or "")
+                if t:
+                    for c in LANE_COLUMNS:
+                        if c in t:
+                            cols[c][i] = t[c]
+        for c in LANE_COLUMNS:
+            feats.attrs[lane_attr(c)] = cols[c]
