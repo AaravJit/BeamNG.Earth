@@ -18,8 +18,8 @@ import fast
 # double_centre_urban: a town's two-way road gets a double solid centre line (the US practice on arterials) instead of
 # a broken one; double_gap: the space between the two lines of a double line.
 Style = namedtuple("Style", "centre w w_motorway edge edge_motorway centre_rural centre_urban lane_rural lane_urban "
-                            "lane_motorway left_edge double_centre_urban double_gap min_centre_m edge_classes",
-                   defaults=(None,))
+                            "lane_motorway left_edge double_centre_urban double_gap min_centre_m edge_classes ladder",
+                   defaults=(None, False))
 
 _US = Style(centre="line_yellow", w=0.12, w_motorway=0.15, edge=0.12, edge_motorway=0.15,
             centre_rural=(3.05, 9.14), centre_urban=(3.05, 9.14), lane_rural=(3.05, 9.14), lane_urban=(3.05, 9.14),
@@ -27,7 +27,7 @@ _US = Style(centre="line_yellow", w=0.12, w_motorway=0.15, edge=0.12, edge_motor
             min_centre_m=4.9,
             # edge lines on arterials (MUTCD 3B.10: rural arterials 20 ft and wider); local and collector roads mostly
             # have none (PEMA 6-inch aerials, Lancaster County, 2026-10-28: tertiary roads with a centre line only)
-            edge_classes=frozenset({"motorway", "trunk", "primary", "secondary"}))
+            edge_classes=frozenset({"motorway", "trunk", "primary", "secondary"}), ladder=True)
 _CA = _US._replace(centre_rural=(3.0, 6.0), centre_urban=(3.0, 6.0), lane_rural=(3.0, 6.0), lane_urban=(3.0, 6.0),
                    lane_motorway=(3.0, 6.0))
 _GB = Style(centre="line_white", w=0.10, w_motorway=0.15, edge=0.15, edge_motorway=0.20,
@@ -264,3 +264,98 @@ def gores(roads_):
                 out.append(("stripe", GORE_W, np.stack([a, apex])))
                 out.append(("stripe", GORE_W, np.stack([apex, b])))
     return out
+
+
+# Turn arrows (MUTCD 3B.20: two per turn lane, near the start of the full lane and before the stop line) from
+# OpenStreetMap's turn:lanes, drawn with West Coast USA's road-marking decal sheet (roadmarkings1, 4 x 4 cells:
+# row 0 left, right and straight arrows; cell rows from the top)
+ARROW_MATERIAL = "roadmarkings1"
+ARROW_CELLS = {"left": (0.0, 0.0), "right": (0.25, 0.0), "through": (0.5, 0.0)}
+ARROW_CELL_M = (4.0, 3.0)           # the cell's quad: m along, across (the arrow ~2.8 m by 0.8 m in it)
+ARROW_AT_M = (12.0, 45.0)           # m before the lane's end (the stop line, then one further back)
+
+
+def _arrow_kind(token):
+    vals = set(str(token).split(";"))
+    if "through" in vals:
+        return "through"
+    if vals & {"left", "slight_left", "sharp_left"}:
+        return "left"
+    if vals & {"right", "slight_right", "sharp_right"}:
+        return "right"
+    return None
+
+
+def _point_back(line, d):
+    """(point (3,), unit direction (2,) of travel) d m before the end of line (k, 3), or None (shorter)."""
+    seg = np.hypot(*np.diff(line[:, :2], axis=0).T)
+    s = np.r_[0.0, np.cumsum(seg)]
+    at = s[-1] - d
+    if at < 2.0:
+        return None
+    j = int(np.clip(np.searchsorted(s, at) - 1, 0, len(seg) - 1))
+    f = (at - s[j]) / max(seg[j], 1e-9)
+    p = line[j] + f * (line[j + 1] - line[j])
+    t = (line[j + 1, :2] - line[j, :2]) / max(seg[j], 1e-9)
+    return p, t
+
+
+def arrows(osm, pts, two_way, drive, lanes, left_hand=False):
+    """[(centre (3,), travel direction (2,), "left" | "right" | "through")] of the turn arrows of a road (pts its
+    centreline (k, 3)) from its turn:lanes tags (osm); none without a turn lane. Pure."""
+    osm = osm or {}
+    import roads as roadsmod
+    out = []
+    plan = []          # (turn:lanes value, the lanes' offsets left to right in their travel, travel along the way?)
+    if not two_way:
+        v = osm.get("turn:lanes")
+        if v:
+            n = len(str(v).split("|"))
+            lw = drive / max(n, 1)
+            plan.append((v, [drive / 2 - (k + 0.5) * lw for k in range(n)], True))
+    else:
+        fw, bw = osm.get("turn:lanes:forward"), osm.get("turn:lanes:backward")
+        nf = len(str(fw).split("|")) if fw else None
+        nb = len(str(bw).split("|")) if bw else None
+        f_ = nf or _count(osm.get("lanes:forward")) or max(1, lanes // 2)
+        b_ = nb or _count(osm.get("lanes:backward")) or max(1, lanes - f_)
+        both = _count(osm.get("lanes:both_ways")) or 0
+        lw = drive / max(f_ + b_ + both, 1)
+        if not left_hand:
+            c_left = drive / 2 - b_ * lw
+            c_right = c_left - both * lw
+            if fw:
+                plan.append((fw, [c_right - (k + 0.5) * lw for k in range(f_)], True))
+            if bw:
+                plan.append((bw, [c_left + (k + 0.5) * lw for k in range(b_)], False))
+        else:
+            if fw:
+                plan.append((fw, [drive / 2 - (k + 0.5) * lw for k in range(f_)], True))
+            if bw:
+                plan.append((bw, [-drive / 2 + (k + 0.5) * lw for k in range(b_)], False))
+    for value, offs, along in plan:
+        toks = str(value).split("|")
+        kinds = [_arrow_kind(t) for t in toks]
+        if len(toks) != len(offs) or not any(k in ("left", "right") for k in kinds):
+            continue
+        for kind_, off in zip(kinds, offs):
+            if kind_ is None:
+                continue
+            line = roadsmod.offset_polyline(pts, off) if along else roadsmod.offset_polyline(pts, off)[::-1].copy()
+            for d in ARROW_AT_M:
+                got = _point_back(line, d)
+                if got is not None:
+                    out.append((got[0], got[1], kind_))
+    return out
+
+
+def arrow_quad(centre, t, kind_):
+    """(corners (4, 3), uvs (4, 2)) of an arrow's quad: tip ahead (travel direction t)."""
+    L, W = ARROW_CELL_M
+    n = np.array([-t[1], t[0]])
+    c = np.asarray(centre, np.float64)
+    fwd, side = np.r_[t * L / 2, 0.0], np.r_[n * W / 2, 0.0]
+    corners = np.stack([c + fwd + side, c + fwd - side, c - fwd - side, c - fwd + side])
+    u0, v0 = ARROW_CELLS[kind_]
+    uv = np.array([[u0, v0], [u0 + 0.25, v0], [u0 + 0.25, v0 + 0.25], [u0, v0 + 0.25]])
+    return corners, uv

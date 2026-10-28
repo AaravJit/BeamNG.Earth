@@ -158,6 +158,7 @@ EDGE_LINE = {"m": "line_white", "tl": 6.4, "p": 2, "w": 0.15, "inset": 0.3}
 # (the user, 2026-10-28: "the edge of the road is blurry and slightly jagged").
 EDGE_DECAL = {"m": "ECA_road_edge_dirt", "tl": 6.4, "p": 1, "w": 1.6, "layer": "edge"}
 EDGE_DECAL_AT = 0.95
+LADDER_LINE_W = 0.30            # a ladder crosswalk's side lines (MUTCD 3C.04: 6-24 in)
 EDGE_DECAL_GAP_M = 1.5          # ... none where another carriageway's edge is this near past the decal (gores, medians)
 MEASURE_SKIP = {"service"}      # classes not measured between buildings (lots, alleys: far walls)
 MEASURE_MAX = 3.0               # a measured carriageway at most this times the class default
@@ -215,6 +216,11 @@ MOTORWAY_RURAL_M = 7.4
 SHOULDER_M = 2.2
 PARKING_CLASSES = {"residential", "tertiary", "secondary", "unclassified", "living_street"}
 EDGE_STRIP_M = 1.0
+# ... by class where measured narrower: rural minor roads' paved width on the official aerials (PEMA 6-inch, Lancaster
+# County PA, 20 tertiary 6.4 m and 20 secondary 6.7 m against 8.5 and 9.5 drawn; NAIP, El Paso County CO, tertiary 7.2;
+# 2026-10-28, the user: "compare against high res satellite photos"): no strips on tertiary and unclassified roads,
+# narrow ones on secondaries
+EDGE_STRIP_CLASS_M = {"tertiary": 0.0, "unclassified": 0.0, "secondary": 0.25}
 URBAN_CLASS = 50                # ESA WorldCover "built-up"
 URBAN_SHARE = 0.5               # a road is urban when this share of its vertices is built-up ...
 URBAN_BESIDE_M = 30.0           # ... and at least URBAN_BESIDE_SHARE of them have built-up land this far to one side:
@@ -985,7 +991,7 @@ def carriageway(cls, kind, urban, rule_width=None, oneway=False, lanes=None):
     if not urban and cls != "service":
         if oneway and cls == "motorway":
             return MOTORWAY_RURAL_M + 2 * SHOULDER_M
-        return w + 2 * EDGE_STRIP_M
+        return w + 2 * EDGE_STRIP_CLASS_M.get(cls, EDGE_STRIP_M)
     return w
 
 
@@ -999,7 +1005,7 @@ def edge_margin(spec):
     a rural motorway's shoulder (carriageway), 0 in towns."""
     if spec.urban or spec.kind not in BUILT or spec.cls == "service":
         return 0.0
-    return motorway_shoulder(spec) if rural_motorway(spec) else EDGE_STRIP_M
+    return motorway_shoulder(spec) if rural_motorway(spec) else EDGE_STRIP_CLASS_M.get(spec.cls, EDGE_STRIP_M)
 
 
 def motorway_shoulder(spec):
@@ -4701,12 +4707,32 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                 for fill in ([] if ROADS_IN_GROUND else ([c["fill"]] if c["fill"] is not None else []) + c.get("fills", [])):
                     chunks.append({"m": fill_look["m"], "w": 0.0, "tl": fill_look["tl"], "p": fill_look["p"],
                                    "poly": [[round(float(v), 3) for v in q] for q in fill], "n": []})
+        import markings as _mk
+        ladder = _mk.style(country, float(np.mean([r[3] for r in roads])) if roads else None).ladder
         for cw in crosswalks:                   # crosswalks and stop lines
             mid = 0.5 * (cw["a"] + cw["b"])
             if x0 <= mid[0] < x1 and y0 <= mid[1] < y1:
                 look = junctions.STOP_LINE if cw.get("stop") else junctions.CROSSWALK
-                chunks.append(_chunk(look, cw["w"], np.array([cw["a"], cw["b"]])))
+                ab = np.array([cw["a"], cw["b"]])
+                chunks.append(_chunk(look, cw["w"], ab))
+                if ladder and not cw.get("stop"):
+                    # a ladder crosswalk (MUTCD 3C.07, Baltimore's on the MD iMAP 3-inch aerial): a solid line along
+                    # each side of the bars
+                    for sd in (1, -1):
+                        chunks.append(_chunk(EDGE_LINE, LADDER_LINE_W, offset_polyline(ab, sd * cw["w"] / 2)))
     import markings
+    for fid, spec, pts, lon in roads:               # turn arrows (OpenStreetMap turn:lanes; MUTCD 3B.20)
+        tags = lane_tags(*seen[fid][:2]) if fid in seen else None
+        if not tags or spec.kind != "paved" or fid in jinternal:
+            continue
+        drv, nl = lane_layout(spec)
+        for centre, t, kind_ in markings.arrows(tags, pts, not spec.oneway, drv, nl, left_hand):
+            corners, uv = markings.arrow_quad(centre, t, kind_)
+            if (corners[:, 0].max() >= x0 and corners[:, 0].min() < x1 and corners[:, 1].max() >= y0
+                    and corners[:, 1].min() < y1):
+                chunks.append({"m": markings.ARROW_MATERIAL, "w": 0.0, "tl": 4.0, "p": CENTRE["p"], "layer": "mark",
+                               "poly": [[round(float(v), 3) for v in q] for q in corners],
+                               "uvq": uv.tolist(), "n": []})
     gore_look = {"m": "line_white", "tl": EDGE_LINE["tl"], "p": CENTRE["p"]}
     for kind_, gw, gl in markings.gores(roads):     # ramp gores: channelizing lines and stripes (MUTCD 3B.08 / 3B.25)
         if kind_ == "fill":

@@ -272,7 +272,7 @@ ROLES = {
     "gis.ngdc.noaa.gov": "sea depths; new coasts get a plain sloping sea floor meanwhile",
     "davidmegginson.github.io": "the airport list; the copy on disk is used meanwhile",
     "data.openstreetmap.us": "road details from OpenStreetMap (lanes, widths, sidewalks); estimated meanwhile",
-    "tecnagamer.github.io": "railway details and US railroad crossing equipment; estimated meanwhile",
+    "tecnagamer.github.io": "railway details, US railroad crossing equipment and lane markings; estimated meanwhile",
     "api.open-meteo.com": "live weather; the weather stays as it is meanwhile",
     "downloads.sourceforge.net": "the gravity model; standard gravity meanwhile",
     "photon.komoot.io": "the map's address search",

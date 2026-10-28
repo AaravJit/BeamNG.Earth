@@ -33,7 +33,14 @@ SOURCES = {
     "naip": ("export", "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer/exportImage?"
              "bbox={bbox}&bboxSR=3857&imageSR=3857&size={w},{h}&format=jpg&f=image", (18.0, -180.0, 72.0, -60.0), None),
 }
-ORDER = ("md3in", "penn", "virginia", "jeffco", "naip")
+# ... and the server's regional XYZ sources (imagery_regional.REGIONAL: Switzerland, France, the Netherlands, Japan,
+# New South Wales, US states...), read at z19
+import imagery_regional  # noqa: E402
+for _n, _v in imagery_regional.REGIONAL.items():
+    if _v[3] == "xyz" and _n not in SOURCES:
+        SOURCES[_n] = ("xyz", _v[0], _v[2], 19)
+ORDER = ("md3in", "penn", "virginia", "jeffco") + tuple(n for n in SOURCES if n not in
+                                                        ("md3in", "penn", "virginia", "jeffco", "naip")) + ("naip",)
 
 
 def merc(lat, lon):
@@ -64,7 +71,7 @@ def main():
         for ty in range(ty0, ty1 + 1):
             for tx in range(tx0, tx1 + 1):
                 try:
-                    t = f.get(url.format(z=zoom, x=tx, y=ty))
+                    t = f.get(url.format(z=zoom, x=tx, y=ty, ty=n - 1 - ty))
                     mos.paste(Image.open(io.BytesIO(t.body)).convert("RGB"), ((tx - tx0) * 256, (ty - ty0) * 256))
                 except Exception as e:
                     print("tile", tx, ty, e)

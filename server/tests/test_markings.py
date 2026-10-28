@@ -91,3 +91,29 @@ class GoreTest(unittest.TestCase):
         self.assertLess(apex[0], a[0], "the point toward the traffic coming from the split")
         for l in stripes:
             self.assertTrue(np.all(l[:, 1] <= -main.width / 2 + 1e-6), "in the wedge, off the carriageway")
+
+
+class ArrowTest(unittest.TestCase):
+    def test_turn_lanes_get_two_arrows_each_before_the_end(self):
+        pts = np.array([[0.0, 0, 0], [100, 0, 0]])
+        a = markings.arrows({"turn:lanes": "left|through|through;right"}, pts, False, 9.9, 3)
+        self.assertEqual(len(a), 6)
+        self.assertEqual(sorted({k for _, _, k in a}), ["left", "through"])
+        lefts = sorted(round(float(c[0]), 1) for c, _, k in a if k == "left")
+        self.assertEqual(lefts, [55.0, 88.0], "12 m and 45 m before the end")
+        self.assertTrue(all(abs(float(c[1]) - 3.3) < 1e-6 for c, _, k in a if k == "left"), "the leftmost lane")
+        self.assertEqual(markings.arrows({"turn:lanes": "through|through"}, pts, False, 6.6, 2), [], "no turn lane")
+
+    def test_backward_lanes_point_back(self):
+        pts = np.array([[0.0, 0, 0], [100, 0, 0]])
+        a = markings.arrows({"turn:lanes:backward": "left|through", "lanes:forward": "1"}, pts, True, 9.9, 3)
+        self.assertTrue(a and all(t[0] < 0 for _, t, _ in a), "travelling against the way")
+        self.assertTrue(all(float(c[1]) > -1e-6 for c, _, _ in a), "on the way's left (driving on the right)")
+        lt = [float(c[1]) for c, _, k in a if k == "left"]
+        self.assertTrue(lt and all(abs(y) < 1e-6 for y in lt), "the left-turn lane next to the centre line")
+
+    def test_quad_uv_is_one_cell(self):
+        corners, uv = markings.arrow_quad(np.zeros(3), np.array([1.0, 0.0]), "right")
+        self.assertAlmostEqual(float(corners[0][0]), 2.0)
+        self.assertEqual(uv.min(0).tolist(), [0.25, 0.0])
+        self.assertEqual(uv.max(0).tolist(), [0.5, 0.25])
