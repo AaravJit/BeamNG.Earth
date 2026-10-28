@@ -415,19 +415,19 @@ def drawn(feats, i):
     sub = feats.attrs.get("subtype")
     if sub is None or str(sub[i]) != "rail":
         return None
+    w = wear(feats, i)
+    if w is None:
+        return None
     cls = feats.attrs.get("class")
     c = str(cls[i]) if cls is not None else "standard_gauge"
     osm = feats.attrs.get("osm_railway")
     if osm is not None and osm[i]:          # (OSM's own railway value: railtags.py, the weekly rail file)
         v = str(osm[i])
+        if v in OSM_RAILWAY_NOT:
+            return None
         if v in OSM_RAILWAY_WEAR:
             w = OSM_RAILWAY_WEAR[v]
             return (c if c in DRAWN else "standard_gauge", w)
-        if v in OSM_RAILWAY_NOT:
-            return None
-    w = wear(feats, i)
-    if w is None:
-        return None
     if c == "unknown" and w:
         c = "standard_gauge"
     return (c, w) if c in DRAWN else None
