@@ -3806,6 +3806,11 @@ class Connection:
         if self.s.boost_on:
             since = time.monotonic() - getattr(self, "boost_t0", 0.0)
             moving = math.hypot(vx, vy) > BOOST_MOVE_MS and since > BOOST_GRACE_S     # (the car settling: not moving)
+            if moving and self.s.mapdata is not None:
+                # (not while the roads round the car are still being built: a 2-core server's boost ended as the
+                # player drove off on bare ground, its road tiles minutes late, GitHub #412)
+                done, want = self.roads.progress()
+                moving = done >= want
             if moving or since > BOOST_MAX_S:
                 self.s.load_boost(False, "moving" if moving else "timeout")
         if isinstance(msg.get("cam"), dict):
