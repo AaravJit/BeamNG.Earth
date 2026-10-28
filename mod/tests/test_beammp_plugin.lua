@@ -11,7 +11,7 @@ T.check(math.abs(G.dist(0, 0, 1000 / M_PER_DEG, 0) - 1000) < 1, 'dist: 1 km nort
 
 -- the startup notice: the Discord for help, not BeamMP's developers; why the server is hidden from other players
 local notice = table.concat(G.supportNotice(), '\n')
-T.check(notice:find('discord.gg/tgf', 1, true) and notice:find('Do NOT contact the BeamMP developers', 1, true)
+T.check(notice:find('discord.gg/tgf', 1, true) and notice:find('do NOT contact the BeamMP team', 1, true)
   and notice:find('hidden from players who do not run BeamNG.Earth', 1, true), 'startup notice: ' .. notice)
 for _, line in ipairs(G.supportNotice()) do T.check(#line <= 80, 'notice lines fit a console: ' .. line) end
 

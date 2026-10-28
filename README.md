@@ -11,8 +11,9 @@ Status: beta (see VERSION). Tested on BeamNG.drive 0.40.3 on Linux (Vulkan) and 
 the mod, report problems, and get an IP to join a BeamMP.Earth server (see [Multiplayer](#multiplayer-beammp)).
 
 > **Need help?** Ask on the BeamNG.Earth Discord: **[discord.gg/tgf](https://discord.gg/tgf)**. This includes help
-> with multiplayer: BeamNG.Earth is not made by the BeamMP team, so please **don't contact the BeamMP developers or
-> open BeamMP support tickets** about it. They can't help with BeamNG.Earth.
+> with multiplayer: BeamNG.Earth isn't like a normal BeamNG mod (it runs its own app next to the game), so if something
+> isn't working with BeamMP, it's almost certainly a BeamNG.Earth problem, not a BeamMP one. Please **don't contact
+> the BeamMP team or open BeamMP support tickets** about it.
 
 You can help support development by reporting [issues](https://github.com/TecnaGamer/BeamNG.Earth/issues), contributing code and sending pull requests, or [donating](https://ko-fi.com/tecnagamer). Thank You!
 
@@ -232,9 +233,10 @@ Tests: `cd server && python3 -m unittest discover -s tests -t tests` and
 BeamNG.Earth runs on [BeamMP](https://beammp.com/) servers (in testing): drive the real world together.
 
 > **Support for BeamNG.Earth on BeamMP comes from us, not from BeamMP.** For questions or help with joining or hosting
-> a BeamNG.Earth server, join the BeamNG.Earth Discord: **[discord.gg/tgf](https://discord.gg/tgf)**. Please **don't
-> contact the BeamMP developers or open BeamMP support tickets** about BeamNG.Earth: it is a separate project and they
-> can't help with it.
+> a BeamNG.Earth server, join the BeamNG.Earth Discord: **[discord.gg/tgf](https://discord.gg/tgf)**. BeamNG.Earth
+> isn't like a normal BeamNG mod: it needs its own app running next to the game. If something isn't working, it's
+> almost certainly a BeamNG.Earth problem, not a BeamMP one, so please **don't contact the BeamMP team or open BeamMP
+> support tickets** when you run into trouble getting BeamNG.Earth to work with BeamMP.
 >
 > **BeamNG.Earth servers are hidden from players who don't run BeamNG.Earth.** BeamMP can't install BeamNG.Earth for
 > a player who joins, because it needs its own app (a launcher and a world server that builds the world on each

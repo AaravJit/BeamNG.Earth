@@ -554,8 +554,9 @@ M.placeCamera = placeCamera     -- (tests)
 
 -- BeamMP's join done (core.lua onBeamMPPostJoin): the first pose asks the plugin where the others are.
 -- (and where to get help: the BeamMP team, 2026-10-27, players kept asking them about BeamNG.Earth)
-M.SUPPORT = 'BeamNG.Earth on BeamMP: for help join the BeamNG.Earth Discord, https://discord.gg/tgf. Please do not '
-  .. 'contact the BeamMP developers or open BeamMP support tickets about BeamNG.Earth: they cannot help with it.'
+M.SUPPORT = 'BeamNG.Earth on BeamMP: for help join the BeamNG.Earth Discord, https://discord.gg/tgf. BeamNG.Earth is '
+  .. 'not like a normal BeamNG mod: if something is not working, it is almost certainly a BeamNG.Earth problem, not a '
+  .. 'BeamMP one, so please do not contact the BeamMP team or open BeamMP support tickets about it.'
 function M.onPostJoin()
   joined, wentTo, camPlaced, goTo = true, false, false, nil
   anchors = {}

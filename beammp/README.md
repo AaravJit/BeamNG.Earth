@@ -6,8 +6,10 @@ with the normal BeamMP launcher.
 > ## Support: the BeamNG.Earth Discord, not BeamMP
 > **For any question or help with setting this up, join the BeamNG.Earth Discord: [discord.gg/tgf](https://discord.gg/tgf).**
 >
-> BeamNG.Earth is not made by the BeamMP team. Please **don't contact the BeamMP developers, ask in BeamMP's channels
-> or open BeamMP support tickets** about BeamNG.Earth: they can't help with it.
+> BeamNG.Earth isn't like a normal BeamNG mod: it needs its own app running next to the game on every player's
+> computer. If something isn't working, it's almost certainly a BeamNG.Earth problem, not a BeamMP one, so please
+> **don't contact the BeamMP team, ask in BeamMP's channels or open BeamMP support tickets** when you run into trouble
+> getting BeamNG.Earth to work with BeamMP.
 >
 > **Your server is hidden from players who don't run BeamNG.Earth.** BeamMP can't install BeamNG.Earth for players who
 > join: it needs its own app (a launcher and a world server that builds the world on each player's computer). So

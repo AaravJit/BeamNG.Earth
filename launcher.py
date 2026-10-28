@@ -113,14 +113,17 @@ def support_notice(multiplayer=False):
     and set apart once BeamMP is up."""
     if not multiplayer:
         say(f"Need help? Join the BeamNG.Earth Discord: {DISCORD}")
-        say("(Multiplayer too: please don't ask the BeamMP team, they can't help with it.)")
+        say("Multiplayer too: a problem with BeamNG.Earth on BeamMP is almost surely ours,")
+        say("not BeamMP's, so please don't contact the BeamMP team about it.")
         return
     _out("")
     _out("  " + "=" * 78)
     _out("  For help with BeamNG.Earth on BeamMP, join the BeamNG.Earth Discord:")
     _out(f"      {DISCORD}")
-    _out("  Do NOT contact the BeamMP developers or open BeamMP support tickets about")
-    _out("  BeamNG.Earth. It is a separate project and they cannot help with it.")
+    _out("  BeamNG.Earth is not like a normal BeamNG mod: it needs this app running")
+    _out("  next to the game. If something is not working, it is almost certainly a")
+    _out("  BeamNG.Earth problem, not a BeamMP one: do NOT contact the BeamMP team or")
+    _out("  open BeamMP support tickets about it.")
     _out("  BeamNG.Earth servers are in the \"BeamNG.Earth\" tab of BeamMP's server browser.")
     _out("  " + "=" * 78)
 
