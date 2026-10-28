@@ -48,9 +48,11 @@ class RuralLightingTest(unittest.TestCase):
         self.assertTrue(self.tile(f, cover, 1))
 
     def test_urban_and_interchange_lighting_remain(self):
-        for kw in ({"urban": True}, {"link": True}):
-            with self.subTest(**kw):
-                self.assertTrue(self.tile(*self.corridor(**kw)))
+        self.assertTrue(self.tile(*self.corridor(urban=True)))
+        # a rural ramp is lit at its ends (furniture.PARTIAL_END_M, FHWA partial interchange lighting): the tile with
+        # its start at x = -300
+        f, cover = self.corridor(link=True)
+        self.assertTrue(self.tile(f, cover, -2))
 
     def test_explicit_unlit_overrides_urban_and_ramps(self):
         for kw in ({"urban": True}, {"link": True}):
