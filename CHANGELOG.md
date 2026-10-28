@@ -2,6 +2,18 @@
 
 What changed in each release of BeamNG.Earth, newest first.
 
+## Unreleased
+
+### Fixes
+- **Roads follow OpenStreetMap's lane count ahead of their road type's default**: a piece of a street without its
+  own lane count takes the count of the same street around it (same name, same direction), so a road no longer
+  narrows sharply where one piece was mapped without lanes (GitHub #175, Kostiantynivka: a 4-lane street drawn as one
+  11 ft lane for a block). A two-way street with a lane count is no longer split into two one-way roads (Portland's
+  Rosa Parks Way, 1 lane each way and a turn lane, was two one-way roads of 3 lanes each), widths measured between
+  buildings no longer override a lane count, and traffic uses the lane count too.
+- **One-way streets meet a two-way street at their own side of it**, not its center line (`BNGE_ONEWAY_JOINS=0`
+  turns it off). Road data is built again once for areas you have visited.
+
 ## 1.7.0 beta (2026-10-27)
 
 > **Join the TGForever Discord, [discord.gg/tgf](https://discord.gg/tgf), to chat, get help, report bugs or help
