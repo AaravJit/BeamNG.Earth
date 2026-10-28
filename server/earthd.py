@@ -654,7 +654,7 @@ class Server:
         self.picking = None          # the settings page's file window open (apppaths.pick): for which path
         revisitmod.CACHE_DIR = cache_dir
         self.refetched = 0              # far textures whose missing photo tiles were fetched here (make_tile)
-        self.share_lock, self.group_helper = threading.Lock(), None    # (share_start: a BeamMP group's server)
+        # self.share_lock, self.group_helper = threading.Lock(), None    # (share_start: shared world building, commented out)
         self.tile_pool = ThreadPoolExecutor(tile_workers + (peerworkmod.MAX_SLOTS if hasattr(far_pool, "remote_slots")
                                                             else 0), thread_name_prefix="far")
         # Road plans (grading) of the map cells ahead of the player, made before a block needs them: a
@@ -2142,42 +2142,43 @@ class Server:
             px = self.tex_size(tile.level)
             self.imagery.prefetch(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px), px, soon=True)
 
-    def share_start(self, port=None):
-        """Compute sharing in a BeamMP group: our GroupHelper listening (started once) on port (the BeamMP server's
-        setting, its plugin's SHARE_PORT; BNGE_SHARE_PORT on this machine wins; else peerwork.SHARE_PORT). -> {port,
-        code} (port None: not sharing)."""
-        if not hasattr(self.far_pool, "set_group"):
-            return {"port": None, "code": peerworkmod.code_id()}
-        self.far_pool.sharing = True        # every tile built is kept from now on (a player arriving gets ours)
-        with self.share_lock:
-            if self.group_helper is None:
-                self.group_helper = peerworkmod.GroupHelper(self.far_pool, self.anchor_id_for,
-                                                            os.path.join(self.cache_dir, "peer-out"))
-                self.group_helper.start(share_port(port))
-        return {"port": self.group_helper.port, "code": peerworkmod.code_id(), "weight": peerworkmod.share_weight()}
+    # (shared world building, commented out 2026-10-27 (off since 2026-10-23; the user: not coming back for a while))
+    # def share_start(self, port=None):
+    #     """Compute sharing in a BeamMP group: our GroupHelper listening (started once) on port (the BeamMP server's
+    #     setting, its plugin's SHARE_PORT; BNGE_SHARE_PORT on this machine wins; else peerwork.SHARE_PORT). -> {port,
+    #     code} (port None: not sharing)."""
+    #     if not hasattr(self.far_pool, "set_group"):
+    #         return {"port": None, "code": peerworkmod.code_id()}
+    #     self.far_pool.sharing = True        # every tile built is kept from now on (a player arriving gets ours)
+    #     with self.share_lock:
+    #         if self.group_helper is None:
+    #             self.group_helper = peerworkmod.GroupHelper(self.far_pool, self.anchor_id_for,
+    #                                                         os.path.join(self.cache_dir, "peer-out"))
+    #             self.group_helper.start(share_port(port))
+    #     return {"port": self.group_helper.port, "code": peerworkmod.code_id(), "weight": peerworkmod.share_weight()}
 
-    def share_group(self, msg):
-        """The mod's "peers": {me, members: [{id, host, port, code}]}: the players on our anchor with our code."""
-        if not hasattr(self.far_pool, "set_group"):
-            return
-        code = peerworkmod.code_id()
-        members, weights = [], {}
-        for m in msg.get("members") or []:
-            try:
-                if m.get("code") == code and m.get("host") and 0 < int(m.get("port")) < 65536:
-                    members.append((str(m["id"]), str(m["host"]), int(m["port"])))
-                    w = float(m.get("weight") or 1.0)
-                    weights[str(m["id"])] = w if 0.1 <= w <= 1000 else 1.0
-            except (TypeError, ValueError, AttributeError):
-                continue
-        self.far_pool.set_group(str(msg.get("me")), members, weights)
+    # def share_group(self, msg):
+    #     """The mod's "peers": {me, members: [{id, host, port, code}]}: the players on our anchor with our code."""
+    #     if not hasattr(self.far_pool, "set_group"):
+    #         return
+    #     code = peerworkmod.code_id()
+    #     members, weights = [], {}
+    #     for m in msg.get("members") or []:
+    #         try:
+    #             if m.get("code") == code and m.get("host") and 0 < int(m.get("port")) < 65536:
+    #                 members.append((str(m["id"]), str(m["host"]), int(m["port"])))
+    #                 w = float(m.get("weight") or 1.0)
+    #                 weights[str(m["id"])] = w if 0.1 <= w <= 1000 else 1.0
+    #         except (TypeError, ValueError, AttributeError):
+    #             continue
+    #     self.far_pool.set_group(str(msg.get("me")), members, weights)
 
-    def anchor_id_for(self, lat, lon):
-        """Our anchor id at (lat, lon) when we have one there (its graders are made already), else the helper's."""
-        for a in list(self.anchors.values()):
-            if float(a.lat) == lat and float(a.lon) == lon:
-                return a.id
-        return peerworkmod._anchor_id(lat, lon)
+    # def anchor_id_for(self, lat, lon):
+    #     """Our anchor id at (lat, lon) when we have one there (its graders are made already), else the helper's."""
+    #     for a in list(self.anchors.values()):
+    #         if float(a.lat) == lat and float(a.lon) == lon:
+    #             return a.id
+    #     return peerworkmod._anchor_id(lat, lon)
 
     def remote_slots(self):
         """Far tiles compute sharing's helpers build at once (0 without helpers)."""
@@ -3364,10 +3365,11 @@ class Connection:
             self.spawn(self.prepare_anchor(msg))
         elif kind == "server_list":             # the BeamNG.Earth servers for the tab in BeamMP's browser
             self.spawn(self.server_list())
-        elif kind == "share":                   # a BeamMP session: serve our group (peerwork.GroupHelper)
-            self.send(dict(self.s.share_start(msg.get("port")), type="share"))
-        elif kind == "peers":                   # the players on our anchor (the BeamMP plugin, through mpsession)
-            self.s.share_group(msg)
+        # (shared world building, commented out 2026-10-27: the mod sends neither any more)
+        # elif kind == "share":                   # a BeamMP session: serve our group (peerwork.GroupHelper)
+        #     self.send(dict(self.s.share_start(msg.get("port")), type="share"))
+        # elif kind == "peers":                   # the players on our anchor (the BeamMP plugin, through mpsession)
+        #     self.s.share_group(msg)
         elif kind == "prepare_terrain":
             self.spawn(self.prepare_terrain(msg))
         elif kind == "commit_anchor":
@@ -4719,18 +4721,19 @@ async def main_async(args):
         disk.close()                # the cache's last uses
 
 
-def share_port(asked=None, env=None):
-    """The port our BeamMP group service listens on: BNGE_SHARE_PORT on this machine, else the BeamMP server's (its
-    plugin's SHARE_PORT, through the mod's "share"), else peerwork.SHARE_PORT; an unusable one is skipped."""
-    env = os.environ.get("BNGE_SHARE_PORT") if env is None else env
-    for p in (env, asked):
-        try:
-            p = int(p)
-        except (TypeError, ValueError):
-            continue
-        if 1024 <= p <= 65535:
-            return p
-    return peerworkmod.SHARE_PORT
+# (shared world building, commented out 2026-10-27 (off since 2026-10-23; the user: not coming back for a while))
+# def share_port(asked=None, env=None):
+#     """The port our BeamMP group service listens on: BNGE_SHARE_PORT on this machine, else the BeamMP server's (its
+#     plugin's SHARE_PORT, through the mod's "share"), else peerwork.SHARE_PORT; an unusable one is skipped."""
+#     env = os.environ.get("BNGE_SHARE_PORT") if env is None else env
+#     for p in (env, asked):
+#         try:
+#             p = int(p)
+#         except (TypeError, ValueError):
+#             continue
+#         if 1024 <= p <= 65535:
+#             return p
+#     return peerworkmod.SHARE_PORT
 
 
 def parse_cache_cap(text):

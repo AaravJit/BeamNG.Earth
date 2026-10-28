@@ -123,9 +123,9 @@ MOD_TO_SERVER = {
     # the performance log (perflog.lua; additive): lines for the server's log (hitches, drops, minutes, the machine)
     "perf_log": {"lines": F((list, dict))},
     # BeamMP shared generation (peerwork.py, mpsession.lua): our world server serves our group; the players on our
-    # anchor ({id, host, port, code, weight} each)
-    "share": {"port": F(int, OPT)},       # (the BeamMP server's sharing port, its plugin's bngeConfig)
-    "peers": {"me": F(str), "members": F(list)},
+    # anchor ({id, host, port, code, weight} each). (Commented out 2026-10-27: shared world building is off.)
+    # "share": {"port": F(int, OPT)},       # (the BeamMP server's sharing port, its plugin's bngeConfig)
+    # "peers": {"me": F(str), "members": F(list)},
     # roads (roads.py; additive): the mod removed its roads (switched off and on again): send them again
     "roads_reset": {},
     # gas stations (gasstations.py; additive): on, sent after every hello
@@ -189,7 +189,8 @@ SERVER_TO_MOD = {
                      "px": F(NUM, NULL, OPT), "py": F(NUM, NULL, OPT),     # the prepare_anchor's spot, echoed
                      "fuelShapes": F(list, OPT)},          # 2026-10-23: the region's gas station shapes (--gas-stations)
     "anchor_error": {"requestId": F(int, NULL), "error": F(str)},
-    "share": {"port": F(int, NULL), "code": F(str), "weight": F(NUM, OPT)},   # our group service (mpsession.onShare)
+    # "share": {"port": F(int, NULL), "code": F(str), "weight": F(NUM, OPT)},   # our group service (shared world
+    # building, commented out 2026-10-27)
     "terrain_ready": {"requestId": F(int), "anchorId": F(int), **TERRAIN},
     "terrain_refresh": {"anchorId": F(int), **TERRAIN},     # the graded block in place of the provisional one
     "terrain_error": {"requestId": F(int, NULL), "anchorId": F(int, NULL), "error": F(str)},
@@ -286,6 +287,12 @@ SHAPE_RE = r"^/temp/beamngEarth/[^/]+/(far_\d+_-?\d+_-?\d+_-?\d+|slot_\d{5})\.cd
 HM_RE = r"^/temp/beamngEarth/[^/]+/hm_\d+_-?\d+_-?\d+\.png$"
 
 
+def code_only(text, mark):
+    """text without its whole-line comments (lines starting with mark: commented-out code is not part of the
+    protocol, e.g. shared world building's messages, 2026-10-27)."""
+    return "\n".join(line for line in text.split("\n") if not line.lstrip().startswith(mark))
+
+
 def lua_tables(text, start):
     """Text of the Lua table constructor that opens at text[start] == '{' (balanced braces)."""
     depth = 0
@@ -324,7 +331,7 @@ def mod_sends():
     out = {}
     for names, pattern in ((("core.lua", "places.lua", "mpsession.lua", "serverlist.lua"), r"net(?:'\))?\.send\(\{"),
                            (("terrainpatch.lua",), r"\bsend\(\{")):
-        text = "\n".join((LUA / n).read_text(encoding="utf-8") for n in names)
+        text = code_only("\n".join((LUA / n).read_text(encoding="utf-8") for n in names), "--")
         for m in re.finditer(pattern, text):
             t = lua_tables(text, m.end() - 1)
             keys, nested = top_keys(t)
@@ -337,14 +344,14 @@ def mod_reads():
     """Fields the mod reads from server messages: msg.X / p.msg.X / tr.X (terrain) in its Lua."""
     out = set()
     for name in ("core.lua", "farfield.lua", "lattice.lua", "weather.lua", "credits.lua", "roads.lua", "mpsession.lua"):
-        text = (LUA / name).read_text(encoding="utf-8")
+        text = code_only((LUA / name).read_text(encoding="utf-8"), "--")
         out |= set(re.findall(r"\bmsg\.(\w+)", text))
         out |= {"terrain." + f for f in re.findall(r"\btr\.(\w+)", text)}
     return out
 
 
 def server_reads():
-    text = (Path(earthd.__file__)).read_text(encoding="utf-8")
+    text = code_only((Path(earthd.__file__)).read_text(encoding="utf-8"), "#")
     out = set(re.findall(r"msg\.get\(\"(\w+)\"", text)) | set(re.findall(r"msg\[\"(\w+)\"\]", text))
     out |= set(re.findall(r"_num\(msg, \"(\w+)\"", text))
     return out
@@ -877,9 +884,10 @@ class ServerMessagesTest(test_server.ServerHarness):
         self.assertIn("clearedBytes", until(lambda m: m["type"] == "cache"))
         c.send({"type": "app_path"})                    # the page's cache folder and BeamMP launcher (no choice made)
         self.assertTrue(until(lambda m: m["type"] == "app_paths")["cacheDir"])
-        c.send({"type": "share"})                       # a BeamMP session: our group service's port and code
-        self.assertTrue(until(lambda m: m["type"] == "share")["code"])
-        c.send({"type": "peers", "me": "1", "members": []})     # (alone: no group; nothing answered)
+        # (shared world building, commented out 2026-10-27)
+        # c.send({"type": "share"})                       # a BeamMP session: our group service's port and code
+        # self.assertTrue(until(lambda m: m["type"] == "share")["code"])
+        # c.send({"type": "peers", "me": "1", "members": []})     # (alone: no group; nothing answered)
         c.send({"type": "prepare_anchor", "requestId": 1, "lat": test_server.LAT, "lon": test_server.LON,
                 "cx": 0, "cy": 0})
         a = until(lambda m: m["type"] == "anchor_ready")

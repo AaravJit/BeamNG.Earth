@@ -272,12 +272,16 @@ world map (**M**) as green arrows; players far away (another country) are hidden
 you watch keeps the damage your own game worked out; a car that crashed out of your sight takes on its owner's damage
 (broken parts and dents) once it comes within about 0.6 miles.
 
+Each player's app builds the world around them on their own computer.
+
+<!-- Shared world building: commented out 2026-10-27 (off since 2026-10-23; not coming back for a while).
 **Sharing the work** (turned off for now: each player builds their own world)**:** players near each other share one
 world origin and split the building of the distant landscape (each piece is built once and sent to the others; faster computers take more), while a player far from
 everyone builds their own. For that the other players must reach your computer on a TCP port, 47621 unless the server
 picks another (the server tells your app which): on the same network it just works; over the internet, forward that
 port in your router, or you simply build everything yourself. A port of your own: set the environment variable
 `BNGE_SHARE_PORT` before starting the app.
+-->
 
 **Hosting a server:** download `BeamNG.Earth-BeamMP-Server-<version>.zip` from the
 [Releases](https://github.com/TecnaGamer/BeamNG.Earth/releases) page and follow the guide inside
@@ -289,8 +293,7 @@ BeamMP's own public list, so players without BeamNG.Earth never see it; `Private
 players use Direct Connect. The plugin lists the server once a minute with `curl` (Linux, and Windows 10 and later).
 Update the server zip with every release: it carries the mod the server sends to players. The server's time and weather for everyone
 (`G.TIME`: real or a fixed / running time such as `'20:30'`; `G.WEATHER`: real or clear, cloudy, rain, storm, snow,
-fog) are set near the top of `Resources/Server/BeamNGEarth/main.lua`. The players' sharing port (47621) is
-`G.SHARE_PORT` near the top of `Resources/Server/BeamNGEarth/main.lua`. The server needs no world data and
+fog) are set near the top of `Resources/Server/BeamNGEarth/main.lua`. The server needs no world data and
 little CPU. From the source, `python3 tools/package.py --beammp` builds the same zip.
 
 ## Data sources and attribution
