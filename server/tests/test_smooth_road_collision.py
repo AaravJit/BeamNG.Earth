@@ -33,7 +33,8 @@ class SmoothRoadCollisionTest(unittest.TestCase):
         s = p.xy[:, 0]
         interior = abs(s) < 250
         expected = 50 + .04 * s + 4 * np.cos(s / 150)
-        self.assertLess(np.max(abs(p.z[interior] - expected[interior])), .05)
+        # (.08: a secondary's 25 m profile sigma, grading.CLASS_SIGMA_M, takes ~5 cm off this 4 m hill's crest)
+        self.assertLess(np.max(abs(p.z[interior] - expected[interior])), .08)
         self.assertGreater(np.ptp((p.z - 50 - .04 * s)[interior]), 3.)
 
     def test_quantized_collision_tracks_keep_the_grade_at_all_angles(self):
