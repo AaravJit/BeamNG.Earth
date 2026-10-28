@@ -2,6 +2,50 @@
 
 What changed in each release of BeamNG.Earth, newest first.
 
+## Unreleased
+
+### Bridges
+- **Bridge decks climb and fall smoothly.** A deck now rises from each end at up to 5 % to whatever it must clear
+  (a road, the water, the deck under it), with rounded crests instead of kinks, and a bridge in several pieces is
+  shaped as one road. Long decks no longer lie flat and then bump up over a road.
+- **River bridges at sea level clear the river.** Where the inventory gives a bridge's navigation clearance but the
+  river is not sea, the deck now holds it over the water (the I-10 bridge over the Calcasieu at Lake Charles: from
+  10 m to 44 m).
+- **Fewer wrong clearances from the inventory.** A clearance that cannot belong to the closed bridge (a lift span
+  raised, a coding error) is ignored.
+- **Bridges look like what they are.** A bascule or lift bridge is no longer drawn as an arch hanging under its
+  road: the bridge inventory's movable type now decides over a map tag. Lift bridges get their trusses over the
+  river and two lift towers; bascule bridges without trusses get their control houses, bascule piers and leaf
+  girders instead of a plain flat deck; a bascule the map or Wikidata calls a truss gets curved-chord trusses.
+- **Lenticular trusses.** A truss bridge the map or Wikidata calls an arch (or tagged `bridge:truss=lenticular`) is
+  drawn as a lens truss, with as many spans as the inventory's main span fits over the river (Pittsburgh's
+  Smithfield Street Bridge: two).
+- **Steel over the river, not beside it.** Rivers above sea level (Pittsburgh's, Portland's Willamette) now place
+  arches, towers and trusses over the water instead of on an approach; a second outline of a bridge with no size of
+  its own no longer adds a stray arch on a ramp; one crossing gets one main span.
+- **No more steps where a deck lands on a steep bank, and side-by-side carriageways stay level.** A deck is lifted
+  over the ground with a rounded ramp instead of a step in its last few metres, and two carriageways the map gives
+  different layers are no longer stacked one over the other (the Vincent Thomas Bridge's upper carriageway sat 10 m
+  over its twin).
+- **Bridge parapets are solid jersey barriers.** A parapet is now a closed New Jersey barrier (840 mm, sloped road
+  face) on the deck's edge, with no open ends or see-through faces. Where a run stops (an abutment, a gap, a gore, a
+  deck's free end) it ends in a 4 m sloped end down to a low square nose instead of a full-height block.
+- **Short bridges are no longer humped.** A short overpass whose straight line between its ends already clears the
+  road under it now follows that line (I-275's overpasses by the Sunshine Skyway had a 0.2-0.3 m crown). A deck's
+  slab and girders now scale with its span (about span / 22, 0.9 to 2.2 m), so a short span needs less climb; the
+  approach ramps use the same clearance as the deck.
+- **Short water spans raise their approaches instead of humping.** Where a short channel bridge cannot reach the
+  water's navigation clearance on an easy grade, its approach fill is raised (up to 2 m, any road class): the
+  Sunshine Skyway causeway's 100 m channel bridges humped about 2.5 m, now about 0.2 m.
+- **Buildings on a pier stand on its deck.** A building on a deck over water (the Skyway fishing pier's bait shop)
+  stands on the deck instead of rising from the seabed through it; one over the deck's lanes is left out.
+- **No walls where a smooth deck cannot reach its end.** On a "bridge" mapped along a steep hillside, or a ramp
+  end the smooth profile cannot meet, the deck keeps 1.7.0's profile instead of stepping up at its abutment.
+- **Short overpasses: a little less headroom instead of a crown.** A short deck may sit down to about 5.85 m over
+  the road under it (target 6 m) where the alternative is a hump; the road dug out under it uses the deck's own
+  depth, so it is not dug deeper than the deck needs.
+- `--bridge-profile legacy` brings back the previous deck shape for comparison.
+
 ## 1.7.0 beta (2026-10-27)
 
 > **Join the TGForever Discord, [discord.gg/tgf](https://discord.gg/tgf), to chat, get help, report bugs or help
