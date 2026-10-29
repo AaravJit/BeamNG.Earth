@@ -69,7 +69,7 @@ class GuardrailStockAssetTest(unittest.TestCase):
         self.assertIn("/art/shapes/objects/italy_guardrails_basic_end_ccw", source)
         self.assertNotIn("M.NO_COLLIDE.guardrail = true", source)
         self.assertIn("M.GROUP_MAX_M.guardrail = 4000", source)
-        self.assertIn("m:setColumn(0, vec3(f[b + 9], f[b + 10], f[b + 11]))", source)
+        self.assertIn("itemVec:set(f[b + 9], f[b + 10], f[b + 11]); m:setColumn(0, itemVec)", source)   # (its basis: one reused vec3)
         self.assertIn("local isGuardrail = M.isBarrier(g)", source)
         # the median barriers' and mapped jersey / cable barriers' groups (guardrails.GROUPS)
         for g in guardrails.GROUPS:

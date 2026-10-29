@@ -1163,3 +1163,24 @@ def tile_mesh(frame, tx, ty, cells, ground, sign_style=None, far_ground=None):
     if out is not None and len(out[0]) > VERTS_MAX:     # (the ballast and rails alone past it: a rail yard)
         return None
     return out
+
+
+# The materials only drawn (from mpsteppe's lean rail collider, in Madderose's PR #41): the rails and sleepers were ~88 %
+# of a track's triangles (Tehachapi Loop, 16 tiles: 118.8k of 135.0k), all colliding, and a collision rebuild's cost
+# grows with every colliding triangle loaded. A car on the track now drives on the ballast's top (the railheads stand
+# 0.28 m over it); at a level crossing the track is flush with the road, which the car drives on either way.
+RENDER_ONLY = frozenset(STEEL_WORN + SLEEPER_WORN)
+
+
+def collision_mesh(mesh):
+    """tile_mesh's mesh without the rails and sleepers (RENDER_ONLY): the ballast, the decks and the piers, as
+    (positions, tris, uvs, materials, tri material) for a collision-only shape (the vertices are the full mesh's:
+    cdae drops the unused ones), or None if nothing is left. Pure."""
+    if mesh is None:
+        return None
+    P, T, UV, mats, M = mesh
+    M = np.asarray(M)
+    keep = ~np.isin(M, [k for k, m in enumerate(mats) if m in RENDER_ONLY])
+    if not keep.any():
+        return None
+    return P, np.asarray(T)[keep], UV, mats, M[keep]

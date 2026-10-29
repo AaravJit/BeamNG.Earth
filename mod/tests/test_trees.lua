@@ -14,7 +14,8 @@ createObject = function(class)
     local fdata = {}
     function fdata:createNewItem(d, m, sc)
       if CREATE_HOOK then CREATE_HOOK() end      -- (the time budget's tests: a fake clock's tick)
-      local it = { d = d, m = m, sc = sc }; items[it] = true; mine[it] = true; return it
+      -- (the engine copies the transform into the item: trees.lua passes the same matrix for every item)
+      local it = { d = d, m = { p = m.p, e = m.e }, sc = sc }; items[it] = true; mine[it] = true; return it
     end
     function fdata:removeItem(it) items[it] = nil; mine[it] = nil end
     function o:getData() return fdata end
@@ -27,7 +28,11 @@ end
 worldEditorCppApi = { createObject = function(class) return createObject(class) end }
 Sim = { getDataBlockSet = function() return { addObject = function() end } end }
 loadJsonMaterialsFile = function() end
-MatrixF = function() return { setFromEuler = function(self, e) self.e = e end, setPosition = function(self, p) self.p = p end } end
+local matrices = 0
+MatrixF = function()        -- (copies what it is given, as the engine's matrix does)
+  matrices = matrices + 1
+  return { setFromEuler = function(self, e) self.e = vec3(e) end, setPosition = function(self, p) self.p = vec3(p) end }
+end
 local files = {}
 readFile = function(p) return files[p] end
 local decoded = setmetatable({}, { __mode = 'k' })    -- every decoded file's rows (weak: what the module still holds)
@@ -64,6 +69,7 @@ do -- an item where its row puts it: position from x, y, z, the heading from yaw
     if it.m.p.y == 10 and it.m.p.z == 5 and it.m.p.x >= 0 and it.m.p.x <= 99 and it.m.e.z == 0 then ok = ok + 1 end
   end
   T.check(ok == 100, 'every item at its row\'s position and heading')
+  T.check(matrices == 1, 'one matrix for every item made (PR #41: no MatrixF garbage an item)')
 end
 -- the tile keeps its items as one flat array (trees.flatten), not the decoded rows: a table per item was most of a
 -- forest's Lua heap, walked by every garbage collection (GitHub #66)

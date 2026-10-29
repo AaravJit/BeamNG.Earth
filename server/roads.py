@@ -6061,7 +6061,7 @@ def shape_files(aid, tx, ty):
            "walk": f"walks_{aid}_{tx}_{ty}.cdae", "walkcol": f"walkcol_{aid}_{tx}_{ty}.cdae",
            "bldcol": f"bldcol_{aid}_{tx}_{ty}.cdae", "wire": f"wire_{aid}_{tx}_{ty}.cdae",
            "bld": f"bld_{aid}_{tx}_{ty}.cdae", "tunnel": f"tunnel_{aid}_{tx}_{ty}.cdae",
-           "rail": f"rail_{aid}_{tx}_{ty}.cdae"}
+           "rail": f"rail_{aid}_{tx}_{ty}.cdae", "railcol": f"railcol_{aid}_{tx}_{ty}.cdae"}
     for k in range(2, BLD_PARTS_MAX + 1):
         out[f"bld{k}"] = f"bld_{aid}_{tx}_{ty}_{k}.cdae"
     return out
@@ -6168,11 +6168,19 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
     if guardrail_rows:              # mapped guard rails and the median barriers (guardrails / medians): Forest rows
         import guardrails
         data["guardrails"] = {"items": guardrail_rows, "groups": list(guardrails.GROUPS)}
-    if rail_mesh is not None:       # railways.tile_mesh: ballast, sleepers and rails (colliding)
+    if rail_mesh is not None:       # railways.tile_mesh: ballast, sleepers and rails
+        import cdae
+        import railways
         x0, y0, _, _ = tile_bbox(tx, ty)
         shape = f"rail_{aid}_{tx}_{ty}.cdae"
         roadmesh.write(os.path.join(out_dir, shape), rail_mesh)
         data["rail"] = {"shape": f"{vfs_dir}/{shape}", "pos": [x0, y0, 0.0]}
+        col = railways.collision_mesh(rail_mesh)
+        if col is not None:         # the lean physics-only mesh (the mod then only draws "rail"): its bed and decks
+            shape = f"railcol_{aid}_{tx}_{ty}.cdae"
+            cdae.write(os.path.join(out_dir, shape), col[0], col[1], uvs=col[2], material=col[3],
+                       tri_materials=col[4], collision_only=True)
+            data["railcol"] = {"shape": f"{vfs_dir}/{shape}", "pos": [x0, y0, 0.0]}
     if walks:
         x0, y0, _, _ = tile_bbox(tx, ty)
         b = sidewalks.Builder((x0, y0, 0.0), collision=True)

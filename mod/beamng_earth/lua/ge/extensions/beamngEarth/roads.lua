@@ -149,15 +149,32 @@ end
 -- many more translucent objects in view (buildings' windows, signals) they vanished. Opaque asphalt is
 -- drawn first, always, and the translucent lines, crossings and gutters over it.
 M.OPAQUE = { 'road_asphalt_2lane', 'italy_cobblestone' }
+-- The opaque road surfaces cast no sun shadow (from Madderose's PR #41). Translucent, as the stock decal materials are,
+-- they drew none; made opaque (above) they joined the shadow pass: every road tile's mesh drawn into each shadow
+-- cascade every frame (the tiles are dynamic TSStatics, no cached shadow map), for a shadow that fell under the road
+-- itself. The decks' slabs, the curbs and the sidewalks keep theirs.
+M.NO_SHADOW = { 'road_asphalt_2lane', 'italy_cobblestone', 'm_gm_concrete_plain' }
 
 local function loadMaterials()
   if loadedMaterials then return end
   for _, f in ipairs(M.MATERIAL_FILES) do loadJsonMaterialsFile(f) end
   for _, f in ipairs(require('beamngEarth/gasstations').MATERIAL_FILES) do loadJsonMaterialsFile(f) end   -- (pumps)
+  local fields, order = {}, {}
   for _, name in ipairs(M.OPAQUE) do
+    if not fields[name] then fields[name] = {}; order[#order + 1] = name end
+    fields[name].translucent = '0'
+  end
+  for _, name in ipairs(M.NO_SHADOW) do
+    if not fields[name] then fields[name] = {}; order[#order + 1] = name end
+    fields[name].castShadows = '0'
+  end
+  for _, name in ipairs(order) do       -- (one reload a material)
     local m = scenetree.findObject(name)
     if m then
-      pcall(function() m:setField('translucent', 0, '0'); m:flush(); m:reload() end)
+      pcall(function()
+        for k, v in pairs(fields[name]) do m:setField(k, 0, v) end
+        m:flush(); m:reload()
+      end)
     end
   end
   local pad = scenetree.findObject('tactile_indicator')    -- curb ramp pads: US truncated domes are yellow
@@ -258,7 +275,7 @@ local function dropTile(key)
   if t.walk then deleteQ[#deleteQ + 1] = t.walk end
   if t.road then deleteQ[#deleteQ + 1] = t.road end
   if t.deck then deleteQ[#deleteQ + 1] = t.deck end
-  for _, w in ipairs({ 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'walkcol', 'tunnel', 'rail' }) do if t[w] then deleteQ[#deleteQ + 1] = t[w] end end
+  for _, w in ipairs({ 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'walkcol', 'tunnel', 'rail', 'railcol' }) do if t[w] then deleteQ[#deleteQ + 1] = t[w] end end
   if t.wire then deleteQ[#deleteQ + 1] = t.wire end
   for _, w in ipairs(M.SIGN_WHATS) do if t[w] then deleteQ[#deleteQ + 1] = t[w] end end
   -- and its meshes not made yet (from KyzoFox's 1.5.4, PR #64): a tile sent again under the same key left its old
@@ -462,7 +479,7 @@ function M.onTile(msg, currentAnchor)
   -- pooled shape files: the server's slot paths instead of the tile's own files
   local slots = {}
   for _, what in ipairs({ 'road', 'deck', 'walk', 'walkcol', 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'wire', 'tunnel', 'rail',
-      'exits', 'mileposts', 'merges', 'speeds' }) do
+      'railcol', 'exits', 'mileposts', 'merges', 'speeds' }) do
     local sl = msgSlot(msg, what)
     if sl then
       if type(data[what]) == 'table' and type(data[what].pos) == 'table' then
@@ -529,15 +546,19 @@ function M.onTile(msg, currentAnchor)
   local tx, ty = tostring(msg.key):match('^s?(%-?%d+)_(%-?%d+)$')
   tiles[key].cx = tx and (tonumber(tx) + 0.5) * M.TILE_M or nil
   tiles[key].cy = ty and (tonumber(ty) + 0.5) * M.TILE_M or nil
-  -- a lean collision mesh ("bldcol", "walkcol": server cdae collision_only) makes the drawn ones render-only
+  -- a lean collision mesh ("bldcol", "walkcol", "railcol": server cdae collision_only) makes the drawn ones render-only
+  -- (railcol: the track's bed and decks without its rails and sleepers, server railways.collision_mesh; mpsteppe's, from
+  -- Madderose's PR #41)
   local lean = type(data.bldcol) == 'table' and data.bldcol.shape ~= nil
   local leanWalk = type(data.walkcol) == 'table' and data.walkcol.shape ~= nil
+  local leanRail = type(data.railcol) == 'table' and data.railcol.shape ~= nil
   -- tunnels (server roadmesh.tunnel: tubes and portals) and railway tracks (server railways.py) collide like the decks
-  for _, what in ipairs({ 'walk', 'deck', 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'walkcol', 'tunnel', 'rail' }) do
+  for _, what in ipairs({ 'walk', 'deck', 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'walkcol', 'tunnel', 'rail', 'railcol' }) do
     local w = data[what]
     if type(w) == 'table' and w.shape and type(w.pos) == 'table' then
       local q = { key = key, walk = w, what = what, tile = tiles[key],
-        renderOnly = (lean and what:sub(1, 3) == 'bld' and what ~= 'bldcol') or (leanWalk and what == 'walk') }
+        renderOnly = (lean and what:sub(1, 3) == 'bld' and what ~= 'bldcol') or (leanWalk and what == 'walk')
+          or (leanRail and what == 'rail') }
       if not q.renderOnly then tiles[key].colWant[what] = true end
       if q.renderOnly or M.collideNear(tiles[key]) then walkQ[#walkQ + 1] = q else parked[#parked + 1] = q end
     end
@@ -664,7 +685,7 @@ M.GHOST_FAR_M = 960         -- ... and once farther from the player than this (t
 M.GHOST_FAR_WAIT_S = 2      -- ... from this long after the rebase on
 local ghostSince = nil      -- stopwatch since the last rebase that left ghosts
 
-local WHATS = { 'walk', 'road', 'deck', 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'walkcol', 'wire', 'tunnel', 'rail',
+local WHATS = { 'walk', 'road', 'deck', 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'walkcol', 'wire', 'tunnel', 'rail', 'railcol',
   'exits', 'mileposts', 'merges', 'speeds' }
 
 function M.transform(xf, geodesy)
@@ -852,7 +873,8 @@ function M.update(gov, currentAnchor, player, view)
       loadMaterials()
       local isRoad = q.what == 'road' or q.what == 'wire' or q.renderOnly   -- render-only meshes
       -- the buildings' and sidewalks' lean meshes are a collision detail (server cdae collision_only): never drawn
-      local ok, id = pcall(createWalk, q.walk, (q.what == 'bldcol' or q.what == 'walkcol') and 'Collision Mesh' or not isRoad)
+      local ok, id = pcall(createWalk, q.walk,
+        (q.what == 'bldcol' or q.what == 'walkcol' or q.what == 'railcol') and 'Collision Mesh' or not isRoad)
       if ok then slotMade(id, q.walk.shape) end
       if ok then
         if not isRoad then t.cq = t.cq or {}; t.cq[q.what] = q end

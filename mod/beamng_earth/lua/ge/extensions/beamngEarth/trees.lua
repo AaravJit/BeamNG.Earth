@@ -524,24 +524,33 @@ end
 -- group: a sign's group (vienna_convention_speed_signs.lua) also makes a second item at the same spot and scale, its
 -- body, and takes the collision. Only the first shape is counted in pop (allow's budget): the body is shared by every
 -- sign, spelled in the tile's variant like the rest, so its population is split.
+-- One matrix and two vectors for every item made (from Madderose's PR #41): createNewItem copies the transform into
+-- the item, as the stock foliage scatter tool relies on (editor/toolUtilities/foliageScatter.lua reuses its pose and
+-- vectors for every item it plants). A new MatrixF and two to five vec3 an item were garbage for the Lua collector,
+-- thousands a second while a forest loads. Every item sets the whole rotation and the position: nothing of the item
+-- before stays.
+local itemMat, itemVec, itemPos = nil, nil, nil
 local function makeItem(fd, t, i, shape, sc, solid, group, variant)
   local d = itemType(shape, vienna.faceSolid(group, solid))
   if not d then M.errors = M.errors + 1; return nil end
-  local m = MatrixF(true)
+  if not itemMat then itemMat, itemVec, itemPos = MatrixF(true), vec3(0, 0, 0), vec3(0, 0, 0) end
+  local m = itemMat
   -- setFromEuler turns clockwise (the engine's headings): a row's yaw (counter-clockwise from +x, the server's) is
   -- given negated. Positive, every prop was mirrored about the x axis: doors on north-south walls backwards, on
   -- diagonal walls askew, benches and lamps turned (read back in-game 2026-10-17: rows at 141.6 rendered at -141.6)
   local f, b = t.f, (i - 1) * t.s
+  itemPos:set(f[b + F_X], f[b + F_Y], f[b + F_Z])
   if t.s >= 17 and type(f[b + 17]) == 'number' then
     -- Guardrails carry their orthonormal world-space basis; local X follows the road chord.
-    m:setColumn(0, vec3(f[b + 9], f[b + 10], f[b + 11]))
-    m:setColumn(1, vec3(f[b + 12], f[b + 13], f[b + 14]))
-    m:setColumn(2, vec3(f[b + 15], f[b + 16], f[b + 17]))
-    m:setPosition(vec3(f[b + F_X], f[b + F_Y], f[b + F_Z]))
+    itemVec:set(f[b + 9], f[b + 10], f[b + 11]); m:setColumn(0, itemVec)
+    itemVec:set(f[b + 12], f[b + 13], f[b + 14]); m:setColumn(1, itemVec)
+    itemVec:set(f[b + 15], f[b + 16], f[b + 17]); m:setColumn(2, itemVec)
+    m:setPosition(itemPos)
   else
     -- Existing props use a flat yaw (counter-clockwise in server coordinates).
-    m:setFromEuler(vec3(0, 0, -math.rad(f[b + F_YAW])))
-    m:setPosition(vec3(f[b + F_X], f[b + F_Y], f[b + F_Z]))
+    itemVec:set(0, 0, -math.rad(f[b + F_YAW]))
+    m:setFromEuler(itemVec)
+    m:setPosition(itemPos)
   end
   local ok, it = pcall(function() return fd:createNewItem(d, m, sc) end)
   if not ok then M.errors = M.errors + 1; return nil end
