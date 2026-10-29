@@ -453,7 +453,12 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
     arid West (district_town): single-storey main streets and ranch houses."""
     area = _area2(ring) / 2
     c = ring.mean(0)
-    seed = _hash01(round(float(c[0]) * 2), round(float(c[1]) * 2), round(area)) if look is None else look
+    # (its random choices: keyed on the map feature's id, the same from every anchor and tile; a ring without one
+    # by its local centroid, as before. Keyed on the centroid in the tile's frame alone, a house changed its look
+    # whenever a rebase moved the anchor: geotiles, 2026-10-29)
+    sid = attrs.get("seed_id")
+    seed = look if look is not None else _hash01(sid, "plan") if sid is not None else \
+        _hash01(round(float(c[0]) * 2), round(float(c[1]) * 2), round(area))
     style = region_style(lat, lon)
     _, _, hl, hw = oriented_box(ring)
     box_fill = area / max(4 * hl * hw, 1e-6)
@@ -2308,6 +2313,8 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
             at = {k: (a[k][i] if k in a else None) for k in
                   ("class", "height", "num_floors", "min_height", "roof_shape", "roof_height", "name",
                    "facade_material", "facade_color", "roof_material", "roof_color")}
+            if key is not None:         # (plan's random choices keyed on the feature, not where the anchor puts it)
+                at["seed_id"] = str(key)
             hh_ = at.get("height")
             if hh_ is not None and np.isfinite(hh_) and 0 < hh_ < FLAT_FOOTPRINT_M and not parts_of.get(str(key)):
                 continue                # a mapped area, not a building (the Golden Gate toll plaza's 0.01 m footprint

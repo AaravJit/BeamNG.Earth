@@ -1126,12 +1126,7 @@ class Server:
         try:            # the bridges' deck heights (the road tiles' BridgeProfiles, one per anchor)
             with self.grader_lock:
                 if anchor.bridges is None:
-                    anchor.bridges = roadsmod.BridgeProfiles(
-                        anchor.frame,
-                        lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads"), elev)
-                    anchor.bridges.wet = self.sea.depth if self.sea is not None else None
-                    anchor.bridges.infra_fn = lambda key: self.mapdata.cell(
-                        key, layers=("infrastructure",), kind="demand").layers.get("infrastructure")
+                    anchor.bridges = self.chain_view(anchor, "bridges", elev)
             for fid, _spec, xy, z, _lon in anchor.bridges.parts(feats, (x - w, y - w, x + w, y + w)):
                 decks.setdefault(fid, []).append((np.asarray(xy, np.float64)[:, :2], np.asarray(z, np.float64)))
         except Exception as e:          # no decks: the graph follows the ground under bridges
@@ -1327,18 +1322,9 @@ class Server:
         walks = []
         with self.grader_lock:
             if anchor.bridges is None:
-                anchor.bridges = roadsmod.BridgeProfiles(
-                    anchor.frame, lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads"),
-                    elev)
-                anchor.bridges.wet = self.sea.depth if self.sea is not None else None    # (decks clear the water)
-                anchor.bridges.infra_fn = lambda key: self.mapdata.cell(
-                    key, layers=("infrastructure",), kind="demand").layers.get("infrastructure")
+                anchor.bridges = self.chain_view(anchor, "bridges", elev)
             if anchor.tunnels is None:
-                anchor.tunnels = roadsmod.TunnelProfiles(
-                    anchor.frame, lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads"),
-                    elev)
-                anchor.tunnels.wet = self.sea.depth if self.sea is not None else None
-                self._tunnel_ground(anchor, g)
+                anchor.tunnels = self.chain_view(anchor, "tunnels", elev, g)
         fuel, skip, fuel_cuts, fuel_pads = [], frozenset(), [], []
         if self.gas_stations:       # pumps and refuel areas; their canopy outlines left out of the buildings
             fuel, skip = gasstationsmod.tile_sites(anchor.frame, tx, ty, self.mapdata, elev, cuts=fuel_cuts,
@@ -1863,10 +1849,7 @@ class Server:
         Grader or None, taken before: grader_for takes grader_lock)."""
         with self.grader_lock:
             if anchor.tunnels is None:
-                cell_fn = lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads")  # noqa: E731
-                anchor.tunnels = roadsmod.TunnelProfiles(anchor.frame, cell_fn, elev)
-                anchor.tunnels.wet = self.sea.depth if self.sea is not None else None
-                self._tunnel_ground(anchor, g)
+                anchor.tunnels = self.chain_view(anchor, "tunnels", elev, g)
             return anchor.tunnels
 
     def tunnel_floor(self, anchor):
@@ -1890,13 +1873,29 @@ class Server:
             log.exception("tunnel floor at anchor %s", anchor.id)
             return None
 
-    def _tunnel_ground(self, anchor, g):
-        """anchor.tunnels' ground at grading.PROFILE_ZOOM, as in the block workers (roads.TunnelProfiles.ends; g: the
-        anchor's Grader or None). Under grader_lock."""
-        t = anchor.tunnels
-        t.raw = lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, gradingmod.PROFILE_ZOOM))
-        if g is not None:
-            t.ends = lambda la, lo: g.apply(la, lo, t.raw(la, lo), gradingmod.ROAD_LIFT, roads_only=True)
+    def chain_view(self, anchor, kind, elev, g=None):
+        """anchor's roads.ChainView of the server's bridge ("bridges") or tunnel ("tunnels") chains: one
+        roads.ChainStore each for every anchor (its ground elev's values are the same whatever the anchor; the tunnels'
+        raw / ends at grading.PROFILE_ZOOM, as in the block workers; g: a Grader or None). Under grader_lock."""
+        stores = self.__dict__.setdefault("chain_stores", {})
+        cs = stores.get(kind)
+        if cs is None:
+            cell_fn = lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads")  # noqa: E731
+            if kind == "bridges":
+                def setup(p):
+                    p.wet = self.sea.depth if self.sea is not None else None    # (decks clear the water)
+                    p.infra_fn = lambda key: self.mapdata.cell(
+                        key, layers=("infrastructure",), kind="demand").layers.get("infrastructure")
+                cls = roadsmod.BridgeProfiles
+            else:
+                def setup(t):
+                    t.wet = self.sea.depth if self.sea is not None else None
+                    t.raw = lambda la, lo: self.ground(None, la, lo, self.dem.sample(la, lo, gradingmod.PROFILE_ZOOM))
+                    if g is not None:
+                        t.ends = lambda la, lo: g.apply(la, lo, t.raw(la, lo), gradingmod.ROAD_LIFT, roads_only=True)
+                cls = roadsmod.TunnelProfiles
+            cs = stores[kind] = roadsmod.ChainStore(cls, cell_fn, elev, setup)
+        return roadsmod.ChainView(cs, anchor.frame)
 
     def _tunnel_holes(self, anchor, elev, keep, cx, cy, idx, info):
         """idx with the block's tunnel portals as holes (roads.block_tunnel_holes; blockworker._tunnel_holes)."""

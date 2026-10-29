@@ -18,7 +18,8 @@ import fast
 import geodesy
 
 Z = 17                  # content tiles (the mod's hello cap geoTiles = Z)
-PLAN_Z = 10             # planning regions (grading, chain profiles)
+PLAN_Z = 10             # planning regions (grading)
+CHAIN_Z = 12            # bridge / tunnel chain profile stores (~8 km: a deck solved in a nearly level frame)
 NEED = 103              # earthfast's geotiles kernels
 
 
@@ -62,11 +63,30 @@ def centre(x, y, z=Z):
     return info(x, y, z)[:2]
 
 
+class WorldFrame(geodesy.EnuFrame):
+    """An EnuFrame whose enu_to_geodetic(e, n, 0) is the exact inverse of the world convention (the place whose h = 0
+    point has these e, n; geotiles.rs world_to_geodetic), not the plane point (e, n, 0), which lies d^2 / 2R over the
+    ellipsoid: a place's lat / lon read back from its own x, y was d^3 / 2R^2 off (4 cm at 15 km, 25 cm at a planning
+    region's corner). The frames content and plans are made in: what they sample is where their vertices are."""
+
+    def enu_to_geodetic(self, e, n, u=0.0):
+        if np.ndim(u) != 0 or float(u) != 0.0:
+            return super().enu_to_geodetic(e, n, u)
+        E, N = np.broadcast_arrays(np.asarray(e, np.float64), np.asarray(n, np.float64))
+        shape = E.shape
+        p = np.zeros((E.size, 3))
+        p[:, 0], p[:, 1] = E.ravel(), N.ravel()
+        la, lo, _ = _ef().geo_world_to_geodetic(float(self.lat0), float(self.lon0), p)
+        if shape == ():
+            return np.float64(la[0]), np.float64(lo[0]), np.float64(0.0)
+        return la.reshape(shape), lo.reshape(shape), np.zeros(shape)
+
+
 @functools.lru_cache(maxsize=4096)
 def frame(x, y, z=Z):
-    """The tile's frame: geodesy.EnuFrame at its centre (h = 0)."""
+    """The tile's frame: a WorldFrame at its centre (h = 0)."""
     la, lo = centre(x, y, z)
-    return geodesy.EnuFrame(la, lo)
+    return WorldFrame(la, lo)
 
 
 def quad(anchor, x, y, z=Z):

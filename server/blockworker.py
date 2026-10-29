@@ -74,8 +74,8 @@ class _State:
                 self.surface.extra_pads = self.airports.runway_pads
         self.graders = {}           # anchor id -> grading.Grader
         self.chunks = {}            # anchor id -> heightmap.ChunkCache
-        self.bridges = {}           # anchor id -> roads.BridgeProfiles (roads_tile)
-        self.tunnels = {}           # anchor id -> roads.TunnelProfiles (roads_tile, the block's holes)
+        self.bridges = {}           # (unused since the chain stores: _chain_store)
+        self.tunnels = {}           # (unused since the chain stores: _chain_store)
         self.lock = threading.Lock()
         self.want = []              # (grader, cell key) to plan, most urgent first
         self.cv = threading.Condition()
@@ -352,21 +352,35 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None,
     return info
 
 
-def _bridges(aid, frame, elev):
-    """The anchor's roads.BridgeProfiles (deck heights of whole bridge chains), made once per anchor in this process."""
+def _chain_store(name, cls, elev, setup=None):
+    """This process's roads.ChainStore `name` (one per purpose: every anchor's tiles share it), made on first use with
+    elev (the physics ground: its values are the same whatever the anchor, the plans being the planning regions')."""
     import roads as roadsmod
     with _s.lock:
-        bridges = _s.bridges.get(aid)
-        if bridges is None:
-            bridges = _s.bridges[aid] = roadsmod.BridgeProfiles(
-                frame, lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads"), elev)
-            sea = getattr(_s, "sea", None)
-            bridges.wet = sea.depth if sea is not None else None        # (decks clear the water: roads.water_clear)
-            bridges.infra_fn = lambda key: _s.md.cell(key, layers=("infrastructure",), kind="demand").layers.get(
-                "infrastructure")                                       # (bridge:structure tags: bridgetypes)
-            for old in sorted(_s.bridges)[:-ANCHORS_KEPT]:
-                del _s.bridges[old]
-    return bridges
+        stores = _s.__dict__.setdefault("chain_stores", {})
+        got = stores.get(name)
+        if got is None:
+            got = stores[name] = roadsmod.ChainStore(
+                cls, lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads"), elev, setup)
+        elif got.elev is None and elev is not None:     # (made as another's preferred one, reading only)
+            got.elev = elev
+            for st in list(got.stores.values()):
+                st.elev = elev
+        return got
+
+
+def _bridge_setup(p):
+    sea = getattr(_s, "sea", None)
+    p.wet = sea.depth if sea is not None else None        # (decks clear the water: roads.water_clear)
+    p.infra_fn = lambda key: _s.md.cell(key, layers=("infrastructure",), kind="demand").layers.get(
+        "infrastructure")                                   # (bridge:structure tags: bridgetypes)
+
+
+def _bridges(aid, frame, elev):
+    """The anchor's view (roads.ChainView) of this process's bridge chains (deck heights of whole chains, each solved
+    once whatever the anchor: roads.ChainStore)."""
+    import roads as roadsmod
+    return roadsmod.ChainView(_chain_store("bridges", roadsmod.BridgeProfiles, elev, _bridge_setup), frame)
 
 
 NAV_GRADED_M = 900.0        # m (Chebyshev) round the AI graph's centre where its ground is graded in full: the road tiles'
@@ -374,22 +388,11 @@ NAV_GRADED_M = 900.0        # m (Chebyshev) round the AI graph's centre where it
 
 
 def _nav_bridges(aid, frame, elev):
-    """The AI graph's roads.BridgeProfiles of an anchor (its own: elev grades only the planned cells), kept per anchor
-    in this process."""
+    """The AI graph's view of the bridge chains: the road tiles' decks where solved (one profile per chain), else its
+    own chains' (elev grades only the planned cells)."""
     import roads as roadsmod
-    with _s.lock:
-        nav = _s.__dict__.setdefault("nav_bridges", {})
-        bridges = nav.get(aid)
-        if bridges is None:
-            bridges = nav[aid] = roadsmod.BridgeProfiles(
-                frame, lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads"), elev)
-            sea = getattr(_s, "sea", None)
-            bridges.wet = sea.depth if sea is not None else None
-            bridges.infra_fn = lambda key: _s.md.cell(key, layers=("infrastructure",), kind="demand").layers.get(
-                "infrastructure")
-            for old in sorted(nav)[:-ANCHORS_KEPT]:
-                del nav[old]
-    return bridges
+    return roadsmod.ChainView(_chain_store("nav_bridges", roadsmod.BridgeProfiles, elev, _bridge_setup), frame,
+                              prefer=_chain_store("bridges", roadsmod.BridgeProfiles, elev, _bridge_setup))
 
 
 def navgraph(aid, lat, lon, zoom, x, y, out_dir, vfs_dir, serial, left_hand, mph, rules):
@@ -858,24 +861,19 @@ def _tunnel_holes(aid, frame, elev, keep, cx, cy, idx, info, g=None):
 
 
 def tunnel_profiles(aid, frame, elev, g=None):
-    """The anchor's roads.TunnelProfiles in this process (road tiles and the block's terrain holes share it): its
-    ground read at grading.PROFILE_ZOOM (raw; ends: graded by g), as in every other process."""
+    """The anchor's view of this process's tunnel chains (road tiles and the blocks' terrain holes share them): their
+    ground read at grading.PROFILE_ZOOM (raw; ends: graded), as in every other process."""
     import roads as roadsmod
-    with _s.lock:
-        if getattr(_s, "tunnels", None) is None:        # (a state made without it: tests)
-            _s.tunnels = {}
-        t = _s.tunnels.get(aid)
-        if t is None:
-            t = _s.tunnels[aid] = roadsmod.TunnelProfiles(
-                frame, lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads"), elev)
-            sea = getattr(_s, "sea", None)
-            t.wet = sea.depth if sea is not None else None
-            t.raw = lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, gradingmod.PROFILE_ZOOM))  # noqa: E731
-            if g is not None:
-                t.ends = lambda la, lo: g.apply(la, lo, t.raw(la, lo), gradingmod.ROAD_LIFT, roads_only=True)    # noqa: E731
-            for old in sorted(_s.tunnels)[:-ANCHORS_KEPT]:
-                del _s.tunnels[old]
-        return t
+    if getattr(_s, "tunnels", None) is None:        # (a state made without it: tests)
+        _s.tunnels = {}
+
+    def setup(t):
+        sea = getattr(_s, "sea", None)
+        t.wet = sea.depth if sea is not None else None
+        t.raw = lambda la, lo: ground(None, la, lo, _s.dem.sample(la, lo, gradingmod.PROFILE_ZOOM))  # noqa: E731
+        if g is not None:
+            t.ends = lambda la, lo: g.apply(la, lo, t.raw(la, lo), gradingmod.ROAD_LIFT, roads_only=True)    # noqa: E731
+    return roadsmod.ChainView(_chain_store("tunnels", roadsmod.TunnelProfiles, elev, setup), frame)
 
 
 def far_buildings_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, lamp_region=None):
@@ -923,17 +921,15 @@ def far_bridge_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir):
     import revisit
     import roads as roadsmod
     frame = geodesy.EnuFrame(lat, lon)
-    with _s.lock:
-        far = _s.__dict__.setdefault("far_bridges", {})
-        bridges = far.get(aid)
-        if bridges is None:
-            bridges = far[aid] = roadsmod.BridgeProfiles(
-                frame, lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads"),
-                lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)))
-            sea = getattr(_s, "sea", None)
-            bridges.wet = sea.depth if sea is not None else None
-            for old in sorted(far)[:-ANCHORS_KEPT]:
-                del far[old]
+
+    def far_setup(p):
+        sea = getattr(_s, "sea", None)
+        p.wet = sea.depth if sea is not None else None
+    # (the road tiles' decks where solved: the bridge looks the same near and far; else on the raw ground)
+    bridges = roadsmod.ChainView(
+        _chain_store(f"far_bridges_{zoom}", roadsmod.BridgeProfiles,
+                     lambda la, lo: ground(None, la, lo, _s.dem.sample(la, lo, zoom)), far_setup), frame,
+        prefer=_chain_store("bridges", roadsmod.BridgeProfiles, None, _bridge_setup))
     k = revisit.key("brfar", round(float(lat), 7), round(float(lon), 7), zoom, tx, ty,
                     _s.md.versions() if _s.md is not None else None)
     return _revisit_tile("brfar", k, aid, tx, ty, out_dir, vfs_dir, f"brfar_{aid}_{tx}_{ty}.json",
