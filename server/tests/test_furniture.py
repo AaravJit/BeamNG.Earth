@@ -251,55 +251,6 @@ class JunctionTest(unittest.TestCase):
 
 
 
-class SpeedSignTest(unittest.TestCase):
-    def test_a_sign_after_each_end_facing_its_traffic(self):
-        r = road("t", "tertiary", True, x0=0.0, x1=400.0)
-        rows = furniture.speed_signs([r], {"t": 30.0 / 0.999}, (-50, -50, 450, 150))
-        self.assertEqual(sorted(x[0] for x in rows), ["speed30", "speed30"])
-        east = min(rows, key=lambda x: x[1])
-        self.assertAlmostEqual(east[1], furniture.SIGN_IN_M, places=1)
-        self.assertLess(east[2], 50.0, "eastbound traffic: its kerb is the south side")
-        west = max(rows, key=lambda x: x[1])
-        self.assertGreater(west[2], 50.0)
-
-    def test_no_sign_without_a_model_or_on_short_roads(self):
-        self.assertEqual(furniture.speed_signs([road("t", "tertiary", True)], {"t": 35.0}, (-500, -50, 700, 150)), [])
-        self.assertEqual(furniture.speed_signs([road("s", "tertiary", True, x0=0.0, x1=100.0)], {"s": 30.0},
-                                               (-500, -50, 700, 150)), [])
-
-
-    def test_km_h_signs_where_limits_are_in_km_h(self):
-        """Europe: round km/h signs are used there, including higher motorway limits and no-limit signs."""
-        r = road("t", "tertiary", True, x0=0.0, x1=400.0)
-        rows = furniture.speed_signs([r], {"t": 80 / 1.609344}, (-50, -50, 450, 150), mph_signs=False)
-        self.assertEqual(sorted(x[0] for x in rows), ["speedk80", "speedk80"])
-        rows = furniture.speed_signs([r], {"t": 50 / 1.609344}, (-50, -50, 450, 150), mph_signs=False)
-        self.assertEqual(sorted(x[0] for x in rows), ["speedk50", "speedk50"])
-        rows = furniture.speed_signs([r], {"t": 130 / 1.609344}, (-50, -50, 450, 150), mph_signs=False)
-        self.assertEqual(sorted(x[0] for x in rows), ["speedk130", "speedk130"])
-        rows = furniture.speed_signs([r], {"t": 150 / 1.609344}, (-50, -50, 450, 150), mph_signs=False)
-        self.assertEqual(sorted(x[0] for x in rows), ["speedk150", "speedk150"])
-        rows = furniture.speed_signs([r], {"t": float("inf")}, (-50, -50, 450, 150), mph_signs=False)
-        self.assertEqual(sorted(x[0] for x in rows), ["speedknone", "speedknone"])
-
-    def test_km_h_sign_for_every_ten_and_the_limits_around_them(self):
-        """Every posted tens value from 30 to 150 has a sign (90 is rural France and Romania, 70 an unmapped secondary
-        road), a limit between two rounds to the nearer (half up: 45 is 50, 35 is 40), 20 has none and 160+ gets the 150."""
-        r = road("t", "tertiary", True, x0=0.0, x1=400.0)
-
-        def groups(kmh):
-            rows = furniture.speed_signs([r], {"t": kmh / 1.609344}, (-50, -50, 450, 150), mph_signs=False)
-            return sorted({x[0] for x in rows})
-
-        for n in range(30, 151, 10):
-            self.assertEqual(groups(n), [f"speedk{n}"], n)
-        self.assertEqual(groups(44), ["speedk40"])
-        self.assertEqual(groups(45), ["speedk50"])
-        self.assertEqual(groups(35), ["speedk40"])
-        self.assertEqual(groups(20), [])
-        self.assertEqual(groups(200), ["speedk150"])
-
-
 class SignAssetsTest(unittest.TestCase):
     """The km/h sign set is written in three places (furniture.SIGN_KMH, the mod's vienna_convention_speed_signs.lua
     LIMITS, the generator's defaults); a number in one and not another is a sign that is never placed or a model that

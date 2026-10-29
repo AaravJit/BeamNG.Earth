@@ -53,7 +53,7 @@ You can help support development by reporting [issues](https://github.com/TecnaG
   and stone parapets along mountain roads' drops; metal guard rails, concrete and cable barriers where OpenStreetMap maps them; median
   barriers down divided highways (concrete walls, cable barriers or steel rails by the median's width and the
   country's practice, open at crossovers and ramps); street lights, utility poles with wires, traffic signals,
-  stop signs and speed-limit signs (mph or km/h by country), traffic lights and sidewalks where OpenStreetMap maps them;
+  stop signs, traffic lights and sidewalks where OpenStreetMap maps them;
   railway lines as 3D track (ballast, sleepers and rails, rail bridges on piers, the ground cut and filled for the
   line; abandoned and disused lines overgrown and rusty; lines not built yet left out), level crossings with the rails
   flush in the road and crossbucks, flashing lights or gates (in the US as the FRA's crossing inventory lists them),
@@ -64,6 +64,10 @@ You can help support development by reporting [issues](https://github.com/TecnaG
   in the gore, overhead destination signs, Interstate / US / state route shields in each state's style, yellow merge
   warnings at entrance ramps and Interstate mile markers, from the destinations and milestones mapped in
   OpenStreetMap (rebuilt weekly). Settings > World > Highway signs turns them off.
+- Speed-limit signs everywhere, showing the limit the traffic drives (the mapped one, else the road class's default):
+  where the limit changes, past major junctions and motorway entrances, and as reminders on long roads; the US
+  "SPEED LIMIT" panel, Canada's "MAXIMUM" panel, and elsewhere the round red-ring sign (mph in the UK). The Highway
+  signs setting switches them too.
 - Bridges drawn as their real type (beam, truss, arch, cable-stayed, suspension) with real heights and spans, piers
   that keep clear of the roads under them and 6 m (20 ft) of headroom over roads where the ground allows; a divided
   road's two decks joined across a narrow median; tunnels through hills, with portals, lights and low arches where

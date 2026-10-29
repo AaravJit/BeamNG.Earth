@@ -1183,7 +1183,7 @@ class Server:
         if self.sign_pool is not None:
             return self.sign_pool.submit(blockworker.signs_tile, aid, anchor.lat, anchor.lon, anchor.zooms[0], tx, ty,
                                          self.out_dir, self.vfs_dir, self.left_hand(anchor),
-                                         self.mph(anchor)).result(timeout=ROAD_TILE_TIMEOUT_S)
+                                         self.mph(anchor), self.country(anchor)).result(timeout=ROAD_TILE_TIMEOUT_S)
         g = self.grader_for(anchor)
         zoom = anchor.zooms[0]
 
@@ -1192,7 +1192,8 @@ class Server:
             return g.apply(la, lo, z, gradingmod.ROAD_LIFT) if g is not None else z
         urban = self.surface.urban if self.surface is not None and hasattr(self.surface, "urban") else None
         return signstream.build_tile(self.mapdata, anchor.frame, aid, tx, ty, elev, self.out_dir, self.vfs_dir,
-                                     urban, self.road_widths, self.left_hand(anchor), self.mph(anchor))
+                                     urban, self.road_widths, self.left_hand(anchor), self.mph(anchor),
+                                     self.country(anchor))
 
     def build_sky_tile(self, aid, ux, uy):
         """buildings.skyline_tile: a skyline (render-only) tile of anchor aid, or None (its cells not at hand: asked

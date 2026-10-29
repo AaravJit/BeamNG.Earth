@@ -18,6 +18,7 @@ mod islands;
 mod ribbons;
 mod groundpaint;
 mod medians;
+mod speedsigns;
 
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, IntoPyArray};
 use pyo3::types::PyBytes;
@@ -5291,6 +5292,8 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
     m.add_function(wrap_pyfunction!(medians::median_modules, m)?)?;
     m.add_function(wrap_pyfunction!(medians::median_rows, m)?)?;
-    m.add("VERSION", 99)?;
+    m.add_function(wrap_pyfunction!(speedsigns::speed_sign_place, m)?)?;
+    m.add_function(wrap_pyfunction!(speedsigns::speed_sign_mesh, m)?)?;
+    m.add("VERSION", 100)?;
     Ok(())
 }

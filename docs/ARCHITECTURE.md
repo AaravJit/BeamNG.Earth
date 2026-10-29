@@ -980,6 +980,15 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
   local shard folder), placed on the roads' own pavement rows (`signroads.Context`, per map cell); only where a US
   state is (every face is MUTCD; `BNE_SIGNS_WORLD=1` everywhere). The mod's Highway signs switch sends
   `highway_signs` {on}: no sign tiles are built while it is off.
+- Speed-limit signs (`server/speedsigns.py`, kernels `speed_sign_place` / `speed_sign_mesh` in
+  `native/earthfast/src/speedsigns.rs`): in the same sign tiles (shape `speeds`), everywhere. The value is
+  `navgraph.road_mph`'s (the AI's: Overture's / OpenStreetMap's limit, else the class default) in the posted unit.
+  Per direction on the road pieces between junctions (Overture connectors) round the tile (900 m): a sign where the
+  limit changes (at a junction's straight-on continuation or inside a road), past major junctions (a secondary-or-better
+  road meets a tertiary-or-better one), 300 m past motorway entrances, and reminders where a road crosses a fixed
+  lat/lon grid (about 1 mile in town, 2 out of it); thinned per value and direction, placed beside the carriageway
+  clear of every pavement, off bridges and tunnels. Faces: MUTCD R2-1 in the US, Rb-1 in Canada, Vienna C14
+  elsewhere. (They replaced the furniture props of 2026-10-14, 30 m past both ends of every long segment.)
 - Build: class and rules give the width (STYLE, or the width rule) and the surface kind (paved /
   gravel / dirt). Footways, paths and steps are left out, and so are segments flagged as bridge or
   tunnel or off ground level. Each road is clipped to the tile plus 2 m, simplified (RDP 0.25 m),

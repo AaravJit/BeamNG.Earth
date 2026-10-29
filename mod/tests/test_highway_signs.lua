@@ -119,4 +119,20 @@ roads.onDrop({anchorId=20,key='0_0'})
 roads.update(gov,20)
 T.check(not shapes()[railPath] and fuelDrops['20:0_0'], 'dropping the road tile still retires rail and fuel')
 gas.onRows, gas.dropKey = onRows, dropKey
+
+-- Speed-limit signs (server speedsigns.py) come in the same sign tiles: render-only, under the same switch.
+roads.clear()
+roads.reset()
+roads.setSession('signs')
+local speedPath = '/temp/beamngEarth/signs/slot_00009.cdae'
+roads.onTile({anchorId=30,key='s1_2',data={chunks={},speeds={shape=speedPath,pos={256,512,0}}}},30)
+roads.update(gov,30)
+T.check(shapes()[speedPath] and shapes()[speedPath].fields.collisionType == 'None', 'speed signs are render only')
+settings.set('highwaySigns',false)
+roads.update(gov,30)
+T.check(not shapes()[speedPath], 'the switch hides speed signs')
+settings.set('highwaySigns',true)
+roads.update(gov,30)
+T.check(shapes()[speedPath] ~= nil, 'and shows them again')
+T.check(not roads.settledFor(30,300,600), 'a speed-sign square is not a ready road')
 T.done('test_highway_signs')

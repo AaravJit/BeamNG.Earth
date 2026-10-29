@@ -40,9 +40,11 @@ def materials():
     import exitsigns
     import mergesigns
     import milemarkers
+    import speedsigns
     out = set(buildings.MATERIALS) | set(sidewalks.MATERIALS) | set(EXTRA)
     # the highway signs' (signstream.py)
     out |= set(exitsigns.GUIDE_MATERIALS) | set(milemarkers.MATERIALS) | set(mergesigns.MATERIALS)
+    out |= set(speedsigns.MATERIALS)
     for mod in (roads, roadmesh, junctions, airportgrade):
         for name, v in vars(mod).items():
             if name.isupper():

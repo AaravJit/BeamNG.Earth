@@ -42,8 +42,8 @@ ENTRY_DRIVABILITY = 0.9     # stock AI yields to the ring's 1.0, even on a tange
 
 def road_mph(feats, i, spec, mph=True, at=0.5):
     """The speed limit (mph) of road feature i at fraction at (default: its middle), else the class default
-    (capped in town for arterials), or None for a class the AI does not drive. Shared by the graph and the road tiles'
-    speed signs (furniture.py), so a sign shows what the traffic drives."""
+    (capped in town for arterials), or None for a class the AI does not drive. Shared by the graph and the speed-limit
+    signs (speedsigns.py), so a sign shows what the traffic drives."""
     if spec is None or spec.cls not in DRIVE:
         return None
     speed = feats.rules.get("max_speed_kmh")
