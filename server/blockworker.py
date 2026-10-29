@@ -1467,6 +1467,182 @@ def far_bridge_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir):
                          _where_enu(lat, lon, *roadsmod_tile_bbox(tx, ty), md=_md_versions()))
 
 
+# --- far geotiles (phase 2): far buildings, the skyline and far bridges once per geotile ---------------------------
+# Each built in its own tile's frame (geotiles.FAR_Z / SKY_Z / BRIDGE_Z), with the rules and DEM zoom of its own place,
+# cached without an anchor in its key (revisit kinds "bldfar" / "bldsky" / "brfar", the key's first part "g"); the mod
+# keeps it across rebases and places it rigidly at its pivot (render-only: no skin, no exact variant).
+
+FAR_GEO = {"bldfar": "bf", "bldsky": "bs", "brfar": "bb"}       # kind -> its files' prefix (<prefix>_<key>[_<sub>])
+FAR_LAMP_ROUND = 1          # decimals of the lamps' coordinates
+
+
+def far_geo_zoom(kind):
+    """The geotile zoom of a far kind."""
+    import geotiles
+    return {"bldfar": geotiles.FAR_Z, "bldsky": geotiles.SKY_Z, "brfar": geotiles.BRIDGE_Z}[kind]
+
+
+def far_geo_names(kind, key):
+    """The session file names of far geotile key: {"json": ..., "shape": ...} (a far buildings or skyline tile's mesh);
+    a far bridge tile's pieces are <prefix>_<key>_<road geotile key>.cdae (far_geo_piece)."""
+    pre = FAR_GEO[kind]
+    return {"json": f"{pre}_{key}.json", "shape": f"{pre}_{key}.cdae"}
+
+
+def far_geo_piece(key, sub):
+    return f"{FAR_GEO['brfar']}_{key}_{sub}.cdae"
+
+
+def _lamps_by_geotile(frame, lamps):
+    """Far lamps [[x, y, z], ...] of frame's world as {road geotile key: {"pivot": m, "rows": [[x, y, z], ...]}}: each
+    in the geotile (geotiles.FAR_Z) its place lies in, in that tile's own frame (the mod's trees.lua places each group
+    there and with it at a rebase); pivot the median height of its rows."""
+    import geotiles
+    if not lamps:
+        return {}
+    p = np.asarray(lamps, np.float64).reshape(-1, 3)
+    la, lo, h = geotiles.world_to_geodetic(frame, p)
+    la, lo, h = np.asarray(la, np.float64), np.asarray(lo, np.float64), np.asarray(h, np.float64)
+    gx, gy = geotiles.tile_of(la, lo, geotiles.FAR_Z)
+    out = {}
+    for kx, ky in sorted({(int(a), int(b)) for a, b in zip(gx, gy)}):
+        sel = (gx == kx) & (gy == ky)
+        x, y, z = geotiles.geodetic_to_world(geotiles.frame(kx, ky, geotiles.FAR_Z), la[sel], lo[sel], h[sel])
+        rows = np.round(np.c_[np.asarray(x, np.float64), np.asarray(y, np.float64), np.asarray(z, np.float64)],
+                        FAR_LAMP_ROUND)
+        out[geotiles.key(kx, ky, geotiles.FAR_Z)] = {"pivot": round(float(np.median(rows[:, 2])), 2),
+                                                      "rows": rows.tolist()}
+    return out
+
+
+def _far_geo_build(kind, tile, gzoom, out_dir, vfs_dir, lamp_region):
+    """Far geotile tile's content written to out_dir: (JSON data, {what: file name} of its shapes, count) or None
+    when its cells are not at hand (asked again later)."""
+    import buildings as buildingsmod
+    import geotiles
+    import roads as roadsmod
+    frame = tile.frame
+    x0, y0, x1, y1 = tile.box
+
+    def raw(la, lo):
+        return ground(None, la, lo, _s.dem.sample(la, lo, gzoom))
+    data = {"v": 1, "key": tile.key, "frame": [float(frame.lat0), float(frame.lon0)]}
+    names = far_geo_names(kind, tile.key)
+    shapes = {}
+    if kind == "bldfar":
+        items, lamps, _box = buildingsmod.far_items(frame, tile, None, _s.md, raw, lamp_region)
+        mesh = buildingsmod.build(items, lite=True)
+        n = len(items)
+    elif kind == "bldsky":
+        keys = roadsmod.cells_of_tile(frame, tile, None, margin=0.0)
+        got = buildingsmod.sky_items(frame, (x0, y0, x1, y1), sorted(keys, key=str), _s.md, raw, lamp_region,
+                                     own=tile.box)
+        if got is None:
+            return None
+        picked, lamps = got
+        mesh = buildingsmod._sky_mesh(picked) if picked else None
+        n = len(picked) if mesh is not None else 0
+        if mesh is None:
+            lamps = []
+    else:                               # brfar: the slabs in a piece per road geotile under it
+        keys = roadsmod.cells_of_tile(frame, tile, None, margin=0.0)
+        if not all(_s.md.has(k, "roads") for k in keys):
+            for k in keys:
+                _s.md.prefetch(k, layers=("roads",))
+            return None
+        cells = [_s.md.cell(k, layers=("roads",), kind="background").layers.get("roads") for k in keys]
+
+        def far_setup(p):
+            sea = getattr(_s, "sea", None)
+            p.wet = sea.depth if sea is not None else None
+        # (the raw ground's chains of this DEM zoom: the same deck whatever the anchor or the order of the asks)
+        bridges = roadsmod.ChainView(_chain_store(f"far_bridges_{gzoom}", roadsmod.BridgeProfiles, raw, far_setup),
+                                     frame)
+        parts = [(xy, z, float(spec.width)) for _fid, spec, xy, z, _lon in bridges.parts(cells, (x0, y0, x1, y1))]
+        meshes = buildingsmod.bridge_slabs(parts, (x0, y0), owners=(frame, geotiles.FAR_Z, tile.z, tile.gx,
+                                                                   tile.gy)) if parts else {}
+        pieces = {}
+        for (gx, gy), m in sorted(meshes.items()):
+            sub = geotiles.key(gx, gy, geotiles.FAR_Z)
+            fname = far_geo_piece(tile.key, sub)
+            buildingsmod.write(os.path.join(out_dir, fname), m)
+            e = {"shape": f"{vfs_dir}/{fname}", "pos": [x0, y0, 0.0]}
+            e.update(_shape_info(os.path.join(out_dir, fname), e["pos"], "brfar"))
+            pieces[sub] = e
+            shapes[sub] = fname
+        if pieces:
+            data["parts"] = pieces
+        return data, shapes, len(parts) if pieces else 0
+    if mesh is not None:
+        buildingsmod.write(os.path.join(out_dir, names["shape"]), mesh)
+        data["shape"] = f"{vfs_dir}/{names['shape']}"
+        data["pos"] = [x0, y0, 0.0]
+        data.update(_shape_info(os.path.join(out_dir, names["shape"]), data["pos"], kind))
+        shapes["shape"] = names["shape"]
+    by = _lamps_by_geotile(frame, lamps)
+    if by:
+        data["lamps"] = by
+    return data, shapes, n
+
+
+def far_geo(kind, gx, gy, gzoom, out_dir, vfs_dir, lamp_region=None):
+    """earthd.Server.build_far_geo here (the far buildings' pool): far geotile (gx, gy) of kind ("bldfar": its far
+    buildings, the lite mesh of those road geotile (gx, gy) holds, and their streets' lamps; "bldsky": the skyline of a
+    SKY_Z square; "brfar": the bridge decks of a BRIDGE_Z square as a piece per road geotile under it), built in its own
+    frame (gzoom its DEM zoom, lamp_region its rules) or from the revisit cache (no anchor in the key). Written as
+    <prefix>_<key>.json (+ its shapes); returns (vfs path of the JSON, count, frame (lat, lon), pivot, {what: shape
+    file name}) or None when its cells are not at hand yet."""
+    import json
+    import geotiles
+    import revisit
+    z = far_geo_zoom(kind)
+    tile = geotiles.geobox(gx, gy, z)
+    names = far_geo_names(kind, tile.key)
+    k = revisit.key(kind, "g", tile.key, int(gzoom), _md_versions(), lamp_region)
+    frame_ll = (float(tile.frame.lat0), float(tile.frame.lon0))
+    got = revisit.load(_s.cache_dir, kind, k)
+    if got is not None:
+        blobs, extra = got
+        for name, data in blobs.items():
+            if name.endswith(".json"):
+                data = data.decode("utf-8").replace("@V@/", f"{vfs_dir}/").encode("utf-8")
+            _write_bytes(os.path.join(out_dir, name), data)
+        _far_geo_stats["hits"] += 1
+        return (f"{vfs_dir}/{names['json']}", int(extra.get("n", 0)), frame_ll, float(extra.get("pivot", 0.0)),
+                dict(extra.get("shapes") or {}))
+    f0 = revisit.faults()
+    res = _far_geo_build(kind, tile, gzoom, out_dir, vfs_dir, lamp_region)
+    if res is None:
+        return None
+    data, shapes, n = res
+    text = json.dumps(data, separators=(",", ":"), sort_keys=True)
+    data["h"] = _content_hash(text, vfs_dir)
+    text = json.dumps(data, separators=(",", ":"), sort_keys=True)
+    _write_bytes(os.path.join(out_dir, names["json"]), text.encode("utf-8"))
+    _far_geo_stats["built"] += 1
+    pivot = float(data.get("pivot", 0.0))
+    if revisit.ON and revisit.faults() == f0:     # (complete: nothing it read failed or was missing)
+        try:
+            blobs = {names["json"]: text.replace(f"{vfs_dir}/", "@V@/").encode("utf-8")}
+            for fname in shapes.values():
+                with open(os.path.join(out_dir, fname), "rb") as fh:
+                    blobs[fname] = fh.read()
+            s, w, nn, e = geotiles.info(gx, gy, z)[2:]
+            wh = revisit.where(*frame_ll, s, w, nn, e, revisit.sig(md=_md_versions()))
+            revisit.store(_s.cache_dir, kind, k, blobs, {"n": int(n), "pivot": pivot, "shapes": shapes}, where=wh)
+        except Exception as ex:          # (not kept rather than no tile)
+            log.debug("revisit: far geotile %s %s not kept: %s: %s", kind, tile.key, type(ex).__name__, ex)
+    return f"{vfs_dir}/{names['json']}", int(n), frame_ll, pivot, shapes
+
+
+_far_geo_stats = {"built": 0, "hits": 0}
+
+
+def far_geo_stats():
+    """This process's far geotile counters (built, from the revisit cache)."""
+    return dict(_far_geo_stats)
+
+
 def base_entry(user_dir, base_vfs, ao_vfs, rgb, ao_value):
     """terraincache.base_entry here (its BC7 encode is the base photo's main cost)."""
     return terraincache.base_entry(user_dir, base_vfs, ao_vfs, rgb, ao_value)
@@ -1726,6 +1902,7 @@ build = _accounted(build)
 terrain_patch = _accounted(terrain_patch)
 roads_tile = _accounted(roads_tile)
 far_buildings_tile = _accounted(far_buildings_tile)
+far_geo = _accounted(far_geo)
 base_entry = _accounted(base_entry)
 far_geometry = _accounted(far_geometry)
 far_tile = _accounted(far_tile)

@@ -1318,14 +1318,15 @@ class Server:
         """Road tiles as geotiles (--geo-tiles on, road tiles in worker processes): content kept across rebases."""
         return bool(self.geo_tiles) and self.road_pool is not None and self.mapdata is not None
 
-    def geo_rules(self, gx, gy):
-        """(left_hand, mph, buried share, lamp region, country, DEM zoom) at geotile (gx, gy)'s centre: its content's
-        own place's rules (an anchor's were the anchor's), kept per tile."""
+    def geo_rules(self, gx, gy, z=None):
+        """(left_hand, mph, buried share, lamp region, country, DEM zoom) at geotile (gx, gy)'s centre (zoom z, the
+        road geotiles' by default): its content's own place's rules (an anchor's were the anchor's), kept per tile."""
         import geotiles
+        z = geotiles.Z if z is None else int(z)
         cache = self.__dict__.setdefault("_geo_rules", {})
-        got = cache.get((gx, gy))
+        got = cache.get((gx, gy, z))
         if got is None:
-            la, lo = geotiles.centre(gx, gy)
+            la, lo = geotiles.centre(gx, gy, z)
             c = navgraphmod.country_near(self.airports_db, la, lo)
             got = (bool(navgraphmod.road_rules(c)["rightHandDrive"]), bool(navgraphmod.road_rules(c)["mph"]),
                    furnituremod.buried_share(c),
@@ -1333,8 +1334,41 @@ class Server:
                    c if self.airports_db else None, demmod.zoom_for(la, 1.25, demmod.FINE_ZOOM))
             if len(cache) > 20000:
                 cache.clear()
-            cache[(gx, gy)] = got
+            cache[(gx, gy, z)] = got
         return got
+
+    def far_geo_ok(self):
+        """Far buildings, the skyline and far bridges as geotiles (--geo-tiles on, their worker process): built once
+        per tile, kept by the mod across rebases."""
+        return bool(self.geo_tiles) and self.far_bld_pool is not None and self.mapdata is not None and self.buildings
+
+    FAR_GEO_KEPT = 20000        # far geotiles of this session remembered (build_far_geo: sent again from the files)
+
+    def build_far_geo(self, kind, gx, gy):
+        """blockworker.far_geo in the far buildings' process: far geotile (gx, gy) of kind ("bldfar", "bldsky",
+        "brfar"), anchor-free (its own place's rules and DEM zoom); one built before in this session comes from its
+        files. (vfs path, n, frame, pivot, shapes) or None (its cells not at hand yet). Worker threads
+        (vegetation.Tracker geo)."""
+        if self.far_bld_pool is None or self.mapdata is None:
+            return None
+        import geotiles
+        z = blockworker.far_geo_zoom(kind)
+        memo = self.__dict__.setdefault("_far_geo_done", {})
+        got = memo.get((kind, gx, gy))
+        if got is not None and all(os.path.exists(os.path.join(self.out_dir, n))
+                                   for n in [os.path.basename(got[0])] + list(got[4].values())):
+            return got
+        _lh, _mph, _buried, lamps, _country, gzoom = self.geo_rules(gx, gy, z)
+        t0 = time.perf_counter()
+        got = self.far_bld_pool.submit(blockworker.far_geo, kind, gx, gy, gzoom, self.out_dir, self.vfs_dir,
+                                       lamps).result()
+        log.debug("far geotile %s %s: %.2f s (queue + build)", kind, geotiles.key(gx, gy, z), time.perf_counter() - t0)
+        if got is not None:
+            if len(memo) > self.FAR_GEO_KEPT:
+                memo.clear()
+            memo[(kind, gx, gy)] = got
+        return got
+
 
     def build_roads_geo(self, aid, gx, gy, content=True, skin=True, exact=None):
         """blockworker.roads_geo in a road process: geotile (gx, gy)'s content (once: kept by the mod across
@@ -3162,18 +3196,10 @@ class Connection:
         # version later"); without them the far ones came first and the car's surroundings last
         # past them the skyline (buildings.skyline_tile): the far buildings then come as whole skyline squares
         # (group), the skyline tiles where none of theirs are (inner)
-        sky = buildingsmod.SKY_SEND_M > buildingsmod.FAR_SEND_M
-        self.bldfar = vegetationmod.Tracker(buildingsmod.FAR_SEND_M, buildingsmod.FAR_DROP_M,
-                                            buildingsmod.FAR_PER_POSE, "bldfar",
-                                            group=buildingsmod.SKY_UNIT if sky else None)
-        self.bldsky = (vegetationmod.Tracker(buildingsmod.SKY_SEND_M, buildingsmod.SKY_DROP_M, buildingsmod.SKY_PER_POSE,
-                                             "bldsky", unit=buildingsmod.SKY_UNIT,
-                                             inner=(buildingsmod.FAR_SEND_M, buildingsmod.SKY_UNIT)) if sky else None)
-        # the bridges past the road tiles (buildings.far_bridge_tile): none built under the road tiles' own reach
-        self.brfar = (vegetationmod.Tracker(buildingsmod.BRIDGE_FAR_SEND_M, buildingsmod.BRIDGE_FAR_DROP_M,
-                                            buildingsmod.BRIDGE_FAR_PER_POSE, "brfar",
-                                            skip_m=roadsmod.SEND_M - roadsmod.TILE)
-                      if buildingsmod.BRIDGE_FAR_SEND_M > roadsmod.SEND_M else None)
+        self.far_geo = False                    # ... as geotiles (hello.farGeo, Server.far_geo_ok): kept across rebases
+        self.building_scale = 1.0
+        self.bldfar = self.bldsky = self.brfar = None
+        self.make_far_trackers(False)
         self.nav = navgraphmod.Tracker()        # the AI road graph around the player (--traffic on)
         self.nav_wait = {}                      # anchor id -> monotonic time its first AI graph was wanted
         self.gravity = gravitymod.Tracker()     # real gravity: recompute rule, last message sent
@@ -3631,6 +3657,55 @@ class Connection:
         """Server.build_veg_tile in this mod's format (veg_flat). The vegetation tracker's worker threads."""
         return self.s.build_veg_tile(aid, tx, ty, flat=self.veg_flat)
 
+    def make_far_trackers(self, geo):
+        """The far buildings', skyline's and far bridges' trackers (closing the old ones): the anchor's tiles, or
+        geotiles (geo: far buildings in the road geotiles' grid sent as whole skyline squares, the skyline's and far
+        bridges' squares at geotiles.SKY_Z / BRIDGE_Z), each at the building scale's reach (set_graphics)."""
+        import geotiles
+        for tr in (self.bldfar, self.bldsky, self.brfar):
+            if tr is not None:
+                tr.close()
+        self.far_geo = bool(geo)
+        bld = self.building_scale
+        far_m = buildingsmod.FAR_SEND_M * bld
+        sky_m = buildingsmod.SKY_SEND_M * bld
+        br_m = buildingsmod.BRIDGE_FAR_SEND_M * bld
+        far_drop = far_m + (buildingsmod.FAR_DROP_M - buildingsmod.FAR_SEND_M)
+        sky_drop = sky_m + (buildingsmod.SKY_DROP_M - buildingsmod.SKY_SEND_M)
+        br_drop = br_m + (buildingsmod.BRIDGE_FAR_DROP_M - buildingsmod.BRIDGE_FAR_SEND_M)
+        # far buildings (--buildings on); none under the road tiles (they carry the buildings themselves)
+        # the far (lite) buildings under the road tiles too, nearest first: they come in seconds after a teleport and
+        # the mod hides each as its road tile's full buildings are made (roads.lua updateFar), the town round the car
+        # drawn simply first and in detail after (the user, 2026-10-25: "load simpler versions first then higher
+        # detail version later"); without them the far ones came first and the car's surroundings last
+        # past them the skyline (buildings.skyline_tile): the far buildings then come as whole skyline squares
+        # (group), the skyline tiles where none of theirs are (inner)
+        sky = buildingsmod.SKY_SEND_M > buildingsmod.FAR_SEND_M
+        bridges = buildingsmod.BRIDGE_FAR_SEND_M > roadsmod.SEND_M
+        if geo:
+            self.bldfar = vegetationmod.Tracker(far_m, far_drop, buildingsmod.FAR_PER_POSE, "bldfar", geo=True,
+                                                z=geotiles.FAR_Z, group_z=geotiles.SKY_Z if sky else None)
+            self.bldsky = (vegetationmod.Tracker(sky_m, sky_drop, buildingsmod.SKY_PER_POSE, "bldsky", geo=True,
+                                                 z=geotiles.SKY_Z, inner=(far_m, buildingsmod.SKY_UNIT))
+                           if sky else None)
+            # (the far bridges' squares under the road tiles too: a square's pieces past their reach are wanted, the
+            # mod hides each piece where its road geotile shows its own deck)
+            self.brfar = (vegetationmod.Tracker(br_m, br_drop, buildingsmod.BRIDGE_FAR_PER_POSE, "brfar", geo=True,
+                                                z=geotiles.BRIDGE_Z) if bridges else None)
+            return
+        self.bldfar = vegetationmod.Tracker(far_m, far_drop, buildingsmod.FAR_PER_POSE, "bldfar",
+                                            group=buildingsmod.SKY_UNIT if sky else None)
+        self.bldsky = (vegetationmod.Tracker(sky_m, sky_drop, buildingsmod.SKY_PER_POSE, "bldsky",
+                                             unit=buildingsmod.SKY_UNIT, inner=(far_m, buildingsmod.SKY_UNIT))
+                       if sky else None)
+        # the bridges past the road tiles (buildings.far_bridge_tile): none built under the road tiles' own reach
+        self.brfar = (vegetationmod.Tracker(br_m, br_drop, buildingsmod.BRIDGE_FAR_PER_POSE, "brfar",
+                                            skip_m=roadsmod.SEND_M - roadsmod.TILE) if bridges else None)
+
+    def build_far_geo(self, kind):
+        """The far geotile tracker's build(gx, gy) of kind (Server.build_far_geo)."""
+        return lambda gx, gy: self.s.build_far_geo(kind, gx, gy)
+
     def build_veg_geo(self, gx, gy):
         """Server.build_veg_geo in this mod's format (veg_flat): the geotile tracker's worker threads."""
         return self.s.build_veg_geo(gx, gy, flat=self.veg_flat, aid=self.active)
@@ -3711,6 +3786,13 @@ class Connection:
                 self.roads = road_tracker(self)
             if road_geo:
                 m["roadGeo"] = roadsmod.ROAD_GEO
+            # ... and the far buildings, skyline and far bridges when it places those too (hello.farGeo: roads.lua's
+            # FAR_GEO; a far tile and the road geotile of the same key hold the same buildings: one shows them)
+            far_geo = road_geo and msg.get("farGeo") == buildingsmod.FAR_GEO and self.s.far_geo_ok()
+            if far_geo != self.far_geo:
+                self.make_far_trackers(far_geo)
+            if far_geo:
+                m["farGeo"] = buildingsmod.FAR_GEO
             self.send(m)
             if self.weather.msg is not None:        # a reconnected mod gets the weather again
                 self.send(self.weather.msg)
@@ -4316,15 +4398,21 @@ class Connection:
                              view=self.view_at, foci=[f for f in self.foci if f[3]],
                              frame=anchor.frame if anchor is not None else None)
         if self.s.buildings and aid == self.active:
-            self.bldfar.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_far_bld_tile,
-                                view=self.view_at)
+            geo = self.far_geo
+            anchor = self.s.anchors.get(aid)
+            frame = anchor.frame if anchor is not None else None
+            self.bldfar.on_pose(self, aid, *self.focus, asyncio.get_running_loop(),
+                                self.build_far_geo("bldfar") if geo else self.s.build_far_bld_tile,
+                                view=self.view_at, frame=frame)
             if self.bldsky is not None and self.bldfar.progress()[0] >= self.bldfar.progress()[1]:
                 # (only once the far buildings round the car are all there: the skyline is the least urgent)
-                self.bldsky.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_sky_tile,
-                                    view=self.view_at)
+                self.bldsky.on_pose(self, aid, *self.focus, asyncio.get_running_loop(),
+                                    self.build_far_geo("bldsky") if geo else self.s.build_sky_tile,
+                                    view=self.view_at, frame=frame)
             if self.brfar is not None and self.bldfar.progress()[0] >= self.bldfar.progress()[1]:
-                self.brfar.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_far_bridge_tile,
-                                   view=self.view_at)
+                self.brfar.on_pose(self, aid, *self.focus, asyncio.get_running_loop(),
+                                   self.build_far_geo("brfar") if geo else self.s.build_far_bridge_tile,
+                                   view=self.view_at, frame=frame)
         if self.s.traffic and aid == self.active and self.nav_may_start(aid):
             self.nav.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_navgraph)
         if aid == self.active:
@@ -5491,8 +5579,9 @@ def main():
                     help="sea and lake water (seacarve.py, seatiles.py): the ground carved under Overture's ocean "
                          "and lake polygons and the mod's WaterBlock tiles that follow the Earth's curve")
     ap.add_argument("--geo-tiles", choices=("on", "off"), default="on",
-                    help="content in the global tiles' own frames (geotiles.py: the vegetation so far), placed by the "
-                         "mod and kept across rebases instead of built again for each anchor; off: per anchor (A/B)")
+                    help="content in the global tiles' own frames (geotiles.py: the vegetation, the road tiles' content, "
+                         "the far buildings, skyline and far bridges), placed by the mod and kept across rebases "
+                         "instead of built again for each anchor; off: per anchor (A/B)")
     ap.add_argument("--trees", choices=("on", "off"), default="off",
                     help="trees, bushes and rocks near the player (vegetation.py): from the canopy height model and "
                          "land cover, Forest items of stock shapes in the mod")

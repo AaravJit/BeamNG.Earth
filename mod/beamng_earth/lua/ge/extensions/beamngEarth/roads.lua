@@ -246,7 +246,12 @@ function M.slotsHeld(sess)
   for _, t in pairs(tiles) do
     for _, sl in pairs(t.slots or {}) do if sl[3] == sess then out[#out + 1] = { sl[1], sl[2] } end end
   end
-  for _, f in pairs(far) do if f.slot and f.slot[3] == sess then out[#out + 1] = { f.slot[1], f.slot[2] } end end
+  for _, f in pairs(far) do
+    if f.slot and f.slot[3] == sess then out[#out + 1] = { f.slot[1], f.slot[2] } end
+    for _, p in pairs(f.parts or {}) do
+      if p.slot and p.slot[3] == sess then out[#out + 1] = { p.slot[1], p.slot[2] } end
+    end
+  end
   for n, d in pairs(slotDropped) do if d[2] == sess then out[#out + 1] = { n, d[1] } end end
   return out
 end
@@ -341,7 +346,7 @@ local function switchAnchor(aid)
     if t.anchor ~= aid and not t.ghost and not t.geo then dropTile(key) end   -- (geotiles: M.replace)
   end
   for key, f in pairs(far) do
-    if f.anchor ~= aid and not f.ghost then
+    if f.anchor ~= aid and not f.ghost and not f.geo then      -- (far geotiles: M.replace)
       farLamps(key, f, false)
       if f.id then deleteQ[#deleteQ + 1] = f.id end
       slotDrop(f.slot)
@@ -349,7 +354,9 @@ local function switchAnchor(aid)
     end
   end
   for key in pairs(farSeen) do
-    if string.sub(key, 1, #tostring(aid) + 1) ~= tostring(aid) .. ':' then farSeen[key] = nil end
+    if string.sub(key, 1, #tostring(aid) + 1) ~= tostring(aid) .. ':' and not (far[key] and far[key].geo) then
+      farSeen[key] = nil
+    end
   end
   local keep = {}
   for _, q in ipairs(createQ) do if tiles[q.key] then keep[#keep + 1] = q end end
@@ -866,6 +873,18 @@ function M.replace(a, aid)
       n = n + 1
     end
   end
+  -- the far geotiles: their made parts moved (their lamps are trees.lua geotiles: placed by trees.transform / reanchor)
+  for _, f in pairs(far) do
+    if f.geo then
+      f.anchor = aid
+      for _, p in pairs(f.parts) do
+        M._farPartPlace(f, p, a)          -- (defined below, with the far geotiles)
+        local o = p.id and scenetree.findObjectById(p.id)
+        if o then o:setPosRot(p.at[1], p.at[2], p.at[3], p.rot[1], p.rot[2], p.rot[3], p.rot[4]) end
+      end
+      M.geoStats.farReplaced = (M.geoStats.farReplaced or 0) + 1
+    end
+  end
   -- queued entries of the skins of other anchors go (their positions are those anchors')
   local function keep(list)
     local out = {}
@@ -1035,6 +1054,7 @@ function M.onFarTile(msg, currentAnchor, kind)
   if kind == true then kind = 'S' end
   local sky = kind == 'S'
   if not M.enabled then return false end
+  if geotile.isKey(msg.key) then return M.onFarGeo(msg, currentAnchor, kind) end
   switchAnchor(currentAnchor)
   if msg.anchorId ~= currentAnchor then return false end
   local ok, data = true, msg.data              -- (in the message, else the file: as onTile)
@@ -1065,6 +1085,7 @@ end
 -- Server message `bldfar_drop` {anchorId, key} (`bldsky_drop` with sky).
 function M.onFarDrop(msg, kind)
   if kind == true then kind = 'S' end
+  if geotile.isKey(msg.key) then return M.dropFarGeo(M.farGeoKey(kind or 'F', msg.key)) end
   local key = tileKey(msg.anchorId, (kind or '') .. msg.key)
   if not kind then farSeen[key] = nil end
   local f = far[key]
@@ -1089,8 +1110,8 @@ end
 
 -- Road geotiles (M.geo): a far tile's 256 m square (key "a:[B]tx_ty") is the road tiles' when every geotile within its
 -- reach has its content here (buildings made, or none; decks: its deck made or none, and its skin's road mesh), the
--- keys found once per far tile (its anchor's world). Until the far tiles are geotiles too (phase 2), a square at the
--- road tiles' edge shows its far buildings over the geotiles it overlaps.
+-- keys found once per far tile (its anchor's world). With anchor far tiles (a server without hello.farGeo) a square at
+-- the road tiles' edge shows its far buildings over the geotiles it overlaps; far geotiles (below) have no such seam.
 local function geoSquareCovered(f, sq, deck)
   if not f.geoKeys then
     local tx, ty = tostring(sq):match('(%-?%d+)_(%-?%d+)$')
@@ -1110,9 +1131,201 @@ local function geoSquareCovered(f, sq, deck)
   return true
 end
 
+-- Far geotiles (server hello.farGeo == M.FAR_GEO: blockworker.far_geo; .claude/work/geotiles_plan.md phase 2): the far
+-- buildings (kind 'F', key 'g17_x_y': the road geotiles' own grid), the skyline ('S', 'g15_x_y': 4 x 4 of them) and
+-- the far bridges ('B', 'g15_x_y': a piece per road geotile under it), each made once in its tile's frame and kept
+-- across rebases and teleports near: M.replace places its parts rigidly at their pivots into the new anchor (render-
+-- only, nothing made again). One ownership rule by geotile key: a far buildings tile holds the very buildings the road
+-- geotile of its key holds and hides once that one's are made; a far bridge piece hides once its road geotile's deck
+-- and road mesh are made; a skyline tile while all 16 far buildings tiles of its square are here. Their street lamps
+-- are trees.lua geotiles (one per road geotile key, placed and moved with the trees'), shown while their tile shows.
+M.FAR_GEO = 1
+M.farGeo = false
+function M.setFarGeo(on) M.farGeo = on and true or false end
+local function farGeoKey(kind, gkey) return tostring(kind) .. ':' .. tostring(gkey) end
+M.farGeoKey = farGeoKey
+M.FAR_GEO_ORPHAN_S = 120    -- a far geotile of an old server session not sent again goes after this long
+
+-- A far geotile part's placement into anchor a: its position (p.at) and rotation (p.rot), rigid at its pivot.
+local function farPartPlace(f, p, a)
+  local pl = geotile.placement(f.frame, a, 0, 0, p.pivot or 0)
+  local xf = geodesy.transformOf(pl.r, pl.t)
+  local qx, qy, qz, qw = xf:beamngQuat()
+  local x, y, z = xf:apply(p.pos[1], p.pos[2], p.pos[3])
+  p.at, p.rot = { x, y, z }, { qx, qy, qz, qw }
+end
+M._farPartPlace = farPartPlace
+
+-- A far geotile's lamps on / off: each road geotile key's rows a trees.lua geotile 'FL<kind><key>' (lampglow).
+local function farGeoLamps(f, on)
+  on = on and f.lamps ~= nil and anchorObj ~= nil
+  if on == (f.lampOn == true) then return end
+  local ok, trees = pcall(require, 'beamngEarth/trees')
+  if not ok then return end
+  f.lampOn = on or nil
+  for k17, g in pairs(f.lamps or {}) do
+    local tk = 'FL' .. f.kind .. tostring(k17)
+    if on then
+      local rows = {}
+      for i, pt in ipairs(type(g) == 'table' and type(g.rows) == 'table' and g.rows or {}) do
+        if type(pt) == 'table' and tonumber(pt[1]) and tonumber(pt[2]) and tonumber(pt[3]) then
+          rows[#rows + 1] = { 0, pt[1], pt[2], pt[3], 0, 1, 1, ((i * 7919) % 997) / 997 * 0.19 }
+        end
+      end
+      local fr = geotile.frameOf(k17)
+      if #rows > 0 and fr then
+        trees.onGeoRows(tk, k17, rows, M.FAR_LAMP_GROUPS, nil, fr, tonumber(g.pivot) or 0, anchorObj)
+      end
+    else
+      trees.dropKey('g:' .. tk)
+    end
+  end
+end
+
+-- A far geotile goes (its objects, slots and lamps).
+function M.dropFarGeo(key)
+  local f = far[key]
+  if not f or not f.geo then return false end
+  farGeoLamps(f, false)
+  for _, p in pairs(f.parts) do
+    if p.id then deleteQ[#deleteQ + 1] = p.id end
+    slotDrop(p.slot)
+  end
+  if f.kind == 'F' then farSeen[key] = nil end
+  far[key] = nil
+  return true
+end
+
+-- Server messages `bldfar_tile` / `bldsky_tile` / `brfar_tile` with a geotile key (kind nil / 'S' / 'B'): {key, frame,
+-- path / data {shape, pos, pivot, lamps {key: {pivot, rows}}; brfar: parts {key: {shape, pos, pivot}}, h}, slots}.
+-- The same content again (h: a server restart, a tile dropped and wanted again) keeps its objects.
+function M.onFarGeo(msg, currentAnchor, kind)
+  local k = kind or 'F'
+  local function release(keep)
+    if type(msg.slots) == 'table' then
+      for w in pairs(msg.slots) do if not (keep and keep[w]) then slotDrop(msgSlot(msg, w)) end end
+    end
+  end
+  local ok, data = true, msg.data
+  if type(data) ~= 'table' then ok, data = pcall(jsonDecode, readFile(msg.path) or '') end
+  if not ok or type(data) ~= 'table' then
+    release()
+    lastError = 'unreadable far geotile ' .. tostring(msg.path)
+    return false
+  end
+  local key = farGeoKey(k, msg.key)
+  if k == 'F' then farSeen[key] = true end
+  local old = far[key]
+  local h = data.h
+  if old and old.geo and h ~= nil and old.h == h then
+    release()
+    old.orphan, old.anchor = nil, currentAnchor
+    M.geoStats.farKept = (M.geoStats.farKept or 0) + 1
+    return true
+  end
+  if old then
+    if old.geo then M.dropFarGeo(key) else far[key] = nil end
+    if k == 'F' then farSeen[key] = true end
+  end
+  local frame = geotile.frameOf({ frame = msg.frame or data.frame, key = msg.key })
+  if not frame then release(); lastError = 'far geotile without a frame: ' .. tostring(msg.key); return false end
+  local f = { geo = true, kind = k, gkey = msg.key, frame = frame, h = h, anchor = currentAnchor, parts = {},
+    lamps = type(data.lamps) == 'table' and next(data.lamps) ~= nil and data.lamps or nil }
+  if k == 'S' then
+    local z, x, y = geotile.parse(msg.key)
+    f.sky = { z, x, y }
+  end
+  local list = {}
+  if k == 'B' then
+    for sub, e in pairs(type(data.parts) == 'table' and data.parts or {}) do list[#list + 1] = { sub, e } end
+    table.sort(list, function(a, b) return tostring(a[1]) < tostring(b[1]) end)
+  elseif type(data.shape) == 'string' then
+    list[1] = { 'shape', { shape = data.shape, pos = data.pos, pivot = data.pivot } }
+  end
+  local used = {}
+  for _, it in ipairs(list) do
+    local sub, e = it[1], it[2]
+    if type(e) == 'table' and type(e.shape) == 'string' and type(e.pos) == 'table' then
+      local sl = msgSlot(msg, sub)
+      used[sub] = true
+      -- (near: the road geotile whose own content shows these buildings / this deck)
+      local p = { shape = sl and sl.path or e.shape, slot = sl, pos = e.pos, pivot = tonumber(e.pivot) or 0,
+        near = (k == 'B' and sub) or (k == 'F' and msg.key) or nil }
+      if anchorObj then farPartPlace(f, p, anchorObj) end
+      f.parts[sub] = p
+      farQ[#farQ + 1] = key .. '#' .. sub
+    end
+  end
+  release(used)
+  far[key] = f
+  M.geoStats.far = (M.geoStats.far or 0) + 1
+  return true
+end
+
+-- Is road geotile gkey showing its own buildings (every building mesh of its content made; none: it has none)?
+-- (tk: its key in tiles, 'g:' .. gkey, when the caller has it: the far geotiles ask every frame)
+local BLD_WHATS = { 'bld', 'bld2', 'bld3', 'bld4' }
+function M.nearShowsBuildings(gkey, tk)
+  local t = tiles[tk or geoKey(gkey)]
+  if not t or not t.geo then return false end
+  for _, what in ipairs(BLD_WHATS) do
+    if t.parts[what] and not t[what] then return false end
+  end
+  return true
+end
+
+-- ... its own deck (made, or none) and road surface (its skin's road mesh made, or a skin without one)?
+function M.nearShowsDeck(gkey, tk)
+  local t = tiles[tk or geoKey(gkey)]
+  if not t or not t.geo then return false end
+  if t.parts.deck and not t.deck then return false end
+  if t.road then return true end
+  return t.skin ~= nil and t.skin.road == nil and (t.skin.pending or 0) <= 0
+end
+
+-- Pure-ish: is far geotile f's part sub hidden now (the ownership rule above)?
+function M.farGeoHidden(f, sub)
+  if f.kind == 'S' then
+    if not f.skyKeys then           -- (its square's far buildings tiles' keys, once)
+      local z, x, y = f.sky[1], f.sky[2], f.sky[3]
+      if not z then return false end
+      local n = 2 ^ (geotile.Z - z)
+      f.skyKeys = {}
+      for j = 0, n - 1 do
+        for i = 0, n - 1 do f.skyKeys[#f.skyKeys + 1] = farGeoKey('F', geotile.key(x * n + i, y * n + j, geotile.Z)) end
+      end
+    end
+    for _, k in ipairs(f.skyKeys) do if not farSeen[k] then return false end end
+    return true
+  end
+  local p = f.parts[sub]
+  if not p or not p.near then return false end
+  p.nearKey = p.nearKey or geoKey(p.near)
+  if f.kind == 'B' then return M.nearShowsDeck(p.near, p.nearKey) end
+  return M.nearShowsBuildings(p.near, p.nearKey)
+end
+
+local function updateFarGeo(key, f)
+  local shown = false
+  for sub, p in pairs(f.parts) do
+    if p.id then
+      local hide = M.farGeoHidden(f, sub)
+      if hide ~= (p.hidden or false) then
+        local o = scenetree.findObjectById(p.id)
+        if o then o:setHidden(hide) end
+        p.hidden = hide
+      end
+      if not hide then shown = true end
+    end
+  end
+  if f.lamps then farGeoLamps(f, shown) end
+end
+
 local function updateFar(gov)
   for key, f in pairs(far) do
-    if f.id then
+    if f.geo then
+      updateFarGeo(key, f)
+    elseif f.id then
       local hide
       if f.sky then
         hide = M.skyCovered(farSeen, f.anchor, f.sky[1], f.sky[2])
@@ -1132,12 +1345,28 @@ local function updateFar(gov)
         f.hidden = hide
       end
     end
-    if f.lamps then farLamps(key, f, f.id ~= nil and not f.hidden) end
+    if f.lamps and not f.geo then farLamps(key, f, f.id ~= nil and not f.hidden) end
   end
   while #farQ > 0 and #walkQ == 0 and gov:try('roadWalk') do
     local key = table.remove(farQ, 1)
-    local f = far[key]
-    if f and not f.id then
+    local gk, sub = key:match('^(.-)#(.*)$')
+    local f = far[gk or key]
+    local p = f and f.geo and sub and f.parts[sub]
+    if p and not p.id and anchorObj then        -- (a far geotile's part: placed as its tile is now)
+      local t0 = now()
+      loadMaterials()
+      farPartPlace(f, p, anchorObj)
+      local ok, id = pcall(createWalk, { shape = p.shape, pos = p.at, rot = p.rot }, false)
+      if ok then
+        p.id = id
+        slotMade(id, p.shape)
+        p.hidden = M.farGeoHidden(f, sub)
+        if p.hidden then scenetree.findObjectById(id):setHidden(true) end
+      else lastError = tostring(id) end
+      local ms = now() - t0
+      gov:charge('roadWalk', ms)
+      noteUnit('far' .. f.kind, ms, p.shape)
+    elseif f and not f.geo and not f.id then
       local t0 = now()
       loadMaterials()
       local ok, id = pcall(createWalk, { shape = f.shape, pos = f.pos }, false)
@@ -1207,7 +1436,7 @@ function M.transform(xf, geodesy)
     ::continue::
   end
   for _, f in pairs(far) do
-    if f.id then
+    if f.id and not f.geo then          -- (far geotiles: placed again by M.replace)
       f.q = newQ(f.q or { 0, 0, 0, 1 })
       moveObj(f.id, f.q)
       f.ghost = true
@@ -1221,7 +1450,10 @@ function M.transform(xf, geodesy)
   end
   walkQ, createQ, parked = keepNew(walkQ), keepNew(createQ), keepNew(parked)
   local fq = {}
-  for _, k in ipairs(farQ) do if far[k] and not far[k].ghost then fq[#fq + 1] = k end end
+  for _, k in ipairs(farQ) do
+    local f = far[k:match('^(.-)#') or k]
+    if f and not f.ghost then fq[#fq + 1] = k end
+  end
   farQ = fq
   if any then ghostSince = stopwatch.new(); sinceChange = stopwatch.new(); collisionDirty = true end
 end
@@ -1696,7 +1928,8 @@ end
 
 function M.clear()
   for key in pairs(tiles) do dropTile(key) end
-  for _, f in pairs(far) do
+  for key, f in pairs(far) do
+    if f.geo then M.dropFarGeo(key) end
     if f.id then deleteQ[#deleteQ + 1] = f.id end
     slotDrop(f.slot)
   end
@@ -1719,7 +1952,12 @@ end
 function M.reset()
   -- (the level took the objects: every slot goes)
   for _, t in pairs(tiles) do for _, sl in pairs(t.slots or {}) do slotsGone[#slotsGone + 1] = { sl[1], sl[2], sl[3] } end end
-  for _, f in pairs(far) do if f.slot then slotsGone[#slotsGone + 1] = { f.slot[1], f.slot[2], f.slot[3] } end end
+  for _, f in pairs(far) do
+    if f.slot then slotsGone[#slotsGone + 1] = { f.slot[1], f.slot[2], f.slot[3] } end
+    for _, p in pairs(f.parts or {}) do
+      if p.slot then slotsGone[#slotsGone + 1] = { p.slot[1], p.slot[2], p.slot[3] } end
+    end
+  end
   for n, d in pairs(slotDropped) do slotsGone[#slotsGone + 1] = { n, d[1], d[2] } end
   objSlot, slotLive, slotDropped = {}, {}, {}
   tiles, createQ, deleteQ, walkQ, anchorId, loadedMaterials = {}, {}, {}, {}, nil, false
@@ -1816,7 +2054,7 @@ M.ORPHAN_MAX_S = 120
 M.ORPHAN_FAR_M = 960
 local orphanSince = nil
 function M.newSession()
-  if not M.geo then return M.clear() end      -- (anchor tiles only: all of them go)
+  if not M.geo and not M.farGeo then return M.clear() end      -- (anchor tiles only: all of them go)
   local any = false
   for key, t in pairs(tiles) do
     if t.geo and M.geo then
@@ -1827,11 +2065,31 @@ function M.newSession()
       dropTile(key)
     end
   end
-  for _, f in pairs(far) do
-    if f.id then deleteQ[#deleteQ + 1] = f.id end
-    slotDrop(f.slot)
+  -- (the far geotiles stay as orphans too: the new session's same content (h) keeps them, the rest go after
+  -- FAR_GEO_ORPHAN_S)
+  local keepFar, keepSeen = {}, {}
+  for key, f in pairs(far) do
+    if f.geo and M.farGeo then
+      f.orphan = true
+      keepFar[key] = f
+      if farSeen[key] then keepSeen[key] = true end
+      any = true
+    else
+      if f.id then deleteQ[#deleteQ + 1] = f.id end
+      slotDrop(f.slot)
+      if f.geo then
+        farGeoLamps(f, false)
+        for _, p in pairs(f.parts) do
+          if p.id then deleteQ[#deleteQ + 1] = p.id end
+          slotDrop(p.slot)
+        end
+      end
+    end
   end
-  far, farQ, farSeen = {}, {}, {}
+  far, farSeen = keepFar, keepSeen
+  local fq = {}
+  for _, k in ipairs(farQ) do if far[k:match('^(.-)#') or k] then fq[#fq + 1] = k end end
+  farQ = fq
   createQ, held, newColliders = {}, {}, {}
   local keep = {}
   for _, q in ipairs(walkQ) do if tiles[q.key] and not q.skin then keep[#keep + 1] = q end end
@@ -1843,6 +2101,11 @@ local function releaseOrphans(player)
   if not orphanSince then return end
   local all = orphanSince() > M.ORPHAN_MAX_S * 1000
   local left = false
+  for key, f in pairs(far) do
+    if f.orphan then
+      if orphanSince() > M.FAR_GEO_ORPHAN_S * 1000 then M.dropFarGeo(key) else left = true end
+    end
+  end
   for key, t in pairs(tiles) do
     if t.orphan then
       local far_ = player and t.cx and M.boxGap(player.x, player.y, t.cx, t.cy, M.TILE_M / 2) > M.ORPHAN_FAR_M
@@ -1863,13 +2126,20 @@ function M.status()
     if t.bld then nb = nb + 1 end
     if t.guardrails then ngForest = ngForest + 1; ngRows = ngRows + (t.guardrailRows or 0) end
   end
-  local nf = 0
-  for _, f in pairs(far) do if f.id and not f.hidden then nf = nf + 1 end end
+  local nf, ngf, ngShown = 0, 0, 0
+  for _, f in pairs(far) do
+    if f.id and not f.hidden then nf = nf + 1 end
+    if f.geo then
+      ngf = ngf + 1
+      for _, p in pairs(f.parts) do if p.id and not p.hidden then nf, ngShown = nf + 1, ngShown + 1 end end
+    end
+  end
   return { enabled = M.enabled, tiles = nt, roads = no, queued = #createQ, deleting = #deleteQ, anchor = anchorId,
     walks = nw, roadMeshes = nr, decks = nd, buildings = nb, guardrailForestTiles = ngForest,
     guardrailForestRows = ngRows, farBuildings = nf, walksQueued = #walkQ, solidAround = M.solidAround or 0,
     urgentWalks = M.urgentWalks or 0, quietS = sinceChange() / 1000, error = lastError, units = unitStats, unitLog = unitLog,
-    geo = M.geo or false, geoStats = M.geoStats }
+    geo = M.geo or false, geoStats = M.geoStats, farGeo = M.farGeo or false, farGeoTiles = ngf,
+    farGeoShown = ngShown }
 end
 
 local okSweep, swept = pcall(M.sweep)

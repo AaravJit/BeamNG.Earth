@@ -23,6 +23,7 @@ mod cachemap;
 mod areacover;
 mod geotiles;
 mod geocontent;
+mod farcontent;
 mod sidewalks;
 mod roadz;
 
@@ -5330,6 +5331,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(geocontent::cdae_shear, m)?)?;
     m.add_function(wrap_pyfunction!(geocontent::clip_segments_convex, m)?)?;
     m.add_function(wrap_pyfunction!(sidewalks::sidewalk_mesh, m)?)?;
-    m.add("VERSION", 105)?;
+    m.add_function(wrap_pyfunction!(farcontent::bridge_slabs, m)?)?;
+    m.add("VERSION", 106)?;
     Ok(())
 }

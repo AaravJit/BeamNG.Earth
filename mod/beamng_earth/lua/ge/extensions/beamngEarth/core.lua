@@ -807,7 +807,9 @@ local function onMessage(msg)
     net.send({ type = 'hello', protocol = PROTOCOL, format = FORMAT, modVersion = MOD_VERSION,
       sessions = farfield.heldSessions(), slotSession = farfield.session(), slotsHeld = held, vegFlat = true,
       geoTiles = require('beamngEarth/geotile').Z,
-      roadGeo = roads.ROAD_GEO })      -- (road tiles as geotiles too: roads.lua)   -- (geotiles: vegetation in the global tiles' frames: trees.lua)
+      -- (geotiles: vegetation in the global tiles' frames: trees.lua)
+      roadGeo = roads.ROAD_GEO,        -- (road tiles as geotiles too: roads.lua)
+      farGeo = roads.FAR_GEO })        -- (and the far buildings, skyline and far bridges: roads.lua)
     setStatus('Connected to companion server')
   elseif t == '_disconnected' then
     st.pending, st.sessionId, st.terrainPending = nil, nil, nil
@@ -829,6 +831,7 @@ local function onMessage(msg)
     -- at 1) never drops the old session's tiles, so they stayed forever (2026-10-11: meshes of four
     -- sessions in the scene, some built by older code)
     roads.setGeo(msg.roadGeo == roads.ROAD_GEO)     -- (road tiles as geotiles: roads.lua)
+    roads.setFarGeo(msg.farGeo == roads.FAR_GEO)    -- (... and the far buildings, skyline and far bridges)
     if roadsSession ~= msg.sessionId then
       -- (road geotiles stay: the new session's content with the same hash keeps them, the rest go once far or old)
       roads.newSession()
