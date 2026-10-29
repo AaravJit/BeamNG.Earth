@@ -505,6 +505,9 @@ def _roads_tile_cached(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks,
     k = revisit.key("roads", round(float(lat), 7), round(float(lon), 7), zoom, tx, ty, bool(sidewalks), float(lift),
                     bool(buildings), bool(left_hand), bool(mph), None if q is None else float(q), bool(gas_stations),
                     _s.md.versions() if _s.md is not None else None, float(buried), lamp_region, country)
+    wh = _where_enu(lat, lon, *roadsmod_tile_bbox(tx, ty),
+                    sidewalks=bool(sidewalks), lift=float(lift), buildings=bool(buildings),
+                    gas_stations=bool(gas_stations), md=_md_versions())
     return _revisit_tile("roads", k, aid, tx, ty, out_dir, vfs_dir, f"roads_{aid}_{tx}_{ty}.json",
                          lambda: _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, buildings,
                                              left_hand, mph, q, gas_stations, buried, lamp_region, country),
@@ -512,10 +515,34 @@ def _roads_tile_cached(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks,
                                                                        for la, lo in rs]] for sid, rs in res[2]]},
                          lambda path, extra: (path, int(extra.get("n", 0)),
                                               [(sid, [(np.asarray(la), np.asarray(lo)) for la, lo in rs])
-                                               for sid, rs in extra.get("pads", [])]))
+                                               for sid, rs in extra.get("pads", [])]), wh)
 
 
-def _revisit_tile(kind, k, aid, tx, ty, out_dir, vfs_dir, name, build, extra_of, result_of):
+def _md_versions():
+    return _s.md.versions() if _s.md is not None else None
+
+
+def roadsmod_tile_bbox(tx, ty):
+    """A road tile's square (anchor frame, m): roads.tile_bbox."""
+    import roads as roadsmod
+    return roadsmod.tile_bbox(tx, ty)
+
+
+def _where_enu(lat, lon, x0, y0, x1, y1, **settings):
+    """revisit.where of an item over the box x0..x1, y0..y1 (m) of anchor lat / lon, built with these settings (the
+    names earthd.Server.world_signature gives); None when it cannot be had."""
+    import revisit
+    try:
+        f = geodesy.EnuFrame(lat, lon)
+        la, lo, _ = f.enu_to_geodetic(np.array([x0, x1, x0, x1], float), np.array([y0, y0, y1, y1], float),
+                                      np.zeros(4))
+        la, lo = np.asarray(la, float), np.asarray(lo, float)
+        return revisit.where(lat, lon, la.min(), lo.min(), la.max(), lo.max(), revisit.sig(**settings))
+    except Exception:
+        return None
+
+
+def _revisit_tile(kind, k, aid, tx, ty, out_dir, vfs_dir, name, build, extra_of, result_of, where=None):
     """A tile written to out_dir as name (a JSON pointing to its shapes in vfs_dir) from the revisit cache (key k), or
     built (build() -> its result) and kept there when complete (revisit.faults unchanged). extra_of(result): JSON data
     kept with it; result_of(vfs path of name, that data): the result again on a hit. The session's names (vfs_dir, the
@@ -541,7 +568,7 @@ def _revisit_tile(kind, k, aid, tx, ty, out_dir, vfs_dir, name, build, extra_of,
             for n in revisit.shapes_in(text, vfs_dir):
                 with open(os.path.join(out_dir, n), "rb") as f:
                     blobs[revisit.swap(n, mine)] = f.read()
-            revisit.store(_s.cache_dir, kind, k, blobs, extra_of(res))
+            revisit.store(_s.cache_dir, kind, k, blobs, extra_of(res), where=where)
         except Exception as e:          # (not kept rather than no tile)
             log.debug("revisit: %s tile %d_%d not kept: %s: %s", kind, tx, ty, type(e).__name__, e)
     return res
@@ -815,7 +842,8 @@ def far_buildings_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, lamp_regio
                                                        lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)),
                                                        out_dir, vfs_dir, aid, lamp_region),
                          lambda res: {"n": int(res[1])},
-                         lambda path, extra: (path, int(extra.get("n", 0))))
+                         lambda path, extra: (path, int(extra.get("n", 0))),
+                         _where_enu(lat, lon, *roadsmod_tile_bbox(tx, ty), md=_md_versions()))
 
 
 def skyline_tile(aid, lat, lon, zoom, ux, uy, out_dir, vfs_dir, lamp_region=None):
@@ -826,12 +854,16 @@ def skyline_tile(aid, lat, lon, zoom, ux, uy, out_dir, vfs_dir, lamp_region=None
     frame = geodesy.EnuFrame(lat, lon)
     k = revisit.key("bldsky", round(float(lat), 7), round(float(lon), 7), zoom, ux, uy,
                     _s.md.versions() if _s.md is not None else None, lamp_region)
+    u = buildingsmod.SKY_UNIT
+    sx0, sy0, _, _ = roadsmod_tile_bbox(ux * u, uy * u)
+    _, _, sx1, sy1 = roadsmod_tile_bbox(ux * u + u - 1, uy * u + u - 1)
     return _revisit_tile("bldsky", k, aid, ux, uy, out_dir, vfs_dir, f"bldsky_{aid}_{ux}_{uy}.json",
                          lambda: buildingsmod.skyline_tile(frame, ux, uy, _s.md,
                                                            lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)),
                                                            out_dir, vfs_dir, aid, lamp_region),
                          lambda res: {"n": int(res[1])},
-                         lambda path, extra: (path, int(extra.get("n", 0))))
+                         lambda path, extra: (path, int(extra.get("n", 0))),
+                         _where_enu(lat, lon, sx0, sy0, sx1, sy1, md=_md_versions()))
 
 
 def far_bridge_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir):
@@ -858,7 +890,8 @@ def far_bridge_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir):
     return _revisit_tile("brfar", k, aid, tx, ty, out_dir, vfs_dir, f"brfar_{aid}_{tx}_{ty}.json",
                          lambda: buildingsmod.far_bridge_tile(frame, tx, ty, _s.md, bridges, out_dir, vfs_dir, aid),
                          lambda res: {"n": int(res[1])},
-                         lambda path, extra: (path, int(extra.get("n", 0))))
+                         lambda path, extra: (path, int(extra.get("n", 0))),
+                         _where_enu(lat, lon, *roadsmod_tile_bbox(tx, ty), md=_md_versions()))
 
 
 def base_entry(user_dir, base_vfs, ao_vfs, rgb, ao_value):
@@ -879,7 +912,8 @@ def far_geometry(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout):
     built = _far_geometry(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout)
     if revisit.ON and revisit.faults() == f0:
         blob, meta = _built_blob(built)
-        revisit.store(_s.cache_dir, "fargeo", k, {"built.npz": blob}, meta)
+        revisit.store(_s.cache_dir, "fargeo", k, {"built.npz": blob}, meta,
+                      where=_where_enu(lat, lon, *tile.bbox, layout=repr(layout), md=_md_versions()))
     return built
 
 
@@ -1037,7 +1071,10 @@ def far_tile(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout, tex):
                 with open(mask[0], "rb") as f:
                     blobs["mask.dds"] = f.read()
             meta.update(tex_bytes=int(got[0]), used={str(n): int(c) for n, c in (got[1] or {}).items()})
-            revisit.store(_s.cache_dir, "far", k, blobs, meta)
+            revisit.store(_s.cache_dir, "far", k, blobs, meta,
+                          where=_where_enu(lat, lon, *tile.bbox, layout=repr(layout), md=_md_versions(),
+                                           chain=tuple(tex["chain"]), tone=tex["tone"], leaf_on=tex["leaf_on"],
+                                           season_mode=tex["season_mode"]))
         except Exception as e:          # (not kept rather than no tile)
             log.debug("revisit: far tile %s not kept: %s: %s", (tile.level, tile.i, tile.j), type(e).__name__, e)
     return built, got

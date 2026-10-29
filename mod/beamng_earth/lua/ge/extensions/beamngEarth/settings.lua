@@ -725,6 +725,24 @@ function M.uiGeocodeResult(id)
   return core and core.takeGeocode and core.takeGeocode(tonumber(id)) or nil
 end
 
+-- The map's cache view (server covermap.py): ask (z, x0, y0, x1, y1, mode -> { id } or { error }) and poll (id -> nil
+-- while waiting, else { z, x0, y0, w, h, cells (base64 levels), gen, ready, error }).
+local cacheMapId = 0
+function M.uiCacheMap(z, x0, y0, x1, y1, mode)
+  local core = ext('beamngEarth_core')
+  if not core or not core.requestCacheMap then return { error = 'BeamNG.Earth is not loaded' } end
+  cacheMapId = cacheMapId + 1
+  if not core.requestCacheMap(cacheMapId, tonumber(z), tonumber(x0), tonumber(y0), tonumber(x1), tonumber(y1),
+      tostring(mode or 'summary')) then
+    return { error = 'Companion server not connected' }
+  end
+  return { id = cacheMapId }
+end
+function M.uiCacheMapResult(id)
+  local core = ext('beamngEarth_core')
+  return core and core.takeCacheMap and core.takeCacheMap(tonumber(id)) or nil
+end
+
 -- "lat, lon" typed in the map's search box -> { lat, lon } or { error }.
 function M.uiMapParse(text)
   local lat, lon = places.parseLatLon(text)

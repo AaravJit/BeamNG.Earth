@@ -33,6 +33,8 @@
           @error="onTileError($event, t)"
         />
       </template>
+      <!-- the cache view (server covermap.py): what is downloaded where, at what detail; under the grid and markers -->
+      <canvas v-show="cacheOn" ref="cacheEl" class="cache-canvas" :width="w" :height="h" />
       <!-- a controller: the point A picks (the centre; padTick) -->
       <div v-if="padMode" class="pad-cross" />
       <div v-if="padMode" class="pad-hint" :class="{ 'below-gps': !!state.gps }">Right stick: move &middot; LT / RT: zoom
@@ -138,9 +140,23 @@
           <label class="layer-opt"><input type="checkbox" v-model="labelsOn" /> Roads &amp; labels</label>
           <label class="layer-opt"><input type="checkbox" v-model="layersOn" /> Borders &amp; places
             <span class="layer-hint">(world to city zoom)</span></label>
+          <label class="layer-opt" title="What is downloaded on this computer, and at what detail (LB / RB: the next view)">
+            <input type="checkbox" v-model="cacheOn" /> Cache <span class="layer-hint">(downloaded data)</span></label>
+          <BngSelect v-if="cacheOn" class="cache-select" :value="cacheMode" :options="cacheModeOptions"
+                     :config="cacheSelectConfig" @valueChanged="v => (cacheMode = v)" />
         </div>
       </div>
       <button v-if="!embedded" class="map-btn close" @click="close" title="Close (Esc / M)">Close</button>
+    </div>
+
+    <!-- the cache view's legend (bumpers: the next view) -->
+    <div v-if="cacheOn" class="cache-legend" @mousedown.stop @wheel.stop>
+      <div class="cache-legend-title">Cache: {{ mm.CACHE_MODE_NAMES[cacheMode] }}</div>
+      <div v-for="c in cacheLegendRows" :key="c.id" class="cache-legend-row">
+        <span class="cache-swatch" :style="{ background: c.css }"></span>{{ c.name }}<span v-if="c.note" class="layer-hint">&nbsp;{{ c.note }}</span>
+      </div>
+      <div v-if="cacheMode === 'elevation' || cacheMode === 'imagery'" class="cache-legend-hint">Faint: only part of the square</div>
+      <div v-if="cacheMsg" class="cache-legend-hint">{{ cacheMsg }}</div>
     </div>
 
     <!-- status: tiles unavailable / not connected -->
@@ -290,6 +306,7 @@ import { useEvents } from "@/services/events"
 import { vBngOnUiNav } from "@/common/directives"
 import * as mm from "./mapmath.js"
 import layerData from "./maplayers.js"
+import { BngSelect } from "@/common/components/base"
 
 const props = defineProps({ embedded: { type: Boolean, default: false } })
 const embedded = props.embedded
@@ -782,6 +799,7 @@ mapEvents.on("BeamNGEarthMapInput", d => {
     case "move_key": if (d.b >= 1 && d.b <= 4) pad.keys[d.b - 1] = a; if (a) padStart(); break
     case "select": padSelect(); break
     case "pad_x": case "pad_y": padButton(d.kind, a); break
+    case "filter": if (a) cycleCache(Number(d.b) < 0 || a < 0 ? -1 : 1); break   // the bumpers (bigMap's onChangeUiFilter)
   }
 })
 mapEvents.on("UINavigation", (name, value) => {
@@ -794,6 +812,132 @@ function onNavDeclared() { return false }
 // the mouse takes over again: no crosshair
 watch(cursor, () => { if (padMode.value && !padActive()) padMode.value = false })
 
+
+// ---- the cache view (server covermap.py; settings.uiCacheMap): what is downloaded where, and at what detail -----------
+// A grid of levels for the view (8 cells a map tile: mapmath.cacheGridZoom), asked 300 ms after the view settles and
+// every 5 s while it is shown, drawn on a canvas under the grid; moved with the view in between. Remembered.
+const cacheEl = ref(null)
+const cacheOn = ref(stored("beamngEarth.map.cache", "0") === "1")
+const storedCacheMode = stored("beamngEarth.map.cacheMode", "summary")
+const cacheMode = ref(mm.CACHE_MODES.includes(storedCacheMode) ? storedCacheMode : "summary")
+watch(cacheOn, on => store("beamngEarth.map.cache", on ? "1" : "0"))
+watch(cacheMode, v => store("beamngEarth.map.cacheMode", v))
+const cacheModeOptions = mm.CACHE_MODES.map(v => ({ label: mm.CACHE_MODE_NAMES[v], value: v }))
+const cacheSelectConfig = { value: o => o.value, label: o => o.label }
+const cacheGrid = ref(null)               // { z, x0, y0, w, h, cells: Uint8Array, mode }
+const cacheMsg = ref("")
+const CACHE_ASK_MS = 300, CACHE_REFRESH_MS = 5000, CACHE_POLL_MS = 100, CACHE_POLL_TRIES = 50
+let cacheTimer = null, cachePollTimer = null, cacheSeq = 0
+function scheduleCache(ms) {
+  clearTimeout(cacheTimer)
+  cacheTimer = setTimeout(askCache, ms)
+}
+function askCache() {
+  cacheTimer = null
+  if (!cacheOn.value) return
+  const v = view.value
+  const b = mm.cacheGridBox(v.lat, v.lon, v.z, w.value, h.value, mm.cacheGridZoom(v.z))
+  const mode = cacheMode.value
+  const seq = ++cacheSeq
+  clearTimeout(cachePollTimer)
+  engineLua(`beamngEarth_settings and beamngEarth_settings.uiCacheMap and beamngEarth_settings.uiCacheMap(${b.z}, ${b.x0}, ${b.y0}, ${b.x1}, ${b.y1}, ${luaStr(mode)}) or nil`, r => {
+    if (seq !== cacheSeq) return
+    if (!r || r.error || !r.id) {
+      cacheMsg.value = (r && r.error) || "Cache view unavailable (BeamNG.Earth not loaded?)"
+      scheduleCache(CACHE_REFRESH_MS)
+      return
+    }
+    let tries = 0
+    const poll = () => {
+      if (seq !== cacheSeq) return
+      engineLua(`beamngEarth_settings and beamngEarth_settings.uiCacheMapResult(${r.id}) or nil`, res => {
+        if (seq !== cacheSeq) return
+        if (!res) {
+          if (++tries < CACHE_POLL_TRIES) cachePollTimer = setTimeout(poll, CACHE_POLL_MS)
+          else { cacheMsg.value = "No answer from the companion server"; scheduleCache(CACHE_REFRESH_MS) }
+          return
+        }
+        const waiting = res.ready === false
+        cacheMsg.value = res.error ? String(res.error) : waiting ? "Indexing the cache..." : ""
+        if (!res.error && !waiting) {
+          cacheGrid.value = { z: res.z, x0: res.x0, y0: res.y0, w: res.w, h: res.h, cells: mm.b64Bytes(res.cells), mode }
+        }
+        scheduleCache(waiting ? 1000 : CACHE_REFRESH_MS)
+      })
+    }
+    cachePollTimer = setTimeout(poll, CACHE_POLL_MS / 2)
+  })
+}
+watch([view, w, h], () => { if (cacheOn.value) scheduleCache(CACHE_ASK_MS) })
+watch([cacheOn, cacheMode], () => {
+  if (cacheGrid.value && cacheGrid.value.mode !== cacheMode.value) cacheGrid.value = null
+  if (cacheOn.value) scheduleCache(0)
+  else { cacheSeq++; clearTimeout(cacheTimer); clearTimeout(cachePollTimer); cacheMsg.value = "" }
+}, { immediate: true })
+onUnmounted(() => { cacheSeq++; clearTimeout(cacheTimer); clearTimeout(cachePollTimer) })
+
+// the bumpers: off -> each view in turn -> off
+function cycleCache(dir) {
+  const list = mm.CACHE_MODES
+  let i = cacheOn.value ? list.indexOf(cacheMode.value) + dir : (dir > 0 ? 0 : list.length - 1)
+  if (i < 0 || i >= list.length) { cacheOn.value = false; showToast("Cache view off"); return }
+  cacheMode.value = list[i]
+  cacheOn.value = true
+  showToast(`Cache: ${mm.CACHE_MODE_NAMES[list[i]]}`)
+}
+
+const CACHE_ALPHA = 0.45, CACHE_ALPHA_PARTIAL = 0.2
+const cacheCss = (rgb, a) => `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${a})`
+const cacheMetric = computed(() => !!((state.value.weather && state.value.weather.metric) || (state.value.gps && state.value.gps.metric)))
+const cacheLegendRows = computed(() => {
+  const mode = cacheMode.value
+  const detail = mode === "elevation" || mode === "imagery"
+  const rows = mm.cacheLegend(mode).map(c => ({ ...c, css: cacheCss(c.rgb, CACHE_ALPHA + 0.2), note: "" }))
+  if (detail) {
+    const f = m => mm.fmtRes(m, cacheMetric.value)
+    for (let i = 0; i < rows.length; i++) {
+      const lo = i + 1 < rows.length ? rows[i + 1].max : 0
+      rows[i].note = rows[i].max === Infinity ? `(over ${f(lo)})` : lo ? `(${f(lo)} - ${f(rows[i].max)})` : `(under ${f(rows[i].max)})`
+    }
+    rows.reverse()
+  }
+  return rows
+})
+
+function drawCache() {
+  const cv = cacheEl.value
+  if (!cv) return
+  const ctx = cv.getContext("2d")
+  if (!ctx) return
+  ctx.clearRect(0, 0, cv.width, cv.height)
+  const g = cacheGrid.value
+  if (!cacheOn.value || !g || !g.cells || g.cells.length < g.w * g.h) return
+  const v = view.value, W = w.value, H = h.value
+  const c = mm.project(v.lat, v.lon, v.z)
+  const s = mm.TILE * Math.pow(2, v.z - g.z)          // px a cell
+  const left0 = W / 2 - c.x, top0 = H / 2 - c.y
+  for (let j = 0; j < g.h; j++) {
+    const y = g.y0 + j
+    const ya = Math.round(top0 + y * s), yb = Math.round(top0 + (y + 1) * s)
+    if (yb < 0 || ya > H) continue
+    const lat = mm.unproject(0, (y + 0.5) * mm.TILE, g.z).lat
+    for (let i = 0; i < g.w; i++) {
+      const lv = g.cells[j * g.w + i]
+      if (!lv) continue
+      const x = g.x0 + i
+      const xa = Math.round(left0 + x * s), xb = Math.round(left0 + (x + 1) * s)
+      if (xb < 0 || xa > W) continue
+      const k = mm.cacheClass(g.mode, lv, lat)
+      if (!k) continue
+      ctx.fillStyle = cacheCss(k.rgb, k.partial ? CACHE_ALPHA_PARTIAL : CACHE_ALPHA)
+      ctx.fillRect(xa, ya, Math.max(1, xb - xa), Math.max(1, yb - ya))
+    }
+  }
+}
+let cacheFrame = 0
+watch([cacheGrid, view, w, h, cacheOn], () => {
+  if (!cacheFrame) cacheFrame = nextFrame(() => { cacheFrame = 0; drawCache() }) || 1
+})
 
 // ---- Places panel (settings.lua uiPlace* -> places.lua; every call answers with both lists) ---------
 // the places panel; closed, the saved places' pins leave the map too (the user, 2026-10-14). Remembered.
@@ -1276,6 +1420,16 @@ const fmtLatLon = mm.fmtLatLon
 .map-tile.tile-dark {
   filter: invert(1) hue-rotate(180deg) brightness(0.92);
 }
+.cache-canvas { position: absolute; left: 0; top: 0; pointer-events: none; }
+.cache-select { margin: 2px 0 4px; }
+.cache-legend {
+  position: absolute; left: 10px; bottom: calc(6.5vh + 40px); z-index: 9; padding: 6px 10px 7px; font-size: 12px;
+  background: rgba(15, 18, 22, 0.88); border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 5px; cursor: default;
+}
+.cache-legend-title { font-weight: 600; margin-bottom: 4px; }
+.cache-legend-row { display: flex; align-items: center; gap: 6px; padding: 1px 0; white-space: nowrap; }
+.cache-swatch { width: 12px; height: 12px; border-radius: 2px; border: 1px solid rgba(255, 255, 255, 0.35); flex-shrink: 0; }
+.cache-legend-hint { margin-top: 3px; font-size: 11px; color: #9aa4ae; }
 .map-grid {
   position: absolute;
   left: 0;

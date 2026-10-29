@@ -124,6 +124,9 @@ You can help support development by reporting [issues](https://github.com/TecnaG
   route's map data and elevation download ahead while you drive, with a progress bar on the map.
   The map shows the route's elevation profile under the GPS box and the local time and weather, has a Dark base
   map, and its right-click menu copies a spot's coordinates.
+- A **Cache** overlay on the map (Layers > Cache, or LB / RB on a controller) shows what is downloaded on your
+  computer and at what detail: a summary (some data / the far view / ready to drive), or the elevation, imagery or
+  map data alone.
 - **Autodrive**: the car drives itself along the GPS route (in lane, legal speed, minding traffic).
 - Saved places and recent places; "Where you left off" in the level select puts you back where you last drove (it
   is saved as you drive, at teleports and when the game closes).

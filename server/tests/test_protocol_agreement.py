@@ -134,6 +134,10 @@ MOD_TO_SERVER = {
     "highway_signs": {"on": F(bool)},
     "map_tiles": {"tiles": F(list)},       # the world map's basemap tiles as files (settings.mapTiles)
     "geocode": {"id": F(int), "q": F(str), "lat": F(NUM, OPT), "lon": F(NUM, OPT)},   # the map's search box
+    # the map's cache view (covermap.py; additive): the zoom-z tiles x0..x1, y0..y1; mode summary / elevation /
+    # imagery / mapdata (world: not asked by the map yet)
+    "cache_map": {"id": F(int), "z": F(int), "x0": F(NUM), "y0": F(NUM), "x1": F(NUM), "y1": F(NUM),
+                  "mode": F(str, OPT)},
     "route": {"id": F(int), "lat0": F(NUM), "lon0": F(NUM), "lat1": F(NUM), "lon1": F(NUM),
               "bearing": F(NUM, OPT)},   # the GPS (routing.py); bearing: the car's heading, the route starts that way
     "where": {"id": F(int), "lat": F(NUM), "lon": F(NUM), "online": F(bool)},   # the status bar (geocode.py)
@@ -155,6 +159,10 @@ TERRAIN = {"cx": F(NUM), "cy": F(NUM), "heightmap": F(str), "size": F(int), "squ
 SERVER_TO_MOD = {
     "server_list": {"servers": F(list, OPT), "error": F(str, OPT)},   # earthd.server_list (the list service)
     "geocode_result": {"id": F(int), "results": F(list), "error": F(str, OPT)},   # geocode.py (Photon)
+    # covermap.py: w x h levels (base64, north row first) for the asked box, clipped to the world; gen changes with
+    # the index; ready: false while the index is being built
+    "cache_map_result": {"id": F(int), "z": F(int), "x0": F(int), "y0": F(int), "w": F(int), "h": F(int),
+                         "cells": F(str), "gen": F(int), "ready": F(bool, OPT), "error": F(str, OPT)},
     "route_result": {"id": F(int), "points": F(list), "dist": F(NUM), "dur": F(NUM), "error": F(str, OPT),
                       "elev": F((list, dict), OPT)},  # OSRM; elev: the map's profile (routing.resample, dem.sample)
     "route_download": {"total": F(int), "done": F(int), "active": F(bool)},  # routeahead.py: the route's corridor
@@ -277,6 +285,7 @@ EXERCISED_ELSEWHERE = {"far_retex", "roads_tile", "roads_drop",   # roads: needs
                        "map_tiles_ready",                            # only when the world map asks (map_tiles)
                        "update",                                     # only when GitHub has a newer version (online)
                        "geocode_result", "route_result",             # only when the map / GPS asks
+                       "cache_map_result",                           # only when the map's cache view asks
                        "route_download",                             # only when the GPS plans a route (routeahead.py)
                        "server_list"}                                # only when the BeamMP tab asks (online)
 # events the mod's net.lua makes up itself (not on the wire)

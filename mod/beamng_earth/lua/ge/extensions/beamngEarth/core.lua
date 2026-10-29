@@ -1032,6 +1032,9 @@ local function onMessage(msg)
     gps.onRouteDownload(msg)
   elseif t == 'geocode_result' then
     if msg.id then geocodeResults[msg.id] = { results = msg.results or {}, error = msg.error } end
+  elseif t == 'cache_map_result' then
+    -- the map's cache view: a grid of levels for the asked box (EarthMap.vue polls takeCacheMap)
+    if msg.id then M._cacheMapResults = { [msg.id] = msg } end
   elseif t == 'map_tiles_ready' then
     -- a world map tile file is written (settings.mapTiles: the map polls every 250 ms while it misses tiles)
   elseif t == 'navgraph' then
@@ -2420,6 +2423,22 @@ end
 function M.takeGeocode(id)
   local r = geocodeResults[id]
   geocodeResults[id] = nil
+  return r
+end
+
+-- The world map's cache view (server covermap.py): what is cached in the zoom-z tiles x0..x1, y0..y1 (mode: summary,
+-- elevation, imagery, mapdata); the answer is cache_map_result. Only the newest answer is kept (M._cacheMapResults:
+-- a field, not a local: the main chunk is at Lua's 200-local limit).
+function M.requestCacheMap(id, z, x0, y0, x1, y1, mode)
+  if not net.isConnected() then return false end
+  M._cacheMapResults = {}
+  net.send({ type = 'cache_map', id = id, z = z, x0 = x0, y0 = y0, x1 = x1, y1 = y1, mode = mode })
+  return true
+end
+function M.takeCacheMap(id)
+  local all = M._cacheMapResults or {}
+  local r = all[id]
+  all[id] = nil
   return r
 end
 
