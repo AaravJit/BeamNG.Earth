@@ -1119,17 +1119,18 @@ function M.reset()
   require('beamngEarth/mpanchor').reset()
 end
 
--- The other players for the world map: { { name, lat, lon, h } } (h: heading in degrees from true north, nil when
--- they have no car), from the plugin's latest bngeAnchors (POSE_S old at most).
+-- The other players for the world map: { { pid, name, lat, lon, h } } (pid: the server's player id as a string, what
+-- the map keys and follows them by: two players can have the same name; h: heading in degrees from true north, nil
+-- when they have no car), from the plugin's latest bngeAnchors (POSE_S old at most).
 function M.others()
   local out, mine = {}, myPid()
   for k, a in pairs(anchors) do
     if k ~= mine and type(a) == 'table' and tonumber(a.lat) and tonumber(a.lon) then
-      out[#out + 1] = { name = type(a.name) == 'string' and a.name or ('player ' .. k), lat = tonumber(a.lat),
+      out[#out + 1] = { pid = k, name = type(a.name) == 'string' and a.name or ('player ' .. k), lat = tonumber(a.lat),
         lon = tonumber(a.lon), h = tonumber(a.h) }
     end
   end
-  table.sort(out, function(x, y) return x.name < y.name end)
+  table.sort(out, function(x, y) if x.name ~= y.name then return x.name < y.name end return x.pid < y.pid end)
   return out
 end
 
