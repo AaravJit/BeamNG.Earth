@@ -5212,6 +5212,9 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(areacover::area_tiles, m)?)?;
     m.add_function(wrap_pyfunction!(areacover::area_km2, m)?)?;
     m.add_function(wrap_pyfunction!(areacover::keys_in_boxes, m)?)?;
+    m.add_function(wrap_pyfunction!(areacover::corridor_tiles, m)?)?;
+    m.add_function(wrap_pyfunction!(areacover::corridor_size, m)?)?;
+    m.add_function(wrap_pyfunction!(areacover::keys_in_cover, m)?)?;
     m.add_function(wrap_pyfunction!(roadz::las_decode, m)?)?;
     m.add_function(wrap_pyfunction!(roadz::roadz_match, m)?)?;
     m.add_function(wrap_pyfunction!(roadz::profile_clean, m)?)?;
@@ -5242,6 +5245,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fartex::season_img, m)?)?;
     m.add_function(wrap_pyfunction!(fartex::dds_levels, m)?)?;
     m.add_function(wrap_pyfunction!(fartex::jpeg_rgb, m)?)?;
-    m.add("VERSION", 113)?;
+    m.add("VERSION", 114)?;
     Ok(())
 }
