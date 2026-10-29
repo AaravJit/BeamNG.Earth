@@ -1107,16 +1107,22 @@ switchAnchor = function(newAnchorId, keepOld, blk, newSession, newAnchor)
   -- global tiles stay shown (the server keeps them, any anchor's), placed into the new anchor; another server
   -- session's are a previous anchor's tiles (that server does not know them)
   local sameSession = newSession == nil or newSession == session
-  local globals = {}
+  local due = minPendingSeq() -- (with the global tiles still loading: a removal after one waits for it)
+  local globals, loading = {}, {}
   if sameSession then
     for key, inst in pairs(live) do
       if inst.global and not inst.doomed then globals[key] = inst end
     end
     for key in pairs(globals) do live[key] = nil end
+    -- ... and those still loading (sent, not swapped in): the server keeps them sent, its swap comes under the new
+    -- anchor (sent again otherwise: a global tile in flight at a rebase was built and imported twice)
+    for key, inst in pairs(pending) do
+      if inst.global and not inst.doomed then loading[key] = inst end
+    end
+    for key in pairs(loading) do pending[key] = nil end
   end
   local keep = {}
   if keepOld then
-    local due = minPendingSeq()
     -- removals whose adds are all shown stay valid in the new frame
     for i = rH, rT do
       local r = removals[i]
@@ -1140,7 +1146,7 @@ switchAnchor = function(newAnchorId, keepOld, blk, newSession, newAnchor)
     end
     old, oldCount, lossy, oldFrames = {}, 0, {}, {}
   end
-  pending, live = {}, globals
+  pending, live = loading, globals
   if newAnchor and newAnchor ~= anchorObj then
     anchorObj = newAnchor
     for _, inst in pairs(globals) do
@@ -1148,8 +1154,16 @@ switchAnchor = function(newAnchorId, keepOld, blk, newSession, newAnchor)
       setTransform(inst)
     end
   end
-  for _, inst in pairs(globals) do applyCover(inst, false) end
   mainQ, mH, mT, preQ, pH, pT, nQueued = {}, 1, 0, {}, 1, 0, 0
+  for _, inst in ipairs(bySeq(loading)) do      -- (transform moved only the shown ones)
+    placeGlobal(inst, anchorObj)
+    if inst.id then setTransform(inst) end
+    if inst.queued then
+      nQueued = nQueued + 1
+      if inst.prefetch then pT = pT + 1; preQ[pT] = inst else mT = mT + 1; mainQ[mT] = inst end
+    end
+  end
+  for _, inst in pairs(globals) do applyCover(inst, false) end
   groups, activeGroups, moving = {}, 0, {}
   removals, rH, rT = keep, 1, #keep
   anchorId = newAnchorId

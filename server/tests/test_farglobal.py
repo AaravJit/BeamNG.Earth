@@ -350,11 +350,24 @@ class ContentTest(unittest.TestCase):
 
 
 class GlobalFarState(FarState):
-    """FarState with global tiles: their key names no anchor, and they stay shown across anchors."""
+    """FarState with global tiles: their key names no anchor, and they stay shown (or loading) across anchors."""
+
+    current = None
+
+    def switch(self, anchor_id):
+        self.current = anchor_id
+        self.held = {k: m for k, m in self.held.items() if k[0] in (anchor_id, 0)}
 
     def apply(self, msgs):
         for m in msgs:
             m = dict(m)
+            if self.current is not None and m.get("anchorId") not in (None, self.current):
+                # (a previous anchor's message that crossed the commit: the mod ignores its swaps and tiles, and a
+                # far_remove of one of its tiles it dropped at the switch)
+                if m["type"] in ("far_swap", "far_tile"):
+                    continue
+                if m["type"] == "far_remove" and (m["anchorId"], m["key"]) not in self.tiles:
+                    continue
             if m["type"] in ("far_tile", "far_remove", "far_retex") and ff.is_global_key(m.get("key")):
                 m["anchorId"] = 0
             if m["type"] == "far_swap":
@@ -426,6 +439,73 @@ class RebaseTest(test_server.ServerHarness):
         c = self.conn()
         self.assertEqual(done["count"], len(c.desired))
         self.assertTrue(all(c.ck(k) in c.shown for k in c.desired))
+
+    def test_there_and_back_with_the_camera_away(self):
+        """A rebase there and back (an anchor 1.4 km away and back to the first place, as at Pikes Peak, 2026-10-29)
+        with a free camera 3 km from the car, the pose coming a while after each commit (as the game's): no level
+        >= 3 tile sent again. (The camera's position stayed in the previous anchor's frame until the next pose: the
+        far field was selected 1.4 km off at each commit, and global tiles went and came back.)"""
+        import time
+        self.hello_global()
+        far = GlobalFarState()
+        car = (test_server.LAT, test_server.LON)
+        cam = (test_server.LAT + 0.004, test_server.LON + 0.03)       # ~3 km east of the car, a free camera
+        anchors = [(test_server.LAT, test_server.LON), (test_server.LAT + 0.01, test_server.LON + 0.01),
+                   (test_server.LAT, test_server.LON)]
+        sent = []
+        for req, (alat, alon) in enumerate(anchors, 1):
+            fr = geodesy.EnuFrame(alat, alon)
+            px, py, _ = fr.geodetic_to_enu(*car, 0.0)
+            cx, cy, _ = fr.geodetic_to_enu(*cam, 0.0)
+            px, py, cx, cy = (float(v) for v in (px, py, cx, cy))
+            cxb, cyb = self.server.snap(px), self.server.snap(py)
+            a = self.prepare_anchor(req, alat, alon, cx=cxb, cy=cyb)
+            aid = a["anchorId"]
+            far.switch(aid)
+            self.c.send({"type": "commit_anchor", "anchorId": aid})
+            self.c.send({"type": "commit_terrain", "anchorId": aid, "cx": cxb, "cy": cyb})
+            time.sleep(1.0)                 # (the next pose: the game sends them every 0.5-1 s)
+            self.c.send({"type": "pose", "anchorId": aid, "x": px, "y": py, "z": 0, "lat": car[0], "lon": car[1],
+                         "speed": 0, "vx": 0, "vy": 0,
+                         "cam": {"x": cx, "y": cy, "z": 200, "fx": 0, "fy": 1, "fz": 0, "fovDeg": 60}})
+            _, seen = self.stream_until_done(far, aid, timeout=300)
+            sent.append([m["key"] for m in seen if m["type"] == "far_tile" and m["level"] >= 3])
+        self.assertGreater(len(sent[0]), 40)
+        self.assertEqual(sent[1:], [[], []], "no level >= 3 tile sent again at either rebase")
+
+    def test_rebase_while_global_tiles_load(self):
+        """A rebase committed while the first far field still streams: the global tiles sent but not swapped in stay
+        sent (the mod keeps them loading), none is sent twice (GlobalFarState asserts it), all show in the end."""
+        self.hello_global()
+        far = GlobalFarState()
+        lon_a = test_server.LON - 15000.0 / (111320.0 * math.cos(math.radians(test_server.LAT)))
+        fa = geodesy.EnuFrame(test_server.LAT, lon_a)
+        px, py, _ = fa.geodetic_to_enu(test_server.LAT, test_server.LON, 0.0)
+        a = self.prepare_anchor(1, test_server.LAT, lon_a, cx=0.0, cy=0.0)
+        a1 = a["anchorId"]
+        far.switch(a1)
+        self.c.send({"type": "commit_anchor", "anchorId": a1})
+        self.c.send({"type": "commit_terrain", "anchorId": a1, "cx": 0.0, "cy": 0.0})
+        self.pose(a1, float(px), float(py))
+        first, seen = self.c.until(lambda m: m["type"] == "far_tile" and ff.is_global_key(m["key"]), timeout=120)
+        far.apply(seen + [first])
+        self.c.send({"type": "prepare_anchor", "requestId": 2, "lat": test_server.LAT, "lon": test_server.LON,
+                     "cx": 0.0, "cy": 0.0})
+        b, more = self.c.until(lambda m: m["type"] == "anchor_ready", timeout=60)
+        more.append(b)
+        a2 = b["anchorId"]
+        self.c.send({"type": "commit_anchor", "anchorId": a2})
+        self.c.send({"type": "commit_terrain", "anchorId": a2, "cx": 0.0, "cy": 0.0})
+        self.pose(a2, 0.0, 0.0)
+        _, rest = self.c.until(lambda m: m["type"] == "far_done" and m["anchorId"] == a2, timeout=300)
+        msgs = more + rest              # in arrival order: the mod switches where the new anchor's messages start
+        k = next(i for i, m in enumerate(msgs) if m.get("anchorId") == a2 and m["type"] != "anchor_ready")
+        far.apply(msgs[:k])
+        far.switch(a2)
+        far.apply(msgs[k:])
+        c = self.conn()
+        shown = {k for a, k in far.tiles if a in (0, a2)}
+        self.assertEqual(shown, set(c.desired))
 
 
 if __name__ == "__main__":

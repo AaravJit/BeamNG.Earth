@@ -88,6 +88,25 @@ farfield.transform(a3:transformTo(a2), a2)
 farfield.switchAnchor(1, true, { cx = 0, cy = 0 }, 'sB', a2)
 T.check(farfield._tile(gkey) == nil and farfield._old(3, gkey, 'sA') ~= nil, 'a new server session: an old tile')
 
+-- a global tile still loading at a rebase (sent, not swapped in) stays, placed into the new anchor; its swap comes
+-- under the new anchor (the server keeps it sent): not received or imported again
+farfield.switchAnchor(6, false, { cx = 0, cy = 0 }, 'sB', a1)
+farfield.onTile(gmsg(a1, 6))
+step()
+local pend = farfield._pending(gkey)
+T.check(pend ~= nil and pend.loaded and not pend.shown, 'loaded, waiting for its swap')
+local imp = farfield.counters().imports
+farfield.transform(a1:transformTo(a2), a2)
+farfield.switchAnchor(7, true, { cx = 0, cy = 0 }, 'sB', a2)
+T.check(farfield._pending(gkey) == pend and not pend.doomed, 'still loading after the rebase')
+T.check(placed(pend, a2), 'placed into the new anchor')
+farfield.onSwap({ type = 'far_swap', anchorId = 7, id = 9, add = { gkey }, remove = {} })
+step()
+T.check(farfield._tile(gkey) == pend and pend.shown, 'its swap under the new anchor shows it')
+T.check(farfield.counters().imports == imp, 'imported once')
+farfield.onRemove({ type = 'far_remove', anchorId = 7, key = gkey })
+step(5)
+
 -- a piece: its footprint is its polygon's AABB
 farfield.switchAnchor(5, false, { cx = 0, cy = 0 }, 'sB', a2)
 farfield.onTile({ type = 'far_tile', anchorId = 5, key = '2_3_4_c14_100_200', level = 2,
@@ -96,4 +115,4 @@ farfield.onTile({ type = 'far_tile', anchorId = 5, key = '2_3_4_c14_100_200', le
 local p = farfield._pending('2_3_4_c14_100_200')
 T.check(p and p.x1 == 3500.5 and p.y1 == 5120 and not p.global, 'a piece: footprint from its poly, an anchor tile')
 
-T.done()
+T.done('farglobal')

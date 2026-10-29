@@ -4346,6 +4346,12 @@ class Connection:
             self.shown = {k: farfield.transform_bbox(old.frame, anchor.frame, bb) for k, bb in self.shown.items()}
             fx, fy, _ = anchor.frame.ecef_to_enu(*old.frame.enu_to_ecef(*self.focus, 0.0))
             self.focus = (float(fx), float(fy))
+            if self.view_at is not None:
+                # the camera away from the car too (the far field's centre until the next pose: left in the old
+                # frame, the far field was selected that far off at the commit and global tiles went and came back,
+                # Pikes Peak 2026-10-29)
+                vx, vy, _ = anchor.frame.ecef_to_enu(*old.frame.enu_to_ecef(*self.view_at, 0.0))
+                self.view_at = (float(vx), float(vy))
             log.debug("commit anchor %d: player at (%.0f, %.0f) in its frame, first terrain %s", aid, fx, fy,
                       anchor.first_terrain)
             if anchor.first_terrain is not None:
@@ -4354,6 +4360,7 @@ class Connection:
                     # Not a rebase but a teleport: the mod places the player on the new
                     # anchor's first terrain, and its next pose may come only after that.
                     self.focus, self.vel = (float(anchor.first_terrain[0]), float(anchor.first_terrain[1])), (0.0, 0.0)
+                    self.view_at = None
                     self.boost_t0 = time.monotonic()
                     self.s.load_boost(True, "teleport")
         else:
@@ -4362,14 +4369,17 @@ class Connection:
             # restart, whose terrain is around the player): start at the anchor's first terrain.
             self.focus = tuple(float(v) for v in anchor.first_terrain) if anchor.first_terrain else (0.0, 0.0)
             self.vel = (0.0, 0.0)
+            self.view_at = None
         for ck, (fut, _) in self.inflight.items():
             if ck[0] != aid:
                 fut.cancel()            # only stops jobs that have not started
-        # Tiles sent but not swapped in are dropped by the mod at the anchor switch (global ones too).
-        self._retire(self.ck(k) for k in self.sent)
+        # Tiles sent but not swapped in are dropped by the mod at the anchor switch, but for the global ones (any
+        # anchor's: the mod keeps them loading, placed into the new anchor; not after a resync, old is None)
+        keep = {k: t for k, t in self.sent.items() if farfield.is_global_key(k)} if old is not None else {}
+        self._retire(self.ck(k) for k in self.sent if k not in keep)
         self.active = aid
         self.ppolys = {}
-        self.desired, self.sent, self.groups, self.queue, self.qi = {}, {}, [], [], 0
+        self.desired, self.sent, self.groups, self.queue, self.qi = {}, keep, [], [], 0
         old_grid = self.s.horizon_grids.get(old.id) if old is not None else None
         self.prev_horizon = (old.frame, old_grid) if old_grid is not None and old_grid.merc is not None else None
         # (the global far tiles' split state is any anchor's: kept, so their hysteresis holds across the rebase)
@@ -5010,8 +5020,13 @@ class Connection:
         if len(self.gpolys) > 4 * len(self.desired) + 1000:
             self.gpolys = {ck: q for ck, q in self.gpolys.items() if ck[0] == aid}
         self.groups = farfield.swap_groups(cur, self.desired, self.poly_of)
-        # Sent tiles no group needs any more: the mod drops them.
+        # Sent tiles no group needs any more: the mod drops them. (A global one kept from a previous anchor takes
+        # the tile of this selection: its quad in this anchor's world.)
         needed = {k for adds, _ in self.groups for k in adds}
+        for k in self.sent:
+            t = self.desired.get(k)
+            if t is not None and self.sent[k] is not t:
+                self.sent[k] = t
         for k in [k for k in self.sent if k not in needed]:
             del self.sent[k]
             self._retire([self.ck(k)])
