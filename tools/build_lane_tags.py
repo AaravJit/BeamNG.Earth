@@ -32,13 +32,16 @@ LANE_KEYS = ("turn:lanes", "turn:lanes:forward", "turn:lanes:backward", "turn:la
              "bus:lanes", "bus:lanes:forward", "bus:lanes:backward", "psv:lanes", "busway", "busway:left",
              "busway:right", "busway:both", "hov:lanes", "cycleway:lanes", "access:lanes")
 TAGS = LANE_KEYS + ("highway", "lanes", "oneway", "junction")
+# roundabout rings too, lane tags or not (roads._rings: their circulatory width; Layercake's highways file has no
+# junction column)
+RINGS = ("roundabout", "circular")
 
 
 def first_pass(src):
     """[(id, tags dict, (first, middle, last) node refs)] of the highway ways with a lane key."""
     with rail._Source(src) as f:
         ways, t0, k = [], time.time(), 0
-        fp = osmium.FileProcessor(f, osmium.osm.WAY).with_filter(osmium.filter.KeyFilter(*LANE_KEYS))
+        fp = osmium.FileProcessor(f, osmium.osm.WAY).with_filter(osmium.filter.KeyFilter(*LANE_KEYS, "junction"))
         for o in fp:
             k += 1
             if k % 500_000 == 0:
@@ -46,6 +49,8 @@ def first_pass(src):
             tags = o.tags
             if "highway" not in tags or len(o.nodes) < 2:
                 continue
+            if tags.get("junction") not in RINGS and not any(k in tags for k in LANE_KEYS):
+                continue                        # (a junction=yes / spui way without lane tags)
             refs = [n.ref for n in o.nodes]
             ways.append((o.id, {t: tags[t] for t in TAGS if t in tags},
                          np.array([refs[0], refs[len(refs) // 2], refs[-1]], np.int64)))

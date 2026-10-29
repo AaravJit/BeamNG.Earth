@@ -1037,7 +1037,9 @@ def shore_plan(frame, x, y, carver, radius=SHORE_RADIUS_M):
             later.append((cx, cy))
             continue
         for n, (kind, lv, la, lo) in enumerate(cell_shores(carver, cx, cy)):
-            e, nn, z = frame.geodetic_to_enu(la, lo, np.full(len(la), lv))
+            # (east / north at h = 0 as the carved ground's samples, up at the water's level: roads.build_tile)
+            e, nn, _ = frame.geodetic_to_enu(la, lo, 0.0)
+            z = frame.geodetic_to_enu(la, lo, np.full(len(la), lv))[2]
             nodes = [[round(float(a), 1), round(float(b), 1), round(float(c), 2)] for a, b, c in zip(e, nn, z)]
             h = hashlib.sha1(repr(nodes).encode()).hexdigest()[:8]
             out.append([f"S{cx}_{cy}_{n}_{h}", kind, nodes])

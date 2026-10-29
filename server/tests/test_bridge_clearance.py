@@ -118,7 +118,7 @@ class MinimumBridgeClearanceTest(TestCase):
         bp = object.__new__(roads.BridgeProfiles)
         bp._ground = flat
         bp.frame = None
-        bp._water = lambda lines, nav: []
+        bp._water = lambda lines, nav, depth=None, channel=0.0: []
         key = ("short", 0)
         pool = {key: (mock.Mock(width=12.0), xy, 0.0, 1.0, len(xy))}
         with mock.patch("bridgetypes.nav_clearance", return_value=0.0), \
@@ -187,6 +187,7 @@ class SemiApproachIntegrationTest(TestCase):
     def test_approach_and_generated_deck_clear_six_metres(self):
         fixture = approaches.OverpassIntegrationTest("test_deck_clears_the_lanes")
         separation, grade = fixture.deck_over_lanes(True)
-        usable = separation - roadmesh.DECK_DEPTH - roadmesh.GIRDER_D
+        # (the deck's own depth: roads.deck_depth of the 70 m bridge's span)
+        usable = separation - roads.deck_depth(roads.geom_span([np.c_[np.linspace(-35, 35, 36), np.zeros(36)]]))
         self.assertGreaterEqual(float(usable.min()), 6.0)
         self.assertLessEqual(grade, roads.DECK_MAX_GRADE)

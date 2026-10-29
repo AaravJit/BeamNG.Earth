@@ -101,6 +101,9 @@ pub fn photo_ghosts<'py>(py: Python<'py>, rgb: numpy::PyReadonlyArray3<'py, u8>,
         }
         // per band pixel: 0 none, 1 band, 2 pavement; its nearest segment's outward unit normal and squared distance
         let mut band = Array2::<u8>::zeros((h, w));
+        // the road whose band a pixel is in (-1 none, -2 two roads: between two carriageways, a gore or a median, the
+        // photo's pavement is real: kept)
+        let mut owner = Array2::<i64>::from_elem((h, w), -1);
         let mut dist = Array2::<f64>::from_elem((h, w), f64::INFINITY);
         let mut seg_d = Array2::<f64>::from_elem((h, w), f64::INFINITY);
         let mut nrm = Array3::<f64>::zeros((h, w, 2));
@@ -114,6 +117,8 @@ pub fn photo_ghosts<'py>(py: Python<'py>, rgb: numpy::PyReadonlyArray3<'py, u8>,
             let l2 = dc * dc + dr * dr;
             each_near(h as i64, w as i64, seg(k), hw[k] + ghost[k], |r, c, d2s| {
                 if on[[r, c]] { return; }
+                let o = owner[[r, c]];
+                if o == -1 { owner[[r, c]] = id as i64; } else if o >= 0 && o != id as i64 { owner[[r, c]] = -2; }
                 let mut d2 = 0.0;
                 for ch in 0..3 { let d = img[[r, c, ch]] as f64 - m[ch]; d2 += d * d; }
                 if band[[r, c]] == 0 { band[[r, c]] = 1; }
@@ -144,6 +149,7 @@ pub fn photo_ghosts<'py>(py: Python<'py>, rgb: numpy::PyReadonlyArray3<'py, u8>,
             }
         }
         for (r, c) in grow { band[[r, c]] = 2; }
+        for r in 0..h { for c in 0..w { if owner[[r, c]] == -2 { band[[r, c]] = 1; } } }
         let mut out = img.to_owned();
         let mut mask = Array2::<bool>::from_elem((h, w), false);
         let at = |c: f64, r: f64| -> Option<(usize, usize)> {

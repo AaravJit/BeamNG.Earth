@@ -65,6 +65,7 @@ local lastApply = -math.huge
 local persistent = nil  -- the node table handed out once (research §2.7.2)
 local ours = false
 local foreign = false
+local urgent = false      -- a rebase moved the graph: applied again without waiting for MIN_GAP_S (M.transform)
 local stats = { applies = 0, lastMs = 0, nodes = 0, edges = 0 }
 local pendingSignals = nil -- the clipped nodes whose signals go in next frame
 local started = false
@@ -274,7 +275,7 @@ local function setRules()
 end
 
 -- pre: toNodes' results built ahead (buildNodes), else made here
-local function apply(b, pre)
+local function apply(b, pre, moved)
   setRules()
   local tN = os.clock()
   local nodes, nn, ne, cl
@@ -318,7 +319,7 @@ local function apply(b, pre)
     persistent = m.nodes
   end
   local tA = os.clock()
-  if keep then pcall(gps.afterGraph, keep, m.nodes) end    -- before the vehicles' new map
+  if keep then pcall(gps.afterGraph, keep, m.nodes, moved) end    -- before the vehicles' new map
   stats.gpsMs = stats.gpsMs + (os.clock() - tA) * 1000
   be:queueAllObjectLua('mapmgr.requestMap()')
   -- the minimap (the navigation app, in 0.40's freeroam layout and ours) indexes the map's roads once and keeps them:
@@ -530,6 +531,29 @@ end
 -- The player teleported: the traffic cars go inactive (no physics: their old positions have no ground) and come
 -- back on the new place's graph once it is in.
 local heldActive = nil
+-- A rebase (core finishRebase, xf: the old frame -> the new one): the server's graph moved into the new anchor and
+-- applied again at once, as the roads and trees are moved. It was dropped instead (its anchor no longer the current
+-- one) and the game's map stayed in the old frame until the server's graph for the new anchor came, seconds later:
+-- the AI planned toward roads hundreds of metres off and swerved, into a street tree on North Front Street, Baltimore
+-- (Steam Deck, 3 of 3 rebase drives, 2026-10-29). The server's own graph replaces this one when it comes.
+function M.transform(xf, anchorId)
+  if not graph or not xf then return false end
+  local nodes = {}
+  for name, n in pairs(graph.nodes) do
+    local m = {}
+    for i, v in ipairs(n) do m[i] = v end
+    m[1], m[2], m[3] = xf:apply(n[1], n[2], n[3])
+    nodes[name] = m
+  end
+  graph = { anchor = anchorId, serial = graph.serial, nodes = nodes, edges = graph.edges, signals = graph.signals,
+            rules = graph.rules, moved = true }
+  dirty, urgent = true, true
+  if applied then applied.box = nil end
+  return true
+end
+
+function M.currentGraph() return graph end      -- (tests)
+
 function M.onTeleport()
   respawnAll = true
   local gt = gameplay_traffic
@@ -619,14 +643,24 @@ function M.update(aid, b, gov)
   if not (dirty or foreign) and applied and M.boxMoved(applied.box, b) >= M.RECLIP_M then dirty = true end
   if not (dirty or foreign) then return end
   local t = os.clock()
-  if t - lastApply < M.MIN_GAP_S and not foreign then return end
-  local pre = buildNodes(b)
-  if not pre or not room(gov) then return end
+  if t - lastApply < M.MIN_GAP_S and not foreign and not urgent then return end
+  -- (a moved graph, M.transform: built in one go and applied in this frame, whatever the frame budget: until the cars
+  -- have it their AI drives on points of the old frame)
+  local pre
+  if urgent then
+    setRules()
+    pre = { M.toNodes(graph, b and { b[1], b[2], b[3], b[4] } or nil, M.EDGE_M, M.rules.rightHandDrive) }
+  else
+    pre = buildNodes(b)
+    if not pre or not room(gov) then return end
+  end
   prep = nil
   lastApply = t
   dirty, foreign = false, false
+  local moved = urgent
+  urgent = false
   local sw = stopwatch.new()
-  local okA = apply(b, pre)
+  local okA = apply(b, pre, moved)
   if gov and gov.noteFrame then gov:noteFrame(sw()) end
   if okA then
     applied = { anchor = aid, serial = graph.serial, box = b and { b[1], b[2], b[3], b[4] } or {} }

@@ -17,6 +17,7 @@ the same every time.
 """
 import logging
 import math
+from collections import OrderedDict
 import os
 import struct
 import threading
@@ -348,6 +349,20 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, e
                     add(lawn, np.asarray(c, np.float64), np.asarray(r, np.float64), mw / 2)
     for la, lo, spec in extra:
         line(np.asarray(lo), np.asarray(la), spec, False)
+    # ramp gores, paved (gore_fills, in a frame at the grid's middle)
+    import geodesy
+    gfr = geodesy.EnuFrame(la_c, lo_c)
+    gb = gfr.geodetic_to_enu(np.array([float(np.min(lat)), float(np.max(lat))]),
+                             np.array([float(np.min(lon)), float(np.max(lon))]), np.zeros(2))
+    for hw_, mid in gore_fills(gfr, feats_list, (float(np.min(gb[0])) - 300, float(np.min(gb[1])) - 300,
+                                                 float(np.max(gb[0])) + 300, float(np.max(gb[1])) + 300), urban_fn, widths):
+        gla, glo, _ = gfr.enu_to_geodetic(mid[:, 0], mid[:, 1], np.zeros(len(mid)))
+        c, r = to_px(np.asarray(glo), np.asarray(gla))
+        c, r = np.asarray(c, np.float64), np.asarray(r, np.float64)
+        sk = segs.setdefault("paved", ([], [])) if "paved" in segs else None
+        if sk is not None:
+            sk[0].append(np.stack([c[:-1], r[:-1], c[1:], r[1:]], axis=1))
+            sk[1].append(np.maximum(hw_[:-1], hw_[1:]) / square)
     fast.require(91, "mask_segments")
 
     def mask(dst):
@@ -358,10 +373,40 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, e
     out = idx.copy()
     out[mask(lawn)] = LAWN
     v = mask(verge)
+    # the rounded corners of curbless junctions (roadcorners.py): asphalt as their roads (ROAD_EDGE_M past the arc), a
+    # verge round them
+    lonlat_bounds = (float(np.min(lon)), float(np.min(lat)), float(np.max(lon)), float(np.max(lat)))
+    corner, corner_verge = (_corner_mask(feats_list, urban_fn, widths, lonlat_bounds, to_px, (h, w), grow)
+                            for grow in (ROAD_EDGE_M, ROAD_EDGE_M + VERGE_M))
+    if corner_verge is not None:
+        v |= corner_verge
     out[v & np.isin(out, VERGE_FROM)] = VERGE
     for k in ROAD_ORDER:
         out[mask(segs[k])] = ROAD_MATERIAL[k]
+    if corner is not None:
+        out[corner] = ROAD_MATERIAL["paved"]
     return out
+
+
+def _corner_mask(feats_list, urban_fn, widths, lonlat_bounds, to_px, shape, grow):
+    """The samples (bool (h, w), to_px: (lon, lat) -> (col, row)) inside the rounded corners of feats_list's junctions
+    (roadcorners.pads, their arcs grown by grow m), or None (none on the grid)."""
+    import roadcorners
+    pads = roadcorners.pads(feats_list, urban_fn, widths, lonlat_bounds=lonlat_bounds, grow=grow)
+    if not pads:
+        return None
+    h, w = shape
+    im = None
+    for la, lo in pads:
+        c, r = to_px(np.asarray(lo), np.asarray(la))
+        c, r = np.asarray(c, np.float64), np.asarray(r, np.float64)
+        if c.max() < 0 or c.min() > w or r.max() < 0 or r.min() > h:
+            continue
+        if im is None:
+            im = Image.new("L", (w, h), 0)
+            draw = ImageDraw.Draw(im)
+        draw.polygon(list(zip(c.tolist(), r.tolist())), fill=255)
+    return None if im is None else np.asarray(im) > 0
 
 
 # Roads in the ground (the user, 2026-10-22: "I dont love that we are applying a floating road texture over the normal
@@ -417,9 +462,60 @@ def _road_segments(frame, x0, y0, size, w, h, feats_list, urban_fn=None, widths=
                     roads_of.append((np.full(len(c) - 1, nroad, np.int64),
                                      np.full(len(c) - 1, not roadsmod.has_sidewalks(sp) and sp.kind == "paved")))
             nroad += 1
+    # ramp gores (markings.gores: the wedge between a ramp and its motorway is paved): as more paved segments
+    for hw_, mid in gore_fills(frame, feats_list, (x0 - 300, y0 - 300, x0 + size + 300, y0 + size + 300), urban_fn,
+                               widths):
+        c = (mid[:, 0] - x0) * px_m
+        r = (y0 + size - mid[:, 1]) * px_m
+        segs.append(np.stack([c[:-1], r[:-1], c[1:], r[1:]], axis=1))
+        hws.append(np.maximum(hw_[:-1], hw_[1:]) * px_m)
+        kind.append(np.full(len(c) - 1, kinds.index("paved"), np.uint8))
+        if roads_of is not None:
+            roads_of.append((np.full(len(c) - 1, nroad, np.int64), np.zeros(len(c) - 1, bool)))
+            nroad += 1
     if not segs:
         return None
     return np.concatenate(segs), np.concatenate(hws), np.concatenate(kind)
+
+
+_GORE_MEMO = OrderedDict()
+
+
+def gore_fills(frame, feats_list, box, urban_fn=None, widths=None):
+    """[(half widths (k,), middle line (k, 3) in frame)] of the paved wedges between ramps and their motorways
+    (markings.gores) whose roads come near box (x0, y0, x1, y1) of frame. Kept for a few calls with the same features
+    and square (a block photo asks twice: unghost_square, paint_square)."""
+    key = (tuple(getattr(f, "__dict__", {}).get("_bnge_cell") or id(f) for f in feats_list), frame.lat0, frame.lon0,
+           tuple(round(float(v), 1) for v in box))
+    got = _GORE_MEMO.get(key)
+    if got is None:
+        got = _gore_fills(frame, feats_list, box, urban_fn, widths)
+        _GORE_MEMO[key] = got
+        while len(_GORE_MEMO) > 8:
+            _GORE_MEMO.popitem(last=False)
+    return got
+
+
+def _gore_fills(frame, feats_list, box, urban_fn=None, widths=None):
+    import markings
+    near, seen = [], set()
+    for feats in feats_list:
+        if feats is None or len(feats) == 0:
+            continue
+        specs = roadsmod.road_specs(feats, urban_fn, widths)
+        for i in range(len(feats)):
+            sp = specs[i]
+            fid = str(feats.ids[i])
+            if sp is None or fid in seen or not sp.oneway or sp.kind != "paved" or \
+                    (sp.cls not in markings.GORE_MAJOR and not sp.link):
+                continue
+            seen.add(fid)
+            for k, ring in enumerate(roadsmod.ground_parts(feats, i)):
+                e, n = mapgeom.enu_xy(feats, frame, ring)
+                if e.max() < box[0] or e.min() > box[2] or n.max() < box[1] or n.min() > box[3]:
+                    continue
+                near.append((f"{fid}:{k}", sp, np.c_[e, n, np.zeros(len(e))], 0.0))
+    return [(hw_, mid) for kind_, hw_, mid in (markings.gores(near) if near else ()) if kind_ == "fill" and len(mid) >= 2]
 
 
 def _feature_boxes(feats, frame):
@@ -479,11 +575,23 @@ def photo_roads(rgb, frame, x0, y0, size, feats_list, urban_fn=None, widths=None
     (earthfast.paint_lines, PHOTO_ROAD_RGBA). Pure (a new array)."""
     fast.require(49, "roads in the ground")
     h, w = rgb.shape[:2]
+    # the rounded corners of curbless junctions (roadcorners.py) in the asphalt's colour, under the roads
+    rgb = photo_corners(rgb, frame, x0, y0, size, corner_pads(frame, x0, y0, size, feats_list, urban_fn, widths))
     got = _road_segments(frame, x0, y0, size, w, h, feats_list, urban_fn, widths)
     if got is None:
         return rgb
     colors = np.array([PHOTO_ROAD_RGBA[k] for k in PHOTO_ROAD_RGBA], np.float32)
     return fast._ef.paint_lines(np.ascontiguousarray(rgb, np.uint8), *got, colors)
+
+
+def corner_pads(frame, x0, y0, size, feats_list, urban_fn=None, widths=None):
+    """The rounded corners (roadcorners.pads) that may reach a photo square [x0, x0 + size]² of frame, their arcs grown
+    by PHOTO_ROAD_EDGE_M as the roads' paint (a few metres of margin: the bounds are rounded out anyway)."""
+    import roadcorners
+    if not feats_list:
+        return []
+    return roadcorners.pads(feats_list, urban_fn, widths, frame, bounds=(x0 - 4.0, y0 - 4.0, x0 + size + 4.0,
+                                                                          y0 + size + 4.0), grow=PHOTO_ROAD_EDGE_M)
 
 
 def _square_roads(frame, x0, y0, size, surface):
@@ -504,11 +612,28 @@ def enlarge(rgb, px):
     return np.asarray(Image.fromarray(rgb, "RGB").resize((px, px), Image.BILINEAR), np.uint8)
 
 
+def _square_pts(frame, x0, y0, size):
+    gx = x0 + np.array([0.0, size, 0.0, size, size / 2])
+    gy = y0 + np.array([0.0, 0.0, size, size, size / 2])
+    la, lo, _ = frame.enu_to_geodetic(gx, gy, np.zeros(5))
+    return np.asarray(la), np.asarray(lo)
+
+
+def _square_lots(frame, x0, y0, size, surface):
+    """The infrastructure and land-use Features around a photo square (Surface.lots; never waits)."""
+    if surface is None or not hasattr(surface, "lots"):
+        return []
+    la, lo = _square_pts(frame, x0, y0, size)
+    return surface.lots(la, lo)
+
+
 def paint_square(rgb, frame, x0, y0, size, surface, widths=None):
     """photo_roads for a ground photo over [x0, x0 + size]² of frame with the roads of surface's cached cells (a
-    Surface; never waits); as it was when its texels are coarser than PHOTO_ROADS_MAX_TEXEL or no cell is cached."""
+    Surface; never waits); as it was when its texels are coarser than PHOTO_ROADS_MAX_TEXEL or no cell is cached.
+    Parking lots are painted first (photo_lots), then gas-station pads, then the carriageways over both."""
     if surface is None or size / max(rgb.shape[1], 1) > PHOTO_ROADS_MAX_TEXEL:
         return rgb
+    rgb = photo_lots(rgb, frame, x0, y0, size, _square_lots(frame, x0, y0, size, surface))
     rgb = photo_pads(rgb, frame, x0, y0, size, _square_pads(frame, x0, y0, size, surface))     # (under the roads)
     feats = _square_roads(frame, x0, y0, size, surface)
     if not feats:
@@ -558,16 +683,20 @@ def road_mask(frame, x0, y0, size, px, surface, widths=None):
     if surface is None or size / max(px, 1) > ROAD_MASK_MAX_TEXEL:
         return None
     pads = pads_mask(frame, x0, y0, size, px, _square_pads(frame, x0, y0, size, surface))
+    lots = lots_mask(frame, x0, y0, size, px, _square_lots(frame, x0, y0, size, surface))
     feats = _square_roads(frame, x0, y0, size, surface)
     got = _road_segments(frame, x0, y0, size, px, px, feats, surface.urban, widths) if feats else None
-    if got is None:
-        return pads
-    colors = np.array([(255.0, 255.0, 255.0, 1.0 if k in ROAD_MASK_KINDS else 0.0) for k in PHOTO_ROAD_RGBA],
-                      np.float32)
-    out = fast._ef.paint_lines(np.zeros((px, px, 3), np.uint8), *got, colors)[..., 0]
-    if pads is not None:
-        out = np.maximum(out, pads)
-    return out if out.any() else None
+    corners = corners_mask(frame, x0, y0, size, px, corner_pads(frame, x0, y0, size, feats, surface.urban, widths)) \
+        if feats else None
+    out = None
+    if got is not None:
+        colors = np.array([(255.0, 255.0, 255.0, 1.0 if k in ROAD_MASK_KINDS else 0.0) for k in PHOTO_ROAD_RGBA],
+                          np.float32)
+        out = fast._ef.paint_lines(np.zeros((px, px, 3), np.uint8), *got, colors)[..., 0]
+    for extra in (pads, lots, corners):
+        if extra is not None:
+            out = extra if out is None else np.maximum(out, extra)
+    return None if out is None or not out.any() else out
 
 
 # A road without sidewalks gets a verge of VERGE_M a side painted bare where the ground would carry grass or shrubs:
@@ -653,6 +782,60 @@ def _pads_px(frame, x0, y0, size, w, h, pads):
     return out
 
 
+def _windows_px(frame, x0, y0, size, w, h, pads):
+    """Each pad's coverage in a w x h photo over [x0, x0 + size]² of frame (row 0 north) in its own small window: [(r0,
+    c0, coverage (float 0..1, 2x supersampled edges))]. (The rounded corners lie all over a photo: one image over their
+    common box was the whole photo, 0.15 s a 2048 px square.)"""
+    k = 2
+    px_m = w * k / size
+    out = []
+    for la, lo in pads:
+        e, n, _ = frame.geodetic_to_enu(np.asarray(la), np.asarray(lo), np.zeros(len(la)))
+        c = (np.asarray(e) - x0) * px_m
+        r = (y0 + size - np.asarray(n)) * px_m
+        c0 = max(0, int(c.min()) // k * k)
+        r0 = max(0, int(r.min()) // k * k)
+        c1 = min(w * k, -(-int(c.max() + 1) // k) * k)
+        r1 = min(h * k, -(-int(r.max() + 1) // k) * k)
+        if c1 <= c0 or r1 <= r0:
+            continue
+        im = Image.new("L", (c1 - c0, r1 - r0), 0)
+        ImageDraw.Draw(im).polygon(list(zip((c - c0).tolist(), (r - r0).tolist())), fill=255)
+        sub = np.asarray(im, np.float32).reshape((r1 - r0) // k, k, (c1 - c0) // k, k).mean(axis=(1, 3)) / 255.0
+        out.append((r0 // k, c0 // k, sub))
+    return out
+
+
+def photo_corners(rgb, frame, x0, y0, size, pads):
+    """photo_pads for many small pads spread over the photo (the rounded junction corners), each in its own window.
+    Pure."""
+    if not pads:
+        return rgb
+    h, w = rgb.shape[:2]
+    r_, g_, b_, op = PHOTO_ROAD_RGBA["paved"]
+    colour = np.array([r_, g_, b_], np.float32)
+    out = None
+    for r0, c0, a in _windows_px(frame, x0, y0, size, w, h, pads):
+        if out is None:
+            out = rgb.copy()
+        r1, c1 = r0 + a.shape[0], c0 + a.shape[1]
+        sub = (a * op)[..., None]
+        out[r0:r1, c0:c1] = np.clip(np.round(out[r0:r1, c0:c1].astype(np.float32) * (1.0 - sub) + colour * sub),
+                                    0, 255).astype(np.uint8)
+    return rgb if out is None else out
+
+
+def corners_mask(frame, x0, y0, size, px, pads):
+    """pads_mask for the rounded junction corners (each in its own window): px x px uint8, or None."""
+    out = None
+    for r0, c0, a in _windows_px(frame, x0, y0, size, px, px, pads):
+        if out is None:
+            out = np.zeros((px, px), np.uint8)
+        r1, c1 = r0 + a.shape[0], c0 + a.shape[1]
+        out[r0:r1, c0:c1] = np.maximum(out[r0:r1, c0:c1], np.round(a * 255.0).astype(np.uint8))
+    return out
+
+
 def photo_pads(rgb, frame, x0, y0, size, pads):
     """The photo rgb (H x W x 3, row 0 north, over [x0, x0 + size]² of frame) with the pads painted in the paved
     roads' colour (PHOTO_ROAD_RGBA). Pure."""
@@ -678,9 +861,45 @@ def pads_mask(frame, x0, y0, size, px, pads):
     return None if a is None else np.round(a * 255.0).astype(np.uint8)
 
 
+def lot_pads(feats_list):
+    """Parking-lot outer rings as (lat, lon) pads for the photo painters (class parking, not grass or gravel)."""
+    pads = []
+    for feats in feats_list:
+        if feats is None or len(feats) == 0:
+            continue
+        sel = _parking(feats)
+        if sel is None:
+            continue
+        for i in np.flatnonzero(sel & (feats.kind == 3)):
+            for part in feats.parts(i):
+                if not part or len(part[0]) < 3:
+                    continue
+                ring = np.asarray(part[0], np.float64)
+                pads.append((ring[:, 1], ring[:, 0]))
+    return pads
+
+
+def photo_lots(rgb, frame, x0, y0, size, feats_list):
+    """The photo with parking-lot polygons painted in the paved roads' colour (under the carriageways). Pure."""
+    return photo_pads(rgb, frame, x0, y0, size, lot_pads(feats_list))
+
+
+def lots_mask(frame, x0, y0, size, px, feats_list):
+    """The parking lots' coverage (px x px uint8, 255 inside) of a tile photo's square, or None."""
+    return pads_mask(frame, x0, y0, size, px, lot_pads(feats_list))
+
+
 def _parking(feats):
     cls = feats.attrs.get("class")
-    return None if cls is None else np.isin(cls.astype(str), list(PARKING_CLASSES))
+    if cls is None:
+        return None
+    sel = np.isin(cls.astype(str), list(PARKING_CLASSES))
+    surf = feats.attrs.get("surface")
+    if surf is not None:
+        import parking
+        bare = np.array([str(v or "").strip().lower() in parking.LOT_UNPAVED for v in surf], bool)
+        sel = sel & ~bare
+    return sel
 
 
 def _yards(feats):

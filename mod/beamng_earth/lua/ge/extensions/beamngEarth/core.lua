@@ -402,7 +402,10 @@ local function applyHorizon()
   if not st.active then return end
   if horizonOn then
     horizon.applySky()
-    local v = horizon.visibleTarget(farRadius, st.visibleDistance or VISIBLE_DISTANCE, VISIBLE_DISTANCE)
+    -- (a fixed view distance in the settings: theirs stays; the horizon's radius moving set it back before)
+    local stg = rawget(_G, 'beamngEarth_settings')
+    local fixed = stg and stg.get and stg.get('viewDistanceMode') == 'fixed'
+    local v = not fixed and horizon.visibleTarget(farRadius, st.visibleDistance or VISIBLE_DISTANCE, VISIBLE_DISTANCE)
     if v and horizon.setVisibleDistance(v) then st.visibleDistance = v end
   else
     horizon.restoreSky()
@@ -413,8 +416,10 @@ end
 local function activateWorld()
   if st.active then return end
   st.active = true
-  -- bigMapMode.lua:866-867 sets the same LevelInfo field at runtime
-  if scenetree.theLevelInfo then scenetree.theLevelInfo.visibleDistance = VISIBLE_DISTANCE end
+  -- bigMapMode.lua:866-867 sets the same LevelInfo field at runtime (not over the settings' fixed view distance)
+  local stg = rawget(_G, 'beamngEarth_settings')
+  local fixed = stg and stg.get and stg.get('viewDistanceMode') == 'fixed'
+  if scenetree.theLevelInfo and not fixed then scenetree.theLevelInfo.visibleDistance = VISIBLE_DISTANCE end
   terrain.hideGroundPlanes()
   applyHorizon()
 end
@@ -468,7 +473,8 @@ local function commitTeleport(msg)
     st.retryAt = st.clock + rebase.RETRY_S -- don't re-request every frame
     return false
   end
-  farfield.switchAnchor(msg.anchorId, false, { cx = tr.cx, cy = tr.cy }, st.sessionId)
+  -- (the global far tiles stay, placed into the new anchor's world: farfield.lua)
+  farfield.switchAnchor(msg.anchorId, false, { cx = tr.cx, cy = tr.cy }, st.sessionId, geodesy.newAnchor(msg.lat, msg.lon))
   st.loadingUntil = st.clock + LOADING_AFTER_TELEPORT_S
   st.placeFrames = PLACE_DELAY_FRAMES
   st.placeZ = (msg.groundZ or 0) + 1.0
@@ -489,6 +495,8 @@ local function commitTeleport(msg)
   be:reloadCollision()
 
   st.anchor, st.anchorId, st.anchorKey = geodesy.newAnchor(msg.lat, msg.lon), msg.anchorId, msg.anchorKey
+  trees.reanchor(st.anchor)       -- (the geotiles it has: placed into the new world; the server drops the far ones)
+  roads.replace(st.anchor, msg.anchorId)     -- (road geotiles too: roads.lua)
   st.anchorSession, st.resync = st.sessionId, false
   mpanchor.announceOwn(msg.lat, msg.lon)
   st.block, st.terrainPending, st.terrainErrorAt = { cx = tr.cx, cy = tr.cy }, nil, nil
@@ -513,18 +521,22 @@ local function finishRebase()
   -- the world shifts under the grass: made fresh (with tools/gcpatch the engine would keep it)
   groundcover.rebuild()
   if not ok then log('E', 'beamngEarth', 'rebase terrain import failed: ' .. tostring(err)) end
-  farfield.transform(xf)
+  farfield.transform(xf, rb.newAnchor)   -- (the global far tiles placed exactly into the new anchor: farfield.lua)
   -- roads, buildings, street furniture and trees move with it and stay until the new anchor's tiles cover them
   roads.transform(xf, geodesy)
-  trees.transform(xf, geodesy)
+  trees.transform(xf, geodesy, rb.newAnchor)    -- (geotiles: placed into the new anchor, nothing sent again)
   ambience.transform(xf)
   pumpjacks.transform(xf)
   nightlights.transform(xf)
   gasstations.transform(xf)
+  -- road geotiles: their content placed exactly into the new anchor (its rows' modules after their transforms above),
+  -- the skins moved and lifted until the new anchor's come (roads.lua M.replace)
+  roads.replace(rb.newAnchor, msg.anchorId)
   sea.transform(xf, msg.anchorId)
+  navgraph.transform(xf, msg.anchorId)    -- (the AI's road graph too: applied again at once, the AI planning afresh)
   -- a resync with a restarted server keeps the previous session's tiles the same way (st.sessionId
   -- is the new session's): they go once the new session's tiles cover them
-  farfield.switchAnchor(msg.anchorId, true, { cx = tr.cx, cy = tr.cy }, st.sessionId)
+  farfield.switchAnchor(msg.anchorId, true, { cx = tr.cx, cy = tr.cy }, st.sessionId, rb.newAnchor)
   local cs = camshift.shift(xf, rb.playerOld[1], rb.playerOld[2], rb.playerOld[3])
   be:reloadCollision()
 
@@ -577,7 +589,9 @@ local function commitRebase(msg, purpose)
   end
   local sw = stopwatch.new()
   local newAnchor = geodesy.newAnchor(msg.lat, msg.lon)
-  local xf = st.anchor:transformTo(newAnchor)
+  -- (corrected at the player: the new world's place of the spot the car is on; geodesy worldTransformTo)
+  local pp = st.player
+  local xf = pp and st.anchor:worldTransformTo(newAnchor, pp.x, pp.y, pp.z) or st.anchor:transformTo(newAnchor)
   -- nothing to move for an identity transform (resync); setClusterPosRelRot from the GE-side
   -- position would only pull the car back to where GE last saw it
   local moved, playerId = {}, nil
@@ -792,7 +806,12 @@ local function onMessage(msg)
     end
     -- vegFlat: the vegetation tiles may come as one flat array of numbers (trees.lua onTile), no table per tree
     net.send({ type = 'hello', protocol = PROTOCOL, format = FORMAT, modVersion = MOD_VERSION,
-      sessions = farfield.heldSessions(), slotSession = farfield.session(), slotsHeld = held, vegFlat = true })
+      sessions = farfield.heldSessions(), slotSession = farfield.session(), slotsHeld = held, vegFlat = true,
+      geoTiles = require('beamngEarth/geotile').Z,
+      -- (geotiles: vegetation in the global tiles' frames: trees.lua)
+      roadGeo = roads.ROAD_GEO,        -- (road tiles as geotiles too: roads.lua)
+      farGeo = roads.FAR_GEO,          -- (and the far buildings, skyline and far bridges: roads.lua)
+      globalFar = farfield.GLOBAL_FAR })  -- (and the far field from level 3 up as global tiles: farfield.lua)
     setStatus('Connected to companion server')
   elseif t == '_disconnected' then
     st.pending, st.sessionId, st.terrainPending = nil, nil, nil
@@ -813,8 +832,11 @@ local function onMessage(msg)
     -- road tiles belong to the session that sent them: a restarted server (anchor ids start again
     -- at 1) never drops the old session's tiles, so they stayed forever (2026-10-11: meshes of four
     -- sessions in the scene, some built by older code)
+    roads.setGeo(msg.roadGeo == roads.ROAD_GEO)     -- (road tiles as geotiles: roads.lua)
+    roads.setFarGeo(msg.farGeo == roads.FAR_GEO)    -- (... and the far buildings, skyline and far bridges)
     if roadsSession ~= msg.sessionId then
-      roads.clear()
+      -- (road geotiles stay: the new session's content with the same hash keeps them, the rest go once far or old)
+      roads.newSession()
       roadsSession = msg.sessionId
     end
     roads.prewarm(msg.prewarm)  -- the materials of the server's shapes set up now, not at their first tile
@@ -833,6 +855,11 @@ local function onMessage(msg)
     if settings and settings.cacheCapGb then net.send({ type = 'cache', capGb = settings.cacheCapGb() }) end
     -- gas stations on, after every hello (a server started without them too; this comes before any tile request)
     net.send({ type = 'gas_stations', on = true })
+    -- the highway signs' switch (settings highwaySigns): no sign tiles built while it is off
+    net.send({ type = 'highway_signs', on = roads.signsEnabled })
+    -- the graphics settings the server serves (terrain detail, tree and building reach, the ground photo's size)
+    M.graphicsSent = nil
+    M.sendGraphics()
     -- the on-screen credits: this session's own follow (the attribution line until then)
     credits.clear()
     -- M4: the terrain block size first (everything below may use the lattice / follow table); a
@@ -949,7 +976,11 @@ local function onMessage(msg)
     st.terrainErrorAt = st.clock -- the edge guard holds the car meanwhile
     setStatus('Terrain request failed: ' .. tostring(msg.error))
   elseif t == 'roads_tile' then
-    roads.onTile(msg, st.anchorId)
+    roads.onTile(msg, st.anchorId, st.anchor)
+  elseif t == 'roads_skin' then           -- a road geotile's draped surfaces for this anchor (roads.lua)
+    roads.onSkin(msg, st.anchorId)
+  elseif t == 'roads_exact' then          -- ... its tall parts' exact variants for this anchor
+    roads.onExact(msg, st.anchorId)
   elseif t == 'roads_drop' then
     roads.onDrop(msg)
   elseif t == 'far_tile' then
@@ -990,7 +1021,7 @@ local function onMessage(msg)
     if tonumber(msg.z) then st.groundAhead = { anchorId = msg.anchorId, z = tonumber(msg.z), at = st.clock } end
   elseif t == 'veg_tile' then
     -- trees, bushes and rocks of a tile (server vegetation.py, --trees on): Forest items (trees.lua)
-    local data = trees.onTile(msg, st.anchorId)
+    local data = trees.onTile(msg, st.anchorId, st.anchor)
     if data then ambience.onTile(msg.anchorId, msg.key, data) end
   elseif t == 'veg_drop' then
     trees.onDrop(msg)
@@ -1030,6 +1061,15 @@ local function onMessage(msg)
     gps.onRouteDownload(msg)
   elseif t == 'geocode_result' then
     if msg.id then geocodeResults[msg.id] = { results = msg.results or {}, error = msg.error } end
+  elseif t == 'areas' then
+    -- the saved areas downloaded ahead (server areas.py): the list and progress; result answers an area_add / area_cmd
+    M._areas = msg
+    if type(msg.result) == 'table' and msg.result.id then M._areaResults = { [msg.result.id] = msg.result } end
+  elseif t == 'area_plan_result' then
+    if msg.id then M._areaPlans = { [msg.id] = msg } end
+  elseif t == 'cache_map_result' then
+    -- the map's cache view: a grid of levels for the asked box (EarthMap.vue polls takeCacheMap)
+    if msg.id then M._cacheMapResults = { [msg.id] = msg } end
   elseif t == 'map_tiles_ready' then
     -- a world map tile file is written (settings.mapTiles: the map polls every 250 ms while it misses tiles)
   elseif t == 'navgraph' then
@@ -1066,7 +1106,7 @@ local function onMessage(msg)
     local prev = cacheInfo
     cacheInfo = { usedBytes = tonumber(msg.usedBytes) or 0, capBytes = tonumber(msg.capBytes) or 0,
       files = tonumber(msg.files) or 0, ready = msg.ready == true, managed = msg.managed ~= false,
-      clearedBytes = prev and prev.clearedBytes, clears = cacheClears }
+      clearedBytes = prev and prev.clearedBytes, clears = cacheClears, pinnedBytes = tonumber(msg.pinnedBytes) }
     if msg.clearedBytes ~= nil then
       cacheClears = cacheClears + 1
       cacheInfo.clearedBytes, cacheInfo.clears = tonumber(msg.clearedBytes) or 0, cacheClears
@@ -1126,7 +1166,7 @@ local function updatePlayer(dt)
     -- follows the camera, standing still (poses, terrain, rebases; nothing moves a vehicle)
     local c = st.cam
     if not c then return end
-    local lat, lon = st.anchor:enuToGeodetic(c.x, c.y, c.z)
+    local lat, lon = st.anchor:worldToGeodetic(c.x, c.y, c.z)
     st.player = { x = c.x, y = c.y, z = c.z, vx = 0, vy = 0, vz = 0, lat = lat, lon = lon, dist = hypot(c.x, c.y),
       speed = 0, camera = true }
     st.slowFor = st.slowFor + dt
@@ -1134,7 +1174,7 @@ local function updatePlayer(dt)
   end
   local p = veh:getPosition()
   local v = veh:getVelocity()
-  local lat, lon = st.anchor:enuToGeodetic(p.x, p.y, p.z)
+  local lat, lon = st.anchor:worldToGeodetic(p.x, p.y, p.z)
   st.player = { x = p.x, y = p.y, z = p.z, vx = v.x, vy = v.y, vz = v.z, lat = lat, lon = lon, dist = hypot(p.x, p.y),
     speed = v:length() }
   st.slowFor = st.player.speed < SLOW_SPEED and (st.slowFor + dt) or 0
@@ -1317,7 +1357,7 @@ local function updateWorld(dt)
   local staleDist, edgeDist
   if p and p.ready and (p.purpose == 'rebase' or p.purpose == 'resync') then
     p.anchorObj = p.anchorObj or geodesy.newAnchor(p.msg.lat, p.msg.lon)
-    p.xf = p.xf or st.anchor:transformTo(p.anchorObj)
+    p.xf = p.xf or st.anchor:worldTransformTo(p.anchorObj, pl.x, pl.y, pl.z)
     local nx, ny = p.xf:apply(pl.x, pl.y, pl.z)
     local tr = p.msg.terrain or {}
     staleDist = follow.cheb(nx, ny, tr.cx or 0, tr.cy or 0)
@@ -1705,6 +1745,8 @@ local function mark(name, t0)
   marks[name] = (marks[name] or 0) + (t - t0)
   return t
 end
+-- The mod's parts' ms in the last whole frame (diagnostics: a per-frame probe; not to be changed by the caller)
+function M.frameMarks() return prevMarks end
 local function noteHitch(frameMs)
   local h = { ms = math.floor(frameMs + 0.5), at = math.floor(st.clock * 10 + 0.5) / 10, mod = {} }
   -- marks: the mod's parts in the frame that just ended (onUpdate swaps them to prevMarks after this call; reading
@@ -1852,6 +1894,7 @@ local function onUpdate(dtReal, dtSim)
   for k in pairs(marks) do marks[k] = nil end
   local t = hitchClock()
   postfx.update(st.inOurLevel)
+  require('beamngEarth/enginepref').update(st.inOurLevel)      -- (the settings' object detail: our level only)
   local stg = rawget(_G, 'beamngEarth_settings')
   if stg and stg.redirectBigMap then stg.redirectBigMap(st.inOurLevel) end
   if st.inOurLevel then gps.update(st.anchor, st.player) end
@@ -1951,7 +1994,7 @@ local function onUpdate(dtReal, dtSim)
     -- the roads before the far tiles: they share the governor's budget and the first to ask gets it; after a
     -- teleport the far field's hundreds of tiles took it frame after frame and the road meshes under the car
     -- came after it had passed (Brasov, Sinaia 2026-10-15: the car drove bare ground)
-    roads.update(gov, st.anchorId, st.player, M.viewAway())
+    roads.update(gov, st.anchorId, st.player, M.viewAway(), st.anchor)
     gasstations.update(gov)
     t = mark('roads', t)
     farfield.update(gov, (gov.w1 or dtReal * 1000) / 1000, st.cam, st.player)
@@ -2097,6 +2140,7 @@ local function onClientEndMission()
   hudapps.unhookCityZone()
   hudapps.unhookMinimapNorth()
   postfx.restore()
+  require('beamngEarth/enginepref').restore()
   pcall(terrainpatch.clear)
   pcall(gasstations.reset)
   pcall(farcars.reset)
@@ -2229,7 +2273,7 @@ function M.rebaseTo(lat, lon)
   local pl = st.player
   local x, y, z = 0, 0, 0
   if pl then x, y, z = pl.x, pl.y, pl.z end
-  local nx, ny = st.anchor:transformTo(geodesy.newAnchor(lat, lon)):apply(x, y, z)
+  local nx, ny = st.anchor:worldTransformTo(geodesy.newAnchor(lat, lon), x, y, z):apply(x, y, z)
   local cx, cy = follow.target(nx, ny, pl and pl.vx or 0, pl and pl.vy or 0)
   return requestAnchor(lat, lon, 'resync', cx, cy)
 end
@@ -2288,6 +2332,13 @@ function M.setHorizon(on)
   if not horizonOn then farRadius = nil end
   applyHorizon()
   return horizonOn
+end
+
+-- The settings' view distance went back to the real horizon (settings.lua applyViewDistance): the horizon's
+-- distance set again now (its hysteresis compares with the last one set here, which the fixed distance replaced).
+function M.refreshHorizon()
+  st.visibleDistance = nil
+  applyHorizon()
 end
 
 -- The server's far-field radius in metres (status.radius, horizon mode). Returns the view distance in use.
@@ -2419,6 +2470,56 @@ function M.takeGeocode(id)
   return r
 end
 
+-- The world map's cache view (server covermap.py): what is cached in the zoom-z tiles x0..x1, y0..y1 (mode: summary,
+-- elevation, imagery, mapdata); the answer is cache_map_result. Only the newest answer is kept (M._cacheMapResults:
+-- a field, not a local: the main chunk is at Lua's 200-local limit).
+function M.requestCacheMap(id, z, x0, y0, x1, y1, mode)
+  if not net.isConnected() then return false end
+  M._cacheMapResults = {}
+  net.send({ type = 'cache_map', id = id, z = z, x0 = x0, y0 = y0, x1 = x1, y1 = y1, mode = mode })
+  return true
+end
+-- Saved areas (server areas.py; M._areas / _areaPlans / _areaResults: fields, not locals, as above): the estimate of
+-- a picked box (area_plan -> area_plan_result), a new area (area_add), pause / resume / delete (area_cmd); the answers
+-- come in the 'areas' message's result.
+function M.requestAreaPlan(id, s, w, n, e)
+  if not net.isConnected() then return false end
+  M._areaPlans = {}
+  net.send({ type = 'area_plan', id = id, s = s, w = w, n = n, e = e })
+  return true
+end
+function M.takeAreaPlan(id)
+  local all = M._areaPlans or {}
+  local r = all[id]
+  all[id] = nil
+  return r
+end
+function M.areaAdd(id, s, w, n, e, name)
+  if not net.isConnected() then return false end
+  net.send({ type = 'area_add', id = id, s = s, w = w, n = n, e = e, name = name })
+  return true
+end
+function M.areaCmd(id, area, op)
+  if not net.isConnected() then return false end
+  net.send({ type = 'area_cmd', id = id, area = area, op = op })
+  return true
+end
+function M.takeAreaResult(id)
+  local all = M._areaResults or {}
+  local r = all[id]
+  all[id] = nil
+  return r
+end
+function M.areasState()
+  return M._areas
+end
+function M.takeCacheMap(id)
+  local all = M._cacheMapResults or {}
+  local r = all[id]
+  all[id] = nil
+  return r
+end
+
 -- The world map asks for its tiles as files (settings.mapTiles; {{z, x, y, layer}, ...}, the most wanted first;
 -- an empty list cancels the last one). Whether it went out.
 function M.requestMapTiles(tiles)
@@ -2470,6 +2571,27 @@ end
 -- The Roads setting: off removes them; on again asks the server to send the tiles once more.
 function M.setRoadsEnabled(on)
   if roads.setEnabled(on) then net.send({ type = 'roads_reset' }) end
+end
+-- The settings page's graphics the server serves (settings.serverGraphics: { lodScale, treeScale, buildingScale,
+-- photoPx, viewM }), after every hello and when one changes (sent only when it differs from the last one sent: applyAll
+-- runs every knob at a level's start). Whether it went out.
+M.graphicsSent = nil          -- (a field: core.lua is near Lua's 200-local limit)
+function M.sendGraphics()
+  local settings = rawget(_G, 'beamngEarth_settings')
+  local g = settings and settings.serverGraphics and settings.serverGraphics()
+  if type(g) ~= 'table' or not net.isConnected() or not st.sessionId then return false end
+  local sig = string.format('%s/%s/%s/%s/%s', tostring(g.lodScale), tostring(g.treeScale), tostring(g.buildingScale),
+    tostring(g.photoPx), tostring(g.viewM))
+  if sig == M.graphicsSent then return false end
+  net.send({ type = 'graphics', lodScale = g.lodScale, treeScale = g.treeScale, buildingScale = g.buildingScale,
+    photoPx = g.photoPx, viewM = g.viewM })
+  M.graphicsSent = sig
+  return true
+end
+
+-- The highway signs on / off (settings highwaySigns): shown or hidden at once, built by the server only while on.
+function M.setHighwaySigns(on)
+  if roads.setSignsEnabled(on) then net.send({ type = 'highway_signs', on = roads.signsEnabled }) end
 end
 
 M.onUpdate = onUpdate
