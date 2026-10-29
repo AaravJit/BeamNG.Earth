@@ -539,9 +539,12 @@ local function placeCamera(player)
   if camPlaced and player.z >= z - 0.5 then return end
   -- (under the terrain over collision a few metres down: in a tunnel's tube, where a teleport put it (core floorCheck)
   -- or it was flown in; only a camera over nothing is lost underground)
+  -- (the ray from the camera: from higher, a camera just under the ground met that ground and counted as in a tube;
+  -- a hit only under the surface)
   local ray = camPlaced and rawget(_G, 'castRayStatic')
-  local d = ray and ray(vec3(x, y, player.z + 1), vec3(0, 0, -1), M.TUBE_RAY_M)
-  if d and d < M.TUBE_RAY_M then return end
+  local from = player.z + 0.1
+  local d = ray and ray(vec3(x, y, from), vec3(0, 0, -1), M.TUBE_RAY_M)
+  if d and d < M.TUBE_RAY_M and from - d < z - 0.5 then return end
   camPlaced = true
   local q = quatFromDir(vec3(0, 1, -0.15), vec3(0, 0, 1))
   if core_camera and core_camera.setPosRot then core_camera.setPosRot(0, x, y, z + 3, q.x, q.y, q.z, q.w) end

@@ -465,6 +465,7 @@ end
 -- car and the free camera on, the camera goes along behind the car.
 M.CAM_ABOVE_M = 2                -- over where a car is set down (the ground + 1): 3 m over the ground, as mpsession's
 M.CAM_BEHIND_M, M.CAM_OVER_M = 6, 3     -- the free camera with a car: behind it, over it
+M.CAM_TUBE_BEHIND_M, M.CAM_TUBE_OVER_M = 2, 1.5   -- the same in a tunnel's tube (floorCheck): floor + 2.5
 M.CAM_HOLD_FRAMES = 30
 -- Whether the view is the free camera (as tools/benchmark.lua isFree)
 function M.freeCamera()
@@ -503,7 +504,10 @@ function M.heldCamera(c)
   local h = st.camAt
   if not h then return c end
   h.frames = h.frames - 1
-  if h.frames <= 0 or (c and (c.x - h.x) ^ 2 + (c.y - h.y) ^ 2 + (c.z - h.z) ^ 2 < 4) then
+  local there = c and (c.x - h.x) ^ 2 + (c.y - h.y) ^ 2 + (c.z - h.z) ^ 2 < 4
+  if h.frames <= 0 or there then
+    -- (said once: the game did not move the free camera, core_camera.setPosRot; the player is its own spot again)
+    if not there then log('W', 'beamngEarth', string.format('teleport: the camera never read back at (%.0f, %.0f, %.0f)', h.x, h.y, h.z)) end
     st.camAt = nil
     return c
   end
@@ -532,6 +536,7 @@ local function commitTeleport(msg)
   -- through the world under the one-sided terrain), moved down onto the floor once that collides (2026-10-17)
   st.floorZ = msg.floorZ
   st.floorUntil = msg.floorZ and (st.clock + FLOOR_WAIT_S) or nil
+  st.placedCam = nil          -- (an earlier teleport's camera spot: not this one's, cameraStill)
   -- The player's old coordinates may now lie anywhere on the new terrain.
   -- Lift it above the new origin in this same frame (velocity zeroed as in spawn.lua:532-534)
   -- so physics never sees that; placePlayer() then sets it down properly.
@@ -782,10 +787,12 @@ local function placePlayer(z, again)
   spawn.safeTeleport(veh, vec3(x, y, z), quatFromDir(dir, vec3(0, 0, 1)), nil, nil, false, nil, true)
   st.placedAt = { x = x, y = y, z = z, t = st.clock }
   if camToo and M.freeCamera() then
-    -- (over the ground behind the car too: a slope up behind it, a wall; not in a tunnel's tube, under the hill)
-    local bx, by = x - M.CAM_BEHIND_M * dir.x, y - M.CAM_BEHIND_M * dir.y
+    -- (over the ground behind the car too: a slope up behind it, a wall; in a tunnel's tube (again) close behind and
+    -- low: the tube is ~9 m wide, its vault 3.6 m at the lowest, and the car's heading need not be along it)
+    local back = again and M.CAM_TUBE_BEHIND_M or M.CAM_BEHIND_M
+    local bx, by = x - back * dir.x, y - back * dir.y
     local g = not again and M.groundRay(z)(bx, by)
-    local bz = math.max(z + M.CAM_OVER_M, g and (g + 1 + M.CAM_ABOVE_M) or -math.huge)
+    local bz = math.max(z + (again and M.CAM_TUBE_OVER_M or M.CAM_OVER_M), g and (g + 1 + M.CAM_ABOVE_M) or -math.huge)
     M.moveCamera(bx, by, bz, dir.x, dir.y)
     st.placedCam = { x = bx, y = by, z = bz }
   end
@@ -1235,7 +1242,10 @@ function M.groundReady()
   if p and (p.purpose == 'teleport' or p.purpose == 'resync') then
     return st.clock - (p.sentAt or st.clock) > M.GO_WAIT_MAX_S
   end
-  return st.anchor ~= nil and st.placeFrames == nil and not dropHold.active
+  -- (no ground yet and nothing on its way: the first place's terrain failed to import, commitTeleport; another may be
+  -- asked, else Go stayed greyed until the level was loaded again)
+  if not st.anchor then return p == nil and st.randomStart == nil end
+  return st.placeFrames == nil and not dropHold.active
 end
 
 -- The game's own pause (simTimeAuthority, what the pause key does): holding the car by setting its position every frame

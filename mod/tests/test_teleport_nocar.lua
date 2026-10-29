@@ -370,6 +370,32 @@ put = cam.puts[#cam.puts]
 T.check(near(put.y, veh.pos.y - core.CAM_BEHIND_M) and near(put.z, 1610 + 1 + core.CAM_ABOVE_M),
   string.format('a slope behind the car: the camera over it (%.1f)', put.z))
 
+-- 5c. a car and the free camera, into a tunnel: once the tube collides, the car down onto its floor and the camera
+-- close behind it and low (CAM_TUBE_BEHIND_M, CAM_TUBE_OVER_M: in the tube, not in the rock beside or over it)
+do
+  local roadsMod = require('beamngEarth/roads')
+  local settled = roadsMod.settledFor
+  roadsMod.settledFor = function() return true end
+  local floorIn = false
+  groundAt = function(_, _, fromZ)
+    if fromZ and fromZ < 1180 then return floorIn and 1100 or nil end
+    return 1180
+  end
+  core.teleport(44.2, 6.0)
+  answer(1180, { floorZ = 1100 })
+  commits = #received('commit_anchor')
+  T.check(pumpUntil(function() return #received('commit_anchor') == commits + 1 end), 'commit (car, free camera, a tunnel)')
+  T.check(pumpUntil(function() return st.placeFrames == nil end, 10), 'placed over the hill')
+  frames(3)
+  floorIn = true
+  frames(3)
+  put = cam.puts[#cam.puts]
+  T.check(st.floorZ == nil and near(veh.pos.z, 1101), 'the car down onto the tube floor')
+  T.check(near(put.z, 1100 + 1 + core.CAM_TUBE_OVER_M) and near(put.y, veh.pos.y - core.CAM_TUBE_BEHIND_M),
+    string.format('the camera close behind it in the tube (%.1f m over the floor)', put.z - 1100))
+  roadsMod.settledFor = settled
+end
+
 -- 6. a car and its own camera (not free): the camera is left to the game
 freeCam = false
 puts0 = #cam.puts
@@ -389,6 +415,23 @@ commits = #received('commit_anchor')
 T.check(pumpUntil(function() return #received('commit_anchor') == commits + 1 end), 'commit (no car again)')
 T.check(pumpUntil(function() return st.placeFrames == nil end, 10), 'placed')
 T.check(#cam.puts == puts0 + 2, 'no car again: the camera moved at the commit and the placement')
+
+-- 8. the level start's terrain fails to import (commitTeleport: no terrain in the answer): nothing is on its way and
+-- there is no ground, so Go must not stay greyed (another place may be asked)
+core.onExtensionUnloaded()
+core.onExtensionLoaded()
+st = core._state()
+frames(3)
+serverSend({ type = 'hello', protocol = 4, format = 3, serverVersion = '0.4.0', sessionId = 's2', farFormat = 'cdae',
+  material = 'bngEarthFar_v3', nearVisual = 'terrain' })
+local nPrep = #received('prepare_anchor')
+T.check(pumpUntil(function() return #received('prepare_anchor') == nPrep + 1 end), 'a new level: its start asked')
+T.check(places.cannotGo() ~= nil, 'the start under way: greyed')
+local rq = last('prepare_anchor')
+serverSend({ type = 'anchor_ready', requestId = rq.requestId, anchorId = 99, lat = rq.lat, lon = rq.lon, groundZ = 1180 })
+frames(10)
+T.check(st.anchor == nil and st.pending == nil and st.teleportRetry == nil, 'its terrain failed: no ground, nothing on its way')
+T.check(places.cannotGo() == nil, 'its terrain failed: Go on (not greyed for good)')
 
 core.onExtensionUnloaded()
 T.done('test_teleport_nocar')
