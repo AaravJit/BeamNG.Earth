@@ -22,6 +22,14 @@ PLAN_Z = 10             # planning regions (grading)
 CHAIN_Z = 12            # bridge / tunnel chain profile stores (~8 km: a deck solved in a nearly level frame)
 NEED = 103              # earthfast's geotiles kernels
 NEED_CONTENT = 104      # ... and the road geotiles' (geo_owns, clip_tris_convex, cdae_zstats / cdae_shear)
+# Far content (phase 2): the far buildings in the road geotiles' own grid (a far tile and the road geotile of the same
+# key hold the very same buildings: each building in one key, shown by one of the two), the skyline in squares of
+# 4 x 4 of them (buildings.SKY_UNIT: the far buildings come as whole squares, a skyline tile shows while not all of its
+# square's far tiles are here), the far bridges' jobs in those squares too, their slabs in pieces per road geotile (the
+# mod hides each where its road geotile shows its own deck).
+FAR_Z = Z               # far buildings (bldfar)
+SKY_Z = Z - 2           # the skyline (bldsky): SKY_UNIT = 2 ** (FAR_Z - SKY_Z)
+BRIDGE_Z = Z - 2        # far bridges (brfar): one job and one message a square, a piece per FAR_Z tile under it
 
 
 def _ef():
@@ -175,6 +183,18 @@ def region_of_cell(cell):
 def region_frame(rx, ry):
     """The region's planning frame (EnuFrame at its centre)."""
     return frame(rx, ry, PLAN_Z)
+
+
+def children(x, y, z, cz):
+    """The zoom-cz tiles under tile (x, y) of zoom z (cz >= z: nested exactly), rows north to south, west to east."""
+    k = 1 << (int(cz) - int(z))
+    return [(int(x) * k + i, int(y) * k + j) for j in range(k) for i in range(k)]
+
+
+def parent(x, y, z, pz):
+    """The zoom-pz tile (pz <= z) a zoom-z tile lies under."""
+    sh = int(z) - int(pz)
+    return int(x) >> sh, int(y) >> sh
 
 
 def tile_cell(x, y, z=Z, cell_z=14):

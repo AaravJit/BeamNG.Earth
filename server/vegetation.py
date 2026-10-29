@@ -866,7 +866,7 @@ class Tracker:
     (messages veg_tile / veg_drop); the far buildings use one too (buildings.FAR_*)."""
 
     def __init__(self, send_m=SEND_M, drop_m=DROP_M, per_pose=BUILD_PER_POSE, kind="veg", skip_m=None, group=None,
-                 unit=1, inner=None, geo=False):
+                 unit=1, inner=None, geo=False, z=None, group_z=None):
         # group G (the far buildings under the skyline tiles): every tile of a G x G group whose square comes within
         # send_m is wanted (a skyline tile shows only while none of its tiles do: no overlap, no hole). unit U (the
         # skyline tiles): keys are U x U squares of road tiles; inner (m, G): squares whose G-group comes within m are
@@ -888,6 +888,10 @@ class Tracker:
         # re-places it at a rebase, geotile.lua), the tiles near a point found by their quads in the anchor's world
         # (on_pose's frame); build(gx, gy) and the messages carry the tile's frame and pivot
         self.geo = bool(geo)
+        # (geotiles of zoom z: geotiles.Z by default; group_z: whole groups, every tile under each zoom-group_z tile
+        # that comes within send_m (the far buildings under the skyline's squares); inner (m, _): the tiles within m
+        # not wanted (the skyline: where the far buildings' squares are, those being its own tiles))
+        self.z, self.group_z = z, group_z
         self.frame = None
         self._quads = {}            # (anchor id, key) -> its quad in that anchor's world
         self.rebuilt = 0            # tiles built again for a key sent before (diagnostics: 0 with geo)
@@ -951,8 +955,9 @@ class Tracker:
             conn.send({"type": f"{self.kind}_drop", "anchorId": aid, "key": f"{k[0]}_{k[1]}"})
 
     def _on_pose_geo(self, conn, aid, x, y, loop, build, view, foci, frame):
-        """on_pose for geotiles: the same rules (send_m, drop_m, the camera's, other cars' foci), the tiles' quads in
-        the anchor's world (frame: its EnuFrame); an anchor change keeps what was sent and in flight."""
+        """on_pose for geotiles: the same rules (send_m, drop_m, the camera's, other cars' foci; group_z's whole groups,
+        inner's tiles left out), the tiles' quads in the anchor's world (frame: its EnuFrame); an anchor change keeps
+        what was sent and in flight."""
         import geotiles
         if frame is None:
             return
@@ -962,16 +967,28 @@ class Tracker:
         if self.pool is None:
             from concurrent.futures import ThreadPoolExecutor
             self.pool = ThreadPoolExecutor(self.per_pose, thread_name_prefix=f"{self.kind}-geo")
+        z = self.z or geotiles.Z
         spots = [(x, y)] + ([tuple(view)] if view else [])
-        near_car = geotiles.tiles_near(frame, x, y, self.send_m)
-        car = [(a, b) for a, b, _d in near_car]
+
+        def near(px, py, r):
+            """Keys within r of (px, py), nearest first (each tile by its own quad)."""
+            if self.group_z is None:
+                return [(a, b) for a, b, _d in geotiles.tiles_near(frame, px, py, r, z)]
+            keys = [c for a, b, _d in geotiles.tiles_near(frame, px, py, r, self.group_z)
+                    for c in geotiles.children(a, b, self.group_z, z)]
+            return sorted(keys, key=lambda k: (self._geo_dist(k, px, py, own=True), k))
+        skip = set()
+        if self.inner is not None:
+            for p in spots:
+                skip.update((a, b) for a, b, _d in geotiles.tiles_near(frame, p[0], p[1], self.inner[0], z))
+        car = [k for k in near(x, y, self.send_m) if k not in skip]
         self.car = set(car)
-        seen = [(a, b) for a, b, _d in geotiles.tiles_near(frame, *view, self.send_m)] if view else []
+        seen = [k for k in near(*view, self.send_m) if k not in skip] if view else []
         others = []
         for f in foci:
-            others += [(a, b) for a, b, _d in geotiles.tiles_near(frame, f[0], f[1], min(self.send_m, f[2] + 128.0))]
+            others += [k for k in near(f[0], f[1], min(self.send_m, f[2] + 128.0)) if k not in skip]
         order, done = [], set()
-        for k in car + seen + others:           # (nearest first: tiles_near sorts by distance)
+        for k in car + seen + others:           # (nearest first)
             if k not in done:
                 done.add(k)
                 order.append(k)
@@ -983,13 +1000,18 @@ class Tracker:
         for k in [k for k in self.sent if all(self._geo_dist(k, *p) > self.drop_m for p in spots)
                   and all(self._geo_dist(k, f[0], f[1]) > f[2] + 256.0 for f in foci)]:
             self.sent.discard(k)
-            conn.send({"type": f"{self.kind}_drop", "anchorId": aid, "key": geotiles.key(*k)})
+            conn.send({"type": f"{self.kind}_drop", "anchorId": aid, "key": geotiles.key(*k, z)})
 
-    def _geo_dist(self, k, x, y):
+    def _geo_dist(self, k, x, y, own=False):
+        """m from (x, y) to geotile k's quad in the anchor's world (to its group's, group_z, unless own)."""
         import geotiles
-        q = self._quads.get((self.aid, k))
+        z = self.z or geotiles.Z
+        if self.group_z is not None and not own:
+            k, z = geotiles.parent(k[0], k[1], z, self.group_z), self.group_z
+        ck = (self.aid, z, k)
+        q = self._quads.get(ck)
         if q is None:
-            q = self._quads[(self.aid, k)] = geotiles.quad(self.frame, k[0], k[1])
+            q = self._quads[ck] = geotiles.quad(self.frame, k[0], k[1], z)
             if len(self._quads) > 20000:
                 self._quads.clear()
         return geotiles.quad_dist(q, x, y)
@@ -1007,17 +1029,24 @@ class Tracker:
             return
         if res is None:
             return
-        path, n, frame, pivot = res
+        path, n, frame, pivot = res[:4]
+        shapes = res[4] if len(res) > 4 else None       # (the far geotiles': {what: shape file}, pooled paths below)
         if key in self.ever:
             self.rebuilt += 1
         self.ever.add(key)
         self.sent.add(key)
-        m = {"type": f"{self.kind}_tile", "anchorId": self.aid, "key": geotiles.key(*key), "path": path, "n": n,
-             "frame": [float(frame[0]), float(frame[1])], "pivot": float(pivot)}
-        out_dir = getattr(getattr(conn, "s", None), "out_dir", None)
+        m = {"type": f"{self.kind}_tile", "anchorId": self.aid, "key": geotiles.key(*key, self.z or geotiles.Z),
+             "path": path, "n": n, "frame": [float(frame[0]), float(frame[1])], "pivot": float(pivot)}
+        s = getattr(conn, "s", None)
+        out_dir = getattr(s, "out_dir", None)
         data = staging.inline_json(out_dir, path) if out_dir else None
         if data is not None:
             m["data"] = data
+        pool = getattr(s, "pool_shapes", None)
+        if shapes and pool is not None:
+            slots = pool(conn, shapes)
+            if slots:
+                m["slots"] = slots
         conn.send(m)
 
     def _near(self, x, y, m, unit=None, group=None):

@@ -98,7 +98,9 @@ MOD_TO_SERVER = {
               # across rebases (geotiles.py, --geo-tiles on)
               "geoTiles": F(int, OPT),
               # ... the road tiles too (roads.lua ROAD_GEO: content kept, a skin per anchor; roads.GeoTracker)
-              "roadGeo": F(int, OPT)},
+              "roadGeo": F(int, OPT),
+              # ... and the far buildings, skyline and far bridges (roads.lua FAR_GEO: blockworker.far_geo)
+              "farGeo": F(int, OPT)},
     "prepare_anchor": {"requestId": F(int), "lat": F(NUM), "lon": F(NUM), "cx": F(NUM, OPT), "cy": F(NUM, OPT),
                        # 2026-10-22: the player's spot when not the origin (BeamMP: onto another player's anchor)
                        "px": F(NUM, OPT), "py": F(NUM, OPT),
@@ -203,6 +205,7 @@ SERVER_TO_MOD = {
               "horizon": F(bool, OPT),          # v1.4 M1h: true with --horizon only
               "geoTiles": F(int, OPT),          # geotiles: the zoom of the tiles it sends (hello.geoTiles, --geo-tiles on)
               "roadGeo": F(int, OPT),           # road tiles as geotiles (hello.roadGeo, the road processes on)
+              "farGeo": F(int, OPT),            # far buildings / skyline / far bridges as geotiles (hello.farGeo)
               "deshadow": F(str, OPT),          # --deshadow lambert|full only (the settings page shows it)
               "colormatch": F(str, OPT),        # --colormatch s2 only (likewise)
               "season": F(str, OPT),           # --season auto / fall (seasonlook.lua tints the leaves)
@@ -279,16 +282,20 @@ SERVER_TO_MOD = {
                  "frame": F(list, OPT), "pivot": F(NUM, OPT)},
     "veg_drop": {"anchorId": F(int), "key": F(str)},
     # far buildings (buildings.far_tile, --buildings on): a JSON file naming a render-only mesh
+    # (a geotile, key "g17_x_y", hello.farGeo: frame [lat, lon] of its centre and pivot, m in that frame: the mod
+    # places it and keeps it across rebases; the skyline's and far bridges' keys "g15_x_y")
     "bldfar_tile": {"anchorId": F(int), "key": F(str), "path": F(str), "n": F(int), "data": F(dict, OPT),
-                    "slots": F(dict, OPT)},    # {"shape": [pooled shape path, serial]}
+                    "slots": F(dict, OPT),     # {"shape": [pooled shape path, serial]}
+                    "frame": F(list, OPT), "pivot": F(NUM, OPT)},
     "bldfar_drop": {"anchorId": F(int), "key": F(str)},
     # the skyline past them (buildings.skyline_tile): the same, one per SKY_UNIT x SKY_UNIT road tiles
     "bldsky_tile": {"anchorId": F(int), "key": F(str), "path": F(str), "n": F(int), "data": F(dict, OPT),
-                    "slots": F(dict, OPT)},
+                    "slots": F(dict, OPT), "frame": F(list, OPT), "pivot": F(NUM, OPT)},
     "bldsky_drop": {"anchorId": F(int), "key": F(str)},
     # the bridges past the road tiles (buildings.far_bridge_tile): the same, a road tile's square of decks
     "brfar_tile": {"anchorId": F(int), "key": F(str), "path": F(str), "n": F(int), "data": F(dict, OPT),
-                   "slots": F(dict, OPT)},
+                   "slots": F(dict, OPT),      # (a geotile's: {road geotile key: [pooled shape path, serial]})
+                   "frame": F(list, OPT), "pivot": F(NUM, OPT)},
     "brfar_drop": {"anchorId": F(int), "key": F(str)},
     # the AI road graph around the player (navgraph.py, --traffic on): a JSON file of nodes and edges
     "navgraph": {"anchorId": F(int), "path": F(str), "cx": F(NUM), "cy": F(NUM), "nodes": F(int), "edges": F(int),
