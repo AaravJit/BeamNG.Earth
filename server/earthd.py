@@ -5031,14 +5031,21 @@ class Connection:
             live.add(gk)
             fut = self.deltas.get(gk)
             if fut is None:
+                special = any(farfield.is_special_key(k) for k in adds + removes)
                 try:
-                    if any(farfield.is_special_key(k) for k in adds + removes):
-                        raise KeyError("a global tile or a piece: the err bound")
+                    if special:
+                        # a global tile's grid is on its Mercator vertices, a piece's its node's: the mod's bound,
+                        # 1.2 (err_new + err_old) + 0.2 (crossover.delta) on the group's largest errors
+                        en = max([info[self.ck(k)].err for k in adds if self.ck(k) in info] or [0.0])
+                        eo = max([info[self.ck(k)].err for k in removes if self.ck(k) in info] or [0.0])
+                        raise LookupError(1.2 * (en + eo) + 0.2)
                     args = ([(farfield.tile_of(k), info[(aid, k)].grid) for k in adds],
                             [(farfield.tile_of(k), info[(aid, k)].grid) for k in removes])
-                except KeyError:        # a tile record was evicted: fall back to the err bound
+                except LookupError as bound:    # a tile record was evicted: fall back to the err bound
                     e = [info[self.ck(k)].err for k in adds + removes if self.ck(k) in info]
                     d = 1.2 * sum(e) + 0.2 if e else 0.0
+                    if special:
+                        d = float(bound.args[0])
                     fut = concurrent.futures.Future()
                     fut.set_result((d - DELTA_MARGIN, d - DELTA_MARGIN))
                 else:

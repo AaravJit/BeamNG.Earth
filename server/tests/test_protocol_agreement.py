@@ -344,7 +344,8 @@ MOD_INTERNAL = {"_connected": set(), "_disconnected": {"error"}}
 LUA = modsim.MOD_DIR
 GRAVITY_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "egm2008_n36.npz"     # degree 36 (test_gravity)
 # levels down to -2 (mesh mode); a textured tile's shape is its material name's pooled file (matslots.py)
-SHAPE_RE = r"^/temp/beamngEarth/[^/]+/(far_\d+_-?\d+_-?\d+_-?\d+|slot_\d{5})\.cdae$"
+# (geotiles phase 3b: a piece's key has a _c<z>_<x>_<y> suffix, a global tile's file is far_0_m<z>_<x>_<y>)
+SHAPE_RE = r"^/temp/beamngEarth/[^/]+/(far_\d+_(-?\d+_-?\d+_-?\d+(_c\d+_\d+_\d+)?|m\d+_\d+_\d+)|slot_\d{5})\.cdae$"
 HM_RE = r"^/temp/beamngEarth/[^/]+/hm_\d+_-?\d+_-?\d+\.png$"
 
 
