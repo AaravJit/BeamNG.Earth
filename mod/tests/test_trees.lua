@@ -428,4 +428,23 @@ do -- GitHub #415: the static boom's copy has its lamps' material renamed (unlit
     'its material does not glow')
 end
 trees.FRAME_MS, trees.POOL_SPARE = FRAME_MS, POOL_SPARE
+-- a pass with nothing to do is skipped (the game speed pulsing, 2026-10-28): until a tile comes or goes, the car moves
+-- RECHECK_M, or RECHECK_S goes by
+do
+  trees.reset()
+  trees.POOL_SPARE = 0
+  trees.onTile({ anchorId = 13, key = '0_0', path = '/t/v.json', n = 100 }, 13)
+  for _ = 1, 4 do trees.update(13, { x = 128, y = 128 }) end
+  local s0 = trees.skipped or 0
+  trees.update(13, { x = 128, y = 128 })
+  trees.update(13, { x = 129, y = 128 })
+  T.check((trees.skipped or 0) == s0 + 2, 'nothing changed and the car stood: the passes are skipped')
+  trees.update(13, { x = 128 + trees.RECHECK_M + 1, y = 128 })
+  T.check((trees.skipped or 0) == s0 + 2, 'the car moved RECHECK_M: a pass')
+  trees.onTile({ anchorId = 13, key = '1_0', path = '/t/v.json', n = 100 }, 13)
+  trees.update(13, { x = 128 + trees.RECHECK_M + 1, y = 128 })
+  T.check((trees.skipped or 0) == s0 + 2 and count() == 200, 'a new tile: a pass at once')
+  trees.update(13, { x = 128 + trees.RECHECK_M + 1, y = 128 })
+  T.check((trees.skipped or 0) == s0 + 3, 'then skipped again')
+end
 T.done('test_trees')

@@ -233,6 +233,8 @@ local stopwatch = require('beamngEarth/stopwatch')
 M.clock = stopwatch.new      -- the tree frame's clock (FRAME_MS; tests: their own)
 local tiles = {}        -- key "a:tx_ty" -> { anchor, cx, cy, f (flat items), s (stride), n, made = { i -> item }, shown }
 local foci = {}         -- other vehicles' collision foci { x, y, r, trees } (M.setFoci, collisionfoci.lua)
+local dirty = true      -- a tree pass has work (M.update: a pass with none is skipped)
+local lastPass = nil    -- { anchor, x, y, vx, vy, clock } of the last full pass (M.update)
 local ghostSince = nil               -- since the last rebase that left ghost tiles (M.transform)
 local types = {}        -- "shape" / "shape#n" (not solid) -> TSForestItemData
 local pop = {}          -- shape -> its items in the level
@@ -568,6 +570,7 @@ local function addTile(anchorId, tileKey, flat, stride, groups)
     madeShape = old and old.madeShape or {}, shown = old and old.shown or 0, forestId = old and old.forestId or nil,
     variant = M.tileVariant(key), cx = (tonumber(tx) or 0) * 256 + 128, cy = (tonumber(ty) or 0) * 256 + 128, drop = false }
   tiles[key] = t
+  dirty = true
 end
 
 -- A 'veg_tile' message: { anchorId, key, path, n }. Returns the tile's data (its ambience: ambience.lua).
@@ -601,13 +604,13 @@ end
 -- The tile "anchorId:key" goes (roads.lua's furniture).
 function M.dropKey(key)
   local t = tiles[key]
-  if t then t.drop = true end
+  if t then t.drop = true; dirty = true end
 end
 
 -- A 'veg_drop' message: the tile's items go.
 function M.onDrop(msg)
   local t = tiles[msg.anchorId .. ':' .. tostring(msg.key)]
-  if t then t.drop = true end
+  if t then t.drop = true; dirty = true end
 end
 
 local function threshold(d)
@@ -643,6 +646,7 @@ M.tileThreshold = tileThreshold
 M.suppress = nil
 function M.refresh()
   for _, t in pairs(tiles) do t.pending, t.scan = true, nil end      -- (every row again: an interrupted pass too)
+  dirty = true
 end
 
 -- Which of the capped groups a tile at distance d still shows (changes re-run its rows).
@@ -684,7 +688,7 @@ function M.transform(xf, geodesy)
       any = true
     end
   end
-  if any then ghostSince = stopwatch.new() end
+  if any then ghostSince = stopwatch.new(); dirty = true end
 end
 
 -- Ghost tiles whose square the current anchor's filled tiles cover go (emptied by update's first loop).
@@ -729,6 +733,14 @@ end
 -- ms whatever the count (2026-10-15, 100 mph forest drive: tick 3.5 -> 1.65 ms a frame on average, 50 -> 54 fps)
 M.EVERY_N = 3
 local frameN = 0
+-- A pass with nothing to do is skipped (the user, 2026-10-28: "the game speed/time is inconsistent"): it still sorted
+-- every tile by distance and ranked each (1331 tiles in Baltimore: ~2.5 ms of Lua and its garbage every third frame,
+-- the frame-to-frame swing the engine's smoothed time step turned into game speed pulsing +-25 % over 0.25 s). A pass
+-- runs when a tile came, went or waits (dirty), the car or the view moved RECHECK_M since the last one, another car's
+-- trees are near (foci) or RECHECK_S went by.
+M.RECHECK_M = 5
+M.RECHECK_S = 1.0
+-- (dirty, lastPass: declared with the tiles, which set them)
 -- view: the camera's {x, y} when it is away from the car (core: VIEW_AWAY_M), else nil: what is shown follows what the
 -- player looks at, the colliding items stay round the car (the user, 2026-10-20: "the LODs still all follow the car").
 -- frameMs: this frame's Lua time for the tree work (default FRAME_MS); 0: none this frame (core: the governor's heavy
@@ -739,6 +751,20 @@ function M.update(anchorId, player, view, frameMs)
   if not setup() then return end
   frameN = frameN + 1
   if frameN % M.EVERY_N ~= 0 then return end
+  if not dirty and not ghostSince and #foci == 0 and lastPass and lastPass.anchor == anchorId and player
+      and math.abs(player.x - lastPass.x) + math.abs(player.y - lastPass.y) < M.RECHECK_M
+      and (view and lastPass.vx and math.abs(view.x - lastPass.vx) + math.abs(view.y - lastPass.vy) < M.RECHECK_M
+        or not view and not lastPass.vx)
+      and lastPass.clock() < M.RECHECK_S * 1000 then
+    M.skipped = (M.skipped or 0) + 1      -- (diagnostics)
+    -- nothing to change: a spare Forest made for the pool (its ~9 ms alone, not in a frame of items), as a pass that
+    -- changed nothing does below
+    if #pool < M.POOL_SPARE then pool[#pool + 1] = newForest():getID() end
+    return
+  end
+  dirty = false                           -- (set again below by anything this pass leaves undone)
+  lastPass = player and { anchor = anchorId, x = player.x, y = player.y, vx = view and view.x, vy = view and view.y,
+    clock = stopwatch.new() } or nil
   local budget = M.PER_FRAME * M.EVERY_N
   local limit, elapsed = frameMs or M.FRAME_MS, M.clock()
   newForests = 0
@@ -751,7 +777,7 @@ function M.update(anchorId, player, view, frameMs)
       local fd = f and f:getData()
       local left = false
       for i, it in pairs(t.made) do
-        if budget <= 0 or elapsed() > limit then return end
+        if budget <= 0 or elapsed() > limit then dirty = true; return end
         local sh = t.madeShape[i]
         if not sh or allow(sh) then
           if fd then removeItem(fd, it, sh) end
@@ -762,7 +788,7 @@ function M.update(anchorId, player, view, frameMs)
       if not left then
         releaseForest(t)
         tiles[key] = nil
-      end
+      else dirty = true end
     end
   end
   if not player then return end
@@ -801,6 +827,7 @@ function M.update(anchorId, player, view, frameMs)
   -- the tile's first row (a dense tile's 6000 rows looked at again in every frame of its pass)
   local function stop(t, i, skipped, want, band, near)
     t.pending = true
+    dirty = true
     t.scan = { from = math.min(i, skipped or i), want = want, band = band, near = near }
     finish()
   end
@@ -818,7 +845,7 @@ function M.update(anchorId, player, view, frameMs)
     local band = groupBand(t, o[2])
     local near = o[3] <= M.SOLID_M or (t.near and o[3] <= M.SOLID_M + M.SOLID_HYST_M) or nearFocus(t) or false
     if want ~= t.shown or band ~= t.band or near ~= t.near or t.pending then
-      if rowsScanned > M.ROWS_PER_FRAME then finish(); return end      -- (its pass in a later frame: pending kept)
+      if rowsScanned > M.ROWS_PER_FRAME then dirty = true; finish(); return end   -- (its pass in a later frame: pending kept)
       t.pending = false
       local scan = t.scan
       local from = scan and scan.want == want and scan.band == band and scan.near == near and scan.from or 1
@@ -887,7 +914,7 @@ function M.update(anchorId, player, view, frameMs)
       t.shown = want
       t.band = band
       t.near = near
-      if skipped then t.pending = true; t.scan = { from = skipped, want = want, band = band, near = near } end
+      if skipped then t.pending = true; t.scan = { from = skipped, want = want, band = band, near = near }; dirty = true end
     end
   end
   finish()
@@ -905,12 +932,13 @@ function M.clear()
     for i, it in pairs(t.made) do if fd then removeItem(fd, it, t.madeShape[i]) end end
     releaseForest(t)
   end
-  tiles, frameN = {}, 0
+  tiles, frameN, dirty, lastPass = {}, 0, true, nil
 end
 
 -- Level end: the level deletes its objects itself.
 function M.reset()
   tiles, types, ready, pool, forestCount, pop = {}, {}, false, {}, 0, {}
+  dirty, lastPass = true, nil
 end
 
 function M.status()

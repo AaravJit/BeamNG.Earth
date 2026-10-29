@@ -1707,6 +1707,8 @@ local function mark(name, t0)
   marks[name] = (marks[name] or 0) + (t - t0)
   return t
 end
+-- The mod's parts' ms in the last whole frame (diagnostics: a per-frame probe; not to be changed by the caller)
+function M.frameMarks() return prevMarks end
 local function noteHitch(frameMs)
   local h = { ms = math.floor(frameMs + 0.5), at = math.floor(st.clock * 10 + 0.5) / 10, mod = {} }
   -- marks: the mod's parts in the frame that just ended (onUpdate swaps them to prevMarks after this call; reading
