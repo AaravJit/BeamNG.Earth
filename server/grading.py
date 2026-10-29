@@ -846,6 +846,14 @@ class Grader:
                     self._lower_underpasses(key, plans)
                 except Exception as e:      # as the data has it rather than no grading
                     log.debug("grading: underpasses of %s: %s: %s", key, type(e).__name__, e)
+            if JUNCTION_SNAP_ON and plans and (APPROACH_ON or UNDER_ON):
+                # the side roads again, at their roads' heights after the approaches' lifts and the underpasses' dips
+                # (snapped before them, every alley along Baltimore's Haven Street stood up to 3.5 m over the street
+                # the dip had lowered: a hump at each, the user 2026-10-28)
+                try:
+                    snap_junctions([p for _f, p in plans], pspecs)
+                except Exception as e:
+                    log.debug("grading: junctions after the dips of %s: %s: %s", key, type(e).__name__, e)
             if CORNERS_ON and plans:
                 # the rounded corners of curbless junctions (roadcorners.py): the ground under each graded to its roads'
                 # solved heights (trimmed to the cell's box with the roads' plans below)

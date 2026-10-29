@@ -636,6 +636,23 @@ class JunctionTest(unittest.TestCase):
         self.assertTrue(np.all(np.diff(side.z[:12]) >= -1e-9))             # eased in, no bump
         np.testing.assert_allclose(main.z, 10 + 0.02 * x)                  # the main road keeps its profile
 
+    def test_a_side_road_follows_its_road_down_into_a_dip(self):
+        """Baltimore's Haven Street (2026-10-28): the alleys were snapped to the street before the underpass dip lowered
+        it 3.5 m, each a hump; snapped again after the dips, they meet it at its new height (a second snap is what
+        Grader._make_cell runs after _lower_underpasses)."""
+        import roads
+        x = np.arange(-200, 201, 4.0)
+        main = grading.Plan(np.stack([x, 0 * x], 1), 10.0 + 0 * x, 5, road_half=4)
+        y = np.arange(0, 101, 4.0)
+        side = grading.Plan(np.stack([0 * y + 50, y], 1), 10.0 + 0 * y, 2, road_half=2)
+        specs = [roads.Spec(8.0, "paved", False, "primary", False), roads.Spec(4.0, "paved", False, "service", False)]
+        grading.snap_junctions([main, side], specs)
+        main.z = main.z - 3.0 * np.exp(-((x - 60.0) / 40.0) ** 2)     # the dip, after the first snap
+        grading.snap_junctions([main, side], specs)
+        _d, zq, _e = grading._nearest_on(main, 50.0, 0.0)
+        self.assertAlmostEqual(side.z[0], zq, places=6)
+        self.assertAlmostEqual(side.z[-1], 10.0, places=6)
+
     def test_a_road_crossing_a_bigger_one_meets_it_there(self):
         """GitHub #414 (Perm): a service road crossing a primary at a shared node, 4 m higher, stood as a wall across
         it; it takes the primary's height at the crossing, eased in either side; the primary keeps its own. (Opt-in with
