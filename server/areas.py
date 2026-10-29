@@ -15,6 +15,12 @@ Store: <cache>/areas/areas.json (the list; atomic writes) and <cache>/areas/<id>
 line each; appended). The plan of an area is a pure function of its box and the server's settings: a resume walks it
 again and skips what is on disk.
 
+Routes (the user, 2026-10-29: "options on pre downloading/generating along a gps route"): an area can be a corridor
+instead of a box: the GPS route's points and a half width ("route": {"lat", "lon", "half"}; s, w, n, e its bounds).
+Its plan takes the corridor's tiles at each zoom (earthfast corridor_tiles: in order along the route, so the start is
+ready first) where a box takes its rectangle's; its pins are the cache keys under the corridor's map data cells
+(keys_in_cover).
+
 Modes and phases: an area's mode names the phases its job walks, in order (MODES); each phase is a plan of steps
 (phase_steps) the thread fetches the same way. Only "data" (the downloads) exists now; a "world" phase (the world
 generation's tiles cached for the place, once they are made the same from any anchor) can be added as a phase of
@@ -64,6 +70,9 @@ REQUEST_S = 0.35            # one request at a time
 CELL_S = 3.0                # a cell's layers built from the downloads
 RAW_PER_CELL = 1.2e6        # the sources' blocks kept on disk per new cell (mapdata/raw: range reads, ~30 cells
                             # measured 2026-10-28)
+ROUTE_HALF_M = (200.0, 5000.0)  # a route's half width (m): at least, at most
+ROUTE_MAX_POINTS = 20000
+ROUTE_PREVIEW_POINTS = 400  # the route drawn on the map (the 'areas' message): at most this many of its points
 SIZES = {"dem": 110e3, "img": 25e3, "cell": 120e3}      # bytes on disk (a cell: one layer's file) when the cache
                                                         # knows no better
 
@@ -90,31 +99,88 @@ def check_box(s, w, n, e):
     return s, w, n, e
 
 
+def check_route(lats, lons, half):
+    """(lats, lons, half) as lists and a float, or ValueError: 2 .. ROUTE_MAX_POINTS points on the map, a half width
+    in ROUTE_HALF_M, a corridor of at most MAX_KM2."""
+    try:
+        lats = [float(v) for v in lats]
+        lons = [float(v) for v in lons]
+        half = float(half)
+    except (TypeError, ValueError):
+        raise ValueError("a route needs its points and a width") from None
+    if len(lats) != len(lons) or len(lats) < 2:
+        raise ValueError("no route: plan one with the GPS first")
+    if len(lats) > ROUTE_MAX_POINTS:
+        raise ValueError("that route has too many points")
+    if not all(math.isfinite(v) and -85.0 < v < 85.0 for v in lats) or \
+            not all(math.isfinite(v) and -180.0 <= v <= 180.0 for v in lons):
+        raise ValueError("that route is not on the map")
+    if not (math.isfinite(half) and ROUTE_HALF_M[0] <= half <= ROUTE_HALF_M[1]):
+        raise ValueError(f"the width each side must be {ROUTE_HALF_M[0]:.0f} .. {ROUTE_HALF_M[1]:.0f} m")
+    km2 = fast._ef.corridor_size(lats, lons, half)[1]
+    if km2 > MAX_KM2:
+        raise ValueError(f"too large: {km2 / 2.59:,.0f} square miles; at most {MAX_KM2 / 2.59:,.0f} (a narrower "
+                         "width, or a shorter route)")
+    return lats, lons, half
+
+
+def route_bounds(route):
+    """(s, w, n, e) round a route's corridor."""
+    lats, lons, half = route["lat"], route["lon"], route["half"]
+    dlat = half / 111_195.0
+    dlon = half / (111_195.0 * max(0.01, math.cos(math.radians(max(abs(min(lats)), abs(max(lats)))))))
+    return (max(-85.0, min(lats) - dlat), max(-180.0, min(lons) - dlon), min(85.0, max(lats) + dlat),
+            min(180.0, max(lons) + dlon))
+
+
+def preview(route):
+    """At most ROUTE_PREVIEW_POINTS of a route's points (evenly by index, the ends kept): [[lat, lon], ...]."""
+    n = len(route["lat"])
+    step = max(1, math.ceil((n - 1) / (ROUTE_PREVIEW_POINTS - 1)))
+    idx = list(range(0, n, step))
+    if idx[-1] != n - 1:
+        idx.append(n - 1)
+    return [[round(route["lat"][i], 6), round(route["lon"][i], 6)] for i in idx]
+
+
+def box_tiles(box):
+    """tiles(z, ring) -> [(x, y)] of a box (area_tiles)."""
+    s, w, n, e = box
+    return lambda z, ring: fast._ef.area_tiles(s, w, n, e, z, ring)
+
+
+def route_tiles(route):
+    """tiles(z, ring) -> [(x, y)] of a route's corridor, in order along it (corridor_tiles)."""
+    lats, lons, half = route["lat"], route["lon"], route["half"]
+    return lambda z, ring: [(x, y) for x, y, _ in fast._ef.corridor_tiles(lats, lons, half, z, ring)]
+
+
 MODES = {"data": ("data",)}      # mode -> its phases, in order ("world" later)
 DEFAULT_MODE = "data"
 
 
-def plan_steps(box, hm_zooms, img_zoom, layers):
-    """The download plan of a box, in order: ("cell", z, x, y, layer) for the map data cells (with CELL_RING), ("dem",
-    z, x, y) at the near terrain's zooms (hm_zooms(x6, y6) -> its zoom under that z6 tile) and DEM_ZOOMS_FAR, then
-    ("img", IMG_PARENT_Z, x, y, zoom) squares at img_zoom and IMG_STEPS coarser. Deterministic."""
-    s, w, n, e = box
-    ef = fast._ef
+def plan_steps(tiles, hm_zooms, img_zoom, layers):
+    """The download plan of an area (tiles(z, ring) -> its [(x, y)] at zoom z with ring more round them: box_tiles,
+    route_tiles), in order: ("cell", z, x, y, layer) for the map data cells (with CELL_RING), ("dem", z, x, y) at the
+    near terrain's zooms (hm_zooms(x6, y6) -> its zoom under that z6 tile) and DEM_ZOOMS_FAR, then ("img",
+    IMG_PARENT_Z, x, y, zoom) squares at img_zoom and IMG_STEPS coarser. Deterministic."""
+    if isinstance(tiles, tuple):        # (a box)
+        tiles = box_tiles(tiles)
     out = []
-    for x, y in ef.area_tiles(s, w, n, e, CELL_Z, CELL_RING):
+    for x, y in tiles(CELL_Z, CELL_RING):
         for layer in layers:
             out.append(("cell", CELL_Z, x, y, layer))
     near = {}
-    for x, y in ef.area_tiles(s, w, n, e, 6, 0):
+    for x, y in tiles(6, 0):
         near.setdefault(hm_zooms(x, y), True)
     zooms = sorted(set(DEM_ZOOMS_FAR) | set(near), reverse=True)
     for z in zooms:
-        for x, y in ef.area_tiles(s, w, n, e, z, DEM_RING if z == min(DEM_ZOOMS_FAR) else 0):
+        for x, y in tiles(z, DEM_RING if z == min(DEM_ZOOMS_FAR) else 0):
             if z in DEM_ZOOMS_FAR or hm_zooms(x >> (z - 6), y >> (z - 6)) == z:
                 out.append(("dem", z, x, y))
     for step in IMG_STEPS:
         zw = img_zoom - step
-        for x, y in ef.area_tiles(s, w, n, e, IMG_PARENT_Z, 0):
+        for x, y in tiles(IMG_PARENT_Z, 0):
             out.append(("img", IMG_PARENT_Z, x, y, zw))
     return out
 
@@ -124,7 +190,7 @@ class Areas:
     mapdata, imagery, net, cache, live_busy, driving); notify(): something changed (the 'areas' message)."""
 
     def __init__(self, cache_dir, server, notify=None):
-        fast.require(101, "areas")
+        fast.require(114, "areas")
         self.dir = os.path.join(cache_dir, SUBDIR)
         self.s = server
         self.notify = notify or (lambda: None)
@@ -152,8 +218,14 @@ class Areas:
             return
         for a in doc.get("areas", []) if isinstance(doc, dict) else []:
             try:
-                box = check_box(a["s"], a["w"], a["n"], a["e"])
-                self.areas.append({"id": str(a["id"])[:16], "name": str(a.get("name", ""))[:NAME_MAX],
+                route = a.get("route")
+                if route is not None:
+                    lats, lons, half = check_route(route["lat"], route["lon"], route["half"])
+                    route = {"lat": lats, "lon": lons, "half": half}
+                    box = route_bounds(route)
+                else:
+                    box = check_box(a["s"], a["w"], a["n"], a["e"])
+                self.areas.append({"id": str(a["id"])[:16], "name": str(a.get("name", ""))[:NAME_MAX], "route": route,
                                    "s": box[0], "w": box[1], "n": box[2], "e": box[3],
                                    "created": float(a.get("created", 0)), "paused": bool(a.get("paused")),
                                    "complete": bool(a.get("complete")), "total": int(a.get("total", 0)),
@@ -170,7 +242,8 @@ class Areas:
     def _save(self):
         doc = {"v": STORE_VERSION, "next": self.next_id,
                "areas": [{k: a[k] for k in ("id", "name", "s", "w", "n", "e", "created", "paused", "complete", "total",
-                                            "diskBytes", "mode")} for a in self.areas]}
+                                            "diskBytes", "mode", "route") if k != "route" or a[k] is not None}
+                         for a in self.areas]}
         try:
             os.makedirs(self.dir, exist_ok=True)
             p = os.path.join(self.dir, STORE)
@@ -222,18 +295,19 @@ class Areas:
         import imagery as imagerymod
         return imagerymod.zoom_for((box[0] + box[2]) / 2, IMG_TEXEL_M)
 
-    def phase_steps(self, phase, box):
-        """The steps of one phase of an area's job ("data": plan_steps)."""
+    def phase_steps(self, phase, box, route=None):
+        """The steps of one phase of an area's job ("data": plan_steps) for a box, or a route's corridor (box: its
+        bounds)."""
         if phase == "data":
-            return plan_steps(box, self._hm_zooms(box), self._img_zoom(box),
-                              area_layers() if self.s.mapdata is not None else ())
+            return plan_steps(route_tiles(route) if route is not None else box_tiles(box), self._hm_zooms(box),
+                              self._img_zoom(box), area_layers() if self.s.mapdata is not None else ())
         raise ValueError(f"unknown area phase {phase!r}")
 
-    def steps(self, box, mode=DEFAULT_MODE):
+    def steps(self, box, mode=DEFAULT_MODE, route=None):
         """Every step of an area's job: its mode's phases in order."""
         out = []
         for phase in MODES[mode]:
-            out += self.phase_steps(phase, box)
+            out += self.phase_steps(phase, box, route)
         return out
 
     def _present(self, step, done_imgs=None):
@@ -253,8 +327,22 @@ class Areas:
             box = check_box(s, w, n, e)
         except ValueError as err:
             return {"ok": False, "error": str(err)}
+        return self._estimate(self.steps(box), fast._ef.area_km2(*box))
+
+    def plan_route(self, lats, lons, half):
+        """plan() for a route's corridor (half: its half width, m), with its length "km" too."""
+        try:
+            lats, lons, half = check_route(lats, lons, half)
+        except ValueError as err:
+            return {"ok": False, "error": str(err)}
+        route = {"lat": lats, "lon": lons, "half": half}
+        length, km2 = fast._ef.corridor_size(lats, lons, half)
+        out = self._estimate(self.steps(route_bounds(route), route=route), km2)
+        out["km"] = round(length / 1000.0, 2)
+        return out
+
+    def _estimate(self, steps, km2):
         im = self.s.imagery
-        steps = self.steps(box)
         sizes = self._sizes()
         req = {}
         missing = {"cell": set(), "layer": 0, "dem": 0, "img": 0}
@@ -300,7 +388,7 @@ class Areas:
             days = max(days, d)
             hosts.append([host, int(r), round(d, 2)])
         seconds = n_req * REQUEST_S + cells * CELL_S
-        return {"ok": True, "km2": round(fast._ef.area_km2(*box), 2), "items": len(steps),
+        return {"ok": True, "km2": round(km2, 2), "items": len(steps),
                 "missing": missing["layer"] + missing["dem"] + missing["img"],
                 "downloadBytes": int(dl), "diskBytes": int(disk), "seconds": int(seconds), "days": round(days, 2),
                 "hosts": hosts, "excluded": sorted(excluded)}
@@ -335,7 +423,20 @@ class Areas:
             box = check_box(s, w, n, e)
         except ValueError as err:
             return False, str(err)
-        est = self.plan(*box)
+        return self._add(box, None, self.plan(*box), name)
+
+    def add_route(self, lats, lons, half, name=""):
+        """A new saved route (its corridor: half m each side). (True, area id) or (False, why)."""
+        try:
+            lats, lons, half = check_route(lats, lons, half)
+        except ValueError as err:
+            return False, str(err)
+        route = {"lat": lats, "lon": lons, "half": half}
+        return self._add(route_bounds(route), route, self.plan_route(lats, lons, half), name)
+
+    def _add(self, box, route, est, name):
+        if not est.get("ok"):
+            return False, est.get("error") or "no estimate"
         with self.lock:
             if len(self.areas) >= MAX_AREAS:
                 return False, f"at most {MAX_AREAS} saved areas: delete one first"
@@ -346,8 +447,9 @@ class Areas:
                                f"of the {cap / 1e9:.0f} GB cache (raise Download cache size in the settings)")
             aid = f"a{self.next_id}"
             self.next_id += 1
-            label = str(name or "").strip()[:NAME_MAX] or f"Area {aid[1:]}"
-            self.areas.append({"id": aid, "name": label, "s": box[0], "w": box[1], "n": box[2], "e": box[3],
+            label = str(name or "").strip()[:NAME_MAX] or f"{'Route' if route else 'Area'} {aid[1:]}"
+            self.areas.append({"id": aid, "name": label, "route": route, "s": box[0], "w": box[1], "n": box[2],
+                               "e": box[3],
                                "created": time.time(), "paused": False, "complete": False, "total": est.get("items", 0),
                                "diskBytes": est.get("diskBytes", 0), "done": 0, "state": "queued", "msg": "",
                                "retry_at": 0.0, "mode": DEFAULT_MODE})
@@ -383,12 +485,19 @@ class Areas:
     def message(self):
         """The 'areas' message's fields."""
         with self.lock:
-            out = {"areas": [{k: a[k] for k in ("id", "name", "s", "w", "n", "e", "state", "done", "total", "msg",
-                                                "mode")}
+            out = {"areas": [dict({k: a[k] for k in ("id", "name", "s", "w", "n", "e", "state", "done", "total", "msg",
+                                                     "mode")}, **({"route": self._preview(a), "half": a["route"]["half"]} if a["route"] else {}))
                              for a in self.areas]}
         if self.pinned_bytes is not None:
             out["pinnedBytes"] = int(self.pinned_bytes)
         return out
+
+    @staticmethod
+    def _preview(a):
+        """A route area's points for the map (computed once)."""
+        if "_preview" not in a:
+            a["_preview"] = preview(a["route"])
+        return a["_preview"]
 
     def _changed(self, force=False):
         now = time.monotonic()
@@ -401,24 +510,37 @@ class Areas:
 
     # --- pins -------------------------------------------------------------------------------------
     def boxes(self):
-        """The saved areas' boxes with their ring of map data cells (what the plan reads)."""
+        """The saved areas' boxes with their ring of map data cells (what the plan reads); routes not."""
         pad = CELL_RING * 360.0 / (1 << CELL_Z)
         with self.lock:
             return [(max(-85.0, a["s"] - pad), max(-180.0, a["w"] - pad), min(85.0, a["n"] + pad),
-                     min(180.0, a["e"] + pad)) for a in self.areas]
+                     min(180.0, a["e"] + pad)) for a in self.areas if not a["route"]]
+
+    def cover(self):
+        """The saved routes' map data cells (CELL_Z, with CELL_RING: what the plan reads) as (z, x, y) tiles."""
+        with self.lock:
+            routes = [a for a in self.areas if a["route"]]
+        out = set()
+        for a in routes:
+            if "_cover" not in a:
+                a["_cover"] = [(CELL_Z, x, y) for x, y in route_tiles(a["route"])(CELL_Z, CELL_RING)]
+            out.update(a["_cover"])
+        return sorted(out)
 
     def pinned(self, keys):
-        """cache.Cache.pinned: [bool] per cache key (its z/x/y tile in a saved area)."""
-        boxes = self.boxes()
-        if not boxes:
-            return [False] * len(keys)
-        return fast._ef.keys_in_boxes(list(keys), boxes)
+        """cache.Cache.pinned: [bool] per cache key (its z/x/y tile in a saved area or under a saved route)."""
+        boxes, cover = self.boxes(), self.cover()
+        keys = list(keys)
+        mask = fast._ef.keys_in_boxes(keys, boxes) if boxes else [False] * len(keys)
+        if cover:
+            mask = [a or b for a, b in zip(mask, fast._ef.keys_in_cover(keys, cover))]
+        return mask
 
     def count_pinned(self):
         cache = self.s.cache
         if cache is None or not getattr(cache, "ready", False):
             return
-        if not self.boxes():
+        if not self.areas:
             self.pinned_bytes = None
             cache.pinned_bytes = None
             return
@@ -490,7 +612,7 @@ class Areas:
     def _pass(self, a):
         """One walk over the area's plan: what is on disk is counted, the rest fetched."""
         box = (a["s"], a["w"], a["n"], a["e"])
-        steps = self.steps(box, a.get("mode", DEFAULT_MODE))
+        steps = self.steps(box, a.get("mode", DEFAULT_MODE), a["route"])
         done_imgs = self._done_set(a["id"])
         with self.lock:
             a["total"], a["done"], a["state"], a["msg"] = len(steps), 0, "checking", ""

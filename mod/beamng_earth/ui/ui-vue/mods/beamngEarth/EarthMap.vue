@@ -53,6 +53,8 @@
           <polyline v-for="(p, i) in stateLines" :key="'s' + i" class="layer-state" :points="p" />
           <polyline v-for="(p, i) in borderLines" :key="'b' + i" class="layer-border" :points="p" />
         </g>
+        <polyline v-for="r in areaRoutes" :key="'rt' + r.id" class="area-route" :class="r.cls" :points="r.points"
+                  :style="{ strokeWidth: r.px + 'px' }" />
         <polyline v-if="routeDone" class="route-done" :points="routeDone" />
         <polyline v-if="routeAhead" class="route-line-casing" :points="routeAhead" />
         <polyline v-if="routeAhead" class="route-line" :points="routeAhead" />
@@ -229,6 +231,8 @@
           {{ state.gps.routeDownload.done }} / {{ state.gps.routeDownload.total }}
         </span>
         <button class="map-btn small" @click="showOnMap(state.gps)">Show</button>
+        <button v-if="routePts.length >= 2" class="map-btn small" @click="askRoute(routeHalf)"
+                title="Download this route's data (elevation, roads, buildings, aerial photos) and keep it, like a saved area">Save route</button>
         <button class="map-btn small" :disabled="!!state.cannotGo" @click="teleportNow(state.gps.lat, state.gps.lon, state.gps.name)">Teleport</button>
         <button class="map-btn small" :class="{ primary: state.gps.autodrive }" @click="setAutodrive(!state.gps.autodrive)"
                 :title="state.gps.autodrive ? 'Stop driving by itself' : 'The car drives itself along the route (in its lane, at the speed limit)'">
@@ -268,10 +272,16 @@
 
     <!-- a picked area: its estimate and Download (server areas.py plan) -->
     <div v-if="areaAsk" class="confirm area-confirm" @mousedown.stop @wheel.stop>
-      <div class="confirm-title">Download this area?</div>
+      <div class="confirm-title">{{ areaAsk.route ? "Download along this route?" : "Download this area?" }}</div>
+      <div v-if="areaAsk.route" class="panel-row route-width">
+        <span class="layer-hint">Width each side:</span>
+        <button v-for="o in ROUTE_WIDTHS" :key="o.m" class="map-btn small" :class="{ primary: areaAsk.half === o.m }"
+                :disabled="areaAsk.busy" @click="askRoute(o.m)">{{ metricUnits ? o.km : o.mi }}</button>
+      </div>
       <div v-if="!areaAsk.plan" class="confirm-where">Working out what it needs...</div>
       <template v-else-if="areaAsk.plan.ok">
-        <div class="confirm-where">{{ fmtArea(areaAsk.plan.km2) }} &middot; about {{ fmtBytes(areaAsk.plan.downloadBytes) }} to download,
+        <div class="confirm-where"><template v-if="areaAsk.plan.km != null">{{ fmtMiles(areaAsk.plan.km * 1000) }} of route,
+          </template>{{ fmtArea(areaAsk.plan.km2) }} &middot; about {{ fmtBytes(areaAsk.plan.downloadBytes) }} to download,
           {{ fmtBytes(areaAsk.plan.diskBytes) }} on disk &middot; {{ fmtEta(areaAsk.plan) }}</div>
         <div v-for="hst in areaHosts" :key="hst[0]" class="area-host">{{ hst[0] }}: {{ hst[1].toLocaleString() }} requests<template
           v-if="hst[2] > 1"> (about {{ Math.ceil(hst[2]) }} days: its daily limit)</template></div>
@@ -343,7 +353,7 @@
         <div class="panel-sub">Saved areas <span class="layer-hint">(downloaded ahead: Area button)</span></div>
         <div v-for="a in areaList" :key="'a' + a.id" class="panel-item area-item">
           <div class="item-text" @click="showArea(a)" title="Show on the map">
-            <div class="item-name">{{ a.name }}</div>
+            <div class="item-name">{{ a.name }}<span v-if="a.route" class="layer-hint"> (route)</span></div>
             <div class="item-sub">{{ areaStateText(a) }}</div>
             <div class="area-bar"><span class="area-bar-fill" :class="a.state" :style="{ width: areaPct(a) + '%' }"></span></div>
           </div>
@@ -355,7 +365,7 @@
               {{ confirmAreaId === a.id ? "Confirm" : "Delete" }}</button>
           </div>
         </div>
-        <div v-if="!areaList.length" class="panel-empty">No saved areas yet.</div>
+        <div v-if="!areaList.length" class="panel-empty">No saved areas yet (GPS: Save route keeps a route's).</div>
         <div v-if="areaMsg" class="panel-msg" :class="{ warn: areaMsgError }">{{ areaMsg }}</div>
 
         <div class="panel-sub">Recent places</div>
@@ -1204,9 +1214,53 @@ const selectRect = computed(() => { view.value; w.value; h.value; return selecti
 const areaRects = computed(() => {
   view.value; w.value; h.value
   if (!(panelOpen.value || cacheOn.value || selecting.value)) return []
-  return areaList.value.map(a => ({ id: a.id, name: a.name, cls: a.state, ...rectOf(a) }))
+  return areaList.value.filter(a => !a.route).map(a => ({ id: a.id, name: a.name, cls: a.state, ...rectOf(a) }))
     .filter(r => r.x < w.value && r.y < h.value && r.x + r.w > 0 && r.y + r.h > 0)
 })
+// saved routes (areas.py "route": its points, ~400 at most; "half": m each side): their corridors, the line as wide
+// as the corridor
+const areaRoutes = computed(() => {
+  view.value; w.value; h.value
+  if (!(panelOpen.value || cacheOn.value)) return []
+  return areaList.value.filter(a => a.route).map(a => {
+    const pts = toArray(a.route).map(p => toArray(p))
+    if (pts.length < 2) return null
+    const lat = Number(pts[0][0]), lon = Number(pts[0][1])
+    const p0 = screen(lat, lon), p1 = screen(lat + (Number(a.half) || 800) / 111195, lon)
+    return { id: a.id, cls: a.state, px: Math.max(3, 2 * Math.abs(p1.y - p0.y)),
+      points: pts.map(p => { const q = screen(Number(p[0]), Number(p[1])); return `${q.x.toFixed(1)},${q.y.toFixed(1)}` }).join(" ") }
+  }).filter(Boolean)
+})
+// "Save route": the planned GPS route's corridor, this far each side (m)
+const ROUTE_WIDTHS = [
+  { m: 402, mi: "¼ mi", km: "0.4 km" }, { m: 805, mi: "½ mi", km: "0.8 km" },
+  { m: 1609, mi: "1 mi", km: "1.6 km" }, { m: 3219, mi: "2 mi", km: "3.2 km" },
+]
+const routeHalf = ref(805)
+function askRoute(half) {
+  routeHalf.value = half
+  const seq = ++areaSeq
+  areaAsk.value = { route: true, half, plan: null, error: "" }
+  areaName.value = state.value.gps && state.value.gps.name ? String(state.value.gps.name).slice(0, 60) : ""
+  engineLua(`beamngEarth_settings and beamngEarth_settings.uiRoutePlan and beamngEarth_settings.uiRoutePlan(${half}) or nil`, r => {
+    if (seq !== areaSeq || !areaAsk.value) return
+    if (!r || r.error || !r.id) { areaAsk.value = { ...areaAsk.value, error: (r && r.error) || "BeamNG.Earth is not loaded" }; return }
+    let tries = 0
+    const poll = () => {
+      if (seq !== areaSeq || !areaAsk.value) return
+      engineLua(`beamngEarth_settings and beamngEarth_settings.uiAreaPlanResult(${r.id}) or nil`, res => {
+        if (seq !== areaSeq || !areaAsk.value) return
+        if (!res) {
+          if (++tries < 200) setTimeout(poll, 150)
+          else areaAsk.value = { ...areaAsk.value, error: "No answer from the companion server" }
+          return
+        }
+        areaAsk.value = { ...areaAsk.value, plan: res, error: res.ok ? "" : String(res.error || "Not possible") }
+      })
+    }
+    setTimeout(poll, 100)
+  })
+}
 function askArea() {
   const b = pickedBox.value
   if (!b) return
@@ -1243,7 +1297,10 @@ function confirmArea() {
   if (!a || !a.plan || !a.plan.ok || a.busy) return
   areaAsk.value = { ...a, busy: true }
   const b = a.box
-  engineLua(`beamngEarth_settings and beamngEarth_settings.uiAreaAdd and beamngEarth_settings.uiAreaAdd(${b.s}, ${b.w}, ${b.n}, ${b.e}, ${luaStr(areaName.value)}) or nil`, r => {
+  const call = a.route
+    ? `beamngEarth_settings.uiRouteAdd and beamngEarth_settings.uiRouteAdd(${a.half}, ${luaStr(areaName.value)})`
+    : `beamngEarth_settings.uiAreaAdd and beamngEarth_settings.uiAreaAdd(${b.s}, ${b.w}, ${b.n}, ${b.e}, ${luaStr(areaName.value)})`
+  engineLua(`beamngEarth_settings and ${call} or nil`, r => {
     if (!r || r.error) { areaAsk.value = { ...a, busy: false, error: (r && r.error) || "BeamNG.Earth is not loaded" }; return }
     let tries = 0
     const poll = () => {
@@ -1252,7 +1309,8 @@ function confirmArea() {
         if (!res.ok) { areaAsk.value = { ...a, busy: false, error: String(res.error || "Not saved") }; return }
         cancelSelect()
         panelOpen.value = true
-        areaMsg.value = "Downloading the area in the background"; areaMsgError.value = false
+        areaMsg.value = a.route ? "Downloading along the route in the background" : "Downloading the area in the background"
+        areaMsgError.value = false
         pollAreas()
       })
     }
@@ -1810,6 +1868,10 @@ const fmtLatLon = mm.fmtLatLon
 }
 .area-rect.done { border-color: rgba(61, 220, 132, 0.9); background: rgba(61, 220, 132, 0.06); }
 .area-rect.paused { border-color: rgba(160, 170, 180, 0.9); background: none; }
+.map-grid .area-route { fill: none; stroke: rgba(255, 181, 74, 0.28); stroke-linecap: round; stroke-linejoin: round; }
+.map-grid .area-route.done { stroke: rgba(61, 220, 132, 0.22); }
+.map-grid .area-route.paused { stroke: rgba(160, 170, 180, 0.25); }
+.route-width { gap: 6px; align-items: center; margin: 4px 0; }
 .area-rect.selecting { border: 2px solid #ffb54a; background: rgba(255, 181, 74, 0.15); z-index: 3; }
 .area-rect-label {
   position: absolute; left: 4px; top: 2px; font-size: 11px; padding: 0 4px; background: rgba(0, 0, 0, 0.6);

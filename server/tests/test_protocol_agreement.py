@@ -151,12 +151,16 @@ MOD_TO_SERVER = {
     # imagery / mapdata (world: not asked by the map yet)
     "cache_map": {"id": F(int), "z": F(int), "x0": F(NUM), "y0": F(NUM), "x1": F(NUM), "y1": F(NUM),
                   "mode": F(str, OPT)},
-    # saved areas (areas.py; additive): a picked box's estimate, a new area, pause / resume / delete one
-    "area_plan": {"id": F(int), "s": F(NUM), "w": F(NUM), "n": F(NUM), "e": F(NUM)},
-    "area_add": {"id": F(int), "s": F(NUM), "w": F(NUM), "n": F(NUM), "e": F(NUM), "name": F(str, OPT)},
+    # saved areas (areas.py; additive): a picked box's estimate, a new area, pause / resume / delete one; a saved
+    # route: route "current" (the last planned GPS route) and half (its corridor's half width, m) instead of the box
+    "area_plan": {"id": F(int), "s": F(NUM, OPT), "w": F(NUM, OPT), "n": F(NUM, OPT), "e": F(NUM, OPT),
+                  "route": F(str, OPT), "half": F(NUM, OPT)},
+    "area_add": {"id": F(int), "s": F(NUM, OPT), "w": F(NUM, OPT), "n": F(NUM, OPT), "e": F(NUM, OPT),
+                 "route": F(str, OPT), "half": F(NUM, OPT), "name": F(str, OPT)},
     "area_cmd": {"id": F(int), "area": F(str), "op": F(str)},
     "route": {"id": F(int), "lat0": F(NUM), "lon0": F(NUM), "lat1": F(NUM), "lon1": F(NUM),
-              "bearing": F(NUM, OPT)},   # the GPS (routing.py); bearing: the car's heading, the route starts that way
+              "bearing": F(NUM, OPT),    # the GPS (routing.py); bearing: the car's heading, the route starts that way
+              "download": F(str, OPT)},  # the "Download along route" setting: off / ahead / route (route_download)
     "where": {"id": F(int), "lat": F(NUM), "lon": F(NUM), "online": F(bool)},   # the status bar (geocode.py)
     "server_list": {},                  # the BeamNG.Earth servers for the tab in BeamMP's browser (serverlist.lua)
     # the update notice's button: the server opens the releases page (updates.open_page; additive)
@@ -184,8 +188,8 @@ SERVER_TO_MOD = {
     "area_plan_result": {"id": F(int), "ok": F(bool), "km2": F(NUM, OPT), "items": F(int, OPT),
                          "missing": F(int, OPT), "downloadBytes": F(int, OPT), "diskBytes": F(int, OPT),
                          "seconds": F(int, OPT), "days": F(NUM, OPT), "hosts": F(list, OPT),
-                         "excluded": F(list, OPT), "error": F(str, OPT)},
-    # the saved areas [{id, name, s, w, n, e, state, done, total, msg, mode}] after hello, a change and while one downloads
+                         "excluded": F(list, OPT), "km": F(NUM, OPT), "error": F(str, OPT)},
+    # the saved areas [{id, name, s, w, n, e, state, done, total, msg, mode, route?}] after hello, a change and while one downloads
     # (at most every areas.STATUS_S); result: the answer to an area_add / area_cmd
     "areas": {"areas": F(list), "pinnedBytes": F(int, OPT), "result": F(dict, OPT)},
     "route_result": {"id": F(int), "points": F(list), "dist": F(NUM), "dur": F(NUM), "error": F(str, OPT),

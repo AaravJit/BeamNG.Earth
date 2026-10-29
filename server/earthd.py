@@ -238,6 +238,10 @@ AHEAD_LAYERS = ("roads", "buildings", "building_parts", "infrastructure", "water
 # instead of the player's current heading, since a road route can wander off that heading entirely.
 ROUTE_AHEAD_ON = True            # --route-prefetch
 ROUTE_AHEAD_MAX_M = 20000.0      # --route-prefetch-km * 1000 (15-25 km is sane; the user, 2026-10-22)
+# the GPS's "Download along route" setting (the user, 2026-10-29: "options on pre downloading/generating along a gps
+# route"): the route message's "download": off, ahead (ROUTE_AHEAD_MAX_M) or the whole route (at most this far)
+ROUTE_DOWNLOAD_MODES = ("off", "ahead", "route")
+ROUTE_WHOLE_MAX_M = 500000.0
 ROUTE_RETRY_S = 2.0               # a deferred tile/cell backs off this long before the next one in the corridor
 FAST_BASE_V = 70.0              # m/s (157 mph): faster, a block waits at most BASE_FAST_WAIT_S for its photo after its
 BASE_FAST_WAIT_S = 0.15         # heights, then goes without it (block_base later): blocks took 0.6-3 s at 600 mph on a
@@ -3340,6 +3344,7 @@ class Connection:
         self.credits = creditsmod.Tracker()     # data credits: throttle, last message sent (--credits on)
         self.ground_busy = False                # a groundahead job is running (one at a time)
         self.route_dl_version = 0               # bumped by every route(): supersedes a running route_download job
+        self.route_points = []                  # the last planned route's points ([lat, lon]: a saved route's)
         self.sea_busy = False                   # a water-tile plan is running (sea_tiles)
         self.sea_checked = None                 # (anchor id, 512 m square, monotonic, complete) of the last plan
         self.sea_sent = None                    # (anchor id, tiles) of the last "sea" message
@@ -3388,9 +3393,10 @@ class Connection:
         files.request(want)
 
     async def route(self, msg):
-        """{"id", "lat0", "lon0", "lat1", "lon1"} -> route_result {"id", "points": [[lat, lon]...], "dist", "dur",
-        "elev": [[dist_m, elev_m], ...]?, "error"?}. Also (re)starts this route's corridor prefetch (route_download,
-        routeahead.py)."""
+        """{"id", "lat0", "lon0", "lat1", "lon1", "download"?} -> route_result {"id", "points": [[lat, lon]...], "dist",
+        "dur", "elev": [[dist_m, elev_m], ...]?, "error"?}. Also (re)starts this route's corridor prefetch
+        (route_download, routeahead.py; download: "off", "ahead" (ROUTE_AHEAD_MAX_M, the default) or "route" (the
+        whole route, up to ROUTE_WHOLE_MAX_M))."""
         self.route_dl_version += 1
         version = self.route_dl_version
         out = {"type": "route_result", "id": msg.get("id"), "points": [], "dist": 0.0, "dur": 0.0}
@@ -3411,7 +3417,9 @@ class Connection:
                  msg.get("lon0"), msg.get("lat1"), msg.get("lon1"), len(out["points"]), out["dist"] / 1000,
                  (" (" + out["error"] + ")") if "error" in out else "")
         self.send(out)
-        self.route_download(version, out["points"])
+        self.route_points = out["points"] if "error" not in out else []
+        mode = msg.get("download")
+        self.route_download(version, out["points"], mode if mode in ROUTE_DOWNLOAD_MODES else "ahead")
 
     def _route_elevation(self, points):
         """The route's elevation profile for the map (routing.resample onto even steps, dem.sample): [[dist_m,
@@ -3430,20 +3438,21 @@ class Connection:
         elev = route_profile_smooth(self.s.dem.sample(lats, lons, zoom))
         return [[round(p[2], 1), round(float(e), 1)] for p, e in zip(pts, elev)]
 
-    def route_download(self, version, points):
+    def route_download(self, version, points, mode="ahead"):
         """Prefetch the route's corridor (elevation tiles and road/building map cells) up to
-        ROUTE_AHEAD_MAX_M ahead, at "prefetch" priority, pushing route_download {total, done, active}
-        (throttled like Server._progress) until it finishes or a newer route() supersedes it (checked by
-        version, since self.route_pool's single worker already serializes a newer job behind this one)."""
+        ROUTE_AHEAD_MAX_M ahead (mode "ahead"; "route": ROUTE_WHOLE_MAX_M, "off": none), at "prefetch" priority,
+        pushing route_download {total, done, active} (throttled like Server._progress) until it finishes or a newer
+        route() supersedes it (checked by version, since self.route_pool's single worker already serializes a newer
+        job behind this one)."""
         empty = {"type": "route_download", "total": 0, "done": 0, "active": False}
-        if not ROUTE_AHEAD_ON or self.s.dem is None or len(points) < 2:
+        if not ROUTE_AHEAD_ON or mode == "off" or self.s.dem is None or len(points) < 2:
             self.send(empty)
             return
         aid = self.active
         zoom = self.s.anchors[aid].hm_zoom if aid in self.s.anchors else demmod.FINE_ZOOM
         reach = self.s.layout.block * heightmap.SQUARE / 2 + AHEAD_MARGIN_M
         layers = (AHEAD_LAYERS if self.s.buildings else ("roads",)) if self.s.mapdata is not None else ()
-        pts = routeaheadmod.arc_length_points(points, ROUTE_AHEAD_MAX_M)
+        pts = routeaheadmod.arc_length_points(points, ROUTE_WHOLE_MAX_M if mode == "route" else ROUTE_AHEAD_MAX_M)
         dem_keys, cell_layer_pairs = routeaheadmod.need(self.s.dem, self.s.mapdata, pts, reach, zoom, layers)
         total = len(dem_keys) + len(cell_layer_pairs)
         if total == 0:
@@ -3652,30 +3661,50 @@ class Connection:
                 out["error"] = str(e)[:200]
         self.send(out)
 
+    def _area_route(self, msg):
+        """A saved route's points (area_plan / area_add with "route": "current": the last planned GPS route) as
+        (lats, lons), or None (a box)."""
+        if msg.get("route") != "current":
+            return None
+        pts = self.route_points or []
+        return [p[0] for p in pts], [p[1] for p in pts]
+
     async def area_plan(self, msg):
-        """{"id", "s", "w", "n", "e"} -> area_plan_result {"id", "ok", km2, items, missing, downloadBytes, diskBytes,
-        seconds, days, hosts, excluded, "error"?} (areas.Areas.plan: no network)."""
+        """{"id", "s", "w", "n", "e"} or {"id", "route": "current", "half"} -> area_plan_result {"id", "ok", km2, items,
+        missing, downloadBytes, diskBytes, seconds, days, hosts, excluded, km? (a route's length), "error"?}
+        (areas.Areas.plan / plan_route: no network)."""
         out = {"type": "area_plan_result", "id": msg.get("id"), "ok": False}
         if self.s.areas is None:
             out["error"] = "saved areas need the download cache"
         else:
             try:
-                out.update(await asyncio.get_running_loop().run_in_executor(
-                    None, self.s.areas.plan, msg.get("s"), msg.get("w"), msg.get("n"), msg.get("e")))
+                route = self._area_route(msg)
+                if route is not None:
+                    out.update(await asyncio.get_running_loop().run_in_executor(
+                        None, self.s.areas.plan_route, route[0], route[1], msg.get("half")))
+                else:
+                    out.update(await asyncio.get_running_loop().run_in_executor(
+                        None, self.s.areas.plan, msg.get("s"), msg.get("w"), msg.get("n"), msg.get("e")))
             except Exception as e:      # (the box stays without an estimate)
                 out.update(ok=False, error=f"{type(e).__name__}: {e}"[:200])
         self.send(out)
 
     async def area_add(self, msg):
-        """{"id", "s", "w", "n", "e", "name"?} -> areas {..., "result": {"id", "ok", "area" or "error"}}."""
+        """{"id", "s", "w", "n", "e", "name"?} or {"id", "route": "current", "half", "name"?} -> areas {..., "result":
+        {"id", "ok", "area" or "error"}}."""
         if self.s.areas is None:
             self.send({"type": "areas", "areas": [], "result": {"id": msg.get("id"), "ok": False,
                                                                 "error": "saved areas need the download cache"}})
             return
         name = msg.get("name")
-        ok, info = await asyncio.get_running_loop().run_in_executor(
-            None, self.s.areas.add, msg.get("s"), msg.get("w"), msg.get("n"), msg.get("e"),
-            name if isinstance(name, str) else "")
+        name = name if isinstance(name, str) else ""
+        route = self._area_route(msg)
+        if route is not None:
+            ok, info = await asyncio.get_running_loop().run_in_executor(
+                None, self.s.areas.add_route, route[0], route[1], msg.get("half"), name)
+        else:
+            ok, info = await asyncio.get_running_loop().run_in_executor(
+                None, self.s.areas.add, msg.get("s"), msg.get("w"), msg.get("n"), msg.get("e"), name)
         res = {"id": msg.get("id"), "ok": ok, ("area" if ok else "error"): info}
         self.send(self.s.areas_message(res))
 

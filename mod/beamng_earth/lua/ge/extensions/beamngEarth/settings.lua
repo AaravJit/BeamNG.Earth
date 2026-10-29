@@ -100,6 +100,10 @@ M.SCHEMA = {
   -- the server's download cache (server cache.py): its size cap in GB, sent on every hello and change
   cacheCapGb = { kind = 'enum', default = '20', values = { '5', '10', '20', '50', 'unlimited' },
     label = 'Download cache size' },
+  -- the GPS route's data fetched ahead (the server's route_download; sent with each route): none, the next 12 miles
+  -- (20 km), or the whole route (up to 300 miles)
+  routeDownload = { kind = 'enum', default = 'ahead', values = { 'off', 'ahead', 'route' },
+    label = 'Download along the GPS route' },
   devOutlineKm = { kind = 'number', default = 3, min = 0.5, max = 20, label = 'Dev outlines radius (km)' },
   devMapKm = { kind = 'number', default = 10, min = 1, max = 80, label = 'Dev mini-map radius (km)' },
   -- not on the page (not in ORDER): the welcome version last shown (EarthWelcome.vue)
@@ -112,7 +116,7 @@ M.ORDER = { 'quality', 'terrainDetail', 'groundPhoto', 'trees', 'treeDistance', 
   'weatherMode', 'realGravity', 'groundCover', 'groundCoverDensity', 'rocks', 'roads', 'highwaySigns', 'dashboardSatellite',
   'hudVisible', 'statusBar',
   'placeNamesOnline', 'creditsVisible', 'beammpOnLaunch',
-  'creditsCorner', 'creditsSize', 'cacheCapGb', 'devOutlineKm', 'devMapKm' }
+  'creditsCorner', 'creditsSize', 'cacheCapGb', 'routeDownload', 'devOutlineKm', 'devMapKm' }
 
 -- Stored but not on the settings page
 M.HIDDEN = { welcomeSeen = true, updateDismissed = true, qualityDetected = true }
@@ -858,6 +862,13 @@ function M.uiAreaPlanResult(id)
 end
 function M.uiAreaAdd(s, w, n, e, name)
   return areaSend('areaAdd', tonumber(s), tonumber(w), tonumber(n), tonumber(e), tostring(name or ''))
+end
+-- A saved route: the GPS's planned route with half m each side (the estimate, then the download, as an area's).
+function M.uiRoutePlan(half)
+  return areaSend('requestRoutePlan', tonumber(half))
+end
+function M.uiRouteAdd(half, name)
+  return areaSend('routeAdd', tonumber(half), tostring(name or ''))
 end
 function M.uiAreaCmd(area, op)
   return areaSend('areaCmd', tostring(area or ''), tostring(op or ''))

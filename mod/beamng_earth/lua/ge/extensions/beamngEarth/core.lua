@@ -2558,7 +2558,8 @@ function M.requestGeocode(id, q, lat, lon)
 end
 function M.requestRoute(id, lat0, lon0, lat1, lon1, bearing)
   if not net.isConnected() then return false end
-  net.send({ type = 'route', id = id, lat0 = lat0, lon0 = lon0, lat1 = lat1, lon1 = lon1, bearing = bearing })
+  net.send({ type = 'route', id = id, lat0 = lat0, lon0 = lon0, lat1 = lat1, lon1 = lon1, bearing = bearing,
+    download = settings.get('routeDownload') })
   return true
 end
 function M.takeRoute(id)
@@ -2588,6 +2589,18 @@ function M.requestAreaPlan(id, s, w, n, e)
   if not net.isConnected() then return false end
   M._areaPlans = {}
   net.send({ type = 'area_plan', id = id, s = s, w = w, n = n, e = e })
+  return true
+end
+-- A saved route (the GPS's planned route, which the server keeps: route 'current'): half m each side of it.
+function M.requestRoutePlan(id, half)
+  if not net.isConnected() then return false end
+  M._areaPlans = {}
+  net.send({ type = 'area_plan', id = id, route = 'current', half = half })
+  return true
+end
+function M.routeAdd(id, half, name)
+  if not net.isConnected() then return false end
+  net.send({ type = 'area_add', id = id, route = 'current', half = half, name = name })
   return true
 end
 function M.takeAreaPlan(id)
