@@ -25,7 +25,7 @@ import math
 import os
 import threading
 import time
-from collections import namedtuple
+from collections import OrderedDict, namedtuple
 
 import numpy as np
 
@@ -4167,45 +4167,121 @@ class BridgeProfiles:
                         continue
                     queued.add((fid, j))
                     todo.append(((fid, j), feats, i))
+        return BridgeProfiles.parts_todo(self, todo)      # (the whole parts: TunnelProfiles splits them)
+
+    owner_of = None     # owner_of(self, comp, pool) -> the profiles that solve chain comp (ChainStore: the one of its
+                        # first part's region), or None: this one
+
+    def parts_todo(self, todo, solved_only=False):
+        """[(fid, spec, xy, z, lon)] of the parts todo [((fid, j), feats, i)], each solved with its chain (once);
+        solved_only: only those solved already."""
+        out = []
         for key, feats, i in todo:
             with self.lock:
                 got = self.done.get(key)
-            if got is None:
-                pool, ground, loaded = {}, {}, set()
+            if got is None and not solved_only:
                 ring = self.parts_of(feats, i)[key[1]]
-                for p in (ring[0], ring[-1]):
-                    ck = mapcells.cell_of(float(p[1]), float(p[0]))
-                    if str(ck) not in loaded:
-                        loaded.add(str(ck))
-                        self._load(ck, pool, ground)
-                if key not in pool:
-                    continue
-                comp = self._resolve(key, pool, ground, loaded)
-                zs = self._solve(comp, pool, ground)
-                with self.lock:
-                    for k, z in zip(comp, zs):
-                        spec, xy, lon = pool[k][:3]
-                        old = self.done.get(k)
-                        # the first solve of a part is kept, and what goes with it, unless this one saw more of it
-                        if old is None or len(xy) > len(old[1]):
-                            self.done[k] = (spec, xy, z, lon)
-                            self._commit(k, ground)
-                    chain = [(self.done[k][1], self.done[k][2], self.done[k][0].width) for k in comp
-                             if k in self.done]
-                    ck = min(comp) if comp else None
-                    fresh = ck is not None and ck not in self.trusses
-                    if fresh:
-                        self.trusses[ck] = []
-                    got = self.done.get(key)
-                if fresh:
-                    beams, tpiers = self._structure(chain)
-                    with self.lock:
-                        self.trusses[ck] = beams
-                        self.piers[("truss", ck)] = tpiers
+                got = self._chain_of(key, [(float(p[1]), float(p[0])) for p in (ring[0], ring[-1])])
             if got is not None:
                 spec, xy, z, lon = got
                 out.append((self._part_id(key), spec, xy, z, lon))
         return out
+
+    def _chain_of(self, key, ends, adopt=True):
+        """Solve the chain of part key (its ring's ends (lat, lon) say where to start loading): its parts into done.
+        Returns done[key] or None. A chain another store owns (owner_of) is solved there and its result taken in, its
+        geometry mapped into this frame (one deck profile per chain, whichever store a tile asks)."""
+        with self.lock:
+            got = self.done.get(key)
+        if got is not None:
+            return got
+        pool, ground, loaded = {}, {}, set()
+        for la_, lo_ in ends:
+            ck = mapcells.cell_of(la_, lo_)
+            if str(ck) not in loaded:
+                loaded.add(str(ck))
+                self._load(ck, pool, ground)
+        if key not in pool:
+            return None
+        comp = self._resolve(key, pool, ground, loaded)
+        owner = self.owner_of(self, comp, pool) if (adopt and self.owner_of is not None) else None
+        if owner is not None and owner is not self:
+            try:
+                if self._adopt(owner, comp, pool):
+                    with self.lock:
+                        got = self.done.get(key)
+                    if got is not None:
+                        return got
+            except Exception as ex:         # (solved here rather than not at all)
+                log.debug("chain %s from its owner: %s: %s", key, type(ex).__name__, ex)
+        zs = self._solve(comp, pool, ground)
+        with self.lock:
+            for k, z in zip(comp, zs):
+                spec, xy, lon = pool[k][:3]
+                old = self.done.get(k)
+                # the first solve of a part is kept, and what goes with it, unless this one saw more of it
+                if old is None or len(xy) > len(old[1]):
+                    self.done[k] = (spec, xy, z, lon)
+                    self._commit(k, ground)
+            chain = [(self.done[k][1], self.done[k][2], self.done[k][0].width) for k in comp
+                     if k in self.done]
+            ck = min(comp) if comp else None
+            fresh = ck is not None and ck not in self.trusses
+            if fresh:
+                self.trusses[ck] = []
+            got = self.done.get(key)
+        if fresh:
+            beams, tpiers = self._structure(chain)
+            with self.lock:
+                self.trusses[ck] = beams
+                self.piers[("truss", ck)] = tpiers
+        return got
+
+    def _ends_ll(self, xy):
+        """(lat, lon) of a deck line's two ends (this frame's world)."""
+        la, lo, _ = self.frame.enu_to_geodetic(np.array([xy[0][0], xy[-1][0]]), np.array([xy[0][1], xy[-1][1]]), 0.0)
+        return [(float(la[0]), float(lo[0])), (float(la[1]), float(lo[1]))]
+
+    def _adopt(self, owner, comp, pool):
+        """Chain comp solved by owner (from its first part), its parts, piers, trusses and depths taken into this
+        frame. False when owner's solve did not cover comp's parts."""
+        first = min(comp)
+        if owner._chain_of(first, self._ends_ll(pool[first][1]), adopt=False) is None:
+            return False
+        import geotiles
+        with owner.lock:
+            mine = [k for k in comp if k in owner.done]
+            if len(mine) != len(comp):
+                return False
+            done = {k: owner.done[k] for k in mine}
+            piers = {k: owner.piers.get(k, []) for k in mine}
+            ck = min(comp)
+            beams = owner.trusses.get(ck)
+            tpiers = owner.piers.get(("truss", ck))
+            depth = {k: owner.__dict__.get("depth", {}).get(k) for k in mine}
+            extra = owner._adopt_extra(comp)
+        mp = ChainView.mapper(owner.frame, self.frame)
+        with self.lock:
+            for k, (spec, xy, z, lon) in done.items():
+                if k in self.done:
+                    continue
+                xyz = mp.pts(np.c_[np.asarray(xy, np.float64)[:, :2], np.asarray(z, np.float64)])
+                self.done[k] = (spec, xyz[:, :2].copy(), xyz[:, 2].copy(), lon)
+                self.piers[k] = [mp.pier(q) for q in piers[k]]
+                if depth.get(k) is not None:
+                    self.__dict__.setdefault("depth", {})[k] = depth[k]
+            if beams is not None and ck not in self.trusses:
+                self.trusses[ck] = [mp.beam(b) for b in beams]
+                self.piers[("truss", ck)] = [mp.pier(q) for q in (tpiers or [])]
+            self._adopt_take(extra)
+        return True
+
+    def _adopt_extra(self, comp):
+        """Under self.lock: what else goes with comp's solve (TunnelProfiles: its sections)."""
+        return None
+
+    def _adopt_take(self, extra):
+        """Under self.lock: _adopt_extra's from another store."""
 
     def _commit(self, k, ground=None):
         """Under self.lock: part k's solve was kept: its piers (pier_sites; TunnelProfiles keeps its sections)."""
@@ -4683,7 +4759,9 @@ class TunnelProfiles(BridgeProfiles):
     def open_parts(self, cells_feats, box):
         """[(fid, spec, xy, z, lon)] of the open sections near box: roads at the floor (the ground graded to it,
         grading.Grader._open_tunnels; _tunnel_chunks)."""
-        whole = super().parts(cells_feats, box)
+        return self._open_of(super().parts(cells_feats, box))
+
+    def _open_of(self, whole):
         with self.lock:
             opened = set(self.open)
         # (an open section under water is an underwater tunnel with no ground over it: the Sydney Harbour Tunnel
@@ -4691,10 +4769,38 @@ class TunnelProfiles(BridgeProfiles):
         return self._dry([p for p in self._split(whole) if p[0] in opened])
 
     def parts(self, cells_feats, box):
-        out = self._split(super().parts(cells_feats, box))
+        return self._closed_of(super().parts(cells_feats, box))
+
+    def _closed_of(self, whole):
+        out = self._split(whole)
         with self.lock:
             opened = set(self.open)
         return self._dry([p for p in out if p[0] not in opened])
+
+    def parts_todo(self, todo, solved_only=False, open_=False):
+        """BridgeProfiles.parts_todo split into sections: the closed ones (parts), or the open ones (open_)."""
+        whole = super().parts_todo(todo, solved_only)
+        return self._open_of(whole) if open_ else self._closed_of(whole)
+
+    def _adopt_extra(self, comp):
+        pids = {self._part_id(k) for k in comp}
+
+        def mine(d):
+            return {k: v for k, v in d.items() if str(k).split("#")[0] in pids}
+        return {"sections": mine(self.sections), "heights": mine(self.heights), "ups": mine(self.ups),
+                "caps": mine(self.caps), "mouths": mine(self.mouths), "open": {o for o in self.open
+                                                                               if o.split("#")[0] in pids},
+                "drowned": {k: v for k, v in self._drowned.items() if k in pids}}
+
+    def _adopt_take(self, extra):
+        if not extra:
+            return
+        for name in ("sections", "heights", "ups", "caps", "mouths"):
+            for k, v in extra[name].items():
+                getattr(self, name).setdefault(k, v)
+        self.open.update(extra["open"])
+        for k, v in extra["drowned"].items():
+            self._drowned.setdefault(k, v)
 
     def _dry(self, out):
         """The parts not under water for more than TUNNEL_WET_SHARE of their points, nor in a chain with one."""
@@ -4712,6 +4818,263 @@ class TunnelProfiles(BridgeProfiles):
             if (np.asarray(self.wet(la, lo)) > 0.5).mean() <= TUNNEL_WET_SHARE:
                 keep.append(p)
         return keep
+
+
+class ChainStore:
+    """Bridge (or tunnel) chain profiles shared by every anchor of a process (geotiles, 2026-10-29): one
+    BridgeProfiles / TunnelProfiles per geotiles.CHAIN_Z region in that region's frame (a WorldFrame: nearly level
+    over a chain), a part asked for in the store of its first point's region, a chain solved in the store of its first
+    part's (owner_of): one deck profile per chain, whatever the anchor or the store a tile asks. cell_fn, elev (the
+    physics ground: anchor-free, as grading's heights are) as BridgeProfiles'; setup(profiles) sets wet, infra_fn,
+    raw, ends on each store made. Anchors see it through a ChainView."""
+
+    KEPT = 12           # stores kept (the farthest regions behind go first)
+
+    def __init__(self, cls, cell_fn, elev, setup=None):
+        self.cls, self.cell_fn, self.elev, self.setup = cls, cell_fn, elev, setup
+        self.stores = OrderedDict()     # region -> profiles
+        self.lock = threading.Lock()
+
+    def store(self, region):
+        region = (int(region[0]), int(region[1]))
+        with self.lock:
+            got = self.stores.get(region)
+            if got is not None:
+                self.stores.move_to_end(region)
+                return got
+            import geotiles
+            got = self.cls(geotiles.frame(region[0], region[1], geotiles.CHAIN_Z), self.cell_fn, self.elev)
+            got.owner_of = self._owner
+            got.region = region
+            if self.setup is not None:
+                self.setup(got)
+            self.stores[region] = got
+            while len(self.stores) > self.KEPT:
+                self.stores.popitem(last=False)
+            return got
+
+    def store_at(self, lat, lon):
+        import geotiles
+        return self.store(geotiles.tile_of(float(lat), float(lon), geotiles.CHAIN_Z))
+
+    def _owner(self, prof, comp, pool):
+        """The store whose region holds chain comp's first part's start."""
+        first = min(comp)
+        (la, lo), _ = prof._ends_ll(pool[first][1])
+        return self.store_at(la, lo)
+
+
+class _Mapper:
+    """Points of one frame's world in another's (geotiles.world_map), rigid parts by the rotation between them."""
+
+    def __init__(self, src, dst):
+        import geotiles
+        self.src, self.dst, self.same = src, dst, src.lat0 == dst.lat0 and src.lon0 == dst.lon0
+        self._gt = geotiles
+        if not self.same:
+            r, _t, _c = geotiles.placement(src, dst, (0.0, 0.0, 0.0))
+            self.r = r
+
+    def pts(self, p):
+        p = np.asarray(p, np.float64)
+        if self.same or not len(p):
+            return p.copy()
+        return self._gt.world_map(self.src, self.dst, p)
+
+    def dir2(self, ux, uy):
+        if self.same:
+            return ux, uy
+        v = self.r[:2, :2] @ np.array([ux, uy])
+        n = max(float(np.hypot(*v)), 1e-12)
+        return float(v[0] / n), float(v[1] / n)
+
+    def pier(self, q):
+        if self.same:
+            return q
+        x, y, ux, uy, zt, zb = q[:6]
+        a = self.pts(np.array([[x, y, zt], [x, y, zb]], np.float64))
+        ux, uy = self.dir2(ux, uy)
+        return (float(a[0, 0]), float(a[0, 1]), ux, uy, float(a[0, 2]), float(a[1, 2])) + tuple(q[6:])
+
+    def beam(self, b):
+        if self.same:
+            return b
+        a = self.pts(np.array([np.asarray(b[0], np.float64)[:3], np.asarray(b[1], np.float64)[:3]]))
+        return (a[0].copy(), a[1].copy()) + tuple(b[2:])
+
+
+class ChainView:
+    """An anchor's view of a ChainStore, with BridgeProfiles' / TunnelProfiles' read side (parts, open_parts,
+    piers_in, beams_in, depth_of, _ground, heights, mouths, height, portal_ups, cap_m, mouth): the parts asked for in
+    their regions' stores, their geometry mapped exactly into this frame's world (kept per part). prefer: another
+    ChainStore whose chains, where solved already, are taken first (the AI graph and the far bridges take the road
+    tiles' decks: one profile per chain)."""
+
+    def __init__(self, cs, frame, prefer=None):
+        self.cs, self.frame, self.prefer = cs, frame, prefer
+        self.elev = cs.elev
+        self.lock = threading.Lock()
+        self._mapped = {}           # (store region, pid, id(xy)) -> (xy ref, mapped part)
+        self._piers = {}            # store region -> (version, mapped piers, mapped beams)
+        self.specs_of, self.parts_of = cs.cls.specs_of, cs.cls.parts_of
+
+    mapper = staticmethod(lambda src, dst: _Mapper(src, dst))
+
+    def __getattr__(self, name):        # wet, infra_fn, raw, ends: the stores' settings (setup)
+        if name in ("wet", "infra_fn", "raw", "ends"):
+            st = list(self.cs.stores.values())
+            return getattr(st[0], name, None) if st else None
+        raise AttributeError(name)
+
+    def _todo(self, cells_feats, box):
+        """{store: [((fid, j), feats, i)]} of the parts in these cells that come near box (this frame)."""
+        x0, y0, x1, y1 = box
+        by, queued = {}, set()
+        for feats in cells_feats:
+            if feats is None or len(feats) == 0:
+                continue
+            bs = self.specs_of(feats)
+            for i in range(len(feats)):
+                if bs[i] is None:
+                    continue
+                fid = str(feats.ids[i])
+                for j, ring in enumerate(self.parts_of(feats, i)):
+                    if (fid, j) in queued:
+                        continue
+                    e, n = mapgeom.enu_xy(feats, self.frame, ring)
+                    if e.max() < x0 - NEAR_M or e.min() > x1 + NEAR_M or n.max() < y0 - NEAR_M or n.min() > y1 + NEAR_M:
+                        continue
+                    queued.add((fid, j))
+                    st = self.cs.store_at(float(ring[0][1]), float(ring[0][0]))
+                    by.setdefault(st.region, (st, []))[1].append(((fid, j), feats, i))
+        return by
+
+    def _map(self, st, got):
+        out = []
+        mp = None
+        for pid, spec, xy, z, lon in got:
+            k = (st.region, pid, id(xy))
+            with self.lock:
+                hit = self._mapped.get(k)
+            if hit is None or hit[0] is not xy:
+                mp = mp or _Mapper(st.frame, self.frame)
+                xyz = mp.pts(np.c_[np.asarray(xy, np.float64)[:, :2], np.asarray(z, np.float64)])
+                hit = (xy, (pid, spec, xyz[:, :2].copy(), xyz[:, 2].copy(), lon))
+                with self.lock:
+                    if len(self._mapped) > 20000:
+                        self._mapped.clear()
+                    self._mapped[k] = hit
+            out.append(hit[1])
+        return out
+
+    def _parts(self, cells_feats, box, **kw):
+        out = []
+        for _r, (st, todo) in sorted(self._todo(cells_feats, box).items()):
+            if self.prefer is not None:
+                pst = self.prefer.store(st.region)
+                with pst.lock:
+                    solved = [t for t in todo if t[0] in pst.done]
+                out += self._map(pst, pst.parts_todo(solved, solved_only=True, **kw))
+                todo = [t for t in todo if t not in solved]
+            out += self._map(st, st.parts_todo(todo, **kw))
+        return out
+
+    def parts(self, cells_feats, box):
+        return self._parts(cells_feats, box)
+
+    def open_parts(self, cells_feats, box):
+        return self._parts(cells_feats, box, open_=True)
+
+    def _stores(self):
+        out = list(self.cs.stores.values())
+        if self.prefer is not None:
+            out += list(self.prefer.stores.values())
+        return out
+
+    def _mapped_piers(self, st):
+        with st.lock:
+            ver = (len(st.piers), sum(len(v) for v in st.piers.values()), len(st.trusses),
+                   sum(len(v) for v in st.trusses.values()))
+            piers = [q for v in st.piers.values() for q in v]
+            beams = [b for v in st.trusses.values() for b in v]
+        key = (id(st), st.region)
+        with self.lock:
+            hit = self._piers.get(key)
+        if hit is None or hit[0] != ver:
+            mp = _Mapper(st.frame, self.frame)
+            hit = (ver, [mp.pier(q) for q in piers], [mp.beam(b) for b in beams])
+            with self.lock:
+                self._piers[key] = hit
+        return hit[1], hit[2]
+
+    def piers_in(self, box):
+        x0, y0, x1, y1 = box
+        out, seen = [], set()
+        for st in self._stores():
+            for q in self._mapped_piers(st)[0]:
+                k = (round(q[0], 3), round(q[1], 3))
+                if x0 <= q[0] < x1 and y0 <= q[1] < y1 and k not in seen:
+                    seen.add(k)
+                    out.append(q)
+        return out
+
+    def beams_in(self, box):
+        x0, y0, x1, y1 = box
+        out, seen = [], set()
+        for st in self._stores():
+            for b in self._mapped_piers(st)[1]:
+                mx, my = (b[0][0] + b[1][0]) / 2, (b[0][1] + b[1][1]) / 2
+                k = (round(float(mx), 3), round(float(my), 3), round(float(b[0][2]), 3))
+                if x0 <= mx < x1 and y0 <= my < y1 and k not in seen:
+                    seen.add(k)
+                    out.append(b)
+        return out
+
+    def depth_of(self, fid):
+        ds = []
+        for st in self._stores():
+            with st.lock:
+                ds += [d for k, d in st.__dict__.get("depth", {}).items() if st._part_id(k) == fid and d is not None]
+        return max(ds) if ds else DECK_FULL_DEPTH
+
+    def _ground(self, xy):
+        xy = np.asarray(xy, np.float64)
+        la, lo, _ = self.frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
+        return self.frame.geodetic_to_enu(la, lo, np.asarray(self.elev(la, lo), np.float64))[2]
+
+    def _merged(self, name):
+        out = {}
+        for st in self._stores():
+            with st.lock:
+                for k, v in getattr(st, name, {}).items():
+                    out.setdefault(k, v)
+        return out
+
+    heights = property(lambda self: self._merged("heights"))
+    mouths = property(lambda self: self._merged("mouths"))
+
+    def _sub(self, method, fid, default):
+        for st in self._stores():
+            with st.lock:
+                if any(fid in getattr(st, d, {}) for d in ("heights", "ups", "caps", "mouths")):
+                    break
+        else:
+            st = None
+        if st is None:
+            return default
+        return getattr(st, method)(fid)
+
+    def height(self, fid):
+        return self._sub("height", fid, roadmesh.TUNNEL_H)
+
+    def portal_ups(self, fid):
+        return self._sub("portal_ups", fid, [roadmesh.PORTAL_FRAME, roadmesh.PORTAL_FRAME])
+
+    def cap_m(self, fid):
+        return self._sub("cap_m", fid, (None, None))
+
+    def mouth(self, fid):
+        return self._sub("mouth", fid, (True, True))
 
 
 def wet_run_inside(xy, wet):

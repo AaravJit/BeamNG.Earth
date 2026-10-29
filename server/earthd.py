@@ -1037,6 +1037,33 @@ class Server:
             return None
         return vegetationmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, rows, flat=flat)
 
+    geo_tiles = True        # --geo-tiles: content in the global tiles' frames, kept by the mod across rebases (geotiles.py)
+
+    def build_veg_geo(self, gx, gy, flat=False, aid=None):
+        """vegetation.geo_tile_items: geotile (gx, gy)'s trees, bushes and rocks in its own frame, written to the
+        session folder: (vfs path, n, frame (lat, lon), pivot) or None. No anchor in it: the ground is the graded one
+        (the plans are the planning regions', whatever the anchor) at the active anchor's DEM zoom."""
+        if self.veg is None:
+            return None
+        import geotiles
+        anchor = self.anchors.get(aid) or (self.anchors[max(self.anchors)] if self.anchors else None)
+        if anchor is None:
+            return None
+        zoom = anchor.zooms[0]
+        g = self.grader_for(anchor)
+
+        def elev(la, lo):
+            z = self.ground(None, la, lo, self.dem.sample(la, lo, zoom))
+            return g.apply(la, lo, z, gradingmod.ROAD_LIFT) if g is not None else z
+        got = vegetationmod.geo_tile_items(gx, gy, self.veg, lambda k: True, elev, self.sea, as_json=True)
+        if got is None:
+            return None
+        rows, pivot = got
+        frame = geotiles.centre(gx, gy)
+        path, n = vegetationmod.write_tile(self.out_dir, self.vfs_dir, None, gx, gy, rows, flat=flat,
+                                           geo={"key": geotiles.key(gx, gy), "frame": frame, "pivot": pivot})
+        return path, n, frame, pivot
+
     def country_at(self, lat, lon):
         """The ISO country code at (lat, lon) (its nearest airport's: navgraph.country_near), or None."""
         try:
@@ -1126,12 +1153,7 @@ class Server:
         try:            # the bridges' deck heights (the road tiles' BridgeProfiles, one per anchor)
             with self.grader_lock:
                 if anchor.bridges is None:
-                    anchor.bridges = roadsmod.BridgeProfiles(
-                        anchor.frame,
-                        lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads"), elev)
-                    anchor.bridges.wet = self.sea.depth if self.sea is not None else None
-                    anchor.bridges.infra_fn = lambda key: self.mapdata.cell(
-                        key, layers=("infrastructure",), kind="demand").layers.get("infrastructure")
+                    anchor.bridges = self.chain_view(anchor, "bridges", elev)
             for fid, _spec, xy, z, _lon in anchor.bridges.parts(feats, (x - w, y - w, x + w, y + w)):
                 decks.setdefault(fid, []).append((np.asarray(xy, np.float64)[:, :2], np.asarray(z, np.float64)))
         except Exception as e:          # no decks: the graph follows the ground under bridges
@@ -1327,18 +1349,9 @@ class Server:
         walks = []
         with self.grader_lock:
             if anchor.bridges is None:
-                anchor.bridges = roadsmod.BridgeProfiles(
-                    anchor.frame, lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads"),
-                    elev)
-                anchor.bridges.wet = self.sea.depth if self.sea is not None else None    # (decks clear the water)
-                anchor.bridges.infra_fn = lambda key: self.mapdata.cell(
-                    key, layers=("infrastructure",), kind="demand").layers.get("infrastructure")
+                anchor.bridges = self.chain_view(anchor, "bridges", elev)
             if anchor.tunnels is None:
-                anchor.tunnels = roadsmod.TunnelProfiles(
-                    anchor.frame, lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads"),
-                    elev)
-                anchor.tunnels.wet = self.sea.depth if self.sea is not None else None
-                self._tunnel_ground(anchor, g)
+                anchor.tunnels = self.chain_view(anchor, "tunnels", elev, g)
         fuel, skip, fuel_cuts, fuel_pads = [], frozenset(), [], []
         if self.gas_stations:       # pumps and refuel areas; their canopy outlines left out of the buildings
             fuel, skip = gasstationsmod.tile_sites(anchor.frame, tx, ty, self.mapdata, elev, cuts=fuel_cuts,
@@ -1605,9 +1618,12 @@ class Server:
             return None
         with self.grader_lock:
             if anchor.grader is None:
-                anchor.grader = gradingmod.Grader(anchor.frame, self.mapdata,
-                                                  lambda la, lo: self.dem.sample(la, lo, gradingmod.PROFILE_ZOOM),
-                                                  self.road_widths)
+                # (every anchor's view of one store: the plans are the planning regions', whatever the anchor)
+                if getattr(self, "plan_store", None) is None:
+                    self.plan_store = gradingmod.PlanStore(
+                        self.mapdata, lambda la, lo: self.dem.sample(la, lo, gradingmod.PROFILE_ZOOM), self.road_widths)
+                anchor.grader = gradingmod.Grader(anchor.frame, self.mapdata, self.plan_store.elev, self.road_widths,
+                                                  store=self.plan_store)
                 anchor.grader.wet = self.sea.depth if self.sea is not None else None    # (no dams: underwater tunnels)
                 anchor.grader.dem = self.dem                # (its urgent lane: _plan_missing)
                 anchor.grader.shared = plancachemod.for_grader(self.cache_dir, anchor.grader, self.road_widths,
@@ -1860,10 +1876,7 @@ class Server:
         Grader or None, taken before: grader_for takes grader_lock)."""
         with self.grader_lock:
             if anchor.tunnels is None:
-                cell_fn = lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads")  # noqa: E731
-                anchor.tunnels = roadsmod.TunnelProfiles(anchor.frame, cell_fn, elev)
-                anchor.tunnels.wet = self.sea.depth if self.sea is not None else None
-                self._tunnel_ground(anchor, g)
+                anchor.tunnels = self.chain_view(anchor, "tunnels", elev, g)
             return anchor.tunnels
 
     def tunnel_floor(self, anchor):
@@ -1887,13 +1900,29 @@ class Server:
             log.exception("tunnel floor at anchor %s", anchor.id)
             return None
 
-    def _tunnel_ground(self, anchor, g):
-        """anchor.tunnels' ground at grading.PROFILE_ZOOM, as in the block workers (roads.TunnelProfiles.ends; g: the
-        anchor's Grader or None). Under grader_lock."""
-        t = anchor.tunnels
-        t.raw = lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, gradingmod.PROFILE_ZOOM))
-        if g is not None:
-            t.ends = lambda la, lo: g.apply(la, lo, t.raw(la, lo), gradingmod.ROAD_LIFT, roads_only=True)
+    def chain_view(self, anchor, kind, elev, g=None):
+        """anchor's roads.ChainView of the server's bridge ("bridges") or tunnel ("tunnels") chains: one
+        roads.ChainStore each for every anchor (its ground elev's values are the same whatever the anchor; the tunnels'
+        raw / ends at grading.PROFILE_ZOOM, as in the block workers; g: a Grader or None). Under grader_lock."""
+        stores = self.__dict__.setdefault("chain_stores", {})
+        cs = stores.get(kind)
+        if cs is None:
+            cell_fn = lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads")  # noqa: E731
+            if kind == "bridges":
+                def setup(p):
+                    p.wet = self.sea.depth if self.sea is not None else None    # (decks clear the water)
+                    p.infra_fn = lambda key: self.mapdata.cell(
+                        key, layers=("infrastructure",), kind="demand").layers.get("infrastructure")
+                cls = roadsmod.BridgeProfiles
+            else:
+                def setup(t):
+                    t.wet = self.sea.depth if self.sea is not None else None
+                    t.raw = lambda la, lo: self.ground(None, la, lo, self.dem.sample(la, lo, gradingmod.PROFILE_ZOOM))
+                    if g is not None:
+                        t.ends = lambda la, lo: g.apply(la, lo, t.raw(la, lo), gradingmod.ROAD_LIFT, roads_only=True)
+                cls = roadsmod.TunnelProfiles
+            cs = stores[kind] = roadsmod.ChainStore(cls, cell_fn, elev, setup)
+        return roadsmod.ChainView(cs, anchor.frame)
 
     def _tunnel_holes(self, anchor, elev, keep, cx, cy, idx, info):
         """idx with the block's tunnel portals as holes (roads.block_tunnel_holes; blockworker._tunnel_holes)."""
@@ -3546,6 +3575,10 @@ class Connection:
         """Server.build_veg_tile in this mod's format (veg_flat). The vegetation tracker's worker threads."""
         return self.s.build_veg_tile(aid, tx, ty, flat=self.veg_flat)
 
+    def build_veg_geo(self, gx, gy):
+        """Server.build_veg_geo in this mod's format (veg_flat): the geotile tracker's worker threads."""
+        return self.s.build_veg_geo(gx, gy, flat=self.veg_flat, aid=self.active)
+
     def spawn(self, coro):
         t = asyncio.create_task(coro)
         self.tasks.add(t)
@@ -3603,6 +3636,16 @@ class Connection:
             # a mod that reads a vegetation tile as one flat array of numbers (no table per item in its Lua: trees.lua);
             # an older one gets the rows
             self.veg_flat = msg.get("vegFlat") is True
+            # a mod that places geotiles itself (hello.geoTiles: geotile.lua's zoom) gets the vegetation in them, kept
+            # across rebases (--geo-tiles on); an older one, or --geo-tiles off, the anchor's tiles
+            import geotiles
+            geo = bool(self.s.geo_tiles) and msg.get("geoTiles") == geotiles.Z
+            if geo != self.veg.geo:
+                old = self.veg
+                old.close()
+                self.veg = vegetationmod.Tracker(old.send_m, old.drop_m, geo=geo)
+            if geo:
+                m["geoTiles"] = geotiles.Z
             self.send(m)
             if self.weather.msg is not None:        # a reconnected mod gets the weather again
                 self.send(self.weather.msg)
@@ -4193,8 +4236,10 @@ class Connection:
             if anchor is not None:                            # a teleport's cells built at once, ahead
                 la, lo, _ = anchor.frame.enu_to_geodetic(*self.focus, 0.0)
                 self.s.veg.warm_around(float(la), float(lo))
-            self.veg.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.build_veg_tile,
-                             view=self.view_at, foci=[f for f in self.foci if f[3]])
+            self.veg.on_pose(self, aid, *self.focus, asyncio.get_running_loop(),
+                             self.build_veg_geo if self.veg.geo else self.build_veg_tile,
+                             view=self.view_at, foci=[f for f in self.foci if f[3]],
+                             frame=anchor.frame if anchor is not None else None)
         if self.s.buildings and aid == self.active:
             self.bldfar.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_far_bld_tile,
                                 view=self.view_at)
@@ -4957,6 +5002,7 @@ async def main_async(args):
                     sea=seacarvemod.SeaCarver(mapdata, args.cache_dir) if args.sea == "on" else None,
                     vegetation=(vegetationmod.Vegetation(mapdata, args.cache_dir) if args.trees == "on" else None))
     server.update_check = args.update_check == "on"
+    server.geo_tiles = args.geo_tiles == "on"
     server.lod_px = args.lod_px
     loop = asyncio.get_running_loop()
 
@@ -5369,6 +5415,9 @@ def main():
     ap.add_argument("--sea", choices=("on", "off"), default="off",
                     help="sea and lake water (seacarve.py, seatiles.py): the ground carved under Overture's ocean "
                          "and lake polygons and the mod's WaterBlock tiles that follow the Earth's curve")
+    ap.add_argument("--geo-tiles", choices=("on", "off"), default="on",
+                    help="content in the global tiles' own frames (geotiles.py: the vegetation so far), placed by the "
+                         "mod and kept across rebases instead of built again for each anchor; off: per anchor (A/B)")
     ap.add_argument("--trees", choices=("on", "off"), default="off",
                     help="trees, bushes and rocks near the player (vegetation.py): from the canopy height model and "
                          "land cover, Forest items of stock shapes in the mod")

@@ -494,6 +494,7 @@ local function commitTeleport(msg)
   be:reloadCollision()
 
   st.anchor, st.anchorId, st.anchorKey = geodesy.newAnchor(msg.lat, msg.lon), msg.anchorId, msg.anchorKey
+  trees.reanchor(st.anchor)       -- (the geotiles it has: placed into the new world; the server drops the far ones)
   st.anchorSession, st.resync = st.sessionId, false
   mpanchor.announceOwn(msg.lat, msg.lon)
   st.block, st.terrainPending, st.terrainErrorAt = { cx = tr.cx, cy = tr.cy }, nil, nil
@@ -521,7 +522,7 @@ local function finishRebase()
   farfield.transform(xf)
   -- roads, buildings, street furniture and trees move with it and stay until the new anchor's tiles cover them
   roads.transform(xf, geodesy)
-  trees.transform(xf, geodesy)
+  trees.transform(xf, geodesy, rb.newAnchor)    -- (geotiles: placed into the new anchor, nothing sent again)
   ambience.transform(xf)
   pumpjacks.transform(xf)
   nightlights.transform(xf)
@@ -799,7 +800,8 @@ local function onMessage(msg)
     end
     -- vegFlat: the vegetation tiles may come as one flat array of numbers (trees.lua onTile), no table per tree
     net.send({ type = 'hello', protocol = PROTOCOL, format = FORMAT, modVersion = MOD_VERSION,
-      sessions = farfield.heldSessions(), slotSession = farfield.session(), slotsHeld = held, vegFlat = true })
+      sessions = farfield.heldSessions(), slotSession = farfield.session(), slotsHeld = held, vegFlat = true,
+      geoTiles = require('beamngEarth/geotile').Z })   -- (geotiles: vegetation in the global tiles' frames: trees.lua)
     setStatus('Connected to companion server')
   elseif t == '_disconnected' then
     st.pending, st.sessionId, st.terrainPending = nil, nil, nil
@@ -1002,7 +1004,7 @@ local function onMessage(msg)
     if tonumber(msg.z) then st.groundAhead = { anchorId = msg.anchorId, z = tonumber(msg.z), at = st.clock } end
   elseif t == 'veg_tile' then
     -- trees, bushes and rocks of a tile (server vegetation.py, --trees on): Forest items (trees.lua)
-    local data = trees.onTile(msg, st.anchorId)
+    local data = trees.onTile(msg, st.anchorId, st.anchor)
     if data then ambience.onTile(msg.anchorId, msg.key, data) end
   elseif t == 'veg_drop' then
     trees.onDrop(msg)

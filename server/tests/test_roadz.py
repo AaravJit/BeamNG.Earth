@@ -343,7 +343,7 @@ class GradingOverrideTest(unittest.TestCase):
         np.testing.assert_allclose(p2.z, p0.z, atol=1e-12, err_msg="nothing measured: the DEM")
 
     def test_ground_override_only_on_coarse_elevation(self):
-        g = grading.Grader(FRAME, FakeMD(overpass()), flat_elev)
+        g = grading._Planner(FRAME, FakeMD(overpass()), flat_elev)
         roadz.PROVIDER = StubProvider(lambda xy, s: np.full(len(xy), 99.0), level=0)
         g.dem = type("D", (), {"coarse_at": staticmethod(lambda la, lo: False)})()
         self.assertIsNone(g._obs(mapcells.cell_of(float(FRAME.lat0), float(FRAME.lon0))))
@@ -354,14 +354,14 @@ class GradingOverrideTest(unittest.TestCase):
         # the overpass's abutments would be raised for the motorway's clearance (test_approaches); a measured deck
         # whose ends sit on the ground says they are not
         f = overpass()
-        g = grading.Grader(FRAME, FakeMD(f), flat_elev)
+        g = grading._Planner(FRAME, FakeMD(f), flat_elev)
         line = np.c_[np.linspace(-35, 35, 36), np.zeros(36)]
         roadz.PROVIDER = None
         self.assertIsNotNone(g._end_lift(line[0]), "the inference raises it")
-        g2 = grading.Grader(FRAME, FakeMD(f), flat_elev)
+        g2 = grading._Planner(FRAME, FakeMD(f), flat_elev)
         roadz.PROVIDER = StubProvider(lambda xy, s: FLAT + 7.0 * np.sin(np.pi * s / s[-1]))
         self.assertIsNone(g2._end_lift(line[0]), "measured at the ground there: no ramp")
-        g3 = grading.Grader(FRAME, FakeMD(f), flat_elev)
+        g3 = grading._Planner(FRAME, FakeMD(f), flat_elev)
         roadz.PROVIDER = StubProvider(lambda xy, s: np.full(len(xy), FLAT + 2.0))
         got = g3._end_lift(line[0])
         self.assertAlmostEqual(got[0], 2.0, places=6, msg="measured 2 m up: raised 2 m")

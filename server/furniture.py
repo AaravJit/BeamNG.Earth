@@ -292,7 +292,7 @@ def _is_signalled(arms, signals=None):
 def junction_controls(arms, k, link_ok=None, ring=None, signals=None):
     """[(arm, G_SIGNAL | G_STOP | G_YIELD)] of a junction's arms (fid, spec, unit vector away, point): signals on
     every arm where two or more major roads meet, stop signs on the minor arms meeting a major road, on the
-    stem of a minor T and on half the minor four-ways (hashed by the junction's 8 m cell; k is unused). Shared with
+    stem of a minor T and on half the minor four-ways (hashed by the roads meeting there; k is unused). Shared with
     navgraph.py, so the AI's signals and stop signs are where the props stand. ring: the fids of roundabout rings
     (islands.ring_fids): a junction on a ring (two of its arms) has give-way signs on incoming external arms.
     The AI graph handles their priority, without installing stop controllers on the ring. signals: the mapped
@@ -314,11 +314,10 @@ def junction_controls(arms, k, link_ok=None, ring=None, signals=None):
         def straightest(a):
             return max(-float(a[2] @ b[2]) for b in arms if b is not a)
         return [(min(arms, key=straightest), G_STOP)] if all(a[1].cls in MINOR for a in arms) else []
-    # the all-way coin flip: keyed on an 8 m cell of the junction, the same from the road tiles and the road graph
-    # (whose points are at another height: a 1 m key could round differently)
-    cx_ = sum(float(a[3][0]) for a in arms) / len(arms)          # (the arms' order differs between the two)
-    cy_ = sum(float(a[3][1]) for a in arms) / len(arms)
-    key = (int(math.floor(cx_ / 8.0)), int(math.floor(cy_ / 8.0)))
+    # the all-way coin flip: keyed on the roads that meet there (their map ids, sorted: the arms' order differs between
+    # the road tiles and the road graph), the same from both and from every anchor (an 8 m cell of the junction in
+    # the anchor's frame flipped junctions at a rebase: geotiles, 2026-10-29)
+    key = tuple(sorted(str(a[0]) for a in arms))
     return [(a, G_STOP) for a in minor] if _h01("allway", key) < 0.5 else []
 
 
@@ -643,14 +642,17 @@ def place(roads, walks, box, curb_h=0.15, wires=None, town=False, left_hand=Fals
         if spec.urban and spec.cls in STREET_TREE_CLASSES and _h01(fid, "trees") < STREET_TREE_SHARE:
             # street trees in pits along the curb (the photos' dense streets have rows of them; the canopy
             # model has few there): small broadleaves, both sides, clear of the junctions
-            for p, out in _stations(run, line, STREET_TREE_SPACING, _h01(fid, side, "tph") * STREET_TREE_SPACING,
-                                    END_CLEAR_M + 4.0, side):
+            tph = _h01(fid, side, "tph") * STREET_TREE_SPACING
+            for p, out in _stations(run, line, STREET_TREE_SPACING, tph, END_CLEAR_M + 4.0, side):
                 q = p[:2] - out * (w / 2 - STREET_TREE_CURB_M)
                 if x0 <= q[0] < x1 and y0 <= q[1] < y1:
-                    h = 6.5 + 3.5 * _h01(fid, round(float(q[0]), 1), round(float(q[1]), 1))
+                    # (each tree's size, turn and rank keyed on its station along the road, not on where the anchor's
+                    # frame puts it: the same tree from every anchor, geotiles 2026-10-29)
+                    k = int(round((float(_project(line, p[None, :2])[0]) - tph) / STREET_TREE_SPACING))
+                    h = 6.5 + 3.5 * _h01(fid, side, k, "th")
                     rows.append([G_STREET_TREE, round(float(q[0]), 2), round(float(q[1]), 2), round(float(p[2] + curb_h), 2),
-                                 round(_h01(q[0], q[1], "ty") * 360.0, 1), 1.0, round(h, 1),
-                                 round(_h01(fid, q[0], "tr"), 3)])
+                                 round(_h01(fid, side, k, "ty") * 360.0, 1), 1.0, round(h, 1),
+                                 round(_h01(fid, side, k, "tr"), 3)])
         if spec.urban:
             # fire hydrants at the curb (US practice ~90-150 m apart), alternating sides
             put(G_HYDRANT, HYDRANT_SPACING, _h01(fid, "hyd") * HYDRANT_SPACING + (HYDRANT_SPACING / 2 if side < 0 else 0),
