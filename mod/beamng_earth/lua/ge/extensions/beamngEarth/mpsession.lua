@@ -526,6 +526,7 @@ onGoToRef = onGoTo
 -- camera at its target itself (core.lua moveCamera / placePlayer, in single player too: onto lower ground it was left
 -- hundreds of metres up, and the car the vehicle selector spawns there fell from it, the user 2026-10-24: "sometimes i
 -- spawn high above the ground in beammp").
+M.TUBE_RAY_M = 8
 local function placeCamera(player)
   if (getPlayerVehicle and getPlayerVehicle(0)) or not be or not be.getSurfaceHeightBelow then return end
   local x, y = 0, -8
@@ -536,13 +537,19 @@ local function placeCamera(player)
   local z = be:getSurfaceHeightBelow(vec3(x, y, 9000))
   if type(z) ~= 'number' or z < -1e5 then return end      -- (the ground not there yet)
   if camPlaced and player.z >= z - 0.5 then return end
+  -- (under the terrain over collision a few metres down: in a tunnel's tube, where a teleport put it (core floorCheck)
+  -- or it was flown in; only a camera over nothing is lost underground)
+  local ray = camPlaced and rawget(_G, 'castRayStatic')
+  local d = ray and ray(vec3(x, y, player.z + 1), vec3(0, 0, -1), M.TUBE_RAY_M)
+  if d and d < M.TUBE_RAY_M then return end
   camPlaced = true
   local q = quatFromDir(vec3(0, 1, -0.15), vec3(0, 0, 1))
   if core_camera and core_camera.setPosRot then core_camera.setPosRot(0, x, y, z + 3, q.x, q.y, q.z, q.w) end
 end
 
--- A teleport asked (core.teleportTo): core puts the camera at its target (no car), so not the join's first spot at the
--- origin after it (that teleport may come before the ground there for it is in). A rebase does not come here.
+-- A teleport asked (core.teleportTo): core puts the camera at its target (no car), so the join's first placement at
+-- the origin does not follow it (a teleport can be asked before the ground at the origin is in). A rebase does not
+-- come here.
 function M.onTeleport()
   camPlaced = true
 end

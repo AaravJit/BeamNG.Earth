@@ -391,6 +391,16 @@ do -- no car (BeamMP joins without one): the free camera on the ground, and lift
   T.check(put == nil, 'after a teleport: the camera core put at its target (over the ground) is left there')
   ms.placeCamera({ x = 900, y = 700, z = 60 })
   T.check(put and put[1] == 900 and put[2] == 700, 'after a teleport: still lifted where it is when under the ground')
+  -- under the terrain but over collision just below: a tunnel's tube (core put it there, or flown in): left there
+  local savedRay = rawget(_G, 'castRayStatic')
+  castRayStatic = function(from, dir, len) return 2.5 end
+  put = nil
+  ms.placeCamera({ x = 900, y = 700, z = 60 })
+  T.check(put == nil, 'in the tube of a tunnel (collision 2.5 m under it): not lifted out onto the hill')
+  castRayStatic = function(from, dir, len) return len end        -- (the engine's "nothing hit": the length)
+  ms.placeCamera({ x = 900, y = 700, z = 60 })
+  T.check(put and put[3] == 103, 'under the terrain over nothing: lifted as before')
+  castRayStatic = savedRay
   put = nil
   getPlayerVehicle = function() return { id = 1 } end
   ms.placeCamera({ x = 0, y = 0, z = -50 })
