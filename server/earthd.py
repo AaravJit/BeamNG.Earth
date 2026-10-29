@@ -121,6 +121,7 @@ import seatiles as seatilesmod  # noqa: E402
 import vegetation as vegetationmod
 import buildings as buildingsmod  # noqa: E402
 import rockface as rockfacemod  # noqa: E402
+import geotiles as geotilesmod  # noqa: E402
 import riverlines as riverlinesmod  # noqa: E402
 import groundahead as groundaheadmod  # noqa: E402
 import routeahead as routeaheadmod  # noqa: E402
@@ -458,6 +459,13 @@ class Anchor:
     bridges: object = None                         # roads.BridgeProfiles: deck heights per chain
     tunnels: object = None                         # roads.TunnelProfiles: floor heights per chain
     first_base: tuple = None                       # ((cx, cy), Future): a provisional first block's photo, reused
+    zf: int = 14                                   # far level 3's Web-Mercator zoom here (farfield.global_zoom)
+
+
+PIECE_PARTS = 24            # nodes whose geometry and texture the server keeps for their other pieces (Server.piece_parts)
+# The far tiles' server key of a global tile (farfield.GTile, geotiles phase 3b): (GLOBAL_AID, key), the same under
+# every anchor (anchor ids start at 1)
+GLOBAL_AID = 0
 
 
 @dataclass
@@ -486,6 +494,8 @@ class TileInfo:
     retex_repeat: int = 0
     credits: frozenset = frozenset()    # data-credit source ids (credits.tile_sources; --credits on only)
     shape: str | None = None    # its shape file when not tile_name(): a copy under a new material name (reslot)
+    tile: object = None         # the farfield tile it was built for (Tile, GTile, Piece)
+    frame: tuple | None = None  # a global tile's frame (lat, lon): its geometry is in that frame's world
 
 
 def predict_centre(px, py, vx, vy, lead, reach=FOLLOW_REACH, grid=heightmap.GRID, min_lead=0.0, min_lead_v=2.0):
@@ -757,6 +767,10 @@ class Server:
         # Far tiles: (anchorId, key) -> TileInfo, LRU order; files are far_<anchorId>_<key>.<fmt>.
         self.tiles = OrderedDict()
         self.tile_inflight = {}
+        # A node across the global tiles' region edge is a piece per global tile it overlaps (farfield.Piece), each
+        # its node's geometry and texture cut: (anchorId, node key) -> {"built", "tex": (DDS bytes, bytes, sources,
+        # pending regions)} of the last few, so the node's other pieces build neither again
+        self.piece_parts = OrderedDict()
         self.build_stats = deque(maxlen=500)   # seconds per built tile, for the log
         self.level_stats = {}                  # level -> deque of (build s, texture s, shape B, texture B)
         self.prune_delay = PRUNE_DELAY
@@ -939,6 +953,7 @@ class Server:
         a.hm_zoom = demmod.zoom_for(lat, 1.25, demmod.FINE_ZOOM)    # ~1 m pixels where the data exists (dem.FINE_ZOOM)
         a.zooms = {lvl: self.layout.dem_zoom(lat, lvl) for lvl in range(1, farfield.HORIZON_MAX_LEVEL + 1)}
         a.zooms[0] = a.hm_zoom                      # L0 shares the terrain's DEM (§1.4)
+        a.zf = farfield.global_zoom(lat)            # the global far tiles' finest zoom (geotiles phase 3b)
         if self.deshadow is not None:
             self.deshadow.prepare(lat, lon)         # the regions around it, in the background
         if self.colormatch is not None:
@@ -1043,6 +1058,7 @@ class Server:
             return None
         return vegetationmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, rows, flat=flat)
 
+    global_far = True       # --global-far: far levels >= 3 as global tiles (geotiles phase 3b; the mod must place them)
     geo_tiles = True        # --geo-tiles: content in the global tiles' frames, kept by the mod across rebases (geotiles.py)
 
     def build_veg_geo(self, gx, gy, flat=False, aid=None):
@@ -2455,9 +2471,9 @@ class Server:
         """Start downloading a queued tile's imagery (fire and forget), so tile workers rarely
         wait on the network. Only the first source of the chain; errors surface at build time."""
         if self.imagery is not None:
-            x0, y0, _, _ = tile.bbox
+            frame, x0, y0, size = self.tile_where(anchor, tile)
             px = self.tex_size(tile.level)
-            self.imagery.prefetch(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px), px, soon=True)
+            self.imagery.prefetch(frame, *imagerymod.gutter_square(x0, y0, size, px), px, soon=True)
 
     # (shared world building, commented out 2026-10-27 (off since 2026-10-23; the user: not coming back for a while))
     # def share_start(self, port=None):
@@ -2502,75 +2518,125 @@ class Server:
         f = getattr(self.far_pool, "remote_slots", None)
         return f() if f is not None else 0
 
+    def far_ck(self, aid, key):
+        """The server's key of far tile `key` shown under anchor aid: (GLOBAL_AID, key) for a global tile (the same
+        for every anchor), else (aid, key)."""
+        return (GLOBAL_AID, key) if farfield.is_global_key(key) else (aid, key)
+
+    def tile_where(self, anchor, tile):
+        """(frame, x0, y0, size) of the square a tile's texture is rendered over in that frame: the node's for a piece;
+        a global tile's own frame and its (Mercator) square, about [-s/2, s/2]^2 there."""
+        if isinstance(tile, farfield.GTile):
+            return geotilesmod.frame(tile.x, tile.y, tile.z), -tile.size / 2, -tile.size / 2, tile.size
+        node = tile.base if isinstance(tile, farfield.Piece) else tile
+        x0, y0, _, _ = node.bbox
+        return anchor.frame, x0, y0, node.size
+
+    def render_tile(self, anchor, tile, px, pending):
+        """(rgb, used): a far tile's photo with its gutter (a global tile's: its Mercator square, render_merc)."""
+        if isinstance(tile, farfield.GTile):
+            return self.imagery.render_merc(tile.z, tile.x, tile.y, px, pending=pending)
+        frame, x0, y0, size = self.tile_where(anchor, tile)
+        return self.imagery.render(frame, *imagerymod.gutter_square(x0, y0, size, px), px, pending=pending)
+
     def make_tile(self, anchor, tile, prev=None):
         """Worker thread: build and write one far tile (and its texture). Returns its TileInfo.
-        prev: the tile's stale TileInfo (--colormatch): only its texture is rendered again."""
+        prev: the tile's stale TileInfo (--colormatch): only its texture is rendered again.
+        A global tile (farfield.GTile) is built in its own frame, the same for every anchor (ck (GLOBAL_AID, key));
+        a piece (farfield.Piece) is its node's tile cut to its global tile's quad."""
         if prev is not None:
             return self.retexture(anchor, tile, prev)
         t0 = time.perf_counter()
         lvl = tile.level
-        q = self.anchor_q(anchor) if lvl <= 0 else None
-        ref_zoom = anchor.zooms[lvl - 1] if lvl > 0 else None
-        path = os.path.join(self.out_dir, self.tile_name(anchor.id, tile.key))
-        g = self.grader_for(anchor) if lvl <= 0 and self.far_pool is None else None   # graded like the block
-        base = self.airports.wrap(self.dem) if self.airports is not None else self.dem
-        if self.sea is not None:
-            base = seacarvemod.SeaDem(base, self.sea if lvl <= seacarvemod.CARVE_MAX_LEVEL else None)
-        src = gradingmod.GradedDem(base, g) if g is not None else base
+        is_global = isinstance(tile, farfield.GTile)
+        node = tile.base if isinstance(tile, farfield.Piece) else tile
+        ck = self.far_ck(anchor.id, tile.key)
+        path = os.path.join(self.out_dir, self.tile_name(*ck))
         done = None             # (texture file, bytes, sources used) when the worker rendered it (blockworker.far_tile)
         geo = None              # the geometry's future while this thread renders the texture
-        if self.far_pool is not None and self.imagery is not None and self.deshadow is None \
-                and self.colormatch is None:
-            # the texture in the far-tile process too, from the imagery on disk (no analyses to apply here)
-            texture = self.texture_name(anchor.id, tile.key, self.tex_rev.get((anchor.id, tile.key), 0))
-            im = self.imagery
-            tex = {"path": os.path.join(self.out_dir, texture), "px": self.tex_size(lvl),
-                   "mask": (os.path.join(self.out_dir, surfacemod.road_mask_name(texture)),
-                            self.road_mask_px(lvl)) if self.road_masks else None,
-                   "chain": [s.name for s in im.chain], "tone": self.tone, "leaf_on": im.leaf_on,
-                   "season_mode": im.season_mode}
-            args = (blockworker.far_tile, anchor.id, anchor.lat, anchor.lon, tile, anchor.zooms[max(lvl, 0)], q,
-                    ref_zoom, self.near_visual in BLOCK_DRAWN, self.layout, tex)
-            built, got = self.far_pool.submit(*args).result()
-            if got is None:
-                # a photo tile was not on disk (its prefetch dropped: a host at its daily budget, GitHub #116, or a
-                # fast drive): fetched here, the render goes back to the workers (rendered in this process, one
-                # interpreter for every far thread, the far field waited on it); here only if that fails too
-                x0, y0, _, _ = tile.bbox
-                if im.fetch_needed(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, tex["px"]), tex["px"]):
-                    built, got = self.far_pool.submit(*args).result()
-                    self.refetched += 1
-            if got is not None:
-                done = (texture, got[0], got[1])
-        elif self.far_pool is not None:
-            # the geometry in a far-tile process while this thread warps the texture from the finished imagery (no
-            # analysis waits there any more: imagery.Imagery.finished); the steps that need both after it
-            geo = self.far_pool.submit(blockworker.far_geometry, anchor.id, anchor.lat, anchor.lon, tile,
-                                       anchor.zooms[max(lvl, 0)], q, ref_zoom, self.near_visual in BLOCK_DRAWN,
-                                       self.layout)
-            built = None
+        if is_global:
+            zoom = farfield.global_dem_zoom(tile.z, self.layout.cells)
+            gref = farfield.global_dem_zoom(tile.z + 1, self.layout.cells)
+            if self.far_pool is not None:
+                geo = self.far_pool.submit(blockworker.far_global_geometry, tile.z, tile.x, tile.y, zoom, gref,
+                                           self.layout)
+                built = None
+            else:
+                base = self.airports.wrap(self.dem) if self.airports is not None else self.dem
+                if self.sea is not None:
+                    base = seacarvemod.SeaDem(base, None)
+                built = farfield.build_global(base, tile.z, tile.x, tile.y, zoom, gref, self.layout)
         else:
-            built = farfield.build_tile(anchor.frame, src, tile, anchor.zooms[max(lvl, 0)], q,
-                                        ref_zoom, with_sink=self.near_visual in BLOCK_DRAWN, layout=self.layout)
+            q = self.anchor_q(anchor) if lvl <= 0 else None
+            ref_zoom = anchor.zooms[lvl - 1] if lvl > 0 else None
+            zoom = anchor.zooms[max(lvl, 0)]
+            part = self.piece_parts.get((anchor.id, node.key)) if node is not tile else None
+            g = self.grader_for(anchor) if lvl <= 0 and self.far_pool is None else None   # graded like the block
+            base = self.airports.wrap(self.dem) if self.airports is not None else self.dem
+            if self.sea is not None:
+                base = seacarvemod.SeaDem(base, self.sea if lvl <= seacarvemod.CARVE_MAX_LEVEL else None)
+            src = gradingmod.GradedDem(base, g) if g is not None else base
+            if self.far_pool is not None and self.imagery is not None and self.deshadow is None \
+                    and self.colormatch is None and node is tile:
+                # the texture in the far-tile process too, from the imagery on disk (no analyses to apply here)
+                texture = self.texture_name(anchor.id, tile.key, self.tex_rev.get(ck, 0))
+                im = self.imagery
+                tex = {"path": os.path.join(self.out_dir, texture), "px": self.tex_size(lvl),
+                       "mask": (os.path.join(self.out_dir, surfacemod.road_mask_name(texture)),
+                                self.road_mask_px(lvl)) if self.road_masks else None,
+                       "chain": [s.name for s in im.chain], "tone": self.tone, "leaf_on": im.leaf_on,
+                       "season_mode": im.season_mode}
+                args = (blockworker.far_tile, anchor.id, anchor.lat, anchor.lon, tile, zoom, q,
+                        ref_zoom, self.near_visual in BLOCK_DRAWN, self.layout, tex)
+                built, got = self.far_pool.submit(*args).result()
+                if got is None:
+                    # a photo tile was not on disk (its prefetch dropped: a host at its daily budget, GitHub #116, or a
+                    # fast drive): fetched here, the render goes back to the workers (rendered in this process, one
+                    # interpreter for every far thread, the far field waited on it); here only if that fails too
+                    x0, y0, _, _ = tile.bbox
+                    if im.fetch_needed(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, tex["px"]),
+                                       tex["px"]):
+                        built, got = self.far_pool.submit(*args).result()
+                        self.refetched += 1
+                if got is not None:
+                    done = (texture, got[0], got[1])
+            elif part is not None:          # (another piece of this node built it)
+                built = part["built"]
+            elif self.far_pool is not None:
+                # the geometry in a far-tile process while this thread warps the texture from the finished imagery (no
+                # analysis waits there any more: imagery.Imagery.finished); the steps that need both after it
+                geo = self.far_pool.submit(blockworker.far_geometry, anchor.id, anchor.lat, anchor.lon, node,
+                                           zoom, q, ref_zoom, self.near_visual in BLOCK_DRAWN, self.layout)
+                built = None
+            else:
+                built = farfield.build_tile(anchor.frame, src, node, zoom, q, ref_zoom,
+                                            with_sink=self.near_visual in BLOCK_DRAWN, layout=self.layout)
         t1 = time.perf_counter()
         geo_wait = 0.0
         material = texture = used = None
         tex_bytes = 0
-        ck = (anchor.id, tile.key)
         pending = set() if self.colormatch is not None or self.deshadow is not None else None
+        part = self.piece_parts.get((anchor.id, node.key)) if node is not tile else None
         if done is not None:
             texture, tex_bytes, used = done
             material = self.matslots.take(ck)
             self.degraded.discard(ck)
             self.imagery_worker += 1
+        elif part is not None and part.get("tex") is not None:      # the node's texture, another piece's
+            texture = self.texture_name(*ck, self.tex_rev.get(ck, 0))
+            data, tex_bytes, used, was = part["tex"]
+            self.write_file(os.path.join(self.out_dir, texture), data)
+            if pending is not None:
+                pending |= set(was)
+            material = self.matslots.take(ck)
+            self.degraded.discard(ck)
         elif self.imagery is not None:
-            x0, y0, _, _ = tile.bbox
             try:
                 px = self.tex_size(lvl)
-                texture = self.texture_name(anchor.id, tile.key, self.tex_rev.get((anchor.id, tile.key), 0))
+                texture = self.texture_name(*ck, self.tex_rev.get(ck, 0))
                 tk = self.tex_key(anchor, tile, px)
                 hit = revisitmod.load(self.cache_dir, "fartex", tk)
-                if hit is not None:         # (rendered in this anchor's place before: the revisit cache)
+                if hit is not None:         # (rendered in this place before: the revisit cache)
                     blobs, extra = hit
                     if "mask.dds" in blobs:
                         self.write_file(os.path.join(self.out_dir, surfacemod.road_mask_name(texture)),
@@ -2579,15 +2645,15 @@ class Server:
                     tex_bytes, used = int(extra["tex_bytes"]), extra["used"]
                 else:
                     f0 = revisitmod.faults()
-                    rgb, used = self.imagery.render(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px),
-                                                    px, pending=pending)
+                    rgb, used = self.render_tile(anchor, tile, px, pending)
                     if geo is not None:
                         w0 = time.perf_counter()
                         built, geo = geo.result(), None
                         geo_wait = time.perf_counter() - w0
                     rgb = self.rock_faces(anchor, tile, px, rgb, built.grid)
-                    rgb = self.road_faces(anchor, tile, px, rgb)
-                    self.write_road_mask(anchor, tile, px, texture)
+                    if not is_global:
+                        rgb = self.road_faces(anchor, node, px, rgb)
+                        self.write_road_mask(anchor, node, px, texture)
                     tex_bytes = imagerymod.write_dds(os.path.join(self.out_dir, texture), rgb)
                     self.keep_texture(tk, texture, tex_bytes, used, pending, f0)
                 material = self.matslots.take(ck)
@@ -2603,6 +2669,16 @@ class Server:
             w0 = time.perf_counter()
             built = geo.result()
             geo_wait += time.perf_counter() - w0
+        if node is not tile:            # a piece: its node cut to its global tile
+            if part is None:
+                tex = None
+                if material is not None:
+                    with open(os.path.join(self.out_dir, texture), "rb") as fh:
+                        tex = (fh.read(), tex_bytes, used, frozenset(pending or ()))
+                self.piece_parts[(anchor.id, node.key)] = {"built": built, "tex": tex}
+                while len(self.piece_parts) > PIECE_PARTS:
+                    self.piece_parts.popitem(last=False)
+            built = farfield.clip_built(built, tile.quad)
         t2 = time.perf_counter()
         size = farfield.write_built(path, built, self.far_format, material or farfield.MATERIAL,
                                     textured=material is not None, tex_px=self.tex_size(lvl))
@@ -2612,21 +2688,32 @@ class Server:
         self.level_stats.setdefault(lvl, deque(maxlen=200)).append((dt - tex_s, tex_s, size, tex_bytes))
         sources = frozenset()
         if self.credits is not None:        # the tile's imagery and DEM sources (data credits)
-            sources = creditsmod.tile_sources(anchor.frame, tile.bbox, self.dem, anchor.zooms[max(lvl, 0)],
+            frame, x0, y0, s = self.tile_where(anchor, tile)
+            sources = creditsmod.tile_sources(frame, (x0, y0, x0 + s, y0 + s), self.dem, zoom,
                                               used if material is not None else None)
         info = TileInfo(built.pos, built.err, built.sink, built.skirt, built.grid, size, dt,
                         material, texture, tex_bytes, tex_s, credits=sources)
+        info.tile = tile
+        if is_global:
+            info.frame = farfield.global_frame_ll(tile.z, tile.x, tile.y)
         if material is not None and self.far_format == "cdae":    # the pooled shape path (matslots.py)
             info.shape = matslotsmod.MatSlots.file(material)
             matslotsmod.place(path, os.path.join(self.out_dir, info.shape))
         if material is not None:
-            info.rev = self.tex_rev.get((anchor.id, tile.key), 0)
+            info.rev = self.tex_rev.get(ck, 0)
             info.cm_pending = frozenset(pending or ())
         return info
 
     def tex_key(self, anchor, tile, px):
-        """The revisit cache's key of a far tile's texture rendered here (revisit.py)."""
+        """The revisit cache's key of a far tile's texture rendered here (revisit.py): a global tile's names no anchor
+        (any anchor's, any session's); a piece's is its node's (the same texture)."""
         im = self.imagery
+        if isinstance(tile, farfield.GTile):
+            return revisitmod.key("fartex", "m", farfield.GLOBAL_GEO_VERSION, tile.key, px, [s.name for s in im.chain],
+                                  self.tone, im.leaf_on, im.season_mode, self.tex_modes, self.layout.cells,
+                                  farfield.global_dem_zoom(tile.z, self.layout.cells))
+        if isinstance(tile, farfield.Piece):
+            tile = tile.base
         return revisitmod.key("fartex", round(float(anchor.lat), 7), round(float(anchor.lon), 7), tile.key, px,
                               self.road_mask_px(tile.level) if self.road_masks else 0, [s.name for s in im.chain],
                               self.tone, im.leaf_on, im.season_mode, self.tex_modes, roadsmod.ROADS_IN_GROUND,
@@ -2667,10 +2754,10 @@ class Server:
         if grid is None:
             return rgb
         try:
-            x0, y0, _, _ = tile.bbox
+            frame, x0, y0, size = self.tile_where(anchor, tile)
             g = np.asarray(grid)
-            return rockfacemod.rock(rgb, anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px), g,
-                                    x0, y0, tile.size / (g.shape[1] - 1))
+            return rockfacemod.rock(rgb, frame, *imagerymod.gutter_square(x0, y0, size, px), g,
+                                    x0, y0, size / (g.shape[1] - 1))
         except Exception as e:          # the photo as it is
             log.debug("rock faces of %s: %s", tile.key, e)
             return rgb
@@ -2714,31 +2801,36 @@ class Server:
         under the next revision's file name; the shape and its material name stay. Network trouble:
         the previous TileInfo, still stale."""
         t0 = time.perf_counter()
-        x0, y0, _, _ = tile.bbox
         px = self.tex_size(tile.level)
         pending = set()
         try:
-            rgb, used = self.imagery.render(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px), px,
-                                            pending=pending)
+            rgb, used = self.render_tile(anchor, tile, px, pending)
         except imagerymod.ImageryError as e:
             log.debug("tile %s of anchor %d: texture not rendered again (%s)", tile.key, anchor.id, e)
             return prev
         rgb = self.rock_faces(anchor, tile, px, rgb, prev.grid)
-        rgb = self.road_faces(anchor, tile, px, rgb)
-        texture = self.texture_name(anchor.id, tile.key, prev.rev + 1)
-        self.write_road_mask(anchor, tile, px, texture)
+        node = tile.base if isinstance(tile, farfield.Piece) else tile
+        ck = self.far_ck(anchor.id, tile.key)
+        if not isinstance(tile, farfield.GTile):
+            rgb = self.road_faces(anchor, node, px, rgb)
+        texture = self.texture_name(*ck, prev.rev + 1)
+        if not isinstance(tile, farfield.GTile):
+            self.write_road_mask(anchor, node, px, texture)
         tex_bytes = imagerymod.write_dds(os.path.join(self.out_dir, texture), rgb)
         self.keep_texture(self.tex_key(anchor, tile, px), texture, tex_bytes, used, pending, None)
         sources = prev.credits
         if self.credits is not None:        # the new texture's sources (the corrected one names S2 too)
-            sources = creditsmod.tile_sources(anchor.frame, tile.bbox, self.dem, anchor.zooms[max(tile.level, 0)],
-                                              used)
+            frame, x0, y0, s = self.tile_where(anchor, tile)
+            zoom = (farfield.global_dem_zoom(tile.z, self.layout.cells) if isinstance(tile, farfield.GTile)
+                    else anchor.zooms[max(tile.level, 0)])
+            sources = creditsmod.tile_sources(frame, (x0, y0, x0 + s, y0 + s), self.dem, zoom, used)
         return replace(prev, texture=texture, tex_bytes=tex_bytes, tex_seconds=time.perf_counter() - t0,
                        cm_pending=frozenset(pending), stale=False, rev=prev.rev + 1, credits=sources)
 
     def tile(self, anchor, tile):
-        """asyncio future for the tile's TileInfo; generated at most once per (anchorId, key)."""
-        ck = (anchor.id, tile.key)
+        """asyncio future for the tile's TileInfo; generated at most once per (anchorId, key) (a global tile's: once
+        for every anchor, far_ck)."""
+        ck = self.far_ck(anchor.id, tile.key)
         loop = self.loop = asyncio.get_running_loop()
         prev = None
         if ck in self.tiles:
@@ -2763,11 +2855,11 @@ class Server:
         now = time.monotonic()
         for c in self.connections:
             out |= set(c.shown)
-            out |= {(c.active, k) for k in c.sent}
+            out |= {self.far_ck(c.active, k) for k in c.sent}
             # built for the active anchor but not sent yet: evicting these deleted the files of
             # tiles about to be sent (in-game 2026-10-10, after a 200 mph run had left thousands
             # of held previous-anchor tiles in the cache: 150 tiles failed with "No Mesh")
-            out |= {(c.active, k) for k in c.desired}
+            out |= {self.far_ck(c.active, k) for k in c.desired}
             out |= set(c.inflight)
             out |= {ck for ck, t in c.retired.items() if now - t < self.retired_keep}
         held = self.held_anchors()
@@ -2780,8 +2872,8 @@ class Server:
         keep their names. Whether a game still draws a name is slot_held()."""
         out = set()
         for c in self.connections:
-            out |= {(c.active, k) for k in c.sent}
-            out |= {(c.active, k) for k in c.desired}
+            out |= {self.far_ck(c.active, k) for k in c.sent}
+            out |= {self.far_ck(c.active, k) for k in c.desired}
             out |= set(c.inflight)
         return out
 
@@ -2800,6 +2892,7 @@ class Server:
         out = set()
         for c in self.connections:
             out |= c.held
+        out.discard(GLOBAL_AID)
         return out
 
     def _tile_done(self, ck, fut):
@@ -2947,7 +3040,8 @@ class Server:
         """The connections that show the tile, or hold it (sent, not swapped in yet), under their
         active anchor (a previous anchor's tiles are on their way out)."""
         aid, key = ck
-        return [c for c in self.connections if c.active == aid and (ck in c.shown or key in c.sent)]
+        return [c for c in self.connections if c.active is not None and self.far_ck(c.active, key) == ck
+                and (ck in c.shown or key in c.sent)]
 
     def retex_request(self, ck, pump=True):
         """A stale tile to re-render live if some mod shows it (event loop)."""
@@ -2965,13 +3059,13 @@ class Server:
         for ck in list(self.retex_todo):
             info = self.tiles.get(ck)
             viewers = self._retex_viewers(ck) if info is not None and info.stale else []
-            if not viewers or ck in self.tile_inflight or ck[0] not in self.anchors \
+            if not viewers or ck in self.tile_inflight or (ck[0] not in self.anchors and ck[0] != GLOBAL_AID) \
                     or info.retex_repeat >= RETEX_REPEAT:
                 self.retex_todo.discard(ck)
                 if info is not None and info.stale and ck not in self.tile_inflight:
                     self.retex_stats["dropped"] += 1
                 continue
-            t = farfield.tile_of(ck[1])
+            t = info.tile if info.tile is not None else farfield.tile_of(ck[1])
             d = min(t.distance(*c.view_focus) for c in viewers)
             if best is None or (d, ck) < (bd, best):
                 best, bd = ck, d
@@ -2991,7 +3085,12 @@ class Server:
                 return
             self.retex_todo.discard(ck)
             self._retex_next = time.monotonic() + 1.0 / self.retex_rate
-            anchor, tile, prev = self.anchors[ck[0]], farfield.tile_of(ck[1]), self.tiles[ck]
+            prev = self.tiles[ck]
+            tile = prev.tile if prev.tile is not None else farfield.tile_of(ck[1])
+            viewers = self._retex_viewers(ck)
+            anchor = self.anchors.get(ck[0]) or self.anchors.get(viewers[0].active if viewers else None)
+            if anchor is None:
+                continue
             fut = self.tile_inflight[ck] = self.loop.run_in_executor(self.tile_pool, self.make_tile, anchor, tile, prev)
             fut.add_done_callback(lambda f, ck=ck: self._tile_done(ck, f))
             fut.add_done_callback(self._retex_done)
@@ -3013,7 +3112,8 @@ class Server:
     def _send_retex(self, ck, info):
         """far_retex to every connection showing (or holding) the tile: its new texture."""
         for c in self._retex_viewers(ck):
-            c.send({"type": "far_retex", "anchorId": ck[0], "key": ck[1], "texture": f"{self.vfs_dir}/{info.texture}"})
+            c.send({"type": "far_retex", "anchorId": c.active if ck[0] == GLOBAL_AID else ck[0], "key": ck[1],
+                    "texture": f"{self.vfs_dir}/{info.texture}"})
             self.retex_stats["sent"] += 1
             c.credits.poke(c)               # the new texture's sources (the corrected one names S2 too)
 
@@ -3211,6 +3311,10 @@ class Connection:
         # past them the skyline (buildings.skyline_tile): the far buildings then come as whole skyline squares
         # (group), the skyline tiles where none of theirs are (inner)
         self.far_geo = False                    # ... as geotiles (hello.farGeo, Server.far_geo_ok): kept across rebases
+        self.global_far = False                 # far levels >= 3 as global tiles (hello.globalFar, --global-far)
+        self.prev_horizon = None                # (frame, HorizonGrid) of the anchor before the active one (horizon_select)
+        self.gpolys = {}                        # (anchorId, key) -> a shown global tile's quad in that anchor's world
+        self.ppolys = {}                        # piece key -> its polygon (pieces sent / shown under the active anchor)
         self.building_scale = 1.0
         self.bldfar = self.bldsky = self.brfar = None
         self.make_far_trackers(False)
@@ -3577,7 +3681,7 @@ class Connection:
         aid = self.active
         if aid is None:
             return 0
-        return sum(1 for k in self.desired if (aid, k) not in self.shown)
+        return sum(1 for k in self.desired if self.ck(k) not in self.shown)
 
     def status(self, text):
         n = self.backlog()
@@ -3807,6 +3911,12 @@ class Connection:
                 self.make_far_trackers(far_geo)
             if far_geo:
                 m["farGeo"] = buildingsmod.FAR_GEO
+            # ... and the far field's levels from 3 up as global tiles when it places those (hello.globalFar:
+            # farfield.lua's GLOBAL_FAR; geotiles phase 3b, --global-far): built once, kept across rebases
+            self.global_far = (geo and msg.get("globalFar") == farfield.GLOBAL_PROTO and bool(self.s.global_far)
+                               and self.s.layout.mesh)
+            if self.global_far:
+                m["globalFar"] = farfield.GLOBAL_PROTO
             self.send(m)
             if self.weather.msg is not None:        # a reconnected mod gets the weather again
                 self.send(self.weather.msg)
@@ -4116,6 +4226,9 @@ class Connection:
         key = (anchor.id, cx, cy)
         anchor.first_terrain = (cx, cy)
         self.s.anchors[anchor.id] = anchor
+        if self.s.horizon:
+            # its zmax grid now, before the commit (a far field selected without it is the HORIZON_MIN disc, uncut)
+            self.s.horizon_grid(anchor, self.eye if self.eye is not None else 0.0)
         self.s.hm_sent.append(key)
         # groundZ is None when (0, 0) lies outside the block (a resync around a distant player)
         gz = info["groundZ"]
@@ -4245,11 +4358,16 @@ class Connection:
         for ck, (fut, _) in self.inflight.items():
             if ck[0] != aid:
                 fut.cancel()            # only stops jobs that have not started
-        # Tiles sent but not swapped in are dropped by the mod at the anchor switch.
-        self._retire((self.active, k) for k in self.sent)
+        # Tiles sent but not swapped in are dropped by the mod at the anchor switch (global ones too).
+        self._retire(self.ck(k) for k in self.sent)
         self.active = aid
+        self.ppolys = {}
         self.desired, self.sent, self.groups, self.queue, self.qi = {}, {}, [], [], 0
-        self.refined, self.node_changed = set(), {}
+        old_grid = self.s.horizon_grids.get(old.id) if old is not None else None
+        self.prev_horizon = (old.frame, old_grid) if old_grid is not None and old_grid.merc is not None else None
+        # (the global far tiles' split state is any anchor's: kept, so their hysteresis holds across the rebase)
+        self.refined = {n for n in self.refined if len(n) == 4}
+        self.node_changed = {n: t for n, t in self.node_changed.items() if len(n) == 4}
         self.failed.clear()
         self.block = self.pending_block = self.predicted_block = None
         if anchor.first_terrain is not None:
@@ -4727,10 +4845,18 @@ class Connection:
         eye = self.eye if self.eye is not None else 0.0
         grid = self.s.horizon_grid(anchor, eye)
         cull = None
+        focus = self.view_focus
+        if grid is None and self.global_far and self.prev_horizon is not None:
+            # (a rebase whose grid is not built yet: the previous anchor's, the focus in its plane. Its Mercator
+            # table culls the global tiles the same for any anchor; without it they went and came back once the new
+            # grid was built. The anchor's own tiles lie within HORIZON_MIN: never culled)
+            pframe, grid = self.prev_horizon
+            fx, fy, _ = pframe.ecef_to_enu(*self.s.anchors[self.active].frame.enu_to_ecef(*focus, 0.0))
+            focus = (float(fx), float(fy))
         if grid is None:
             radius = farfield.HORIZON_MIN
         else:
-            radius, zr = grid.radius(*self.view_focus, eye)
+            radius, zr = grid.radius(*focus, eye)
             cull = farfield.Horizon(eye, grid)
             if zr != self.zmax_region or abs(radius - self.radius) > RADIUS_REPORT_REL * self.radius:
                 log.info("horizon: eye %.0f m, highest visible terrain %.0f m, radius %.0f km",
@@ -4789,10 +4915,19 @@ class Connection:
         radius, extra = (self.horizon_select() if self.s.horizon else (self.s.radius, {}))
         if self.view_cap is not None:       # (a fixed view distance: nothing past it is drawn; a disc, as the horizon)
             radius, extra = min(radius, self.view_cap), dict(extra, disc=True)
-        new, refined = farfield.select(*self.view_focus, self.forced(), self.refined, self.kfun(),
-                                       self.s.hysteresis, radius, hold=set(self.node_changed),
-                                       min_level=self.s.min_level, radii=self.s.near_radii, layout=self.s.layout,
-                                       forced_level=self.s.forced_level, view=self.view(), **extra)
+        anchor = self.s.anchors[self.active]
+        if self.global_on(anchor, radius):
+            # far levels from 3 up as global tiles (geotiles phase 3b): the same for every anchor, kept at a rebase
+            new, refined = farfield.select_global(anchor.frame, *self.view_focus, anchor.zf, self.forced(),
+                                                  self.refined, self.kfun(), self.s.hysteresis, radius,
+                                                  hold=set(self.node_changed), min_level=self.s.min_level,
+                                                  radii=self.s.near_radii, layout=self.s.layout,
+                                                  forced_level=self.s.forced_level, view=self.view(), **extra)
+        else:
+            new, refined = farfield.select(*self.view_focus, self.forced(), self.refined, self.kfun(),
+                                           self.s.hysteresis, radius, hold=set(self.node_changed),
+                                           min_level=self.s.min_level, radii=self.s.near_radii, layout=self.s.layout,
+                                           forced_level=self.s.forced_level, view=self.view(), **extra)
         if self.desired:                # the first selection of an anchor is not a change
             for n in refined ^ self.refined:
                 self.node_changed[n] = now
@@ -4804,6 +4939,34 @@ class Connection:
             self.dirty = True
             self.batch = [time.perf_counter(), 0, 0]
         self.wake.set()
+
+    def ck(self, key):
+        """The server's key of far tile `key` under the active anchor (Server.far_ck: a global tile's names none)."""
+        return (GLOBAL_AID, key) if farfield.is_global_key(key) else (self.active, key)
+
+    def global_on(self, anchor, radius):
+        """Global far tiles for this selection: the mod places them (hello.globalFar) and the radius stays within Web
+        Mercator (farfield.GLOBAL_MAX_LAT; beyond it the anchor's quadtree as before)."""
+        return bool(self.global_far) and abs(anchor.lat) + (radius + 20000.0) / 110574.0 < farfield.GLOBAL_MAX_LAT
+
+    def poly_of(self, key):
+        """A special tile's footprint polygon (flat) in the active anchor's world (swap groups): a desired tile's own,
+        a shown global tile's quad, a piece's polygon as sent."""
+        t = self.desired.get(key)
+        if t is not None:
+            return t.poly
+        if farfield.is_global_key(key):
+            ck = (self.active, key)
+            q = self.gpolys.get(ck)
+            if q is None:
+                anchor = self.s.anchors.get(self.active)
+                g = farfield.parse_global(key)
+                if anchor is None or g is None:
+                    return None
+                q = self.gpolys[ck] = tuple(float(v) for v in
+                                            geotilesmod.quad(anchor.frame, g[1], g[2], g[0]).ravel())
+            return q
+        return self.ppolys.get(key)
 
     def view(self):
         """The camera for screen-space LOD (farfield.View) from pose.cam (x, y, z, fovDeg, h: the screen's height px),
@@ -4823,6 +4986,8 @@ class Connection:
         aid, tiles = self.active, self.s.tiles
 
         def err(node):
+            if len(node) != 3:
+                return None
             info = tiles.get((aid, farfield.Tile(*node).key))
             return None if info is None else info.err
         reach, cap = farfield.SSE_REACH, farfield.SSE_SPACING_CAP
@@ -4834,13 +4999,15 @@ class Connection:
 
     def _regroup(self):
         aid = self.active
-        cur = {k for a, k in self.shown if a == aid}
-        self.groups = farfield.swap_groups(cur, self.desired)
+        cur = {k for a, k in self.shown if a == aid or a == GLOBAL_AID}
+        if len(self.gpolys) > 4 * len(self.desired) + 1000:
+            self.gpolys = {ck: q for ck, q in self.gpolys.items() if ck[0] == aid}
+        self.groups = farfield.swap_groups(cur, self.desired, self.poly_of)
         # Sent tiles no group needs any more: the mod drops them.
         needed = {k for adds, _ in self.groups for k in adds}
         for k in [k for k in self.sent if k not in needed]:
             del self.sent[k]
-            self._retire([(aid, k)])
+            self._retire([self.ck(k)])
             self.send({"type": "far_remove", "anchorId": aid, "key": k})
         # Build order: L0 under the committed / pending block (the mod's cover and commit
         # gating need them), then groups that are partly sent, then the rest; nearest first.
@@ -4870,7 +5037,7 @@ class Connection:
         while self.qi < len(self.queue):
             t = self.queue[self.qi]
             self.qi += 1
-            ck = (aid, t.key)
+            ck = self.ck(t.key)
             if t.key not in self.sent and ck not in self.inflight and t.key in self.desired:
                 return t
         return None
@@ -4889,12 +5056,21 @@ class Connection:
             live.add(gk)
             fut = self.deltas.get(gk)
             if fut is None:
+                special = any(farfield.is_special_key(k) for k in adds + removes)
                 try:
+                    if special:
+                        # a global tile's grid is on its Mercator vertices, a piece's its node's: the mod's bound,
+                        # 1.2 (err_new + err_old) + 0.2 (crossover.delta) on the group's largest errors
+                        en = max([info[self.ck(k)].err for k in adds if self.ck(k) in info] or [0.0])
+                        eo = max([info[self.ck(k)].err for k in removes if self.ck(k) in info] or [0.0])
+                        raise LookupError(1.2 * (en + eo) + 0.2)
                     args = ([(farfield.tile_of(k), info[(aid, k)].grid) for k in adds],
                             [(farfield.tile_of(k), info[(aid, k)].grid) for k in removes])
-                except KeyError:        # a tile record was evicted: fall back to the err bound
-                    e = [info[(aid, k)].err for k in adds + removes if (aid, k) in info]
+                except LookupError as bound:    # a tile record was evicted: fall back to the err bound
+                    e = [info[self.ck(k)].err for k in adds + removes if self.ck(k) in info]
                     d = 1.2 * sum(e) + 0.2 if e else 0.0
+                    if special:
+                        d = float(bound.args[0])
                     fut = concurrent.futures.Future()
                     fut.set_result((d - DELTA_MARGIN, d - DELTA_MARGIN))
                 else:
@@ -4908,7 +5084,7 @@ class Connection:
             del self.deltas[gk]
             if fut.cancelled() or fut.exception() is not None:
                 log.warning("swap deltas of %s: %r", gk[1], None if fut.cancelled() else fut.exception())
-                e = [info[(aid, k)].err for k in adds + removes if (aid, k) in info]
+                e = [info[self.ck(k)].err for k in adds + removes if self.ck(k) in info]
                 d_in = d_out = (1.2 * sum(e) + 0.2 if e else 0.0) - DELTA_MARGIN
             else:
                 d_in, d_out = fut.result()
@@ -4917,16 +5093,17 @@ class Connection:
             self.next_group += 1
             self.send({"type": "far_swap", "anchorId": aid, "id": gid, "add": adds, "remove": removes,
                        "dIn": round(d_in, 2), "dOut": round(d_out, 2)})
-            if log.isEnabledFor(logging.DEBUG) and adds and removes:   # the pop's size on screen: amplitude / distance
+            if log.isEnabledFor(logging.DEBUG) and adds and removes and \
+                    not any(farfield.is_special_key(k) for k in adds + removes):    # the pop's size: amplitude / distance
                 dist = min(farfield.tile_of(k).distance(*self.focus) for k in adds + removes)
                 log.debug("far_swap %d L%d->L%d dIn %.1f dOut %.1f at %.0f m (%.2f mrad)", gid,
                           farfield.tile_of(removes[0]).level, farfield.tile_of(adds[0]).level, d_in, d_out, dist,
                           1000 * max(d_in, d_out) / max(dist, 1.0))
             for k in removes:
-                self.shown.pop((aid, k), None)
-            self._retire((aid, k) for k in removes)
+                self.shown.pop(self.ck(k), None)
+            self._retire(self.ck(k) for k in removes)
             for k in adds:
-                self.shown[(aid, k)] = self.sent.pop(k).bbox
+                self.shown[self.ck(k)] = self.sent.pop(k).bbox
             self.batch[2] += 1
             self.credits.poke(self)         # other tiles on screen
         self.groups = rest
@@ -4937,10 +5114,10 @@ class Connection:
         """far_remove every shown tile of a previous anchor once no desired tile that is not
         swapped in yet overlaps it (so nothing ever leaves a hole)."""
         aid = self.active
-        cands = [ck for ck in self.shown if ck[0] != aid]
+        cands = [ck for ck in self.shown if ck[0] != aid and ck[0] != GLOBAL_AID]
         if not cands:
             return
-        pending = [t.bbox for k, t in self.desired.items() if (aid, k) not in self.shown]
+        pending = [t.bbox for k, t in self.desired.items() if self.ck(k) not in self.shown]
         if pending:
             c = np.array([self.shown[ck] for ck in cands])
             u = np.array(pending)
@@ -4988,7 +5165,7 @@ class Connection:
                 t = self._next_tile()
                 if t is None:
                     break
-                self.inflight[(anchor.id, t.key)] = (self.s.tile(anchor, t), t)
+                self.inflight[self.ck(t.key)] = (self.s.tile(anchor, t), t)
             if anchor is not None and self.s.imagery is not None and not self.teleport_pending:
                 # a tile at most every PREFETCH_AGAIN_S (a prefetch skips sources short of request tokens): the
                 # loop wakes on every tile done and every message from the game, and asking again for the same 40
@@ -4997,7 +5174,7 @@ class Connection:
                 if len(self.prefetched) > PREFETCHED_MAX:
                     self.prefetched.clear()
                 for t in self.queue[self.qi:self.qi + IMAGERY_PREFETCH]:
-                    ck = (anchor.id, t.key)
+                    ck = self.ck(t.key)
                     if ck not in self.s.tiles and now - self.prefetched.get(ck, -1e9) >= PREFETCH_AGAIN_S:
                         self.prefetched[ck] = now
                         self.s.prefetch_imagery(anchor, t)
@@ -5007,7 +5184,7 @@ class Connection:
             if (not self.inflight and self.dirty and anchor is not None
                     and len(self.groups) == len(self._blocked())):
                 self.dirty = False
-                n = sum(1 for k in self.desired if (anchor.id, k) in self.shown)
+                n = sum(1 for k in self.desired if self.ck(k) in self.shown)
                 self.send({"type": "far_done", "anchorId": anchor.id, "count": n})
                 self.s.load_boost(False, "far field done")
                 self.status(f"Far field ready ({n} tiles)")
@@ -5028,7 +5205,7 @@ class Connection:
                                  "%d base photos", self.s.imagery_worker, self.s.refetched, self.s.base_worker)
                 if self.s.retex_stats["started"]:
                     log.info("live retexture: %s, %d waiting", self.s.retex_stats, len(self.s.retex_todo))
-                if not any(ck[0] != anchor.id for ck in self.shown):
+                if not any(ck[0] != anchor.id and ck[0] != GLOBAL_AID for ck in self.shown):
                     self.s.schedule_prune(anchor.id)
             await self.writer.drain()
             if waker is None:
@@ -5046,7 +5223,7 @@ class Connection:
                               exc_info=fut.exception() if t.key not in self.failed else None)   # (its first)
                     self.failed.add(t.key)
                     continue
-                if ck[0] != self.active or t.key not in self.desired or ck in self.shown or t.key in self.sent:
+                if ck != self.ck(t.key) or t.key not in self.desired or ck in self.shown or t.key in self.sent:
                     continue            # superseded meanwhile; the file stays cached
                 # the server's latest record: a live retexture may have finished since this build
                 info = self.s.tiles.get(ck, fut.result())
@@ -5056,12 +5233,19 @@ class Connection:
                 if info.stale:          # a region turned ready since: re-rendered live, then far_retex
                     self.s.retex_request(ck)
                 self.batch[1] += 1
-                m = {"type": "far_tile", "anchorId": ck[0], "key": t.key, "level": t.level,
+                m = {"type": "far_tile", "anchorId": self.active, "key": t.key, "level": t.level,
                      "shape": f"{self.s.vfs_dir}/{info.shape or self.s.tile_name(*ck)}",
                      "pos": [round(v, 3) for v in info.pos], "err": round(info.err, 3),
                      "skirt": round(info.skirt, 2), "state": "group"}
                 if info.sink is not None:
                     m["sink"] = round(info.sink, 2)
+                if isinstance(t, farfield.GTile):   # geotiles phase 3b: placed by the mod from its own frame
+                    m["frame"] = [info.frame[0], info.frame[1]]
+                    m["pos"] = [0, 0, round(info.pos[2], 3)]
+                    m["poly"] = [round(v, 2) for v in t.quad]
+                elif isinstance(t, farfield.Piece):
+                    m["poly"] = [round(v, 2) for v in t.poly]
+                    self.ppolys[t.key] = t.poly
                 if info.shape is not None and info.shape.startswith("slot_"):  # pooled (matslots.py)
                     m["slotSerial"] = serial = next(self.s.slot_serial)
                     self.slot_holds[matslotsmod.MatSlots.number(info.material)] = serial
@@ -5180,6 +5364,7 @@ async def main_async(args):
                     vegetation=(vegetationmod.Vegetation(mapdata, args.cache_dir) if args.trees == "on" else None))
     server.update_check = args.update_check == "on"
     server.geo_tiles = args.geo_tiles == "on"
+    server.global_far = args.global_far == "on"
     server.lod_px = args.lod_px
     loop = asyncio.get_running_loop()
 
@@ -5598,6 +5783,10 @@ def main():
                     help="content in the global tiles' own frames (geotiles.py: the vegetation, the road tiles' content, "
                          "the far buildings, skyline and far bridges), placed by the mod and kept across rebases "
                          "instead of built again for each anchor; off: per anchor (A/B)")
+    ap.add_argument("--global-far", choices=("on", "off"), default="on",
+                    help="far-field levels from 3 (2 km) up as global Web-Mercator tiles in their own frames "
+                         "(farfield.select_global): built once, cached for any anchor, kept by the mod across rebases; "
+                         "needs --geo-tiles on; off: the anchor's quadtree at every level (A/B)")
     ap.add_argument("--trees", choices=("on", "off"), default="off",
                     help="trees, bushes and rocks near the player (vegetation.py): from the canopy height model and "
                          "land cover, Forest items of stock shapes in the mod")
