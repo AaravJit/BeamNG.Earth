@@ -731,7 +731,8 @@ function M.mapTiles(list)
 end
 
 -- What the map polls every second: the player, the places, the tile endpoint, the credits.
--- The other players of a BeamMP session for the map's arrows ({ { name, lat, lon, h } }), nil outside one.
+-- The other players of a BeamMP session for the map's arrows and its Players list ({ { pid, name, lat, lon, h } },
+-- mpsession.others()), nil outside one.
 local function otherPlayers()
   local okB, inMP = pcall(function() return require('beamngEarth/beammp').inSession() end)
   if not okB or not inMP then return nil end
@@ -773,6 +774,7 @@ function M.uiMapState()
     attribution = core and core.attribution and core.attribution() or '',
     creditsByArea = core and core.creditsByArea and core.creditsByArea() or nil,
     gps = require('beamngEarth/gps').status(),
+    metric = require('beamngEarth/gps').metric(),     -- (the game's length unit with no GPS route: the Players list)
     weather = localWeatherBadge(),
   }
 end

@@ -1457,8 +1457,9 @@ def dual_carriageways(feats, specs, left_hand=False):
                 continue                # carriageways are one-way ways there): Portland's Rosa Parks Way, 1+1 lanes and
                                         # a turn lane, was drawn as two one-ways of 3 lanes each (2026-10-27)
             d = (1 if best[1] > 0 else -1) * (-1 if left_hand else 1)
-            w = sp.width if _rule_value(feats.rules.get("width"), i) is not None else \
-                carriageway(sp.cls, sp.kind, sp.urban, None, True)
+            w = sp.width if (_rule_value(feats.rules.get("width"), i) is not None
+                             or _osm(feats, "width", i, *OSM_WIDTH_M) is not None) else \
+                carriageway(sp.cls, sp.kind, sp.urban, None, True, sp.lanes)
             out[i] = sp._replace(oneway=True, dir=d, width=_dual_width(sp, w, gap, feats, i), median=gap)
     return out
 
@@ -1483,7 +1484,8 @@ def _dual_width(sp, w, gap, feats, i):
     """A divided road carriageway's width: a mapped width stands; in a city with its centre lines within
     URBAN_MEDIAN_GAP_M, out to an URBAN_MEDIAN_M median (at most URBAN_DUAL_MAX_W); never overlapping the other
     (dual_cap)."""
-    if _rule_value(feats.rules.get("width"), i) is not None:
+    if (_rule_value(feats.rules.get("width"), i) is not None
+            or _osm(feats, "width", i, *OSM_WIDTH_M) is not None):
         return w
     if sp.urban and gap <= URBAN_MEDIAN_GAP_M:
         w = float(np.clip(gap - URBAN_MEDIAN_M, w, URBAN_DUAL_MAX_W))
@@ -1585,6 +1587,7 @@ def _road_specs(feats, urban_fn, left_hand):
     out = []
     rules = feats.rules
     ask = []                                    # (index in out, cls, kind, rule_w, coordinate range)
+    developed_both = {}
     cr = rules.get("connectors")
     ncon = np.bincount(np.asarray(cr.feature), minlength=len(feats)) if cr is not None and len(cr.feature) else None
     lens = _lengths(feats) if ncon is not None else None
@@ -1632,6 +1635,7 @@ def _road_specs(feats, urban_fn, left_hand):
         u, by, both = u_all[:n], u_all[n:2 * n] | u_all[2 * n:], u_all[n:2 * n] & u_all[2 * n:]
         k = 0
         for j, cls, kind, a, b, ow, dk, lanes, token, link in ask:
+            developed_both[j] = float(np.mean(both[k:k + (b - a)])) >= URBAN_BOTH_SHARE
             urban = (float(np.mean(u[k:k + (b - a)])) >= URBAN_SHARE
                      and float(np.mean(by[k:k + (b - a)])) >= URBAN_BESIDE_SHARE
                      and (cls not in ("motorway", "trunk")
@@ -1641,7 +1645,57 @@ def _road_specs(feats, urban_fn, left_hand):
                           surf=token, link=link)
     out = _rings(feats, out)
     out = dual_carriageways(feats, out, left_hand)
-    return _osm_sidewalks(feats, out)
+    # A primary's opposite carriageway can supply all of its apparent development
+    # on one side. Apply the major-highway rule after pairing, without changing
+    # ordinary town main streets or explicitly mapped sidewalk/lighting tags.
+    for j, sp in enumerate(out):
+        if (sp is not None and sp.cls == "primary" and sp.median and sp.urban
+                and not developed_both.get(j, True)):
+            width = _rule_value(rules.get("width"), j)
+            if width is None:
+                width = _osm(feats, "width", j, *OSM_WIDTH_M)
+            w = carriageway(sp.cls, sp.kind, False, width, sp.oneway, sp.lanes)
+            out[j] = sp._replace(urban=False, width=_dual_width(sp._replace(urban=False), w, sp.median, feats, j))
+    return _osm_sidewalks(feats, _rural_connectors(feats, out))
+
+
+def _rural_connectors(feats, specs):
+    """Short links across a rural divided highway inherit its roadside context.
+
+    The two carriageways themselves can make a median crossing look built-up.
+    Require both ends to meet distinct rural divided roads; an urban connection
+    or a road merely running nearby is not evidence. OSM overrides follow this.
+    """
+    candidates = [i for i, sp in enumerate(specs) if sp is not None and sp.link and sp.urban
+                  and sp.cls in ("trunk", "primary", "secondary", "tertiary")]
+    rural = [i for i, sp in enumerate(specs) if sp is not None and not sp.urban and sp.oneway
+             and sp.median and sp.cls in ("motorway", "trunk", "primary")]
+    if not candidates or len(rural) < 2:
+        return specs
+    ends = {}
+    for i in candidates + rural:
+        a = feats.coord_off[feats.ring_off[feats.part_off[i]]]
+        b = feats.coord_off[feats.ring_off[feats.part_off[i + 1]]]
+        if b > a:
+            ends[i] = feats.lonlat[[a, b - 1]]
+    points = np.concatenate([ends[i] for i in rural if i in ends])
+    owners = np.repeat([i for i in rural if i in ends], 2)
+    scale = np.array([111320.0 * math.cos(math.radians(float(points[:, 1].mean()))), 110540.0])
+    out = list(specs)
+    lengths = _lengths(feats)
+    for i in candidates:
+        if i not in ends or lengths[i] > 2 * URBAN_BESIDE_M:
+            continue
+        distance = np.linalg.norm((ends[i][:, None] - points[None]) * scale, axis=2)
+        attached = [set(owners[distance[j] < 2.5]) for j in (0, 1)]
+        if not attached[0] or not attached[1] or len(attached[0] | attached[1]) < 2:
+            continue
+        sp = out[i]
+        width = _rule_value(feats.rules.get("width"), i)
+        if width is None:
+            width = _osm(feats, "width", i, *OSM_WIDTH_M)
+        out[i] = sp._replace(urban=False, width=carriageway(sp.cls, sp.kind, False, width, sp.oneway, sp.lanes))
+    return out
 
 
 # Roundabouts (OpenStreetMap junction=roundabout / circular: osmtags osm_junction): the circulatory roadway as wide as
@@ -6173,7 +6227,7 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
             probe = xy + nl * side * (core + grading.WALL_FLAT_M + grading.WALL_T_M + WALL_PROBE_M)
             pts_all.append(probe)
             info.append((xy, z, nl * side, core, inside, width / 2, steps, spec.cls in CONCRETE_WALL_CLASSES,
-                         fid, not spec.urban, not spec.urban and spec.cls not in NO_PARAPET_CLASSES,
+                         fid, not spec.urban, not spec.urban and spec.cls not in NO_PARAPET_CLASSES and not spec.median,
                          grading.wall_max_h(spec)))
     if not pts_all:
         return []
@@ -6825,6 +6879,23 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
             roads.append((fid, spec, np.stack([e[k:k + m], n[k:k + m], u[k:k + m]], axis=1),
                           float(np.mean(ring[:, 0]))))
             k += m
+    # Geometric roundabout rings (islands.ring_directions): Overture often leaves junction=roundabout and oneway
+    # off the ring ways (Chavagnes-en-Paillers 2026-10-28). No parking / inferred sidewalks on the ring, one-way so
+    # centre lines are not painted through the circle. Short approaches that meet the ring lose sidewalks too:
+    # their stubs against the circle were rectangular concrete blocks.
+    ring_dir = {}
+    if roads:
+        import islands
+        ring_dir = islands.ring_directions(roads, left_hand)
+        if ring_dir:
+            apps = islands.ring_approaches(roads, ring_dir)
+            short_apps = {fid for fid, sp, pts, _ in roads if fid in apps
+                          and float(np.sum(np.hypot(*np.diff(pts[:, :2], axis=0).T))) < islands.APPROACH_NO_WALK_M}
+            roads = [(fid,
+                      (sp._replace(urban=False, median=None, oneway=True, dir=ring_dir[fid]) if fid in ring_dir
+                       else sp._replace(urban=False, median=None) if fid in short_apps
+                       else sp),
+                      pts, lon) for fid, sp, pts, lon in roads]
     chunks = []
     if roads_out is not None:
         roads_out.extend(roads)
@@ -6905,10 +6976,16 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         for f in isl:
             if f["ring"] is None:
                 continue
-            ring = np.vstack([f["ring"], f["ring"][:1]])
-            band = offset_polyline(ring, islands.ISLAND_BAND_M / 2)
+            # (from its south-west-most point: each tile finds the loop from its own roads, starting anywhere)
+            ring = np.roll(f["ring"], -int(np.lexsort((f["ring"][:, 1], f["ring"][:, 0]))[0]), axis=0)
+            # (closed: offset with a vertex either side of its start, so its ends meet mitred, not 5 cm apart)
+            band = offset_polyline(np.vstack([ring[-1:], ring, ring[:2]]), islands.ISLAND_BAND_M / 2)[1:-1]
+            # tight simplify + denser nodes: the default 0.25 m / 12 m spacing faceted the curb into a hexagon (PR
+            # #468). The whole ring simplified before it is clipped, so neighbouring tiles' pieces (each to its box and
+            # the skin margin, the skin cutting them exactly at the tile's quad) share its vertices and meet
+            band = simplify(band, tol=0.08)
             for piece in clip_polyline(band, *wexact):
-                run = densify(simplify(piece))
+                run = densify(piece, spacing=3.0)
                 if len(run) >= 2:
                     walks.append({"pts": run, "side": 1, "caps": (False, False), "ramps": [],
                                   "w": islands.ISLAND_BAND_M, "fid": "island"})
@@ -6923,6 +7000,12 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
             p = c["arc"][len(c["arc"]) // 2]
             if isl and islands.in_island(isl, p[:2]):
                 continue                        # a curb return inside a loop: its island has its own curb
+            # a curb return on the circulatory roadway or at a ring entry (approach sidewalks meeting there): the
+            # ring has no sidewalk, so the corner was a rectangular block on the asphalt (PR #468)
+            if any(float(np.hypot(*(p[:2] - f["poly"].mean(0))))
+                   < float(np.max(np.hypot(*(f["poly"] - f["poly"].mean(0)).T))) + islands.ENTRY_CLEAR_M
+                   for f in isl if f.get("round")):
+                continue
             if skin_own(p[0], p[1]):
                 walks.append({"corner": c})
                 fill_look = _corner_look(p, roads)
@@ -6991,7 +7074,11 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         decal_blockers = [(p2[:, :2], s2.width / 2 + (CUT_MARGIN if (fid, f2) in going_on else
                                                       EDGE_DECAL["w"] + EDGE_DECAL_GAP_M))
                           for f2, s2, p2, _ in roads if f2 != fid and s2.kind in BUILT]
-        walk_blockers = [(p2[:, :2], s2.width / 2 if (fid, f2) in cornered else sidewalk_stop(spec, fid, s2, f2))
+        # ring roads: sidewalks stop ENTRY_CLEAR_M outside the carriageway (no stub into the circle)
+        walk_blockers = [(p2[:, :2],
+                          (s2.width / 2 + (islands.ENTRY_CLEAR_M if f2 in ring_dir else 0.0)
+                           if (fid, f2) in cornered or f2 in ring_dir
+                           else sidewalk_stop(spec, fid, s2, f2)))
                          for f2, s2, p2, _ in roads if f2 != fid] + list(walk_cuts)
         # a median's band stops at the other carriageways' curbs only (their sidewalk is on their far side: it cut
         # one carriageway's half of Boston Street's median away)
