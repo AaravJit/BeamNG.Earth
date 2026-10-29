@@ -5671,7 +5671,12 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         lon = np.concatenate([r[:, 0] for _, _, r in rings])     # is per call: 2026-10-11 profile,
         lat = np.concatenate([r[:, 1] for _, _, r in rings])     # 1,240 calls took 7 of a tile's 8 s)
         h = np.asarray(elev(lat, lon), np.float64)
-        e, n, u = frame.geodetic_to_enu(lat, lon, h)
+        # east / north of the point at h = 0, as the ground's (heightmap.surface: its samples' lat / lon at plane
+        # z 0) and every outline's (mapgeom.enu_xy); up of the point at its height. At its height the point lands
+        # h x distance / earth radius farther out: US-163 in Utah at 1650 m, 13 km out, the lines lay 2.8 m east and
+        # 2.0 m north of the asphalt and grip painted into the ground (the user's screenshot, 2026-10-29)
+        e, n, _ = frame.geodetic_to_enu(lat, lon, 0.0)
+        u = frame.geodetic_to_enu(lat, lon, h)[2]
         k = 0
         for fid, spec, ring in rings:
             m = len(ring)

@@ -582,7 +582,9 @@ local function commitRebase(msg, purpose)
   end
   local sw = stopwatch.new()
   local newAnchor = geodesy.newAnchor(msg.lat, msg.lon)
-  local xf = st.anchor:transformTo(newAnchor)
+  -- (corrected at the player: the new world's place of the spot the car is on; geodesy worldTransformTo)
+  local pp = st.player
+  local xf = pp and st.anchor:worldTransformTo(newAnchor, pp.x, pp.y, pp.z) or st.anchor:transformTo(newAnchor)
   -- nothing to move for an identity transform (resync); setClusterPosRelRot from the GE-side
   -- position would only pull the car back to where GE last saw it
   local moved, playerId = {}, nil
@@ -1136,7 +1138,7 @@ local function updatePlayer(dt)
     -- follows the camera, standing still (poses, terrain, rebases; nothing moves a vehicle)
     local c = st.cam
     if not c then return end
-    local lat, lon = st.anchor:enuToGeodetic(c.x, c.y, c.z)
+    local lat, lon = st.anchor:worldToGeodetic(c.x, c.y, c.z)
     st.player = { x = c.x, y = c.y, z = c.z, vx = 0, vy = 0, vz = 0, lat = lat, lon = lon, dist = hypot(c.x, c.y),
       speed = 0, camera = true }
     st.slowFor = st.slowFor + dt
@@ -1144,7 +1146,7 @@ local function updatePlayer(dt)
   end
   local p = veh:getPosition()
   local v = veh:getVelocity()
-  local lat, lon = st.anchor:enuToGeodetic(p.x, p.y, p.z)
+  local lat, lon = st.anchor:worldToGeodetic(p.x, p.y, p.z)
   st.player = { x = p.x, y = p.y, z = p.z, vx = v.x, vy = v.y, vz = v.z, lat = lat, lon = lon, dist = hypot(p.x, p.y),
     speed = v:length() }
   st.slowFor = st.player.speed < SLOW_SPEED and (st.slowFor + dt) or 0
@@ -1327,7 +1329,7 @@ local function updateWorld(dt)
   local staleDist, edgeDist
   if p and p.ready and (p.purpose == 'rebase' or p.purpose == 'resync') then
     p.anchorObj = p.anchorObj or geodesy.newAnchor(p.msg.lat, p.msg.lon)
-    p.xf = p.xf or st.anchor:transformTo(p.anchorObj)
+    p.xf = p.xf or st.anchor:worldTransformTo(p.anchorObj, pl.x, pl.y, pl.z)
     local nx, ny = p.xf:apply(pl.x, pl.y, pl.z)
     local tr = p.msg.terrain or {}
     staleDist = follow.cheb(nx, ny, tr.cx or 0, tr.cy or 0)
@@ -2243,7 +2245,7 @@ function M.rebaseTo(lat, lon)
   local pl = st.player
   local x, y, z = 0, 0, 0
   if pl then x, y, z = pl.x, pl.y, pl.z end
-  local nx, ny = st.anchor:transformTo(geodesy.newAnchor(lat, lon)):apply(x, y, z)
+  local nx, ny = st.anchor:worldTransformTo(geodesy.newAnchor(lat, lon), x, y, z):apply(x, y, z)
   local cx, cy = follow.target(nx, ny, pl and pl.vx or 0, pl and pl.vy or 0)
   return requestAnchor(lat, lon, 'resync', cx, cy)
 end

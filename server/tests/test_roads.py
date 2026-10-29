@@ -1361,3 +1361,23 @@ class TunnelCoverRoadsTest(unittest.TestCase):
         far = np.asarray(fast._ef.tunnel_cover_roads(np.ascontiguousarray(xy), s, kinds, road + [50.0, 0.0],
                                                      np.array([0, 2], np.int64), np.array([6.5]), 2.0, 0.35, 15.0, 8.0))
         np.testing.assert_array_equal(far, kinds)          # a road far from the arch: as it was
+
+
+class WorldConventionTest(unittest.TestCase):
+    def test_a_roads_line_lies_where_the_ground_puts_it_whatever_its_height(self):
+        """The road lines' x, y are their points' at h = 0 (as the ground's samples: heightmap.surface), their z at the
+        road's height: 13 km out at 1650 m the lines lay 2.8 m east and 2.0 m north of the asphalt painted into the
+        ground (US-163, Utah, 2026-10-29)."""
+        f = features([[(12700.0, 7750.0), (13200.0, 7750.0)]], ["primary"])
+        got = {}
+        for h in (10.0, 2000.0):
+            out = []
+            roads.build_tile(FRAME, 50, 30, [f], lambda la, lo, h=h: np.full(np.shape(la), h), roads_out=out)
+            self.assertEqual(len(out), 1)
+            got[h] = out[0][2]
+        np.testing.assert_allclose(got[2000.0][:, :2], got[10.0][:, :2], atol=1e-6)
+        self.assertGreater(float(np.min(got[2000.0][:, 2] - got[10.0][:, 2])), 1980.0)
+        la, lo = f.lonlat[:, 1], f.lonlat[:, 0]
+        e, n, _ = FRAME.geodetic_to_enu(la, lo, 0.0)
+        np.testing.assert_allclose(got[2000.0][:, 0], e, atol=1e-6)
+        np.testing.assert_allclose(got[2000.0][:, 1], n, atol=1e-6)
