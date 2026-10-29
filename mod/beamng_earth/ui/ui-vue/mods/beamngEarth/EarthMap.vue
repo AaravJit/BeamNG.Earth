@@ -82,7 +82,7 @@
       <div v-for="o in otherMarkers" :key="'o' + o.pid" class="marker other" :class="{ followed: follow === o.pid }"
            :style="{ left: o.sx + 'px', top: o.sy + 'px' }">
         <div class="arrow" :style="{ transform: 'rotate(' + (o.h || 0) + 'deg)' }" :class="{ noheading: o.h == null }"></div>
-        <span class="marker-label" title="Follow on the map" @mousedown.stop @click.stop="followPlayer(o)" @dblclick.stop>{{ o.name }}</span>
+        <span class="marker-label" :title="follow === o.pid ? 'Stop following' : 'Follow on the map'" @mousedown.stop @click.stop="followPlayer(o)" @dblclick.stop>{{ o.name }}</span>
       </div>
       <!-- the player -->
       <div v-if="playerScreen" class="marker player" :style="{ left: playerScreen.x + 'px', top: playerScreen.y + 'px' }">
@@ -509,8 +509,9 @@ const placeMarkers = computed(() =>
   (state.value.places || []).map(p => ({ ...p, ...(() => { const s = screen(p.lat, p.lon); return { sx: s.x, sy: s.y } })() }))
     .filter(p => onScreen({ x: p.sx, y: p.sy })))
 
-// state.others: mpsession.others() ({ pid, name, lat, lon, h }), nil outside a BeamMP session
-const otherList = computed(() => toArray(state.value.others))
+// state.others: mpsession.others() ({ pid, name, lat, lon, h }), nil outside a BeamMP session. An older mod's Lua (a
+// player's own copy, mods/unpacked: the server's zip does not replace the Lua it already runs) has no pid: their name
+const otherList = computed(() => toArray(state.value.others).map(o => (o.pid != null ? o : { ...o, pid: "name:" + o.name })))
 // (a followed player at the centre: the view is on them or gliding there, glideTo; drawn at their latest position the
 // arrow jumped ahead at each update and the map slid after it)
 const otherMarkers = computed(() =>
