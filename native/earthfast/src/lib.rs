@@ -21,6 +21,7 @@ mod medians;
 mod speedsigns;
 mod cachemap;
 mod areacover;
+mod roadz;
 
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, IntoPyArray};
 use pyo3::types::PyBytes;
@@ -5301,6 +5302,11 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(areacover::area_tiles, m)?)?;
     m.add_function(wrap_pyfunction!(areacover::area_km2, m)?)?;
     m.add_function(wrap_pyfunction!(areacover::keys_in_boxes, m)?)?;
-    m.add("VERSION", 101)?;
+    m.add_function(wrap_pyfunction!(roadz::las_decode, m)?)?;
+    m.add_function(wrap_pyfunction!(roadz::roadz_match, m)?)?;
+    m.add_function(wrap_pyfunction!(roadz::profile_clean, m)?)?;
+    m.add_function(wrap_pyfunction!(roadz::deck_lidar, m)?)?;
+    m.add_function(wrap_pyfunction!(roadz::deck_blend, m)?)?;
+    m.add("VERSION", 102)?;
     Ok(())
 }

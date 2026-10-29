@@ -254,6 +254,8 @@ class MapData:
         self.rasters = maprasters.Rasters(self.raw_dir, self.fetcher, os.path.join(cache_dir, "dem", "lidarbc"))
         import railtags                 # (OSM's railway tags joined to the roads layer's rail segments)
         self.rail_tags = railtags.RailTags(cache_dir, self.fetcher) if railtags.ON else None
+        import roadz                    # (real road / deck / tunnel heights where a source has them: BNE_ROADZ)
+        roadz.install(cache_dir, self.fetcher, self)
         self.lane_tags = railtags.LaneTags(cache_dir, self.fetcher) if railtags.LANES_ON else None   # (markings.py)
         import highwaysigns             # (exit, overhead and mile-marker signs: railtags.SignTags, signstream.py)
         self.highway_signs = highwaysigns.Source(self) if railtags.SIGNS_ON else None
