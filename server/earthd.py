@@ -1514,7 +1514,16 @@ class Server:
 
         # Share the bridge mesh's exact parapet geometry with the tile builder.
         # Mapped rails on a deck are replaced by guardrails.bridge_rows(); the parapet runs also feed the fallback matching.
-        parapets = roadmeshmod.parapet_runs(chunks, ctx, ground=cover)
+        pads_near = []
+        if anchor.bridges is not None:  # (the junction pads round the tile: roads.deck_pads)
+            try:
+                pad_parts = list(anchor.bridges.parts(cells, (box[0] - 40, box[1] - 40, box[2] + 40, box[3] + 40)))
+                pads_near = roadsmod.deck_pads([(f, sp, xy, z) for f, sp, xy, z, _lon in pad_parts], near_roads, box,
+                                               anchor.bridges._ground, own=False)
+            except Exception as ex:
+                log.warning("deck pads: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
+        pads = [p for p in pads_near if roadsmod.box_owns(box, float(p[1][0]), float(p[1][1]))]
+        parapets = roadmeshmod.parapet_runs(chunks, ctx, ground=cover, pads=pads_near)
         import guardrails as guardrailsmod
         infra_fn = lambda key: self.mapdata.cell(key, layers=("infrastructure",), kind="demand").layers.get("infrastructure")
         low_parapet_decks = set()
@@ -1540,13 +1549,6 @@ class Server:
                                  clip=box, follow=True, q=self.anchor_q(anchor), drawn=drawn)
         mesh = blockworker._with_plazas(mesh, anchor.frame, roadsmod.tile_bbox(tx, ty), elev, (x0, y0, 0.0),
                                         self.surface)
-        pads = []
-        if anchor.bridges is not None:  # (the junctions on the bridges paved: roads.deck_pads)
-            try:
-                pads = roadsmod.deck_pads([(f, sp, xy, z) for f, sp, xy, z, _lon in deck_parts], near_roads, box,
-                                          anchor.bridges._ground)
-            except Exception as ex:
-                log.warning("deck pads: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
         dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0),
                                  anchor.bridges.piers_in(roadsmod.tile_bbox(tx, ty)) if anchor.bridges is not None else (),
                                  ctx,

@@ -605,7 +605,7 @@ def deck(chunks, origin, piers=(), context=(), beams=(), ground=(), parapets=Non
         return None
     low_parapet_decks = set(low_parapet_decks or ())
     if parapets is None:
-        parapets = parapet_runs(chunks, context, _rb=rb, ground=ground)
+        parapets = parapet_runs(chunks, context, _rb=rb, ground=ground, pads=pads)
     parapets_by_deck = {}
     for parapet in parapets:
         parapets_by_deck.setdefault(parapet["deck"], []).append(parapet)
@@ -694,9 +694,22 @@ def deck(chunks, origin, piers=(), context=(), beams=(), ground=(), parapets=Non
     for p in _piers_clear(piers, rb):
         _pier(p, origin, P, T, UV, M, side)
         nv = sum(len(a) for a in P)
-    for ring, centre in pads:       # (junction pads on bridges: roads.deck_pads)
+    for pad in pads:                # (junction pads on bridges: roads.deck_pads; their rim's railings)
+        ring, centre = pad[0], pad[1]
         _pad(ring, centre, origin, P, T, UV, M, top, side)
         nv = sum(len(a) for a in P)
+        for pts, out in (pad[2] if len(pad) > 2 else ()):
+            pts = np.asarray(pts, np.float64)
+            out = np.asarray(out, np.float64)
+            edge = pts[:, :2] + out * (JERSEY_HALF_W + 0.02)
+            ends = [tuple(edge[0]), tuple(edge[-1])]
+            h = parapet_heights(edge, ends)
+            bp, bt_, buv = barrier_solid(edge, -out, pts[:, 2] - PAD_DROP, h)
+            P.append(bp - origin)
+            UV.append(buv)
+            T.append(bt_ + nv)
+            M.append(np.full(len(bt_), side))
+            nv += len(bp)
     if len(beams):
         for pt in sorted({b[4] if len(b) > 4 else "grey" for b in beams}):
             mats.append(steel(pt))
@@ -937,7 +950,7 @@ def _parapet_cover(rb, context=()):
 
 
 
-def parapet_runs(chunks, context=(), _rb=None, ground=()):
+def parapet_runs(chunks, context=(), _rb=None, ground=(), pads=()):
     """Actual generated bridge parapets as XY centre lines plus the mesh geometry.
 
     Uses the same coverage masks, edge offsets, tunnel exclusion, and minimum-run rule as deck().
@@ -967,6 +980,9 @@ def parapet_runs(chunks, context=(), _rb=None, ground=()):
         wide = 0.0 if c.get("tunnel") else PARAPET_W
         gl, gr = medians[n]
         covered[n] = (covered[n][0] | (gl > 0), covered[n][1] | (gr > 0))
+        if len(pads):               # (none inside a junction pad: roads.deck_pads)
+            import roads as _roads
+            covered[n] = (covered[n][0] | _roads.pad_inside(pads, left), covered[n][1] | _roads.pad_inside(pads, right))
         el = left + u * np.maximum(wide, gl / 2 + 0.05)[:, None]
         er = right - u * np.maximum(wide, gr / 2 + 0.05)[:, None]
         k = len(z)
