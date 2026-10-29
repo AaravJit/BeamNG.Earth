@@ -100,7 +100,9 @@ MOD_TO_SERVER = {
               # ... the road tiles too (roads.lua ROAD_GEO: content kept, a skin per anchor; roads.GeoTracker)
               "roadGeo": F(int, OPT),
               # ... and the far buildings, skyline and far bridges (roads.lua FAR_GEO: blockworker.far_geo)
-              "farGeo": F(int, OPT)},
+              "farGeo": F(int, OPT),
+              # ... and the far field from level 3 up as global tiles (farfield.lua GLOBAL_FAR: select_global)
+              "globalFar": F(int, OPT)},
     "prepare_anchor": {"requestId": F(int), "lat": F(NUM), "lon": F(NUM), "cx": F(NUM, OPT), "cy": F(NUM, OPT),
                        # 2026-10-22: the player's spot when not the origin (BeamMP: onto another player's anchor)
                        "px": F(NUM, OPT), "py": F(NUM, OPT),
@@ -206,6 +208,7 @@ SERVER_TO_MOD = {
               "geoTiles": F(int, OPT),          # geotiles: the zoom of the tiles it sends (hello.geoTiles, --geo-tiles on)
               "roadGeo": F(int, OPT),           # road tiles as geotiles (hello.roadGeo, the road processes on)
               "farGeo": F(int, OPT),            # far buildings / skyline / far bridges as geotiles (hello.farGeo)
+              "globalFar": F(int, OPT),         # far levels >= 3 as global tiles (hello.globalFar, --global-far)
               "deshadow": F(str, OPT),          # --deshadow lambert|full only (the settings page shows it)
               "colormatch": F(str, OPT),        # --colormatch s2 only (likewise)
               "season": F(str, OPT),           # --season auto / fall (seasonlook.lua tints the leaves)
@@ -235,7 +238,10 @@ SERVER_TO_MOD = {
                  # protocol 4, satellite imagery: the tile's own material (all three, or none)
                  "material": F(str, OPT), "texture": F(str, OPT), "detail": F(bool, OPT),
                  "tex": F(int, OPT),            # v1.4 M1: texture px (FORMAT 4, with the material)
-                 "slotSerial": F(int, OPT)},    # a pooled shape file's send serial (matslots.py; pose.slotsGone)
+                 "slotSerial": F(int, OPT),     # a pooled shape file's send serial (matslots.py; pose.slotsGone)
+                 # geotiles phase 3b (hello.globalFar): a global tile's frame [lat, lon] (pos then {0, 0, pivot} in
+                 # it), and a global tile's / a piece's footprint (flat x, y: its quad / polygon in the anchor's world)
+                 "frame": F(list, OPT), "poly": F(list, OPT)},
     "far_swap": {"anchorId": F(int), "id": F(int), "add": F(list), "remove": F(list), "dIn": F(NUM),
                  "dOut": F(NUM)},
     "far_remove": {"anchorId": F(int), "key": F(str)},

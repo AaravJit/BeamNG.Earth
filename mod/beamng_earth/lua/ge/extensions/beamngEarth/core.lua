@@ -473,7 +473,8 @@ local function commitTeleport(msg)
     st.retryAt = st.clock + rebase.RETRY_S -- don't re-request every frame
     return false
   end
-  farfield.switchAnchor(msg.anchorId, false, { cx = tr.cx, cy = tr.cy }, st.sessionId)
+  -- (the global far tiles stay, placed into the new anchor's world: farfield.lua)
+  farfield.switchAnchor(msg.anchorId, false, { cx = tr.cx, cy = tr.cy }, st.sessionId, geodesy.newAnchor(msg.lat, msg.lon))
   st.loadingUntil = st.clock + LOADING_AFTER_TELEPORT_S
   st.placeFrames = PLACE_DELAY_FRAMES
   st.placeZ = (msg.groundZ or 0) + 1.0
@@ -520,7 +521,7 @@ local function finishRebase()
   -- the world shifts under the grass: made fresh (with tools/gcpatch the engine would keep it)
   groundcover.rebuild()
   if not ok then log('E', 'beamngEarth', 'rebase terrain import failed: ' .. tostring(err)) end
-  farfield.transform(xf)
+  farfield.transform(xf, rb.newAnchor)   -- (the global far tiles placed exactly into the new anchor: farfield.lua)
   -- roads, buildings, street furniture and trees move with it and stay until the new anchor's tiles cover them
   roads.transform(xf, geodesy)
   trees.transform(xf, geodesy, rb.newAnchor)    -- (geotiles: placed into the new anchor, nothing sent again)
@@ -535,7 +536,7 @@ local function finishRebase()
   navgraph.transform(xf, msg.anchorId)    -- (the AI's road graph too: applied again at once, the AI planning afresh)
   -- a resync with a restarted server keeps the previous session's tiles the same way (st.sessionId
   -- is the new session's): they go once the new session's tiles cover them
-  farfield.switchAnchor(msg.anchorId, true, { cx = tr.cx, cy = tr.cy }, st.sessionId)
+  farfield.switchAnchor(msg.anchorId, true, { cx = tr.cx, cy = tr.cy }, st.sessionId, rb.newAnchor)
   local cs = camshift.shift(xf, rb.playerOld[1], rb.playerOld[2], rb.playerOld[3])
   be:reloadCollision()
 
@@ -809,7 +810,8 @@ local function onMessage(msg)
       geoTiles = require('beamngEarth/geotile').Z,
       -- (geotiles: vegetation in the global tiles' frames: trees.lua)
       roadGeo = roads.ROAD_GEO,        -- (road tiles as geotiles too: roads.lua)
-      farGeo = roads.FAR_GEO })        -- (and the far buildings, skyline and far bridges: roads.lua)
+      farGeo = roads.FAR_GEO,          -- (and the far buildings, skyline and far bridges: roads.lua)
+      globalFar = farfield.GLOBAL_FAR })  -- (and the far field from level 3 up as global tiles: farfield.lua)
     setStatus('Connected to companion server')
   elseif t == '_disconnected' then
     st.pending, st.sessionId, st.terrainPending = nil, nil, nil

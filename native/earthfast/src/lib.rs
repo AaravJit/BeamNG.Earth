@@ -27,6 +27,7 @@ mod farcontent;
 mod sidewalks;
 mod roadz;
 mod fartex;
+mod farglobal;
 
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, IntoPyArray};
 use pyo3::types::PyBytes;
@@ -4972,7 +4973,17 @@ fn rtin_mesh<'py>(py: Python<'py>, h: PyReadonlyArray2<'py, f64>, max_err: f64)
         return Err(pyo3::exceptions::PyValueError::new_err("rtin_mesh: a (2^k + 1)² grid"));
     }
     let hv: Vec<f64> = g.iter().copied().collect();
-    let (tris, surf, worst) = py.allow_threads(|| {
+    let (tris, surf, worst) = py.allow_threads(|| rtin_core(&hv, n, max_err));
+    let m = tris.len();
+    let tris = numpy::ndarray::Array2::from_shape_vec((m, 3), tris.into_iter().flatten().collect()).unwrap();
+    let surf = numpy::ndarray::Array2::from_shape_vec((n, n), surf).unwrap();
+    Ok((tris.into_pyarray(py), surf.into_pyarray(py), worst))
+}
+
+/// rtin_mesh's mesh of a (2^k + 1)^2 grid hv (n = 2^k + 1): (tris, surf, worst).
+pub(crate) fn rtin_core(hv: &[f64], n: usize, max_err: f64) -> (Vec<[i64; 3]>, Vec<f64>, f64) {
+    let t = n - 1;
+
         let at = |x: usize, y: usize| hv[y * n + x];
         let num = t * t * 2 - 2;
         let parents = num - t * t;
@@ -5071,11 +5082,6 @@ fn rtin_mesh<'py>(py: Python<'py>, h: PyReadonlyArray2<'py, f64>, max_err: f64)
             worst = worst.max((surf[k] - hv[k]).abs());
         }
         (tris, surf, worst)
-    });
-    let m = tris.len();
-    let tris = numpy::ndarray::Array2::from_shape_vec((m, 3), tris.into_iter().flatten().collect()).unwrap();
-    let surf = numpy::ndarray::Array2::from_shape_vec((n, n), surf).unwrap();
-    Ok((tris.into_pyarray(py), surf.into_pyarray(py), worst))
 }
 
 #[pymodule]
@@ -5218,6 +5224,11 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(geotiles::geo_world_map, m)?)?;
     m.add_function(wrap_pyfunction!(geotiles::geo_world_to_geodetic, m)?)?;
     m.add_function(wrap_pyfunction!(geotiles::geo_placement, m)?)?;
+    m.add_function(wrap_pyfunction!(farglobal::far_global_select, m)?)?;
+    m.add_function(wrap_pyfunction!(farglobal::far_box_cover, m)?)?;
+    m.add_function(wrap_pyfunction!(farglobal::far_overlap_pairs, m)?)?;
+    m.add_function(wrap_pyfunction!(farglobal::far_global_mesh, m)?)?;
+    m.add_function(wrap_pyfunction!(farglobal::far_clip_mesh, m)?)?;
     m.add_function(wrap_pyfunction!(geocontent::geo_owns, m)?)?;
     m.add_function(wrap_pyfunction!(geocontent::clip_tris_convex, m)?)?;
     m.add_function(wrap_pyfunction!(geocontent::cdae_zstats, m)?)?;
@@ -5229,6 +5240,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fartex::season_img, m)?)?;
     m.add_function(wrap_pyfunction!(fartex::dds_levels, m)?)?;
     m.add_function(wrap_pyfunction!(fartex::jpeg_rgb, m)?)?;
-    m.add("VERSION", 108)?;
+    m.add("VERSION", 109)?;
     Ok(())
 }
