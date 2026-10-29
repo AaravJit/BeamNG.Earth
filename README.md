@@ -136,8 +136,8 @@ You can help support development by reporting [issues](https://github.com/TecnaG
 - Easy setup: one download per system (Windows .exe, Linux AppImage) that installs the mod and starts the server
   and the game; from the source, `install.py` installs everything and `start.py` keeps the mod in sync.
 - Runs on a Steam Deck (aim: 30 fps on the Handheld graphics preset).
-- Quality presets (Low / Medium / High / Ultra) on BeamNG.Earth's own settings page (pause menu > Mods > BeamNG.Earth >
-  Open BeamNG.Earth settings): trees, grass, rocks, street-lamp lights and view distance at one press, each
+- Quality presets (Low / Medium / High / Ultra) in BeamNG.Earth's own pause-menu tab (pause menu > BeamNG.Earth >
+  Graphics; every settings page is listed down the side there): trees, grass, rocks, street-lamp lights and view distance at one press, each
   fine-tunable; the first start picks one for your hardware (Medium on a Steam Deck).
 - Uses your graphics card for some of the world server's work (colour matching of the photos, compressing the distant
   textures) when it can, so the server needs less of your CPU; without a usable one the CPU does it as before.
@@ -264,7 +264,7 @@ BeamNG.Earth runs on [BeamMP](https://beammp.com/) servers (in testing): drive t
      SteamOS has podman; about a minute on a Steam Deck). A launcher you built yourself is used when found
      (a `BeamMP-Launcher` folder in your home folder or one folder down, e.g. `~/Games/BeamMP-Launcher`, or
      `~/.local/share`; or answer "Have it already", or set `BEAMMP_LAUNCHER`).
-   - The setting **Start BeamMP with BeamNG.Earth** (Pause menu > Mods > BeamNG.Earth, Multiplayer) turns this off or
+   - The setting **Start BeamMP with BeamNG.Earth** (Pause menu > BeamNG.Earth > Multiplayer) turns this off or
      back on; `--no-beammp` starts the game without BeamMP once.
 2. In the game: main menu > More > BeamMP, log in (an account or a guest).
 3. Pick the **BeamNG.Earth** category in BeamMP's server browser: the servers running BeamNG.Earth (search,

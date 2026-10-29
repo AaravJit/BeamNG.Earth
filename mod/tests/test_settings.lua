@@ -313,18 +313,18 @@ local view = { connection = 'connected', anchorId = 2, dist = 1200, toRebase = 1
   status = 'ok', defaultLat = 1, defaultLon = 2, rebaseDistance = 15000, rebaseMin = 2000, rebaseMax = 16000, attribution = 'c' }
 local okDraw, errDraw = pcall(ui.draw, view, { teleport = function() end, setRebaseDistance = function(m) return m end })
 local joined = table.concat(drawnText, '\n')
-T.check(okDraw and joined:match('rebase in 13.8 km') and joined:match('pause menu > Mods > BeamNG.Earth'),
+T.check(okDraw and joined:match('rebase in 13.8 km') and joined:match('pause menu > BeamNG.Earth'),
   'compact HUD: status line and the settings hint (' .. tostring(errDraw) .. ')')
 ui.compact, drawnText = false, {}
 okDraw = pcall(ui.draw, view, { teleport = function() end, setRebaseDistance = function(m) return m end })
 T.check(okDraw and table.concat(drawnText, '\n'):match('Anchor: #2'), 'full window still draws')
 
 ------------------------------------------------------------------------------------------
--- the page's own copy of the defaults (EarthSettings.vue settingsSchema: its reset buttons and
+-- the page's own copy of the defaults (earthSettingsStore.js settingsSchema: its reset buttons and
 -- "default" labels) agrees with SCHEMA for every persisted setting it lists
 
 do
-  local f = io.open(dir .. '/../beamng_earth/ui/ui-vue/mods/beamngEarth/EarthSettings.vue', 'r')
+  local f = io.open(dir .. '/../beamng_earth/ui/ui-vue/mods/beamngEarth/earthSettingsStore.js', 'r')
   local page = f and f:read('*a') or ''
   if f then f:close() end
   local defs, seen = settings.defaults(), 0

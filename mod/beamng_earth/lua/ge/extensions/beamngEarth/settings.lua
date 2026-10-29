@@ -1,6 +1,6 @@
 -- BeamNG.Earth settings: GE extension 'beamngEarth_settings' and the module the other parts read
--- (docs/DEVTOOLS.md "Pause-menu integration"). The pause menu's Mods tab has a "BeamNG.Earth"
--- button (ui/ui-vue/mods/beamngEarth/index.js) that opens EarthSettings.vue; the page reads and
+-- (docs/DEVTOOLS.md "Pause-menu integration"). The pause menu has a "BeamNG.Earth" tab with a button
+-- per settings page (ui/ui-vue/mods/beamngEarth/index.js, EarthSettingsPage.vue); the pages read and
 -- writes everything here through the bridge (bngApi.engineLua, as the user's taa_standalone mod):
 --   beamngEarth_settings.uiState()             -> { settings, schema, status, dev }
 --   beamngEarth_settings.uiSet(key, value)     -> { ok, value, error } (validated, saved, applied)
@@ -32,7 +32,7 @@ local places = require('beamngEarth/places')
 
 M.FILE = '/settings/beamngEarth.json'
 M.VERSION = 1
-M.BUTTON_ID = 'beamngEarth-settings' -- index.js registerModButton id
+M.BUTTON_ID = 'beamngEarth-settings' -- index.js: the pause tab's first page button (earthSettingsStore.js pageId)
 M.LEVEL_ID = 'beamng_earth'
 
 -- key -> { kind = 'number'|'bool'|'enum', default, min, max, values, label }. Order = ORDER.
