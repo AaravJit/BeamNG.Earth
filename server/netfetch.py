@@ -70,6 +70,8 @@ PREFETCH_RESERVE = 0.5          # prefetch takes a token only while the bucket h
 BACKGROUND_RESERVE = 0.75       # background (de-shadow, weather) only above this: it comes after prefetch
 RETRY_AFTER_MIN, RETRY_AFTER_MAX = 1.0, 900.0
 BUDGET_WARN = 0.8               # share of the soft daily budget where prefetch / background stop
+PREDOWNLOAD_SHARE = 0.5         # saved areas' downloads ahead (areas.py) stop at this share of a host's daily budget
+                                # (soft, else hard): live play keeps the rest of the day
 BUDGET_REPEAT_S = 3600.0        # over budget: the warning repeats this often
 STATS_FLUSH_S = 60.0
 DAY = 86400.0
@@ -309,13 +311,17 @@ def role_of(host):
 
 
 # --- errors ------------------------------------------------------------------------------------
+_quiet = threading.local()      # set while a "predownload" request runs: its errors are no build's (no revisit.fault)
+
+
 class FetchError(IOError):
     """A request that did not give data. retry_after: s before asking this host again helps."""
 
     def __init__(self, msg, url=None, host=None, retry_after=0.0, status=None):
         super().__init__(msg)
         self.url, self.host, self.retry_after, self.status = url, host, retry_after, status
-        if not isinstance(self, (NotFound, Deferred)):     # (no data there, a dropped prefetch: as it should be)
+        # (no data there, a dropped prefetch: as it should be; a saved area's download ahead: no build waited on it)
+        if not isinstance(self, (NotFound, Deferred)) and not getattr(_quiet, "on", False):
             import revisit
             revisit.fault()             # (a build that goes on without it is not kept)
 
@@ -754,6 +760,9 @@ class Fetcher:
             used = h.day["requests"]
         if p.daily_hard is not None and used >= p.daily_hard:
             raise BudgetExceeded(f"{h.name}: daily limit of {p.daily_hard} requests reached", url, h.name)
+        if kind == "predownload" and p.daily_hard is not None and used >= PREDOWNLOAD_SHARE * p.daily_hard:
+            raise BudgetExceeded(f"{h.name}: past {round(100 * PREDOWNLOAD_SHARE)} % of the daily limit (downloads "
+                                 "ahead)", url, h.name)
         if p.daily_budget is None:
             return
         now = self.wall()
@@ -769,6 +778,9 @@ class Fetcher:
             h.warned = now
             log.warning("net: %s: %d requests today, %d %% of the daily budget of %d: no more prefetch",
                         h.name, used, round(100 * BUDGET_WARN), p.daily_budget)
+        if kind == "predownload" and used >= PREDOWNLOAD_SHARE * p.daily_budget:
+            raise BudgetExceeded(f"{h.name}: past {round(100 * PREDOWNLOAD_SHARE)} % of the daily budget (downloads "
+                                 "ahead)", url, h.name)
         if kind not in ("demand", "urgent") and used >= BUDGET_WARN * p.daily_budget:
             raise BudgetExceeded(f"{h.name}: past {round(100 * BUDGET_WARN)} % of the daily budget", url, h.name)
 
@@ -850,6 +862,16 @@ class Fetcher:
         """GET url under its host's policy: a Response with status 2xx, or one of the errors above. lane: a name of
         its own (its own rate bucket, breaker and day's count under the host's policy): one kind of request whose
         failures must not shut another out (the status bar's town lookups and the map's search, GitHub #350)."""
+        if kind != "predownload":
+            return self._get(url, kind, headers, lane)
+        prev = getattr(_quiet, "on", False)
+        _quiet.on = True        # (its failures mark no build incomplete: revisit.fault)
+        try:
+            return self._get(url, kind, headers, lane)
+        finally:
+            _quiet.on = prev
+
+    def _get(self, url, kind, headers, lane):
         h, probe = self._admit(url, kind, lane)
         p = h.policy
         attempts = 1 if probe else max(1, p.max_attempts)

@@ -127,6 +127,12 @@ You can help support development by reporting [issues](https://github.com/TecnaG
 - A **Cache** overlay on the map (Layers > Cache, or LB / RB on a controller) shows what is downloaded on your
   computer and at what detail: a summary (some data / the far view / ready to drive), or the elevation, imagery or
   map data alone.
+- **Download an area ahead**: the map's **Area** button (or Shift + drag; on a controller A, A, then X) picks a box
+  of up to 965 square miles; the confirm box shows its size, the download, the disk space and the time it takes
+  (some hosts' daily limits stretch big areas over days). Its map data, elevation and imagery then download in the
+  background, slower while you drive and never while the world around you loads, and carry on after a restart.
+  Saved areas (Places panel) show their progress, can be paused or deleted, and their data is kept when the cache
+  is full or cleared. The world itself (roads, buildings) is still built when you get there.
 - **Autodrive**: the car drives itself along the GPS route (in lane, legal speed, minding traffic).
 - Saved places and recent places; "Where you left off" in the level select puts you back where you last drove (it
   is saved as you drive, at teleports and when the game closes).

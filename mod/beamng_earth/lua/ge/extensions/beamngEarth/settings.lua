@@ -277,8 +277,10 @@ function M.cacheLine(c)
   if not c.ready then return 'counting files... (' .. used .. ' so far)' end
   local files = string.format('%d files', c.files or 0)
   if not c.managed then return used .. ', ' .. files .. ' (a newer version\'s cache: left alone)' end
-  if (c.capBytes or 0) <= 0 then return used .. ', ' .. files .. ' (no limit)' end
-  return used .. ' of ' .. size(c.capBytes, true) .. ', ' .. files
+  local kept = (c.pinnedBytes or 0) > 0 and (', ' .. size(c.pinnedBytes) .. ' in saved areas (Clear cache keeps them)')
+    or ''
+  if (c.capBytes or 0) <= 0 then return used .. ', ' .. files .. ' (no limit)' .. kept end
+  return used .. ' of ' .. size(c.capBytes, true) .. ', ' .. files .. kept
 end
 
 function M.getAll()
@@ -741,6 +743,39 @@ end
 function M.uiCacheMapResult(id)
   local core = ext('beamngEarth_core')
   return core and core.takeCacheMap and core.takeCacheMap(tonumber(id)) or nil
+end
+
+-- Saved areas (server areas.py): a picked box's estimate (send -> { id }, poll -> nil or the estimate), a new area and
+-- pause / resume / delete (send -> { id }, poll uiAreaResult -> nil or { ok, error }), the list (uiAreas).
+local areaId = 0
+local function areaSend(fn, ...)
+  local core = ext('beamngEarth_core')
+  if not core or not core[fn] then return { error = 'BeamNG.Earth is not loaded' } end
+  areaId = areaId + 1
+  if not core[fn](areaId, ...) then return { error = 'Companion server not connected' } end
+  return { id = areaId }
+end
+function M.uiAreaPlan(s, w, n, e)
+  return areaSend('requestAreaPlan', tonumber(s), tonumber(w), tonumber(n), tonumber(e))
+end
+function M.uiAreaPlanResult(id)
+  local core = ext('beamngEarth_core')
+  return core and core.takeAreaPlan and core.takeAreaPlan(tonumber(id)) or nil
+end
+function M.uiAreaAdd(s, w, n, e, name)
+  return areaSend('areaAdd', tonumber(s), tonumber(w), tonumber(n), tonumber(e), tostring(name or ''))
+end
+function M.uiAreaCmd(area, op)
+  return areaSend('areaCmd', tostring(area or ''), tostring(op or ''))
+end
+function M.uiAreaResult(id)
+  local core = ext('beamngEarth_core')
+  return core and core.takeAreaResult and core.takeAreaResult(tonumber(id)) or nil
+end
+function M.uiAreas()
+  local core = ext('beamngEarth_core')
+  local a = core and core.areasState and core.areasState()
+  return { areas = a and a.areas or {}, pinnedBytes = a and a.pinnedBytes or nil }
 end
 
 -- "lat, lon" typed in the map's search box -> { lat, lon } or { error }.

@@ -1032,6 +1032,12 @@ local function onMessage(msg)
     gps.onRouteDownload(msg)
   elseif t == 'geocode_result' then
     if msg.id then geocodeResults[msg.id] = { results = msg.results or {}, error = msg.error } end
+  elseif t == 'areas' then
+    -- the saved areas downloaded ahead (server areas.py): the list and progress; result answers an area_add / area_cmd
+    M._areas = msg
+    if type(msg.result) == 'table' and msg.result.id then M._areaResults = { [msg.result.id] = msg.result } end
+  elseif t == 'area_plan_result' then
+    if msg.id then M._areaPlans = { [msg.id] = msg } end
   elseif t == 'cache_map_result' then
     -- the map's cache view: a grid of levels for the asked box (EarthMap.vue polls takeCacheMap)
     if msg.id then M._cacheMapResults = { [msg.id] = msg } end
@@ -1071,7 +1077,7 @@ local function onMessage(msg)
     local prev = cacheInfo
     cacheInfo = { usedBytes = tonumber(msg.usedBytes) or 0, capBytes = tonumber(msg.capBytes) or 0,
       files = tonumber(msg.files) or 0, ready = msg.ready == true, managed = msg.managed ~= false,
-      clearedBytes = prev and prev.clearedBytes, clears = cacheClears }
+      clearedBytes = prev and prev.clearedBytes, clears = cacheClears, pinnedBytes = tonumber(msg.pinnedBytes) }
     if msg.clearedBytes ~= nil then
       cacheClears = cacheClears + 1
       cacheInfo.clearedBytes, cacheInfo.clears = tonumber(msg.clearedBytes) or 0, cacheClears
@@ -2434,6 +2440,40 @@ function M.requestCacheMap(id, z, x0, y0, x1, y1, mode)
   M._cacheMapResults = {}
   net.send({ type = 'cache_map', id = id, z = z, x0 = x0, y0 = y0, x1 = x1, y1 = y1, mode = mode })
   return true
+end
+-- Saved areas (server areas.py; M._areas / _areaPlans / _areaResults: fields, not locals, as above): the estimate of
+-- a picked box (area_plan -> area_plan_result), a new area (area_add), pause / resume / delete (area_cmd); the answers
+-- come in the 'areas' message's result.
+function M.requestAreaPlan(id, s, w, n, e)
+  if not net.isConnected() then return false end
+  M._areaPlans = {}
+  net.send({ type = 'area_plan', id = id, s = s, w = w, n = n, e = e })
+  return true
+end
+function M.takeAreaPlan(id)
+  local all = M._areaPlans or {}
+  local r = all[id]
+  all[id] = nil
+  return r
+end
+function M.areaAdd(id, s, w, n, e, name)
+  if not net.isConnected() then return false end
+  net.send({ type = 'area_add', id = id, s = s, w = w, n = n, e = e, name = name })
+  return true
+end
+function M.areaCmd(id, area, op)
+  if not net.isConnected() then return false end
+  net.send({ type = 'area_cmd', id = id, area = area, op = op })
+  return true
+end
+function M.takeAreaResult(id)
+  local all = M._areaResults or {}
+  local r = all[id]
+  all[id] = nil
+  return r
+end
+function M.areasState()
+  return M._areas
 end
 function M.takeCacheMap(id)
   local all = M._cacheMapResults or {}

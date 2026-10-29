@@ -138,6 +138,10 @@ MOD_TO_SERVER = {
     # imagery / mapdata (world: not asked by the map yet)
     "cache_map": {"id": F(int), "z": F(int), "x0": F(NUM), "y0": F(NUM), "x1": F(NUM), "y1": F(NUM),
                   "mode": F(str, OPT)},
+    # saved areas (areas.py; additive): a picked box's estimate, a new area, pause / resume / delete one
+    "area_plan": {"id": F(int), "s": F(NUM), "w": F(NUM), "n": F(NUM), "e": F(NUM)},
+    "area_add": {"id": F(int), "s": F(NUM), "w": F(NUM), "n": F(NUM), "e": F(NUM), "name": F(str, OPT)},
+    "area_cmd": {"id": F(int), "area": F(str), "op": F(str)},
     "route": {"id": F(int), "lat0": F(NUM), "lon0": F(NUM), "lat1": F(NUM), "lon1": F(NUM),
               "bearing": F(NUM, OPT)},   # the GPS (routing.py); bearing: the car's heading, the route starts that way
     "where": {"id": F(int), "lat": F(NUM), "lon": F(NUM), "online": F(bool)},   # the status bar (geocode.py)
@@ -163,6 +167,14 @@ SERVER_TO_MOD = {
     # the index; ready: false while the index is being built
     "cache_map_result": {"id": F(int), "z": F(int), "x0": F(int), "y0": F(int), "w": F(int), "h": F(int),
                          "cells": F(str), "gen": F(int), "ready": F(bool, OPT), "error": F(str, OPT)},
+    # areas.py: a picked box's estimate (sizes in bytes, the time in s, days of the hosts' daily limits)
+    "area_plan_result": {"id": F(int), "ok": F(bool), "km2": F(NUM, OPT), "items": F(int, OPT),
+                         "missing": F(int, OPT), "downloadBytes": F(int, OPT), "diskBytes": F(int, OPT),
+                         "seconds": F(int, OPT), "days": F(NUM, OPT), "hosts": F(list, OPT),
+                         "excluded": F(list, OPT), "error": F(str, OPT)},
+    # the saved areas [{id, name, s, w, n, e, state, done, total, msg}] after hello, a change and while one downloads
+    # (at most every areas.STATUS_S); result: the answer to an area_add / area_cmd
+    "areas": {"areas": F(list), "pinnedBytes": F(int, OPT), "result": F(dict, OPT)},
     "route_result": {"id": F(int), "points": F(list), "dist": F(NUM), "dur": F(NUM), "error": F(str, OPT),
                       "elev": F((list, dict), OPT)},  # OSRM; elev: the map's profile (routing.resample, dem.sample)
     "route_download": {"total": F(int), "done": F(int), "active": F(bool)},  # routeahead.py: the route's corridor
@@ -265,7 +277,8 @@ SERVER_TO_MOD = {
                       "tris": F(int, OPT), "error": F(str, OPT)},
     "app_paths": {"cacheDir": F(str), "cacheNext": F(str), "beammp": F(str), "result": F(dict, OPT)},
     "cache": {"v": F(int), "usedBytes": F(int), "capBytes": F(int), "files": F(int), "ready": F(bool),
-              "managed": F(bool), "clearedBytes": F(int, OPT)},
+              "managed": F(bool), "clearedBytes": F(int, OPT),
+              "pinnedBytes": F(int, OPT)},     # the saved areas' files (areas.py; kept by a clear)
 }
 WEATHER_NESTED = {"cover": {"total", "low", "mid", "high"}, "wind": {"ms", "fromDeg", "gustMs"},
                   "aloft": {"ms", "fromDeg"}}
@@ -286,6 +299,7 @@ EXERCISED_ELSEWHERE = {"far_retex", "roads_tile", "roads_drop",   # roads: needs
                        "update",                                     # only when GitHub has a newer version (online)
                        "geocode_result", "route_result",             # only when the map / GPS asks
                        "cache_map_result",                           # only when the map's cache view asks
+                       "area_plan_result", "areas",                  # saved areas: a Server with a Cache (test_areas)
                        "route_download",                             # only when the GPS plans a route (routeahead.py)
                        "server_list"}                                # only when the BeamMP tab asks (online)
 # events the mod's net.lua makes up itself (not on the wire)

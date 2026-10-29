@@ -30,7 +30,11 @@ until LOW_WATER (90 %) of the cap is left, at most every EVICT_S. Never evicted:
 server process used within PROTECT_S (an hour: the area around the player), and empty files (404 and
 "no seams" markers: they save requests; clear() removes them). Directories stay (a writer may be about
 to put a file there). clear() removes every MANAGED file but the ones this server process used at all
-(the current session's, however long ago).
+(the current session's, however long ago). Neither touches a file in a saved area (pinned(keys): areas.py,
+the map's downloads ahead).
+
+on_change(key, added): a key new to the index or gone from it (the map's cache view, covermap.py); never called
+for a repeat hit.
 
 Per-source lifetimes (ROADMAP "Caching" 3): LIFETIMES maps a path prefix to the longest a file may be
 kept after its download (s); the start-up walk deletes older ones. Empty today: none of the current

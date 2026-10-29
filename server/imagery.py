@@ -302,6 +302,15 @@ def range_in_bounds(src, z, tx0, tx1, ty0, ty1):
     return lon1 > w and lon0 < e and lat1 > s and lat0 < n
 
 
+def _under(pz, px, py, z):
+    """(x0, x1, y0, y1) of the zoom-z tiles under tile (pz, px, py), or its ancestor at z when z < pz."""
+    if z >= pz:
+        s = z - pz
+        return px << s, ((px + 1) << s) - 1, py << s, ((py + 1) << s) - 1
+    s = pz - z
+    return px >> s, px >> s, py >> s, py >> s
+
+
 def lat_lon_bbox(mb):
     """An EPSG:3857 extent (minx, miny, maxx, maxy) as WMS 1.3.0's EPSG:4326 BBOX: "south,west,north,east" (latitude
     first). The source draws it in plate carree: over an export parent (~1 km) its rows are within ~1e-4 of the
@@ -643,6 +652,49 @@ class Imagery:
             return self._download(src, z, x, y)
         finally:
             self._local.kind = "demand"
+
+    def predownload_sources(self, pz, px, py, zw, fetch_probes=True, excluded=None):
+        """A saved area's square (areas.py): per source of the chain in order, (src, [(src, z, x, y)]) of the tiles a
+        render at zoom zw would ask for under tile (pz, px, py): its zoom capped at the source's, inside its bounds.
+        Sources whose host takes no pre-download (the regional services) are left out (their names added to
+        `excluded`), and a source whose coverage probe says it has nothing there (fetch_probes: the probe fetched as
+        "predownload"; else only a probe known on disk). Lazy sources (NAIP, Maryland's 6-inch photos: only warm()
+        fetches them while driving) are in: a render uses their tiles once they are on disk; one request of an export
+        source writes 4 ** export tiles (raw: _download_export). The caller fetches a source's tiles and stops at the
+        first that had any."""
+        for src in self.chain:
+            z = min(zw, src.max_zoom)
+            p = self.fetcher.policy(netfetch.host_of(src.url))
+            if z < src.min_zoom:
+                continue
+            if p is None or p.interactive_only or not p.offline_ok:
+                if excluded is not None and range_in_bounds(src, z, *_under(pz, px, py, z)):
+                    excluded.add(src.name)
+                continue
+            x0, x1, y0, y1 = _under(pz, px, py, z)
+            if not range_in_bounds(src, z, x0, x1, y0, y1):
+                continue
+            keys = [(src, z, x, y) for y in range(y0, y1 + 1) for x in range(x0, x1 + 1) if in_bounds(src, z, x, y)]
+            if not keys:
+                continue
+            probe = self._probe_key(keys[0])
+            if probe is not None and _under(pz, px, py, probe[1])[0] == _under(pz, px, py, probe[1])[1]:
+                if fetch_probes:
+                    got = self.tiles([probe], kind="predownload").get(probe)
+                    if not self._covered(got):
+                        continue
+                elif os.path.exists(self._paths(*probe)[1]):
+                    continue
+            yield src, keys
+
+    def on_disk(self, key):
+        """A source tile's file is there (no read)."""
+        return self._on_disk(key)
+
+    def on_disk_or_missing(self, key):
+        """A source tile is on disk or known to be missing there (its .404 marker)."""
+        jpg, miss = self._paths(*key)
+        return os.path.exists(jpg) or os.path.exists(miss)
 
     def _on_disk(self, key):
         src, z, x, y = key
