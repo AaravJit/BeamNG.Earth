@@ -5559,7 +5559,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                lines=None, wires=None, town=None, park=None, left_hand=False, structures=(), mph=True, tunnels=None,
                buried=0.0, lamp_region=None, country=None,
                walls=None, deck_context=None, ground=None, terrain_paint=True, cover_out=None, walk_cuts=(),
-               signals=None, marks=None):
+               signals=None, marks=None, roads_out=None):
     """The chunks of one tile. cells: the mapgeom.Features of the "roads" layer of every cell touching
     the tile; elev(lat, lon) -> metres (the DEM); urban_fn: as road_specs. Features in several cells are
     taken once (by id). The carriageways, then each road's sidewalks / gutters / markings (extras), cut
@@ -5569,7 +5569,9 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
     bridges: a BridgeProfiles (deck heights of whole chains, shared by every tile); None: from the
     chains among these cells. ground(x, y) -> z: the terrain block's drawn ground in the frame, the sidewalks' heights
     (drape_walks); None: elev's. walk_cuts: [(centreline (k, 2), half width)] where no sidewalk runs (a gas station's
-    made-up driveway: gasstations.tile_sites cuts). Pure given its inputs (sorted by feature id)."""
+    made-up driveway: gasstations.tile_sites cuts). roads_out: a list that gets the ground carriageways near the tile
+    ((fid, spec, centreline (k, 3), lon): the median barriers', medians.tile_rows). Pure given its inputs (sorted by
+    feature id)."""
     x0, y0, x1, y1 = tile_bbox(tx, ty)
     box = (x0 - OVERLAP, y0 - OVERLAP, x1 + OVERLAP, y1 + OVERLAP)
     near = (x0 - NEAR_M, y0 - NEAR_M, x1 + NEAR_M, y1 + NEAR_M)
@@ -5609,6 +5611,8 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                           float(np.mean(ring[:, 0]))))
             k += m
     chunks = []
+    if roads_out is not None:
+        roads_out.extend(roads)
     if cover_out is not None:
         # the ground carriageways for the decks' parapet test (roadmesh.deck ground=): drawn or painted into the ground,
         # a deck at grade across one has no parapet over its lanes (GitHub #96). With the roads in the ground there
@@ -6099,9 +6103,9 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
         shape = f"tunnel_{aid}_{tx}_{ty}.cdae"
         roadmesh.write(os.path.join(out_dir, shape), tunnel_mesh)
         data["tunnel"] = {"shape": f"{vfs_dir}/{shape}", "pos": [x0, y0, 0.0]}
-    if guardrail_rows:
-        data["guardrails"] = {"items": guardrail_rows, "groups": ["guardrail", "guardrail_start", "guardrail_end",
-                                                                "guardrail_back", "guardrail_back_start", "guardrail_back_end"]}
+    if guardrail_rows:              # mapped guard rails and the median barriers (guardrails / medians): Forest rows
+        import guardrails
+        data["guardrails"] = {"items": guardrail_rows, "groups": list(guardrails.GROUPS)}
     if rail_mesh is not None:       # railways.tile_mesh: ballast, sleepers and rails (colliding)
         x0, y0, _, _ = tile_bbox(tx, ty)
         shape = f"rail_{aid}_{tx}_{ty}.cdae"

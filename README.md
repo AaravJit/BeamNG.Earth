@@ -50,7 +50,9 @@ You can help support development by reporting [issues](https://github.com/TecnaG
 - Roads painted into the ground itself (no floating road surface), with lane markings, sidewalks and curbs, curb ramps, storm drains, cobblestone streets,
   traffic islands, roundabouts, rural motorways with shoulders and toll booths; the ground graded under them, with
   retaining walls where a road is cut into a hill (dry stone in the mountains and towns, concrete along major roads)
-  and stone parapets along mountain roads' drops; metal guard rails where OpenStreetMap maps them; street lights, utility poles with wires, traffic signals,
+  and stone parapets along mountain roads' drops; metal guard rails, concrete and cable barriers where OpenStreetMap maps them; median
+  barriers down divided highways (concrete walls, cable barriers or steel rails by the median's width and the
+  country's practice, open at crossovers and ramps); street lights, utility poles with wires, traffic signals,
   stop signs and speed-limit signs (mph or km/h by country), traffic lights and sidewalks where OpenStreetMap maps them;
   railway lines as 3D track (ballast, sleepers and rails, rail bridges on piers, the ground cut and filled for the
   line; abandoned and disused lines overgrown and rusty; lines not built yet left out), level crossings with the rails

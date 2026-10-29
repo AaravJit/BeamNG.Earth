@@ -578,6 +578,7 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
                                          (box[0] - 8, box[1] - 8, box[2] + 8, box[3] + 8))
     cover = []                          # the ground carriageways for the decks' parapets (roadmesh.deck ground=)
     marks = []                          # stall lines along parking aisles (parking.finish_markings adds the lot polygons')
+    near_roads = []                     # the ground carriageways near the tile (the median barriers': medians.tile_rows)
     chunks = roadsmod.build_tile(frame, tx, ty, cells, elev, urban, walks=walks, deck_context=ctx, bridges=bridges, widths=_s.widths,
                                  walk_cuts=fuel_cuts,    # (the stations' made-up driveways: no sidewalk across them)
                                  props=props, lines=lines, wires=wires, town=town, park=park,
@@ -586,6 +587,7 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
                                  tunnels=tunnels, walls=rwalls,
                                  ground=lambda x, y: roadmeshmod.drawn_ground(frame, drawn, np.c_[x, y], q),
                                  terrain_paint=getattr(_s, "surface", None) is not None, cover_out=cover, marks=marks,
+                                 roads_out=near_roads,
                                  signals=furniture.signals_for(_s.md, frame,
                                                                roadsmod.cells_of_tile(frame, tx, ty, SIGNALS_MARGIN_M)))
     chunks += railsmod.tile_chunks(frame, tx, ty, cells)     # railway and tram tracks on the ground
@@ -610,10 +612,11 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
     import guardrails as guardrailsmod
     infra_fn = lambda key: _s.md.cell(key, layers=("infrastructure",), kind="demand").layers.get("infrastructure")
     low_parapet_decks = set()
+    deck_parts = []                 # the bridges' parts near the tile (the median barriers' on joined decks too)
     try:
+        deck_parts = list(bridges.parts(cells, (box[0]-10, box[1]-10, box[2]+10, box[3]+10)))
         guardrail_decks = [{"n": np.column_stack((xy, z)), "w": spec.width}
-                           for _fid, spec, xy, z, _lon in bridges.parts(
-                               cells, (box[0]-10, box[1]-10, box[2]+10, box[3]+10))]
+                           for _fid, spec, xy, z, _lon in deck_parts]
         guardrail_rows = guardrailsmod.forest_rows(frame, infra_fn, box, elev,
                                                    decks=guardrail_decks, parapets=parapets,
                                                    bridge_rails=roadmeshmod.BRIDGE_RAILS,
@@ -622,6 +625,8 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
         log.warning("mapped guardrails: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
         low_parapet_decks.clear()
         guardrail_rows = []
+    guardrail_rows = guardrail_rows + _median_rows(frame, near_roads, box, elev, left_hand, country, guardrail_rows,
+                                                   tx, ty, deck_parts)
     mesh = roadmeshmod.build(frame, chunks, elev, (x0, y0, 0.0), lift, clip=box, follow=True, q=q, drawn=drawn,
                              context=ctx)
     mesh = _with_plazas(mesh, frame, tx, ty, elev, (x0, y0, 0.0), getattr(_s, "surface", None))
@@ -667,6 +672,17 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
     return roadsmod.write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks if sidewalks else None, mesh, dmesh,
                                bld, props, wires, park, tunnel_mesh=tmesh, fuel=fuel, rail_mesh=rmesh, guardrail_rows=guardrail_rows,
                                garage_sound=garage_sound, wells=oil_wells) + (fuel_pads,)
+
+
+def _median_rows(frame, near_roads, box, elev, left_hand, country, mapped, tx, ty, decks=()):
+    """The median barriers' Forest rows of a road tile (medians.tile_rows; none where the mapped rows have one; decks:
+    the bridges' parts near it), [] if they fail (logged: the tile goes on without them)."""
+    import medians
+    try:
+        return medians.tile_rows(frame, near_roads, box, elev, left_hand, country, mapped, decks)
+    except Exception as ex:
+        log.warning("median barriers: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
+        return []
 
 
 def _with_plazas(mesh, frame, tx, ty, elev, origin, surface):

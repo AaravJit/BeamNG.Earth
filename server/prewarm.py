@@ -14,7 +14,7 @@ import numpy as np
 
 NAME = "prewarm.cdae"
 # materials the code names at run time, not in a constant the scan below finds
-EXTRA = ("line_yellow", "line_white", "bne_wire")
+EXTRA = ("line_yellow", "line_white", "bne_wire", "bne_cable_steel", "bne_cable_reflector")   # (the median cable barrier's: medians.py)
 
 
 def _marks(v, out):
