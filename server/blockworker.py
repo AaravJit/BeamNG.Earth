@@ -981,7 +981,7 @@ def _geo_content(gx, gy, zoom, out_dir, vfs_dir, buildings, left_hand, mph, gas_
         _geo_stats["content_hits"] += 1
         return (f"{vfs_dir}/{names['json']}", int(extra.get("n", 0)), extra.get("info") or {},
                 [(sid, [(np.asarray(la), np.asarray(lo)) for la, lo in rs]) for sid, rs in extra.get("pads", [])])
-    stages, mark = _stage_clock()
+    _stages, mark = _stage_clock()
     f0 = revisit.faults()
     g = _frame_grader(tile.frame)
     walks_raw = []
@@ -1124,10 +1124,6 @@ def _clip_mesh(mesh, origin, quad):
     return P2[used], remap[T2], UV2[used], mats, np.asarray(M)[src]
 
 
-def _write_mesh_cdae(path, mesh, write):
-    write(path, mesh)
-
-
 def _geo_skin(aid, lat, lon, zoom, gx, gy, out_dir, vfs_dir, sidewalks, lift, q, content):
     """Anchor aid's skin of geotile (gx, gy): the draped road surfaces (the road mesh and plazas: roadmesh.build on the
     anchor's lattice and height quantum q, follow) and the sidewalks (curbs on the drawn ground, their lean collision
@@ -1140,7 +1136,7 @@ def _geo_skin(aid, lat, lon, zoom, gx, gy, out_dir, vfs_dir, sidewalks, lift, q,
     import roadmesh as roadmeshmod
     import roads as roadsmod
     import sidewalks as sidewalksmod
-    stages, mark = _stage_clock()
+    _stages, mark = _stage_clock()
     tile = geotiles.geobox(gx, gy)
     inputs = _skin_inputs(tile.key, out_dir, content)
     mark("inputs")
