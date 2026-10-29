@@ -271,6 +271,12 @@ local function dropTile(key)
   local t = tiles[key]
   if not t then return end
   for _, sl in pairs(t.slots or {}) do slotDrop(sl) end
+  for w, v in pairs(t.oldSkin or {}) do       -- (a geotile's previous skin and replaced parts: road geotiles below)
+    if type(w) == 'string' and w:sub(1, 2) == 's:' then slotDrop(v) else deleteQ[#deleteQ + 1] = v end
+  end
+  for _, id in pairs(t.oldPart or {}) do deleteQ[#deleteQ + 1] = id end
+  for _, sl in pairs(t.oldPartSlot or {}) do slotDrop(sl) end
+  t.oldSkin, t.oldPart, t.oldPartSlot = nil, nil, nil
   for _, id in ipairs(t.objs) do deleteQ[#deleteQ + 1] = id end
   if t.walk then deleteQ[#deleteQ + 1] = t.walk end
   if t.road then deleteQ[#deleteQ + 1] = t.road end
@@ -332,7 +338,7 @@ local function switchAnchor(aid)
   if aid == anchorId then return end
   anchorId = aid
   for key, t in pairs(tiles) do
-    if t.anchor ~= aid and not t.ghost then dropTile(key) end
+    if t.anchor ~= aid and not t.ghost and not t.geo then dropTile(key) end   -- (geotiles: M.replace)
   end
   for key, f in pairs(far) do
     if f.anchor ~= aid and not f.ghost then
@@ -446,6 +452,10 @@ local function createWalk(walk, collide)
   o.canSave = false
   o:setPosition(vec3(walk.pos[1], walk.pos[2], walk.pos[3]))
   o:registerObject('')
+  if walk.rot then        -- (a geotile's part: placed from its tile's frame, M.geoWalk)
+    local r = walk.rot
+    o:setPosRot(walk.pos[1], walk.pos[2], walk.pos[3], r[1], r[2], r[3], r[4])
+  end
   group():addObject(o)
   return o:getID()
 end
@@ -461,10 +471,458 @@ local function createChunk(chunk)
   return r:getId()
 end
 
--- Server message `roads_tile` {anchorId, key, path, n, data (the file's JSON, optional), slots}.
-function M.onTile(msg, currentAnchor)
+-- Road geotiles (server --geo-tiles on, hello.roadGeo = M.ROAD_GEO; .claude/work/geotiles_plan.md phase 1c): a road
+-- tile keyed 'g17_x_y' (geotile.lua) whose CONTENT (buildings and their collision mesh, decks, tunnels, rails, wires,
+-- street furniture and guard rails, parking spots, gas stations, pump jacks, sound spaces) is in the tile's own frame
+-- and belongs to no anchor: it stays across rebases and teleports near, each shape placed into the current anchor's
+-- world at its pivot (setPosRot: geotile.placement, rigid; a tall part the rigid move would leave off comes as its
+-- "exact variant" from the server, roads_exact), each row mapped exactly (geotile.apply). Its SKIN (the draped road
+-- mesh, plazas, sidewalks and their collision) follows the anchor's 2 m lattice and height quantum: a skin per anchor
+-- (roads_skin), the old one kept, moved and lifted q/2 + SKIN_LIFT_M (no poke-through on the new block) until the
+-- new one is made. M.replace(anchor) re-places everything at a rebase (core.lua finishRebase): no ghosts, colliders
+-- and slots kept.
+M.ROAD_GEO = 1
+M.SKIN_LIFT_M = 0.003
+M.geoStats = { tiles = 0, kept = 0, replaced = 0, skins = 0, skinSwaps = 0, exact = 0, exactBase = 0 }
+local geotile = require('beamngEarth/geotile')
+local geodesy = require('beamngEarth/geodesy')
+local anchorObj = nil       -- the current anchor (geodesy) the geotiles are placed into (M.update, onTile)
+M.CONTENT_WHATS = { 'deck', 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'wire', 'tunnel', 'rail', 'railcol' }
+M.SKIN_WHATS = { 'road', 'walk', 'walkcol' }
+
+local function geoKey(gkey) return 'g:' .. tostring(gkey) end
+M.geoKey = geoKey
+
+-- A geotile's placement of a part (its pivot) into anchor a: { pl = geotile.placement, xf = rigid transform, q }.
+local function partPlacement(t, a, pivot)
+  local pl = geotile.placement(t.frame, a, 0, 0, pivot or 0)
+  local xf = geodesy.transformOf(pl.r, pl.t)
+  local qx, qy, qz, qw = xf:beamngQuat()
+  return { pl = pl, xf = xf, q = { qx, qy, qz, qw }, inv = xf:inverse() }
+end
+
+-- Pure-ish: tile t's placements into anchor a (each part's at its pivot, the rows' at the tile's), its centre.
+function M.placeGeoTile(t, a)
+  t.anchorObj = a
+  t.pls = {}
+  for what, p in pairs(t.parts or {}) do t.pls[what] = partPlacement(t, a, p.pivot) end
+  t.rowPl = partPlacement(t, a, t.rowPivot or 0)
+  local cx, cy = geotile.apply(t.rowPl.pl, 0, 0, t.rowPivot or 0)
+  t.cx, t.cy = cx, cy
+end
+
+-- Rows of a road tile's content mapped into its placement (exact: geotile.apply with the shear): parking spots
+-- [x, y, z, heading], pump jacks [x, y, z, yaw], sound rows (flat, 8 a row: kind, x, y, z, l, w, h, yaw rad),
+-- station records (props / areas pos + yaw, area icons), furniture rows [group, x, y, z, yaw, ...] (the lamps).
+local function mapPt(pl, p)
+  local x, y, z = geotile.apply(pl, p[1], p[2], p[3])
+  return { x, y, z }
+end
+function M.mapRows(pl, rows, xi, yawi, rad)
+  if type(rows) ~= 'table' then return rows end
+  local dyaw = geotile.yawOf(pl)
+  if rad then dyaw = math.rad(dyaw) end
+  local out = {}
+  for i, r in ipairs(rows) do
+    if type(r) == 'table' then
+      local n = {}
+      for k, v in pairs(r) do n[k] = v end
+      if type(r[xi]) == 'number' and type(r[xi + 1]) == 'number' and type(r[xi + 2]) == 'number' then
+        n[xi], n[xi + 1], n[xi + 2] = geotile.apply(pl, r[xi], r[xi + 1], r[xi + 2])
+      end
+      if yawi and type(r[yawi]) == 'number' then n[yawi] = r[yawi] + dyaw end
+      out[i] = n
+    else
+      out[i] = r
+    end
+  end
+  return out
+end
+function M.mapFlat(pl, flat, stride, xi, yawi)
+  if type(flat) ~= 'table' then return flat end
+  local out, dyaw = {}, math.rad(geotile.yawOf(pl))
+  for i = 1, #flat do out[i] = flat[i] end
+  for b = 0, #flat - stride, stride do
+    out[b + xi], out[b + xi + 1], out[b + xi + 2] = geotile.apply(pl, flat[b + xi], flat[b + xi + 1], flat[b + xi + 2])
+    if yawi then out[b + yawi] = flat[b + yawi] + dyaw end
+  end
+  return out
+end
+function M.mapStations(pl, recs)
+  if type(recs) ~= 'table' then return recs end
+  local dyaw = geotile.yawOf(pl)
+  local out = {}
+  for i, r in ipairs(recs) do
+    local n = {}
+    for k, v in pairs(r) do n[k] = v end
+    n.props, n.areas = {}, {}
+    for j, p in ipairs(r.props or {}) do
+      local q = {}
+      for k, v in pairs(p) do q[k] = v end
+      if type(p.pos) == 'table' then q.pos = mapPt(pl, p.pos) end
+      if type(p.yaw) == 'number' then q.yaw = p.yaw + dyaw end
+      n.props[j] = q
+    end
+    for j, a in ipairs(r.areas or {}) do
+      local q = {}
+      for k, v in pairs(a) do q[k] = v end
+      if type(a.pos) == 'table' then q.pos = mapPt(pl, a.pos) end
+      if type(a.icon) == 'table' then q.icon = mapPt(pl, a.icon) end
+      if type(a.yaw) == 'number' then q.yaw = a.yaw + dyaw end
+      n.areas[j] = q
+    end
+    out[i] = n
+  end
+  return out
+end
+
+-- The rows of tile t (key) handed to their modules, mapped into its current placement (made: replaced in place).
+local function geoRows(key, t, data, replacing)
+  local pl = t.rowPl.pl
+  if type(data.props) == 'table' and type(data.props.items) == 'table' then   -- street lights, poles (trees.lua)
+    -- (at a rebase trees.lua places its own geotiles: trees.transform)
+    if not replacing then
+      require('beamngEarth/trees').onGeoRows('p' .. t.gkey, t.gkey, data.props.items, data.props.groups, nil,
+        t.frame, t.rowPivot or 0, t.anchorObj)
+    end
+    require('beamngEarth/nightlights').onRows(key, M.mapRows(pl, data.props.items, 2, 5), data.props.groups)
+    t.props = true
+  end
+  if type(data.guardrails) == 'table' and type(data.guardrails.items) == 'table' and #data.guardrails.items > 0 then
+    if not replacing then
+      require('beamngEarth/trees').onGeoRows('g' .. t.gkey, t.gkey, data.guardrails.items, data.guardrails.groups,
+        17, t.frame, t.rowPivot or 0, t.anchorObj)
+    end
+    t.guardrails = true
+    t.guardrailRows = #data.guardrails.items
+  end
+  if type(data.park) == 'table' and data.park[1] then
+    require('beamngEarth/parking').onRows(t.anchor, key, M.mapRows(pl, data.park, 1, 4))
+    t.park = true
+  end
+  if type(data.fuel) == 'table' and data.fuel[1] then
+    require('beamngEarth/gasstations').onRows(t.anchor, key, M.mapStations(pl, data.fuel))
+    t.fuel = true
+  end
+  if type(data.wells) == 'table' and data.wells[1] then
+    local pj = require('beamngEarth/pumpjacks')
+    local rows = M.mapRows(pl, data.wells, 1, 4)
+    if t.wells and pj.placeRows then pj.placeRows(key, rows) else pj.onRows(key, rows) end
+    t.wells = true
+  end
+  if type(data.sound) == 'table' and data.sound[1] then
+    local amb = require('beamngEarth/ambience')
+    local flat = M.mapFlat(pl, data.sound, 8, 2, 8)
+    if t.sound and amb.placeSpaces then amb.placeSpaces(key, flat) else amb.onSpaces(key, flat) end
+    t.sound = true
+  end
+end
+
+-- The mesh parts of geotile t queued (each its placement's, made by update); t.exactShape[what]: its exact variant.
+local function queueGeoParts(key, t, data)
+  local lean = t.parts.bldcol ~= nil
+  local leanRail = t.parts.railcol ~= nil
+  for _, what in ipairs(M.CONTENT_WHATS) do
+    if t.parts[what] then
+      local q = { key = key, what = what, tile = t, geo = true,
+        renderOnly = what == 'wire' or (lean and what:sub(1, 3) == 'bld' and what ~= 'bldcol') or (leanRail and what == 'rail') }
+      if not q.renderOnly then t.colWant[what] = true end
+      if q.renderOnly or M.collideNear(t) then walkQ[#walkQ + 1] = q else parked[#parked + 1] = q end
+    end
+  end
+end
+
+-- The shape a geotile's part shows now: its exact variant for this anchor, else its base.
+local function partShape(t, what)
+  return (t.exactShape and t.exactShape[what]) or (t.parts[what] and t.parts[what].shape)
+end
+
+-- A geotile's part as createWalk takes it: its shape, placed (position and rotation).
+function M.geoWalk(t, what)
+  local p = t.parts[what]
+  local pp = t.pls and t.pls[what]
+  if not p or not pp then return nil end
+  local x, y, z = pp.xf:apply(p.pos[1], p.pos[2], p.pos[3])
+  return { shape = partShape(t, what), pos = { x, y, z }, rot = pp.q }
+end
+
+-- Server message `roads_tile` for a geotile key: its content (data: the JSON; frame, h, slots, exact).
+function M.onGeoTile(msg, currentAnchor, a)
+  a = a or anchorObj
+  if not a then return false end
+  anchorObj = a
+  local ok, data = true, msg.data
+  if type(data) ~= 'table' then ok, data = pcall(jsonDecode, readFile(msg.path) or '') end
+  if not ok or type(data) ~= 'table' then
+    lastError = 'unreadable road geotile ' .. tostring(msg.path)
+    return false
+  end
+  local key = geoKey(msg.key)
+  local old = tiles[key]
+  local h = msg.h or data.h
+  if old and old.geo and h and old.h == h then
+    -- the same content again (a server restart): its objects stay; the new message's slots are not used
+    if type(msg.slots) == 'table' then
+      for w in pairs(msg.slots) do slotDrop(msgSlot(msg, w)) end
+    end
+    old.anchor, old.orphan = currentAnchor, nil
+    M.geoStats.kept = M.geoStats.kept + 1
+    return true
+  end
+  if old then dropTile(key) end         -- (new content: its skin comes with it, roads.GeoTracker)
+  local frame = geotile.frameOf({ frame = msg.frame or data.frame, key = msg.key })
+  if not frame then lastError = 'road geotile without a frame: ' .. tostring(msg.key); return false end
+  local t = { anchor = currentAnchor, geo = true, gkey = msg.key, frame = frame, h = h, objs = {}, queued = 0,
+    colliders = {}, slots = {}, at = now(), colWant = {}, parts = {}, exactShape = {}, exactOf = {} }
+  local cols = type(data.colliders) == 'table' and data.colliders or {}
+  local pivots, np = 0, 0
+  for _, what in ipairs(M.CONTENT_WHATS) do
+    local e = data[what]
+    if type(e) == 'table' and e.shape and type(e.pos) == 'table' then
+      local sl = msgSlot(msg, what)
+      t.parts[what] = { shape = sl and sl.path or e.shape, pos = e.pos, pivot = tonumber(e.pivot) or 0,
+        relief = tonumber(e.relief) or 0 }
+      if sl then t.slots[what] = sl end
+      if cols[what] then t.colliders[what] = cols[what] end
+      pivots, np = pivots + (tonumber(e.pivot) or 0), np + 1
+    else
+      slotDrop(msgSlot(msg, what))
+    end
+  end
+  for what, path in pairs(type(msg.exact) == 'table' and msg.exact or {}) do
+    if t.parts[what] and type(path) == 'string' then
+      local sl = msgSlot(msg, 'x:' .. what)
+      t.exactShape[what] = sl and sl.path or path
+      t.exactOf[what] = currentAnchor
+      if sl then t.slots['x:' .. what] = sl end
+    end
+  end
+  t.rowPivot = np > 0 and pivots / np or 0
+  t.data = data
+  M.placeGeoTile(t, a)
+  tiles[key] = t
+  sinceChange = stopwatch.new()
+  geoRows(key, t, data)
+  queueGeoParts(key, t, data)
+  M.geoStats.tiles = M.geoStats.tiles + 1
+  return true
+end
+
+-- Server message `roads_skin` {anchorId, key, data / path, slots}: the draped surfaces of a geotile for this anchor.
+-- The old skin's objects stay until the new ones are made (per part; what the new skin lacks: with its road mesh).
+function M.onSkin(msg, currentAnchor)
+  local t = tiles[geoKey(msg.key)]
+  local function release()
+    if type(msg.slots) == 'table' then for w in pairs(msg.slots) do slotDrop(msgSlot(msg, w)) end end
+  end
+  if not t or msg.anchorId ~= currentAnchor then release(); return false end
+  local ok, data = true, msg.data
+  if type(data) ~= 'table' then ok, data = pcall(jsonDecode, readFile(msg.path) or '') end
+  if not ok or type(data) ~= 'table' then release(); lastError = 'unreadable road skin ' .. tostring(msg.path); return false end
+  -- the previous skin: its objects kept as the old ones (swapped as the new are made), its queue entries gone
+  t.oldSkin = t.oldSkin or {}
+  for _, w in ipairs(M.SKIN_WHATS) do
+    if t[w] then
+      if t.oldSkin[w] then deleteQ[#deleteQ + 1] = t.oldSkin[w] end
+      t.oldSkin[w] = t[w]
+      t[w] = nil
+    end
+    if t.cq then t.cq[w] = nil end
+    if t.slots[w] then t.oldSkin['s:' .. w] = t.slots[w]; t.slots[w] = nil end
+  end
+  for _, id in ipairs(t.objs) do deleteQ[#deleteQ + 1] = id end
+  t.objs, t.queued = {}, 0
+  local function purge(list)
+    local keep = {}
+    for _, q in ipairs(list) do if not (q.tile == t and q.skin) then keep[#keep + 1] = q end end
+    return keep
+  end
+  walkQ, parked, held, createQ = purge(walkQ), purge(parked), purge(held), purge(createQ)
+  local cols = type(data.colliders) == 'table' and data.colliders or {}
+  t.colliders.walk, t.colliders.walkcol = cols.walk, cols.walkcol
+  t.colWant.walk, t.colWant.walkcol = nil, nil
+  local pv = type(data.pivot) == 'table' and data.pivot or {}
+  t.skin = { anchor = msg.anchorId, anchorObj = anchorObj, pending = 0,
+    pivot = { tonumber(pv[1]) or t.cx or 0, tonumber(pv[2]) or t.cy or 0, tonumber(pv[3]) or 0 }, q = tonumber(data.q) or 0 }
+  local road = type(data.road) == 'table' and data.road.shape and type(data.road.pos) == 'table' and data.road
+  local leanWalk = type(data.walkcol) == 'table' and data.walkcol.shape ~= nil
+  for _, what in ipairs(M.SKIN_WHATS) do
+    local w = data[what]
+    local sl = msgSlot(msg, what)
+    if type(w) == 'table' and w.shape and type(w.pos) == 'table' then
+      if sl then w = { shape = sl.path, pos = w.pos }; t.slots[what] = sl end
+      t.skin[what] = { shape = w.shape, pos = w.pos }
+      local q = { key = geoKey(msg.key), walk = w, what = what, tile = t, skin = true,
+        renderOnly = what == 'road' or (leanWalk and what == 'walk') }
+      if not q.renderOnly then t.colWant[what] = true end
+      t.skin.pending = t.skin.pending + 1
+      if q.renderOnly or M.collideNear(t) then walkQ[#walkQ + 1] = q else parked[#parked + 1] = q end
+    else
+      slotDrop(sl)
+    end
+  end
+  if not road and type(data.chunks) == 'table' then       -- (no road mesh: DecalRoads, as an anchor tile's)
+    for _, c in ipairs(data.chunks) do createQ[#createQ + 1] = { key = geoKey(msg.key), chunk = c, skin = true, tile = t } end
+    t.queued = #data.chunks
+  end
+  if t.skin.pending == 0 then M.dropOldSkin(t) end
+  M.geoStats.skins = M.geoStats.skins + 1
+  sinceChange = stopwatch.new()
+  return true
+end
+
+-- A geotile's old skin objects go (all, or only part what: its new one is made).
+function M.dropOldSkin(t, what)
+  if not t.oldSkin then return end
+  local function drop(w)
+    if t.oldSkin[w] then deleteQ[#deleteQ + 1] = t.oldSkin[w]; t.oldSkin[w] = nil; M.geoStats.skinSwaps = M.geoStats.skinSwaps + 1 end
+    if t.oldSkin['s:' .. w] then slotDrop(t.oldSkin['s:' .. w]); t.oldSkin['s:' .. w] = nil end
+  end
+  if what then drop(what) else for _, w in ipairs(M.SKIN_WHATS) do drop(w) end end
+  if next(t.oldSkin) == nil then t.oldSkin = nil end
+end
+
+-- Server message `roads_exact` {anchorId, key, parts {what: path | false}, slots}: parts shown as their exact variant
+-- for this anchor (false: the base shape again), each swapped once its new object is made.
+function M.onExact(msg, currentAnchor)
+  local t = tiles[geoKey(msg.key)]
+  if not t or msg.anchorId ~= currentAnchor or type(msg.parts) ~= 'table' then
+    if type(msg.slots) == 'table' then for w in pairs(msg.slots) do slotDrop(msgSlot(msg, w)) end end
+    return false
+  end
+  for what, path in pairs(msg.parts) do
+    if t.parts[what] then
+      local sl = msgSlot(msg, what)
+      if t.slots['x:' .. what] then t.oldPartSlot = t.oldPartSlot or {}; t.oldPartSlot[what] = t.slots['x:' .. what] end
+      t.slots['x:' .. what] = sl
+      if path then
+        t.exactShape[what] = sl and sl.path or path
+        t.exactOf[what] = msg.anchorId
+        M.geoStats.exact = M.geoStats.exact + 1
+      else
+        t.exactShape[what], t.exactOf[what] = nil, nil
+        M.geoStats.exactBase = M.geoStats.exactBase + 1
+      end
+      if t[what] then         -- made: the new shape made beside it, the old one deleted then (update)
+        t.oldPart = t.oldPart or {}
+        if t.oldPart[what] then deleteQ[#deleteQ + 1] = t.oldPart[what] end
+        t.oldPart[what] = t[what]
+        t[what] = nil
+        if t.cq then t.cq[what] = nil end
+        local keep = {}
+        for _, q in ipairs(walkQ) do if not (q.tile == t and q.what == what) then keep[#keep + 1] = q end end
+        walkQ = keep
+        local lean = t.parts.bldcol ~= nil
+        local q = { key = geoKey(msg.key), what = what, tile = t, geo = true, swap = true,
+          renderOnly = what == 'wire' or (lean and what:sub(1, 3) == 'bld' and what ~= 'bldcol')
+            or (t.parts.railcol ~= nil and what == 'rail') }
+        walkQ[#walkQ + 1] = q
+      end
+    end
+  end
+  sinceChange = stopwatch.new()
+  return true
+end
+
+-- A rebase / teleport near (core.lua): every geotile placed into anchor a (aid): its made parts moved (setPosRot),
+-- its rows mapped again for their modules, its skin moved and lifted until the new anchor's comes (onSkin). Returns
+-- the tiles moved.
+function M.replace(a, aid)
+  if not a then return 0 end
+  anchorObj = a
+  local n = 0
+  for key, t in pairs(tiles) do
+    if t.geo then
+      t.anchor = aid
+      M.placeGeoTile(t, a)
+      for what, pp in pairs(t.pls) do
+        local p = t.parts[what]
+        local x, y, z = pp.xf:apply(p.pos[1], p.pos[2], p.pos[3])
+        for _, id in ipairs({ t[what], t.oldPart and t.oldPart[what] or false }) do
+          local o = id and scenetree.findObjectById(id)
+          if o then o:setPosRot(x, y, z, pp.q[1], pp.q[2], pp.q[3], pp.q[4]) end
+        end
+      end
+      -- the skin (its anchor's world): moved rigidly at its pivot into this one, lifted over the new block's quantum
+      local sk = t.skin
+      if sk and sk.anchorObj and sk.anchor ~= aid then
+        local pv = sk.pivot
+        local xf = sk.anchorObj:worldTransformTo(a, pv[1], pv[2], pv[3])
+        local qx, qy, qz, qw = xf:beamngQuat()
+        local lift = (sk.q or 0) / 2 + M.SKIN_LIFT_M
+        for _, w in ipairs(M.SKIN_WHATS) do
+          local e = sk[w]
+          local o = e and t[w] and scenetree.findObjectById(t[w])
+          if o then
+            local x, y, z = xf:apply(e.pos[1], e.pos[2], e.pos[3])
+            o:setPosRot(x, y, z + lift, qx, qy, qz, qw)
+          end
+        end
+        for _, id in ipairs(t.objs) do deleteQ[#deleteQ + 1] = id end      -- (DecalRoads cannot turn)
+        t.objs, t.queued = {}, 0
+        sk.stale = true
+      end
+      if t.data then geoRows(key, t, t.data, true) end
+      n = n + 1
+    end
+  end
+  -- queued entries of the skins of other anchors go (their positions are those anchors')
+  local function keep(list)
+    local out = {}
+    for _, q in ipairs(list) do
+      if not (q.skin and q.tile and q.tile.skin and q.tile.skin.anchor ~= aid) then out[#out + 1] = q end
+    end
+    return out
+  end
+  walkQ, parked, held, createQ = keep(walkQ), keep(parked), keep(held), keep(createQ)
+  if n > 0 then collisionDirty = true; sinceChange = stopwatch.new() end
+  M.geoStats.replaced = M.geoStats.replaced + n
+  return n
+end
+
+-- The geotile keys whose quads in the current anchor's world come within r of (x, y).
+function M.geoKeysNear(x, y, r)
+  local a = anchorObj
+  if not a then return {} end
+  local la, lo = a:worldToGeodetic(x, y, 0)
+  local kx, ky = geotile.tileOf(la, lo)
+  local side = 40075016.686 * math.max(math.cos(math.rad(la)), 0.01) / 2 ^ geotile.Z
+  local rings = math.ceil(r / side) + 1
+  local out = {}
+  for dy = -rings, rings do
+    for dx = -rings, rings do
+      local gx, gy = kx + dx, ky + dy
+      if geotile.quadDist(geotile.quad(a, geotile.Z, gx, gy), x, y) <= r then
+        out[#out + 1] = geotile.key(gx, gy)
+      end
+    end
+  end
+  return out
+end
+
+-- The geotile under (x, y) of the current anchor's world, or nil.
+function M.geoKeyAt(x, y)
+  local a = anchorObj
+  if not a then return nil end
+  local la, lo = a:worldToGeodetic(x, y, 0)
+  return geotile.key(geotile.tileOf(la, lo))
+end
+
+-- Is geotile t made for anchor aid: its content's colliding parts made (busy: tile keys with meshes queued), its skin
+-- this anchor's and made?
+local function geoMade(t, aid, busy)
+  if not t or not t.geo or busy[geoKey(t.gkey)] then return false end
+  if not t.skin or t.skin.anchor ~= aid or t.skin.pending > 0 or t.queued > 0 then return false end
+  return true
+end
+M._geoMade = geoMade
+
+-- Server message `roads_tile` {anchorId, key, path, n, data (the file's JSON, optional), slots}. A geotile key
+-- (geotile.lua): onGeoTile (a: the current anchor, geodesy).
+function M.onTile(msg, currentAnchor, a)
   if not M.enabled then return false end
   switchAnchor(currentAnchor)
+  if geotile.isKey(msg.key) then return M.onGeoTile(msg, currentAnchor, a) end
   if msg.anchorId ~= currentAnchor then return false end
   local key = tileKey(msg.anchorId, msg.key)
   if tiles[key] then dropTile(key) end
@@ -629,15 +1087,42 @@ function M.skyCovered(seen, aid, ux, uy)
   return true
 end
 
+-- Road geotiles (M.geo): a far tile's 256 m square (key "a:[B]tx_ty") is the road tiles' when every geotile within its
+-- reach has its content here (buildings made, or none; decks: its deck made or none, and its skin's road mesh), the
+-- keys found once per far tile (its anchor's world). Until the far tiles are geotiles too (phase 2), a square at the
+-- road tiles' edge shows its far buildings over the geotiles it overlaps.
+local function geoSquareCovered(f, sq, deck)
+  if not f.geoKeys then
+    local tx, ty = tostring(sq):match('(%-?%d+)_(%-?%d+)$')
+    if not tx or not anchorObj then return false end
+    f.geoKeys = M.geoKeysNear((tonumber(tx) + 0.5) * M.TILE_M, (tonumber(ty) + 0.5) * M.TILE_M, M.TILE_M * 0.5)
+  end
+  if #f.geoKeys == 0 then return false end
+  for _, k in ipairs(f.geoKeys) do
+    local t = tiles[geoKey(k)]
+    if not t then return false end
+    if deck then
+      if (t.parts.deck and not t.deck) or not t.road then return false end
+    elseif t.parts.bld and not t.bld then
+      return false
+    end
+  end
+  return true
+end
+
 local function updateFar(gov)
   for key, f in pairs(far) do
     if f.id then
       local hide
       if f.sky then
         hide = M.skyCovered(farSeen, f.anchor, f.sky[1], f.sky[2])
+      elseif f.deckOf and M.geo then      -- (a ghost: as it was, its square is another anchor's)
+        hide = f.ghost and (f.hidden or false) or geoSquareCovered(f, f.deckOf, true)
       elseif f.deckOf then
         local t = tiles[f.deckOf]
         hide = t ~= nil and (t.deck ~= nil or t.road ~= nil)
+      elseif M.geo then
+        hide = f.ghost and (f.hidden or false) or geoSquareCovered(f, key, false)
       else
         hide = tiles[key] ~= nil and tiles[key].bld ~= nil
       end
@@ -666,9 +1151,10 @@ end
 
 -- Server message `roads_drop` {anchorId, key}. (A ghost goes when covered: releaseGhosts.)
 function M.onDrop(msg)
-  local t = tiles[tileKey(msg.anchorId, msg.key)]
+  local key = geotile.isKey(msg.key) and geoKey(msg.key) or tileKey(msg.anchorId, msg.key)   -- (a geotile: any anchor's)
+  local t = tiles[key]
   if t and t.ghost then return end
-  dropTile(tileKey(msg.anchorId, msg.key))
+  dropTile(key)
   sinceChange = stopwatch.new()
 end
 
@@ -710,6 +1196,7 @@ function M.transform(xf, geodesy)
   end
   local any = false
   for key, t in pairs(tiles) do
+    if t.geo then goto continue end        -- (placed again by M.replace)
     t.q = newQ(t.q or { 0, 0, 0, 1 })
     for _, what in ipairs(WHATS) do moveObj(t[what], t.q) end
     for _, id in ipairs(t.objs) do deleteQ[#deleteQ + 1] = id end
@@ -717,6 +1204,7 @@ function M.transform(xf, geodesy)
     if t.cx then t.cx, t.cy = xf:apply(t.cx, t.cy, 0) end
     t.ghost = true
     any = true
+    ::continue::
   end
   for _, f in pairs(far) do
     if f.id then
@@ -745,7 +1233,7 @@ end
 local function madeSquares(aid, busy, signs)
   local n, done = M.TILE_M, {}
   for key, t in pairs(tiles) do
-    if t.anchor == aid and not t.ghost and t.cx and (t.signOnly == true) == (signs == true) then
+    if t.anchor == aid and not t.ghost and not t.geo and t.cx and (t.signOnly == true) == (signs == true) then
       done[math.floor(t.cx / n) .. '_' .. math.floor(t.cy / n)] = t.queued <= 0 and not busy[key]
     end
   end
@@ -758,16 +1246,32 @@ function M.settledFor(aid, x, y)
   if anchorId ~= aid or #deleteQ > 0 or collisionDirty then return false end
   local n = M.TILE_M
   for _, t in pairs(tiles) do
-    if not t.signOnly and (t.anchor ~= aid or t.ghost) then   -- (a sign tile has no collision)
+    -- (a sign tile has no collision; a geotile's old skin, moved from another anchor, counts as another's road)
+    local other = (not t.geo and (t.anchor ~= aid or t.ghost)) or (t.geo and t.skin and t.skin.anchor ~= aid)
+    if not t.signOnly and other then
       if not t.cx or (math.abs(t.cx - x) < 1.5 * n and math.abs(t.cy - y) < 1.5 * n) then return false end
     end
   end
   local busy = {}
   for _, q in ipairs(walkQ) do busy[q.key] = true end
+  if M.geo then
+    local k = M.geoKeyAt(x, y)
+    return k ~= nil and geoMade(tiles[geoKey(k)], aid, busy)
+  end
   return madeSquares(aid, busy)[math.floor(x / n) .. '_' .. math.floor(y / n)] == true
 end
 
-local function covered(done, cx, cy)
+local covered0
+-- (a ghost square is covered by geotiles too: every geotile within its corners' reach made for the anchor)
+local function covered(done, cx, cy, busy)
+  if covered0(done, cx, cy) then return true end
+  if not M.geo or not anchorObj then return false end
+  for _, k in ipairs(M.geoKeysNear(cx, cy, M.TILE_M * 0.71)) do
+    if not geoMade(tiles[geoKey(k)], anchorId, busy or {}) then return false end
+  end
+  return true
+end
+covered0 = function(done, cx, cy)
   local h, n = M.TILE_M / 2, M.TILE_M
   for gx = math.floor((cx - h) / n), math.floor((cx + h - 1e-6) / n) do
     for gy = math.floor((cy - h) / n), math.floor((cy + h - 1e-6) / n) do
@@ -792,7 +1296,7 @@ local function releaseGhosts(player)
       -- ghost looked kilometres away and all went: 46 road tiles -> 0 at each rebase, 2026-10-17)
       local far = p and t.cx and ghostSince() > M.GHOST_FAR_WAIT_S * 1000
         and M.boxGap(p.x, p.y, t.cx, t.cy, M.TILE_M / 2) > M.GHOST_FAR_M
-      if all or far or (t.cx and covered(t.signOnly and signsDone or done, t.cx, t.cy)) then
+      if all or far or (t.cx and (t.signOnly and covered0(signsDone, t.cx, t.cy) or (not t.signOnly and covered(done, t.cx, t.cy, busyKeys)))) then
         dropTile(key)
         if not t.signOnly then collisionDirty = true end
       else left = true end
@@ -816,14 +1320,16 @@ local viewAt = nil  -- core.viewAway(): the camera's { x, y } when it is away fr
 local prewarmId, prewarmPath, prewarmWant = nil, nil, nil     -- (the materials' prewarm shape, below)
 local prewarmNow
 
-function M.update(gov, currentAnchor, player, view)
+function M.update(gov, currentAnchor, player, view, a)
   viewAt = view
+  if a then anchorObj = a end
   if prewarmWant then prewarmNow()
   elseif prewarmId and not scenetree.findObjectById(prewarmId) then   -- (the level loaded again: gone with it)
     prewarmId, prewarmWant = nil, prewarmPath
   end
   if currentAnchor then switchAnchor(currentAnchor) end
   releaseGhosts(player)
+  if M._releaseOrphans then M._releaseOrphans(player) end
   while #deleteQ > 0 and gov:try('roadDelete') do
     local t0 = now()
     local did = table.remove(deleteQ)
@@ -871,18 +1377,30 @@ function M.update(gov, currentAnchor, player, view)
     -- (only a colliding mesh waits: a render-only one (q.renderOnly: the drawn sidewalks and buildings beside their lean
     -- collision meshes) cannot catch the car, and holding it hid a whole tile's sidewalks while the car stood in their
     -- box: a roundabout's island band was never drawn, 2026-10-17 Harbor Point)
-    if t and q.what ~= 'road' and not q.renderOnly and playerIn(t.colliders[q.what], q.what) then
+    if t and q.what ~= 'road' and not q.renderOnly and playerIn(t.colliders[q.what], q.what, t) then
       held[#held + 1] = q           -- the car is on it: made once the car is clear (playerIn)
       t = nil
     end
-    if t then
+    local walk = q.walk
+    if t and q.geo then walk = M.geoWalk(t, q.what) end      -- (a geotile's part: placed as the tile is now)
+    if t and walk then
       local t0 = now()
       loadMaterials()
       local isRoad = q.what == 'road' or q.what == 'wire' or q.renderOnly   -- render-only meshes
       -- the buildings' and sidewalks' lean meshes are a collision detail (server cdae collision_only): never drawn
-      local ok, id = pcall(createWalk, q.walk,
+      local ok, id = pcall(createWalk, walk,
         (q.what == 'bldcol' or q.what == 'walkcol' or q.what == 'railcol') and 'Collision Mesh' or not isRoad)
-      if ok then slotMade(id, q.walk.shape) end
+      if ok then slotMade(id, walk.shape) end
+      if ok and q.skin and t.skin then             -- a new skin's part: the old one's goes (all, with the last)
+        t.skin.pending = t.skin.pending - 1
+        M.dropOldSkin(t, q.what)
+        if t.skin.pending <= 0 then M.dropOldSkin(t) end
+      end
+      if ok and q.swap and t.oldPart and t.oldPart[q.what] then     -- an exact variant / the base again: swapped
+        deleteQ[#deleteQ + 1] = t.oldPart[q.what]
+        t.oldPart[q.what] = nil
+        if t.oldPartSlot and t.oldPartSlot[q.what] then slotDrop(t.oldPartSlot[q.what]); t.oldPartSlot[q.what] = nil end
+      end
       if ok then
         if not isRoad then t.cq = t.cq or {}; t.cq[q.what] = q end
         if isRoad then t[q.what] = id else
@@ -892,7 +1410,7 @@ function M.update(gov, currentAnchor, player, view)
       else lastError = tostring(id) end
       local ms = now() - t0
       gov:charge('roadWalk', ms)
-      noteUnit(tostring(q.what), ms, q.walk and q.walk.shape)
+      noteUnit(tostring(q.what), ms, walk and walk.shape)
       sinceChange = stopwatch.new()
     end
   end
@@ -947,12 +1465,17 @@ function M.nearPlayer(p, r)
   return dx * dx + dy * dy <= r * r
 end
 
-playerIn = function(boxes, what)
+playerIn = function(boxes, what, t)
   -- (a drop hold: the car does not move until its ground and colliders are in, then it is set on top of them)
   if holdActive or type(boxes) ~= 'table' or #boxes == 0 then return false end
   local veh = getPlayerVehicle and getPlayerVehicle(0)
   if not veh then return false end
   local p = veh:getPosition()
+  local pp = t and t.geo and t.pls and t.pls[what]
+  if pp then      -- a geotile's content: its boxes are in the tile's frame, the player mapped into it
+    local x, y, z = pp.inv:apply(p.x, p.y, p.z)
+    p = { x = x, y = y, z = z }
+  end
   local r, dz = (what == 'walk' or what == 'walkcol') and M.WALK_PLAYER_R or M.PLAYER_R, M.PLAYER_DZ
   for _, b in ipairs(boxes) do
     if p.x >= b[1] - r and p.x <= b[4] + r and p.y >= b[2] - r and p.y <= b[5] + r then
@@ -976,7 +1499,7 @@ releaseHeld = function()
   for _, q in ipairs(held) do
     local t = tiles[q.key]
     if t then
-      if playerIn(t.colliders[q.what], q.what) then keep[#keep + 1] = q else walkQ[#walkQ + 1] = q end
+      if playerIn(t.colliders[q.what], q.what, t) then keep[#keep + 1] = q else walkQ[#walkQ + 1] = q end
     end
   end
   held = keep
@@ -987,7 +1510,7 @@ noteNewColliders = function()
   for _, c in ipairs(newColliders) do
     local q = c[2]
     local t = tiles[q.key]
-    if t and t[q.what] == c[1] and playerIn(t.colliders[q.what], q.what) then
+    if t and t[q.what] == c[1] and playerIn(t.colliders[q.what], q.what, t) then
       local o = scenetree.findObjectById(c[1])
       if o then o:delete() end
       t[q.what] = nil
@@ -1098,6 +1621,17 @@ function M.readyAround(aid, x, y, r)
     if not q.renderOnly and q.what ~= 'road' and q.what ~= 'wire' then busy[q.key] = true end
   end
   local n = M.TILE_M
+  if M.geo then           -- (geotiles: those whose quads come within r, their skins this anchor's)
+    for _, k in ipairs(M.geoKeysNear(x, y, r)) do
+      local key = geoKey(k)
+      local t = tiles[key]
+      if not t or busy[key] or not t.skin or t.skin.anchor ~= aid then return false end
+      for what in pairs(t.colWant or {}) do
+        if not t[what] or ((t.colAt and t.colAt[what]) or math.huge) >= lastReloadAt then return false end
+      end
+    end
+    return true
+  end
   for gx = math.floor((x - r) / n), math.floor((x + r) / n) do
     for gy = math.floor((y - r) / n), math.floor((y + r) / n) do
       local key = tileKey(aid, gx .. '_' .. gy)
@@ -1234,9 +1768,11 @@ function M.ahead(x, y, hx, hy, dist)
   for d = 0, dist, 32 do
     local px, py = x + hx * d, y + hy * d
     local sq = math.floor(px / n) .. '_' .. math.floor(py / n)
+    local tkey = tileKey(anchorId, sq)
+    if M.geo then sq = M.geoKeyAt(px, py) or sq; tkey = geoKey(sq) end
     if not seen[sq] then
       seen[sq] = true
-      local t = tiles[tileKey(anchorId, sq)]
+      local t = tiles[tkey]
       local e = { d = d, key = sq, arrived = t and math.floor(tnow - (t.at or tnow)) or false }
       if t then
         e.road = t.road ~= nil or (t.queued or 0) <= 0
@@ -1258,7 +1794,7 @@ function M.ahead(x, y, hx, hy, dist)
           end
           for _, set in ipairs({ { walkQ, 'walk' }, { parked, 'parked' }, { held, 'held' } }) do
             for _, q in ipairs(set[1]) do
-              if q.key == tileKey(anchorId, sq) and e.miss[q.what] then e.miss[q.what] = set[2] end
+              if q.key == tkey and e.miss[q.what] then e.miss[q.what] = set[2] end
             end
           end
         end
@@ -1268,6 +1804,54 @@ function M.ahead(x, y, hx, hy, dist)
   end
   return out
 end
+
+-- The server's hello: road tiles as geotiles (hello.roadGeo == M.ROAD_GEO) or the anchor's.
+function M.setGeo(on) M.geo = on and true or false end
+
+-- A new server session (core.lua hello: a restarted server, its anchor ids from 1 again): every anchor tile goes (as
+-- M.clear: they belonged to the old session), the geotiles stay as orphans: one the new session sends again with the
+-- same content hash (h) keeps its objects (onGeoTile), the others go once ORPHAN_FAR_M away or after ORPHAN_MAX_S
+-- (releaseOrphans). Their skins are no anchor's now (the new session's come with their content).
+M.ORPHAN_MAX_S = 120
+M.ORPHAN_FAR_M = 960
+local orphanSince = nil
+function M.newSession()
+  if not M.geo then return M.clear() end      -- (anchor tiles only: all of them go)
+  local any = false
+  for key, t in pairs(tiles) do
+    if t.geo and M.geo then
+      t.orphan = true
+      if t.skin then t.skin.anchor = -1 end
+      any = true
+    else
+      dropTile(key)
+    end
+  end
+  for _, f in pairs(far) do
+    if f.id then deleteQ[#deleteQ + 1] = f.id end
+    slotDrop(f.slot)
+  end
+  far, farQ, farSeen = {}, {}, {}
+  createQ, held, newColliders = {}, {}, {}
+  local keep = {}
+  for _, q in ipairs(walkQ) do if tiles[q.key] and not q.skin then keep[#keep + 1] = q end end
+  walkQ = keep
+  orphanSince = any and stopwatch.new() or nil
+  collisionDirty = true
+end
+local function releaseOrphans(player)
+  if not orphanSince then return end
+  local all = orphanSince() > M.ORPHAN_MAX_S * 1000
+  local left = false
+  for key, t in pairs(tiles) do
+    if t.orphan then
+      local far_ = player and t.cx and M.boxGap(player.x, player.y, t.cx, t.cy, M.TILE_M / 2) > M.ORPHAN_FAR_M
+      if all or far_ then dropTile(key); collisionDirty = true else left = true end
+    end
+  end
+  if not left then orphanSince = nil end
+end
+M._releaseOrphans = releaseOrphans
 
 function M.status()
   local nt, no, nw, nr, nd, nb, ngForest, ngRows = 0, 0, 0, 0, 0, 0, 0, 0
@@ -1284,7 +1868,8 @@ function M.status()
   return { enabled = M.enabled, tiles = nt, roads = no, queued = #createQ, deleting = #deleteQ, anchor = anchorId,
     walks = nw, roadMeshes = nr, decks = nd, buildings = nb, guardrailForestTiles = ngForest,
     guardrailForestRows = ngRows, farBuildings = nf, walksQueued = #walkQ, solidAround = M.solidAround or 0,
-    urgentWalks = M.urgentWalks or 0, quietS = sinceChange() / 1000, error = lastError, units = unitStats, unitLog = unitLog }
+    urgentWalks = M.urgentWalks or 0, quietS = sinceChange() / 1000, error = lastError, units = unitStats, unitLog = unitLog,
+    geo = M.geo or false, geoStats = M.geoStats }
 end
 
 local okSweep, swept = pcall(M.sweep)

@@ -3401,7 +3401,24 @@ def split(pts, n=MAX_NODES):
 
 
 def tile_bbox(tx, ty):
+    """A tile's box (x0, y0, x1, y1) in its frame: an anchor tile's square; a geotile's (tx a geotiles.GeoBox, ty
+    None) its quad's bounding box in its own frame, an OwnedBox (box_owns: its own points exactly)."""
+    b = getattr(tx, "box", None)
+    if b is not None:
+        return b
     return tx * TILE, ty * TILE, (tx + 1) * TILE, (ty + 1) * TILE
+
+
+def box_owns(box, x, y):
+    """geotiles.box_owns: the tile's own points (a geotile's exactly, an anchor tile's half-open box)."""
+    import geotiles
+    return geotiles.box_owns(box, x, y)
+
+
+def tile_side(tx, ty):
+    """m: the side of a square of the tile's area (TILE for an anchor tile)."""
+    side = getattr(tx, "side", None)
+    return side() if side is not None else TILE
 
 
 def box_gap(x0, y0, x1, y1, x, y):
@@ -4342,7 +4359,7 @@ class BridgeProfiles:
         x0, y0, x1, y1 = box
         with self.lock:
             allb = [b for v in self.trusses.values() for b in v]
-        return [b for b in allb if x0 <= (b[0][0] + b[1][0]) / 2 < x1 and y0 <= (b[0][1] + b[1][1]) / 2 < y1]
+        return [b for b in allb if box_owns(box, (b[0][0] + b[1][0]) / 2, (b[0][1] + b[1][1]) / 2)]
 
     def piers_in(self, box):
         """The piers (pier_sites) of the parts solved so far standing in box (x0, y0, x1, y1): x0 <= x < x1, y0 <= y
@@ -4350,7 +4367,7 @@ class BridgeProfiles:
         x0, y0, x1, y1 = box
         with self.lock:
             allp = [p for v in self.piers.values() for p in v]
-        return [p for p in allp if x0 <= p[0] < x1 and y0 <= p[1] < y1]
+        return [p for p in allp if box_owns(box, p[0], p[1])]
 
     @staticmethod
     def _part_id(key):
@@ -5013,7 +5030,7 @@ class ChainView:
         for st in self._stores():
             for q in self._mapped_piers(st)[0]:
                 k = (round(q[0], 3), round(q[1], 3))
-                if x0 <= q[0] < x1 and y0 <= q[1] < y1 and k not in seen:
+                if box_owns(box, q[0], q[1]) and k not in seen:
                     seen.add(k)
                     out.append(q)
         return out
@@ -5025,7 +5042,7 @@ class ChainView:
             for b in self._mapped_piers(st)[1]:
                 mx, my = (b[0][0] + b[1][0]) / 2, (b[0][1] + b[1][1]) / 2
                 k = (round(float(mx), 3), round(float(my), 3), round(float(b[0][2]), 3))
-                if x0 <= mx < x1 and y0 <= my < y1 and k not in seen:
+                if box_owns(box, mx, my) and k not in seen:
                     seen.add(k)
                     out.append(b)
         return out
@@ -6161,7 +6178,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                lines=None, wires=None, town=None, park=None, left_hand=False, structures=(), mph=True, tunnels=None,
                buried=0.0, lamp_region=None, country=None,
                walls=None, deck_context=None, ground=None, terrain_paint=True, cover_out=None, walk_cuts=(),
-               signals=None, marks=None, roads_out=None):
+               signals=None, marks=None, roads_out=None, skin_margin=0.0, walks_raw=None):
     """The chunks of one tile. cells: the mapgeom.Features of the "roads" layer of every cell touching
     the tile; elev(lat, lon) -> metres (the DEM); urban_fn: as road_specs. Features in several cells are
     taken once (by id). The carriageways, then each road's sidewalks / gutters / markings (extras), cut
@@ -6172,9 +6189,14 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
     chains among these cells. ground(x, y) -> z: the terrain block's drawn ground in the frame, the sidewalks' heights
     (drape_walks); None: elev's. walk_cuts: [(centreline (k, 2), half width)] where no sidewalk runs (a gas station's
     made-up driveway: gasstations.tile_sites cuts). roads_out: a list that gets the ground carriageways near the tile
-    ((fid, spec, centreline (k, 3), lon): the median barriers', medians.tile_rows). Pure given its inputs (sorted by
+    ((fid, spec, centreline (k, 3), lon): the median barriers', medians.tile_rows). skin_margin (m, a geotile's content:
+    blockworker.roads_geo): the draped surfaces' pieces (sidewalk runs and corners, markings, crosswalks, corner fills)
+    taken this far past the tile's box, its own, the skin clipping them exactly at the tile's quad in the anchor's
+    world (a seam-straddling crosswalk drawn by both tiles, each its half); walks_raw: a list that gets the sidewalk
+    pieces before they are put on the ground (the skin drapes them on its anchor's). Pure given its inputs (sorted by
     feature id)."""
-    x0, y0, x1, y1 = tile_bbox(tx, ty)
+    own_box = tile_bbox(tx, ty)                 # (a geotile's knows its own points: box_owns)
+    x0, y0, x1, y1 = own_box
     box = (x0 - OVERLAP, y0 - OVERLAP, x1 + OVERLAP, y1 + OVERLAP)
     near = (x0 - NEAR_M, y0 - NEAR_M, x1 + NEAR_M, y1 + NEAR_M)
     seen, bseen = {}, {}
@@ -6269,6 +6291,13 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                 n[:, 2] += float(c.get("tunnel_h") or roadmesh.TUNNEL_H)
                 decks_near.append({"n": n, "w": float(c["w"]) + 2 * roadmesh.TUNNEL_SHOULDER})
     exact = (x0, y0, x1, y1)
+    sm = float(skin_margin or 0.0)
+    wexact = (x0 - sm, y0 - sm, x1 + sm, y1 + sm) if sm else exact    # (the skin's pieces: skin_margin)
+
+    def skin_own(px, py):                       # a draped piece's owner test (skin_margin: the margin box)
+        if sm:
+            return wexact[0] <= px < wexact[2] and wexact[1] <= py < wexact[3]
+        return box_owns(own_box, px, py)
     if walls is not None:                       # retaining walls where a road is cut into the ground (roadmesh.tunnel)
         tile_walls = retaining_walls(frame, roads, elev, exact, decks=decks_near)
         if props is None:                       # (no props here: stone)
@@ -6292,7 +6321,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                 continue
             ring = np.vstack([f["ring"], f["ring"][:1]])
             band = offset_polyline(ring, islands.ISLAND_BAND_M / 2)
-            for piece in clip_polyline(band, *exact):
+            for piece in clip_polyline(band, *wexact):
                 run = densify(simplify(piece))
                 if len(run) >= 2:
                     walks.append({"pts": run, "side": 1, "caps": (False, False), "ramps": [],
@@ -6308,7 +6337,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
             p = c["arc"][len(c["arc"]) // 2]
             if isl and islands.in_island(isl, p[:2]):
                 continue                        # a curb return inside a loop: its island has its own curb
-            if x0 <= p[0] < x1 and y0 <= p[1] < y1:
+            if skin_own(p[0], p[1]):
                 walks.append({"corner": c})
                 fill_look = _corner_look(p, roads)
                 for fill in ([] if ROADS_IN_GROUND else ([c["fill"]] if c["fill"] is not None else []) + c.get("fills", [])):
@@ -6318,7 +6347,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         ladder = _mk.style(country, float(np.mean([r[3] for r in roads])) if roads else None).ladder
         for cw in crosswalks:                   # crosswalks and stop lines
             mid = 0.5 * (cw["a"] + cw["b"])
-            if x0 <= mid[0] < x1 and y0 <= mid[1] < y1:
+            if skin_own(mid[0], mid[1]):
                 look = junctions.STOP_LINE if cw.get("stop") else junctions.CROSSWALK
                 ab = np.array([cw["a"], cw["b"]])
                 chunks.append(_chunk(look, cw["w"], ab))
@@ -6335,8 +6364,8 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         drv, nl = lane_layout(spec)
         for centre, t, kind_ in markings.arrows(tags, pts, not spec.oneway, drv, nl, left_hand):
             corners, uv = markings.arrow_quad(centre, t, kind_)
-            if (corners[:, 0].max() >= x0 and corners[:, 0].min() < x1 and corners[:, 1].max() >= y0
-                    and corners[:, 1].min() < y1):
+            if (corners[:, 0].max() >= wexact[0] and corners[:, 0].min() < wexact[2]
+                    and corners[:, 1].max() >= wexact[1] and corners[:, 1].min() < wexact[3]):
                 chunks.append({"m": markings.ARROW_MATERIAL, "w": 0.0, "tl": 4.0, "p": CENTRE["p"], "layer": "mark",
                                "poly": [[round(float(v), 3) for v in q] for q in corners],
                                "uvq": uv.tolist(), "n": []})
@@ -6346,7 +6375,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
             continue                                # (painted into the ground: surface.photo_roads)
         if kind_ == "stripe":
             mid = 0.5 * (gl[0] + gl[-1])
-            if x0 <= mid[0] < x1 and y0 <= mid[1] < y1:
+            if skin_own(mid[0], mid[1]):
                 chunks.append(_chunk(gore_look, gw, gl))
             continue
         for piece in clip_polyline(gl, x0, y0, x1, y1):
@@ -6364,7 +6393,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
     import roadcorners
     corner_chunks, corner_cuts = roadcorners.tile(
         roads, box, not ROADS_IN_GROUND, country, left_hand,
-        rings={fid for fid, (f, i, sp) in seen.items() if is_ring(f, i)}, no_decal=lot_aisles, exact=exact)
+        rings={fid for fid, (f, i, sp) in seen.items() if is_ring(f, i)}, no_decal=lot_aisles, exact=wexact)
     chunks.extend(corner_chunks)
     going_on = _going_on(roads)
     for fid, spec, pts, lon in roads:
@@ -6426,21 +6455,24 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         drain_runs = []                         # (walks entry, side, real ends, width): drains once on the ground
         for rn in runs_near:
             fid, side, w, run0 = rn["fid"], rn["side"], rn["w"], rn["pts"]
-            for run in clip_polyline(run0, *exact):
+            for run in clip_polyline(run0, *wexact):
                 if len(run) < 2:
                     continue
                 first = np.hypot(*(run[0, :2] - run0[0, :2])) < 1e-6
                 last = np.hypot(*(run[-1, :2] - run0[-1, :2])) < 1e-6
                 at_j0 = first and rn["j"][0]
                 at_j1 = last and rn["j"][1]
-                caps = (first and not at_j0 and not _on_box(run[0], exact),
-                        last and not at_j1 and not _on_box(run[-1], exact))
+                caps = (first and not at_j0 and not _on_box(run[0], wexact),
+                        last and not at_j1 and not _on_box(run[-1], wexact))
                 rl = [r for key in rn.get("ramp_keys", [(fid, side)]) for r in jramps.get(key, [])]
                 ramps = junctions.ramp_ranges(run, rl)
                 walks.append({"pts": run, "side": side, "caps": caps, "ramps": ramps, "w": w, "fid": fid,
                               "median": rn.get("median", False)})
                 if not rn.get("median"):                # (a median: a bare curb, no storm drains)
                     drain_runs.append((walks[-1], side, (caps[0] or at_j0, caps[1] or at_j1), w))
+        if walks_raw is not None:               # (the skin's: put on its anchor's ground there)
+            import copy
+            walks_raw.extend(copy.deepcopy(walks))
         drape_walks(frame, elev, walks, ground)
         for wk, side, ends, w in drain_runs:
             chunks.extend(drains(wk["pts"], side, ends, w))
@@ -6450,7 +6482,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         # (the speed-limit signs are the sign tiles' since 2026-10-28: speedsigns.py)
         import furniture
         decks = [(np.asarray(ch["n"], np.float64), ch["w"] / 2) for ch in chunks if ch.get("deck")]
-        props.extend(furniture.place(roads, walks, (x0, y0, x1, y1), wires=wires, town=bool(town), left_hand=left_hand,
+        props.extend(furniture.place(roads, walks, own_box, wires=wires, town=bool(town), left_hand=left_hand,
                                      decks=decks, signals=signals, buried=buried, region=lamp_region,
                                      lighting={fid: str(f.attrs["osm_lit"][i]).strip().lower()
                                                for fid, (f, i, _sp) in seen.items() if "osm_lit" in f.attrs}))
@@ -6464,11 +6496,11 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                 if sp.oneway:
                     v = _rule_value(f.rules.get("oneway"), i)
                     dirs[fid] = (-1 if float(v) < 0 else 1) if v is not None else (sp.dir or 1)
-            park.extend(parking.curb_spots(roads, walks, (x0, y0, x1, y1), left_hand, dirs))
+            park.extend(parking.curb_spots(roads, walks, own_box, left_hand, dirs))
             if aisles:
-                park.extend(parking.aisle_spots(roads, aisles, (x0, y0, x1, y1)))
+                park.extend(parking.aisle_spots(roads, aisles, own_box))
         if marks is not None and aisles:            # stall lines along the aisles (parking.aisle_markings)
-            marks.extend(parking.aisle_markings(roads, aisles, (x0, y0, x1, y1)))
+            marks.extend(parking.aisle_markings(roads, aisles, wexact))
     return chunks
 
 
@@ -6610,6 +6642,320 @@ _FAILS_SEEN = set()             # the kinds of road tile failures logged in full
 BLD_PARTS_MAX = 4               # building meshes per road tile ("bld", "bld2".."bld4": the mod's list)
 
 
+# --- road geotiles (phase 1c, .claude/work/geotiles_plan.md) -------------------------------------------------------
+# A road tile is a geotile (geotiles.Z: the global grid, key "g17_x_y"): its content (buildings, decks, tunnels,
+# walls, wires, rails, props and guard rails, parking, stations, wells, sound) built once in its own frame and kept by
+# the mod across rebases (placed into each anchor's world: geotile.lua), its skin (the draped road mesh, plazas,
+# sidewalks) built per anchor on that anchor's lattice. After a rebase the server sends skins only (and the exact
+# variants of the tall parts the rigid placement leaves off: GeoTracker.exact_need).
+
+ROAD_GEO = 1                # the road geotiles' protocol (hello.roadGeo, the mod's roads.lua M.ROAD_GEO)
+EXACT_TOL_COL_M = 0.03      # m a colliding part placed rigidly may be off (relief x the shear) before its exact variant
+EXACT_TOL_M = 0.10          # ... a render-only one
+
+
+def geo_wanted(frame, x, y, vx=0.0, vy=0.0):
+    """wanted_tiles for geotiles (their quads in frame's world): those within SEND_M, and at FAST_MS or more those
+    within CORRIDOR_M of the path ahead (LEAD_S of driving, LEAD_MAX_M at most). {(gx, gy): m from (x, y)}."""
+    import geotiles
+    want = {(a, b): d for a, b, d in geotiles.tiles_near(frame, x, y, SEND_M)}
+    s = math.hypot(vx, vy)
+    lead = min(LEAD_MAX_M, s * LEAD_S)
+    if s < FAST_MS or lead <= SEND_M:
+        return want
+    ux, uy = vx / s, vy / s
+    d = 0.0
+    while d <= lead:
+        for a, b, _dd in geotiles.tiles_near(frame, x + ux * d, y + uy * d, CORRIDOR_M):
+            want.setdefault((a, b), d)
+        d += TILE / 2
+    return want
+
+
+class GeoTracker:
+    """Per connection: the road geotiles the mod has. Content is sent once for the connection (kept by the mod across
+    anchors, sent: its keys), skins per anchor (skins), exact variants per anchor (shown: the variant's anchor per
+    part the mod shows; none: its base shape). build(aid, gx, gy, content, skin, exact) runs in a worker and returns
+    blockworker.roads_geo's result."""
+
+    geo = True
+
+    def __init__(self):
+        self.aid = None
+        self.frame = None
+        self.frames = {}        # anchor id -> its frame (the exact variants' error: _shown_err)
+        self.sent = set()       # (gx, gy) whose content the mod has
+        self.info = {}          # (gx, gy) -> its content's {"h", "parts": {what: {pivot, relief, col}}}
+        self.skins = set()      # (gx, gy) with self.aid's skin sent
+        self.shown = {}         # (gx, gy) -> {what: anchor id of the exact variant the mod shows}
+        self.need = {}          # ((gx, gy), aid) -> {what: pivot} its exact variants due (exact_need, cached)
+        self.building = set()
+        self.pool = None
+        self.futs = {}
+        self.retry = {}
+        self.fails = {}
+        self.started = {}
+        self.stuck_said = set()
+        self.car = set()
+        self.empty = set()      # (anchor tiles' interface: progress)
+        self.stats = {"content": 0, "skins": 0, "exact": 0, "exact_base": 0, "anchors": 0,
+                      "content_cpu": 0.0, "skin_cpu": 0.0}
+
+    def close(self):
+        if self.pool is not None:
+            self.pool.shutdown(wait=False, cancel_futures=True)
+
+    def progress(self):
+        """(done, wanted) of the tiles round the car: done = content and this anchor's skin sent, or waiting for a
+        retry."""
+        done = sum(1 for k in self.car if (k in self.sent and k in self.skins) or k in self.retry)
+        return done, len(self.car)
+
+    def _shown_err(self, key, what, part, frame):
+        """m the part (pivot, relief) of tile key is off in frame's world as the mod shows it (its base shape, or the
+        exact variant of the anchor in shown) under rigid placement."""
+        import geotiles
+        tf = geotiles.frame(*key)
+        piv = float(part.get("pivot", 0.0))
+        rel = float(part.get("relief", 0.0))
+        r_b, _t, c_b = geotiles.placement(tf, frame, (0.0, 0.0, piv))
+        src = self.shown.get(key, {}).get(what)
+        if src is None or src not in self.frames:
+            off = c_b
+        else:
+            r_a, _ta, c_a = geotiles.placement(tf, self.frames[src], (0.0, 0.0, piv))
+            off = r_b @ r_a.T @ c_a - c_b
+        return rel * float(np.hypot(off[0], off[1]))
+
+    def exact_need(self, key, aid=None, frame=None):
+        """({what: {pivot}} of tile key's parts whose exact variant for the anchor must be made, [what] of those
+        whose base shape is exact enough again while the mod shows a variant)."""
+        aid = self.aid if aid is None else aid
+        frame = self.frame if frame is None else frame
+        info = self.info.get(key)
+        if info is None or frame is None:
+            return {}, []
+        make, base = {}, []
+        for what, part in (info.get("parts") or {}).items():
+            tol = EXACT_TOL_COL_M if part.get("col") else EXACT_TOL_M
+            src = self.shown.get(key, {}).get(what)
+            if src == aid:
+                continue
+            if self._shown_err(key, what, part, frame) <= tol:
+                continue
+            saved = self.shown.get(key, {}).pop(what, None)         # (the base shape's error, for the choice)
+            base_err = self._shown_err(key, what, part, frame)
+            if saved is not None:
+                self.shown[key][what] = saved
+            if base_err <= tol:
+                base.append(what)
+            else:
+                make[what] = {"pivot": part.get("pivot", 0.0)}
+        return make, base
+
+    def on_pose(self, conn, aid, x, y, loop, build, vel=(0.0, 0.0), ground_busy=False, view=None, foci=(),
+                frame=None):
+        import geotiles
+        if frame is None:
+            return
+        if aid != self.aid:
+            for f in self.futs.values():
+                f.cancel()
+            self.aid, self.frame, self.building, self.futs = aid, frame, set(), {}
+            self.frames[aid] = frame
+            while len(self.frames) > 4:
+                old = min(a for a in self.frames if a != aid)
+                del self.frames[old]
+            self.skins, self.retry, self.fails, self.started, self.stuck_said = set(), {}, {}, {}, set()
+            self.need = {}
+            self.stats["anchors"] += 1
+        if self.pool is None:
+            from concurrent.futures import ThreadPoolExecutor
+            self.pool = ThreadPoolExecutor(BUILD_PER_POSE, thread_name_prefix="roads-geo")
+        vx, vy = (float(vel[0]), float(vel[1])) if vel else (0.0, 0.0)
+        s = math.hypot(vx, vy)
+        car = geo_wanted(frame, x, y, vx, vy)
+        self.car = set(car)
+        seen = {(a, b): d for a, b, d in geotiles.tiles_near(frame, *view, SEND_M)} if view else {}
+        others = {}
+        for f in foci:
+            for a, b, d in geotiles.tiles_near(frame, f[0], f[1], min(SEND_M, f[2] + TILE / 2)):
+                others.setdefault((a, b), d)
+        wanted = set(car) | set(seen) | set(others)
+        start = {(a, b) for a, b, _ in geotiles.tiles_near(frame, x, y, SEND_M)} if ground_busy else wanted
+        now = time.monotonic()
+        jobs = []
+        for k in start:
+            if k in self.building or self.retry.get(k, 0.0) > now:
+                continue
+            if k not in self.sent:
+                jobs.append((k, True, True, "auto"))
+                continue
+            make = None
+            if k not in self.skins or (k, self.aid) not in self.need:
+                mk, base = self.exact_need(k)
+                self.need[(k, self.aid)] = mk
+                if base:                    # (the base shape is exact enough again: no build)
+                    for w in base:
+                        self.shown.get(k, {}).pop(w, None)
+                    self.stats["exact_base"] += len(base)
+                    conn.send({"type": "roads_exact", "anchorId": aid, "key": geotiles.key(*k),
+                               "parts": {w: False for w in base}})
+            make = self.need.get((k, self.aid)) or None
+            if k not in self.skins or make:
+                jobs.append((k, False, k not in self.skins, make))
+
+        def order(job):
+            k = job[0]
+            if k in car:
+                d = car[k]
+                if s >= FAST_MS:        # (ahead first: the corridor's distance along the path)
+                    q = geotiles.quad(frame, *k)
+                    cx, cy = float(np.mean(q[:, 0])), float(np.mean(q[:, 1]))
+                    along = ((cx - x) * vx + (cy - y) * vy) / s
+                    if along < -TILE / 2:
+                        d = d * SIDE_PENALTY + LEAD_MAX_M
+                return (0, d)
+            if k in seen:
+                return (1, seen[k])
+            return (2, others.get(k, 1e9))
+        jobs.sort(key=order)
+        for k, content, skin, make in jobs[:max(0, BUILD_PER_POSE - len(self.building))]:
+            self.building.add(k)
+            self.started[k] = now
+            fut = self.futs[k] = loop.run_in_executor(self.pool, build, aid, k[0], k[1], content, skin, make)
+            fut.add_done_callback(lambda f, kk=k, a=aid, c=content, sk=skin, m=make:
+                                  self._built(conn, a, kk, f, c, sk, m))
+        for k in self.building:
+            t0 = self.started.get(k)
+            if t0 is not None and now - t0 > TILE_STUCK_S and k not in self.stuck_said:
+                self.stuck_said.add(k)
+                log.warning("road geotile %s of anchor %d: building for %.0f s (%d in flight, %d sent): the road "
+                            "workers may be stuck", k, aid, now - t0, len(self.building), len(self.sent))
+
+        def far(k):
+            q = geotiles.quad(frame, *k)
+            if geotiles.quad_dist(q, x, y) <= DROP_M:
+                return False
+            if view and geotiles.quad_dist(q, *view) <= DROP_M:
+                return False
+            return all(geotiles.quad_dist(q, f[0], f[1]) > f[2] + TILE for f in foci)
+        for k in [k for k in self.sent if k not in wanted and k not in self.building and far(k)]:
+            self.sent.discard(k)
+            self.skins.discard(k)
+            self.info.pop(k, None)
+            self.shown.pop(k, None)
+            self.need = {nk: v for nk, v in self.need.items() if nk[0] != k}
+            conn.send({"type": "roads_drop", "anchorId": aid, "key": geotiles.key(*k)})
+        if self.retry:
+            self.retry = {k: t for k, t in self.retry.items() if t > now}
+
+    def _built(self, conn, aid, key, fut, content, skin, make):
+        import geotiles
+        if self.futs.get(key) is fut:
+            self.building.discard(key)
+            self.futs.pop(key, None)
+            self.started.pop(key, None)
+        if fut.cancelled():
+            return
+        try:
+            res = fut.result()
+        except Exception as e:
+            kind = f"{type(e).__name__}: {e}"[:200]
+            fails = self.fails[key] = self.fails.get(key, 0) + 1
+            if kind not in _FAILS_SEEN and not isinstance(e, (OSError, TimeoutError)):
+                _FAILS_SEEN.add(kind)
+                log.warning("road geotile %s failed: %s", key, kind, exc_info=e)
+            elif fails == TILE_FAILS_WARN:
+                log.warning("road geotile %s: %d builds failed in a row, the last: %s", key, fails, kind)
+            else:
+                log.debug("road geotile %s: %s: %s", key, type(e).__name__, e)
+            if aid == self.aid:
+                self.retry[key] = time.monotonic() + TILE_RETRY_S
+            return
+        if res is None:
+            self.retry[key] = time.monotonic() + TILE_RETRY_S
+            return
+        self.fails.pop(key, None)
+        gkey = geotiles.key(*key)
+        s = getattr(conn, "s", None)
+        out_dir = getattr(s, "out_dir", None)
+        pool = getattr(s, "pool_shapes", None)
+        tm = res.get("time") or {}
+        self.stats["content_cpu"] += float(tm.get("content_cpu", 0.0))
+        self.stats["skin_cpu"] += float(tm.get("skin_cpu", 0.0))
+        c = res.get("content")
+        ex = (res.get("exact") or {}) if aid == self.aid else {}
+        if c is not None:
+            path, n, info = c[0], c[1], c[2]
+            self.sent.add(key)
+            self.info[key] = info
+            self.shown.pop(key, None)
+            self.stats["content"] += 1
+            m = {"type": "roads_tile", "anchorId": aid, "key": gkey, "path": path, "n": n,
+                 "frame": list(geotiles.centre(*key)), "h": info.get("h")}
+            data = staging.inline_json(out_dir, path) if out_dir else None
+            if data is not None:
+                m["data"] = data
+            if ex:                      # (the parts this anchor needs exact: the mod loads those, not the base)
+                m["exact"] = dict(ex)
+            if pool is not None:
+                import blockworker
+                names = blockworker.geo_names(gkey)
+                files = {w: n_ for w, n_ in names.items() if w not in ("json", "inputs") and w not in ex}
+                files.update({f"x:{w}": os.path.basename(p) for w, p in ex.items()})
+                slots = pool(conn, files)
+                if slots:
+                    m["slots"] = slots
+            conn.send(m)
+        if aid != self.aid:             # (an old anchor's skin and variants: the new anchor's come on their own)
+            return
+        sk = res.get("skin")
+        if skin and sk is not None:
+            self.skins.add(key)
+            self.stats["skins"] += 1
+            m = {"type": "roads_skin", "anchorId": aid, "key": gkey, "path": sk[0]}
+            data = staging.inline_json(out_dir, sk[0]) if out_dir else None
+            if data is not None:
+                m["data"] = data
+            if pool is not None:
+                import blockworker
+                names = blockworker.geo_names(gkey, aid)
+                slots = pool(conn, {w: n_ for w, n_ in names.items() if w != "json"})
+                if slots:
+                    m["slots"] = slots
+            conn.send(m)
+        for w in ex:
+            self.shown.setdefault(key, {})[w] = aid
+        self.stats["exact"] += len(ex)
+        if c is not None:               # (what is left due: none, with "auto")
+            mk, _base = self.exact_need(key)
+            self.need[(key, aid)] = mk
+        elif ex:
+            m = {"type": "roads_exact", "anchorId": aid, "key": gkey, "parts": dict(ex)}
+            if pool is not None:
+                slots = pool(conn, {w: os.path.basename(p) for w, p in ex.items()})
+                if slots:
+                    m["slots"] = slots
+            conn.send(m)
+        if make and c is None:
+            self.need[(key, aid)] = {w: v for w, v in (self.need.get((key, aid)) or {}).items() if w not in ex}
+
+
+def geo_exact_auto(tile_frame, frame, parts):
+    """{what: {pivot}} of a fresh content's parts (parts: {what: {pivot, relief, col}}) whose base shape placed rigidly
+    in frame's world would be off by more than their tolerance (EXACT_TOL_COL_M colliding, EXACT_TOL_M else)."""
+    import geotiles
+    out = {}
+    for what, part in (parts or {}).items():
+        piv = float(part.get("pivot", 0.0))
+        _r, _t, c = geotiles.placement(tile_frame, frame, (0.0, 0.0, piv))
+        tol = EXACT_TOL_COL_M if part.get("col") else EXACT_TOL_M
+        if float(part.get("relief", 0.0)) * float(np.hypot(c[0], c[1])) > tol:
+            out[what] = {"pivot": piv}
+    return out
+
+
 def shape_files(aid, tx, ty):
     """The shape files write_tile may write for a tile, by the field naming them in the tile ({what: file name})."""
     out = {"road": f"road_{aid}_{tx}_{ty}.cdae", "deck": f"deck_{aid}_{tx}_{ty}.cdae",
@@ -6687,7 +7033,7 @@ def sound_boxes(chunks):
 
 def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None, deck_mesh=None, bld=None,
                props=None, wires=None, park=None, tunnel_mesh=None, fuel=None,
-               rail_mesh=None, garage_sound=(), wells=(), guardrail_rows=None):
+               rail_mesh=None, garage_sound=(), wells=(), guardrail_rows=None, decals=True):
     """Write a tile's chunks (atomically), its sidewalk mesh (walks: build_tile's runs, if any:
     `walks_<a>_<tx>_<ty>.cdae`, announced in the tile as "walk": {shape, pos}) and its road mesh
     (road_mesh: roadmesh.build's result: `road_<a>_<tx>_<ty>.cdae`, "road": {shape, pos}; the mod then
@@ -6699,7 +7045,8 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
     path = os.path.join(out_dir, name)
     # (from PR #41, Madderose) with a road mesh the mod makes no DecalRoads: their chunks were ~36 % of the file it
     # parses on its main thread
-    data = {"v": VERSION, "chunks": [] if road_mesh is not None else [c for c in chunks if not c.get("tube_only")]}
+    data = {"v": VERSION, "chunks": [] if road_mesh is not None or not decals else
+            [c for c in chunks if not c.get("tube_only")]}
     sound = sound_boxes(chunks) + list(garage_sound)      # (garage_sound: buildings.garage_sound_boxes)
     if sound:
         data["sound"] = sound

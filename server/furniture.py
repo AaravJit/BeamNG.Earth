@@ -44,6 +44,13 @@ LAMP_SPACING_NA_SPARSE = dict(LAMP_SPACING_NA, residential=(130.0, False), uncla
 LAMP_SPACING_NA_SPARSE_DENSE = dict(LAMP_SPACING_NA_DENSE, residential=(60.0, False), unclassified=(66.0, False))
 
 
+
+
+def _owns(box, x, y):
+    """Is (x, y) the tile's own point (geotiles.box_owns: a geotile's exactly, an anchor tile's half-open box)?"""
+    import geotiles
+    return geotiles.box_owns(box, x, y)
+
 def lamp_region(country, region=None):
     """The street lamp rules of a country (ISO 3166 alpha-2) and region (ISO 3166-2, e.g. "US-CA"): "na",
     "na:sparse" or "na:ramps" (LAMP_SPACING_NA and the states' practice) or None (LAMP_SPACING)."""
@@ -393,7 +400,7 @@ def junction_props(roads, box, curb_h=0.15, left_hand=False, decks=(), signals=N
         if len(arms) < 3 or (not on_ring and not _controlled_here(arms, signals)):
             continue
         p = arms[0][3]
-        if not (x0 <= p[0] < x1 and y0 <= p[1] < y1):
+        if not (_owns(box, p[0], p[1])):
             continue
         put = junction_controls(arms, k, link_ok, ring, signals)
         if not put:
@@ -607,7 +614,7 @@ def place(roads, walks, box, curb_h=0.15, wires=None, town=False, left_hand=Fals
         def put(group, spacing, phase, curb_off, height, yaw_fn, clear=END_CLEAR_M):
             for p, out in _stations(run, line, spacing, phase, clear, side):
                 q = p[:2] - out * (w / 2 - curb_off)
-                if x0 <= q[0] < x1 and y0 <= q[1] < y1:
+                if _owns(box, q[0], q[1]):
                     rows.append([group, round(float(q[0]), 2), round(float(q[1]), 2), round(float(p[2] + curb_h), 2),
                                  round(yaw_fn(out), 1), 1.0, height, 0.0])
         rule = spacing_of.get(spec.cls)
@@ -622,7 +629,7 @@ def place(roads, walks, box, curb_h=0.15, wires=None, town=False, left_hand=Fals
                     q = p[:2] - out * (w / 2 - 0.6)
                     yaw = _yaw(out[0], out[1])
                     run_poles.append((float(q[0]), float(q[1]), float(p[2]), yaw))
-                    if x0 <= q[0] < x1 and y0 <= q[1] < y1:
+                    if _owns(box, q[0], q[1]):
                         rows.append([G_POLE, round(float(q[0]), 2), round(float(q[1]), 2), round(float(p[2]), 2),
                                      round(yaw, 1), 1.0, 9.2, 0.0])
                         k = int(round((float(_project(line, q[None])[0]) - ph) / TOWN_POLE_SPACING))
@@ -645,7 +652,7 @@ def place(roads, walks, box, curb_h=0.15, wires=None, town=False, left_hand=Fals
             tph = _h01(fid, side, "tph") * STREET_TREE_SPACING
             for p, out in _stations(run, line, STREET_TREE_SPACING, tph, END_CLEAR_M + 4.0, side):
                 q = p[:2] - out * (w / 2 - STREET_TREE_CURB_M)
-                if x0 <= q[0] < x1 and y0 <= q[1] < y1:
+                if _owns(box, q[0], q[1]):
                     # (each tree's size, turn and rank keyed on its station along the road, not on where the anchor's
                     # frame puts it: the same tree from every anchor, geotiles 2026-10-29)
                     k = int(round((float(_project(line, p[None, :2])[0]) - tph) / STREET_TREE_SPACING))
@@ -697,7 +704,7 @@ def place(roads, walks, box, curb_h=0.15, wires=None, town=False, left_hand=Fals
         for k, (p, d) in enumerate(zip(P, D)):
             n = np.array([-d[1], d[0]]) * side
             q = p[:2] + n * (spec.width / 2 + (POLE_OFF_M if poles else LAMP_EDGE_M))
-            inside = x0 <= q[0] < x1 and y0 <= q[1] < y1
+            inside = _owns(box, q[0], q[1])
             if not _clear(np.array([q[0], q[1], p[2]]), others, fid):
                 if len(run) > 1 and wires is not None:
                     wires.extend(_own_spans(run, box))
@@ -729,6 +736,6 @@ def _own_spans(run, box):
     x0, y0, x1, y1 = box
     out = []
     for a, b in zip(run[:-1], run[1:]):
-        if x0 <= a[0] < x1 and y0 <= a[1] < y1:
+        if _owns(box, a[0], a[1]):
             out.extend(wire_lines([a, b]))
     return out

@@ -581,10 +581,16 @@ local function makeItem(fd, t, i, shape, sc, solid, group, variant)
     itemPos:set(f[b + F_X], f[b + F_Y], f[b + F_Z])
   end
   if t.s >= 17 and type(f[b + 17]) == 'number' then
-    -- Guardrails carry their orthonormal world-space basis; local X follows the road chord.
-    itemVec:set(f[b + 9], f[b + 10], f[b + 11]); m:setColumn(0, itemVec)
-    itemVec:set(f[b + 12], f[b + 13], f[b + 14]); m:setColumn(1, itemVec)
-    itemVec:set(f[b + 15], f[b + 16], f[b + 17]); m:setColumn(2, itemVec)
+    -- Guardrails carry their orthonormal world-space basis; local X follows the road chord. (A geotile's: in its
+    -- frame, turned by its placement's rotation.)
+    local r = t.geo and t.madePl and t.madePl.r
+    for c = 0, 2 do
+      local vx, vy, vz = f[b + 9 + 3 * c], f[b + 10 + 3 * c], f[b + 11 + 3 * c]
+      if r then
+        vx, vy, vz = r[1] * vx + r[2] * vy + r[3] * vz, r[4] * vx + r[5] * vy + r[6] * vz, r[7] * vx + r[8] * vy + r[9] * vz
+      end
+      itemVec:set(vx, vy, vz); m:setColumn(c, itemVec)
+    end
     m:setPosition(itemPos)
   else
     -- Existing props use a flat yaw (counter-clockwise in server coordinates).
@@ -713,6 +719,20 @@ function M.onRows(anchorId, tileKey, rows, groups, stride)
   stride = math.floor(tonumber(stride) or M.STRIDE)
   if stride < M.STRIDE then stride = M.STRIDE end
   addTile(anchorId, tileKey, M.flatten(rows, stride), stride, groups)
+end
+
+-- Rows of a road geotile (roads.lua: its street furniture 'p<key>', guard rails 'g<key>'), in the tile's frame
+-- (frame: its anchor object, pivot), placed into anchor a as the vegetation's geotiles are (and with them at a rebase:
+-- M.transform). Dropped with M.dropKey('g:' .. tileKey).
+function M.onGeoRows(tileKey, gkey, rows, groups, stride, frame, pivot, a)
+  if not frame or not a then return end
+  stride = math.floor(tonumber(stride) or M.STRIDE)
+  if stride < M.STRIDE then stride = M.STRIDE end
+  local geo = { frame = frame, pivot = pivot or 0, pl = geoPlacement(frame, a, pivot or 0) }
+  addTile(nil, tileKey, M.flatten(rows, stride), stride, groups, geo)
+  local t = tiles['g:' .. tostring(tileKey)]
+  t.key, t.anchorObj = gkey, a
+  M.placeGeo(t)
 end
 
 -- The tile "anchorId:key" goes (roads.lua's furniture).

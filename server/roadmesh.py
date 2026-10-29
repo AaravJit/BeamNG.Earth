@@ -335,7 +335,8 @@ def _shared(P, UV, T):
     return P[first], UV[first], inv.reshape(-1)[T]
 
 
-def build(frame, chunks, elev, origin, lift=0.0, clip=None, follow=False, q=None, drawn=None, context=()):
+def build(frame, chunks, elev, origin, lift=0.0, clip=None, follow=False, q=None, drawn=None, context=(),
+          clip_poly=None):
     """The road mesh of a tile (render only; on bridges it lies DECK_SKIN over deck()'s slab): (positions
     relative to origin, tris, uvs, materials, tri material index), or None. elev(lat, lon) -> m (graded,
     as the physics block). One elev call. lift: m more for the draped surfaces (detail mode: the physics
@@ -346,7 +347,9 @@ def build(frame, chunks, elev, origin, lift=0.0, clip=None, follow=False, q=None
     and cut along its triangles where it bends under them (follow_ground; q its height quantum), so they lie `lift`
     over the drawn ground (within FOLLOW_TOL; drawn(lat, lon): the block's heights where they are not elev's, its
     ground raised over low arches): a ribbon straight across the road stood under the ground's bumps (up to 30 cm on hills), so it was drawn
-    5 cm over it and the tyres sank into it (the user, 2026-10-20)."""
+    5 cm over it and the tyres sank into it (the user, 2026-10-20). clip_poly (k, 2): a convex polygon the mesh is cut
+    to instead of the box (a geotile's quad in the anchor's world: earthfast.clip_tris_convex, the neighbours' cuts
+    along the very same lines); clip then only says where the ribbons reach past the tile (_reach_past)."""
     chunks = [c for c in chunks if not c.get("tube_only")]  # (twin tunnels' tube: no road surface, roads._tunnel_chunks)
     if clip is not None:
         chunks = [_reach_past(c, clip) for c in chunks]
@@ -417,7 +420,17 @@ def build(frame, chunks, elev, origin, lift=0.0, clip=None, follow=False, q=None
     P, T, UV, M = np.concatenate(P), np.concatenate(T), np.concatenate(UV), np.concatenate(M)
     TL = np.concatenate(TL)
     tid = np.arange(len(T))
-    if clip is not None:
+    if clip_poly is not None:
+        import fast
+        fast.require(104, "clip_tris_convex")
+        P, UV, T, src = fast._ef.clip_tris_convex(np.ascontiguousarray(P[:, :3], np.float64),
+                                                  np.ascontiguousarray(UV, np.float64),
+                                                  np.ascontiguousarray(T, np.int64),
+                                                  np.ascontiguousarray(np.asarray(clip_poly, np.float64)[:, :2]))
+        tid = tid[src]
+        if not len(T):
+            return None
+    elif clip is not None:
         P, T, UV, tid = _clip_tris(P, T, UV, tid, clip)
         if not len(T):
             return None

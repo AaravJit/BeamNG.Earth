@@ -22,6 +22,8 @@ mod speedsigns;
 mod cachemap;
 mod areacover;
 mod geotiles;
+mod geocontent;
+mod sidewalks;
 mod roadz;
 
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, IntoPyArray};
@@ -3120,50 +3122,54 @@ fn triangulate<'py>(py: Python<'py>, p: PyReadonlyArray2<'py, f64>) -> Bound<'py
     let a = p.as_array();
     let n = a.nrows();
     let pts: Vec<(f64, f64)> = (0..n).map(|i| (a[[i, 0]], a[[i, 1]])).collect();
-    let out = py.allow_threads(|| {
-        let cross = |a: (f64, f64), b: (f64, f64), c: (f64, f64)| (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
-        let mut idx: Vec<usize> = (0..n).collect();
-        let mut out: Vec<[i64; 3]> = Vec::new();
-        let mut guard = 0usize;
-        while idx.len() > 3 && guard < 4 * n * n {
-            guard += 1;
-            let m = idx.len();
-            let mut found = false;
-            for k in 0..m {
-                let (i0, i1, i2) = (idx[(k + m - 1) % m], idx[k], idx[(k + 1) % m]);
-                let (pa, pb, pc) = (pts[i0], pts[i1], pts[i2]);
-                if cross(pa, pb, pc) <= 1e-12 {
+    let out = py.allow_threads(|| ear_clip(&pts));
+    let flat: Vec<i64> = out.iter().flat_map(|t| t.iter().copied()).collect();
+    numpy::ndarray::Array2::from_shape_vec((out.len(), 3), flat).unwrap().into_pyarray(py)
+}
+
+/// triangulate's ear clipping (also the sidewalks' corner slabs: sidewalks.rs).
+pub(crate) fn ear_clip(pts: &[(f64, f64)]) -> Vec<[i64; 3]> {
+    let n = pts.len();
+    let cross = |a: (f64, f64), b: (f64, f64), c: (f64, f64)| (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
+    let mut idx: Vec<usize> = (0..n).collect();
+    let mut out: Vec<[i64; 3]> = Vec::new();
+    let mut guard = 0usize;
+    while idx.len() > 3 && guard < 4 * n * n {
+        guard += 1;
+        let m = idx.len();
+        let mut found = false;
+        for k in 0..m {
+            let (i0, i1, i2) = (idx[(k + m - 1) % m], idx[k], idx[(k + 1) % m]);
+            let (pa, pb, pc) = (pts[i0], pts[i1], pts[i2]);
+            if cross(pa, pb, pc) <= 1e-12 {
+                continue;
+            }
+            let mut ear = true;
+            for &j in &idx {
+                if j == i0 || j == i1 || j == i2 {
                     continue;
                 }
-                let mut ear = true;
-                for &j in &idx {
-                    if j == i0 || j == i1 || j == i2 {
-                        continue;
-                    }
-                    let q = pts[j];
-                    if cross(pa, pb, q) >= 0.0 && cross(pb, pc, q) >= 0.0 && cross(pc, pa, q) >= 0.0 {
-                        ear = false;
-                        break;
-                    }
-                }
-                if ear {
-                    out.push([i0 as i64, i1 as i64, i2 as i64]);
-                    idx.remove(k);
-                    found = true;
+                let q = pts[j];
+                if cross(pa, pb, q) >= 0.0 && cross(pb, pc, q) >= 0.0 && cross(pc, pa, q) >= 0.0 {
+                    ear = false;
                     break;
                 }
             }
-            if !found {
+            if ear {
+                out.push([i0 as i64, i1 as i64, i2 as i64]);
+                idx.remove(k);
+                found = true;
                 break;
             }
         }
-        if idx.len() == 3 {
-            out.push([idx[0] as i64, idx[1] as i64, idx[2] as i64]);
+        if !found {
+            break;
         }
-        out
-    });
-    let flat: Vec<i64> = out.iter().flat_map(|t| t.iter().copied()).collect();
-    numpy::ndarray::Array2::from_shape_vec((out.len(), 3), flat).unwrap().into_pyarray(py)
+    }
+    if idx.len() == 3 {
+        out.push([idx[0] as i64, idx[1] as i64, idx[2] as i64]);
+    }
+    out
 }
 
 /// buildings.clean_ring's simplification: the ring (n, 2) without its closing point (np.allclose), its nearly collinear
@@ -5316,6 +5322,12 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(geotiles::geo_world_map, m)?)?;
     m.add_function(wrap_pyfunction!(geotiles::geo_world_to_geodetic, m)?)?;
     m.add_function(wrap_pyfunction!(geotiles::geo_placement, m)?)?;
-    m.add("VERSION", 103)?;
+    m.add_function(wrap_pyfunction!(geocontent::geo_owns, m)?)?;
+    m.add_function(wrap_pyfunction!(geocontent::clip_tris_convex, m)?)?;
+    m.add_function(wrap_pyfunction!(geocontent::cdae_zstats, m)?)?;
+    m.add_function(wrap_pyfunction!(geocontent::cdae_shear, m)?)?;
+    m.add_function(wrap_pyfunction!(geocontent::clip_segments_convex, m)?)?;
+    m.add_function(wrap_pyfunction!(sidewalks::sidewalk_mesh, m)?)?;
+    m.add("VERSION", 104)?;
     Ok(())
 }
