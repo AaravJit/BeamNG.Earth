@@ -297,6 +297,17 @@ pub fn geo_tile_quad<'py>(py: Python<'py>, lat0: f64, lon0: f64, z: u32, x: i64,
     numpy::ndarray::Array2::from_shape_vec((4, 2), q.iter().flatten().copied().collect()).unwrap().into_pyarray(py)
 }
 
+/// geotiles.quad_dist: m from (x, y) to a quad (4, 2) (0 inside).
+#[pyfunction]
+pub fn geo_quad_dist(q: PyReadonlyArray2<'_, f64>, x: f64, y: f64) -> f64 {
+    let a = q.as_array();
+    let mut qq = [[0.0f64; 2]; 4];
+    for k in 0..4 {
+        qq[k] = [a[[k, 0]], a[[k, 1]]];
+    }
+    quad_dist(&qq, x, y)
+}
+
 /// geotiles.tiles_near: [(x, y, m)] of the zoom-z tiles within r of (x, y) in the world of the frame (lat0, lon0).
 #[pyfunction]
 pub fn geo_tiles_near(py: Python<'_>, lat0: f64, lon0: f64, z: u32, x: f64, y: f64, r: f64) -> Vec<(i64, i64, f64)> {

@@ -5312,6 +5312,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(geotiles::geo_tile_info, m)?)?;
     m.add_function(wrap_pyfunction!(geotiles::geo_tile_quad, m)?)?;
     m.add_function(wrap_pyfunction!(geotiles::geo_tiles_near, m)?)?;
+    m.add_function(wrap_pyfunction!(geotiles::geo_quad_dist, m)?)?;
     m.add_function(wrap_pyfunction!(geotiles::geo_world_map, m)?)?;
     m.add_function(wrap_pyfunction!(geotiles::geo_world_to_geodetic, m)?)?;
     m.add_function(wrap_pyfunction!(geotiles::geo_placement, m)?)?;

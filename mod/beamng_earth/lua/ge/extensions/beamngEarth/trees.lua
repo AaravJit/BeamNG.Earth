@@ -7,6 +7,14 @@
 -- hundred per frame (~19 us each, 2026-10-13 probe).
 local M = {}
 local vienna = require('beamngEarth/vienna_convention_speed_signs')
+local geotile = require('beamngEarth/geotile')
+-- Geotiles (server --geo-tiles on, hello.geoTiles): a tile keyed 'g17_x_y' holds its items in its own frame (msg.frame,
+-- msg.pivot); it belongs to no anchor. Its items are made where its placement into the current anchor puts them
+-- (geotile.placement); at a rebase its Forest takes the move from the old placement to the new one (rendering at once,
+-- nothing made again) and the server sends nothing again. A Forest's transform moves only the drawing, not the
+-- collision (probe 2026-10-17), so a moved tile that must collide (within SOLID_M) has its items made again at the
+-- new placement first (flush), and only those: the far ones never collide.
+M.geoMoved, M.geoFlushed = 0, 0
 
 M.PER_FRAME = 250       -- items made or removed per frame at most
 M.ROWS_PER_FRAME = 12000 -- rows of changing tiles looked at per frame at most (Lua time: 30000 averaged 2.5 ms)
@@ -563,7 +571,15 @@ local function makeItem(fd, t, i, shape, sc, solid, group, variant)
   -- given negated. Positive, every prop was mirrored about the x axis: doors on north-south walls backwards, on
   -- diagonal walls askew, benches and lamps turned (read back in-game 2026-10-17: rows at 141.6 rendered at -141.6)
   local f, b = t.f, (i - 1) * t.s
-  itemPos:set(f[b + F_X], f[b + F_Y], f[b + F_Z])
+  local yawAdd = 0
+  if t.geo then             -- (made where the tile's placement put it when its first items were made: madePl)
+    local x, y, z = geotile.apply(t.madePl, f[b + F_X], f[b + F_Y], f[b + F_Z])
+    itemPos:set(x, y, z)
+    yawAdd = t.madeYaw or geotile.yawOf(t.madePl)
+    t.madeYaw = yawAdd
+  else
+    itemPos:set(f[b + F_X], f[b + F_Y], f[b + F_Z])
+  end
   if t.s >= 17 and type(f[b + 17]) == 'number' then
     -- Guardrails carry their orthonormal world-space basis; local X follows the road chord.
     itemVec:set(f[b + 9], f[b + 10], f[b + 11]); m:setColumn(0, itemVec)
@@ -572,7 +588,7 @@ local function makeItem(fd, t, i, shape, sc, solid, group, variant)
     m:setPosition(itemPos)
   else
     -- Existing props use a flat yaw (counter-clockwise in server coordinates).
-    itemVec:set(0, 0, -math.rad(f[b + F_YAW]))
+    itemVec:set(0, 0, -math.rad(f[b + F_YAW] + yawAdd))
     m:setFromEuler(itemVec)
     m:setPosition(itemPos)
   end
@@ -605,8 +621,8 @@ local function allow(shape)
 end
 
 -- A tile's items as a flat array (STRIDE numbers each, or more: stride), shown from the next update on.
-local function addTile(anchorId, tileKey, flat, stride, groups)
-  local key = anchorId .. ':' .. tostring(tileKey)
+local function addTile(anchorId, tileKey, flat, stride, groups, geo)
+  local key = geo and ('g:' .. tostring(tileKey)) or (anchorId .. ':' .. tostring(tileKey))
   local old = tiles[key]
   local tx, ty = tostring(tileKey):match('(%-?%d+)_(%-?%d+)$')
   -- (the shape cache is the items': every message brings items of its own)
@@ -616,26 +632,77 @@ local function addTile(anchorId, tileKey, flat, stride, groups)
     shapes = {}, scales = {},
     madeShape = old and old.madeShape or {}, shown = old and old.shown or 0, forestId = old and old.forestId or nil,
     variant = M.tileVariant(key), cx = (tonumber(tx) or 0) * 256 + 128, cy = (tonumber(ty) or 0) * 256 + 128, drop = false }
+  if geo then
+    -- (its items as made so far stay where they were made: madePl, the Forest's move since in t.moved)
+    t.geo, t.frame, t.pivot, t.half = true, geo.frame, geo.pivot, 128
+    t.pl = geo.pl
+    t.madePl = old and old.madePl or geo.pl
+    t.moved = old and old.moved or nil
+    M.placeGeo(t)
+  end
   tiles[key] = t
   dirty = true
 end
 
+-- Pure-ish: a geotile's centre and half size in the current placement (t.pl), for the distances.
+function M.placeGeo(t)
+  local z, x, y = geotile.parse(t.key or '')
+  local cx, cy = geotile.apply(t.pl, 0, 0, t.pivot)
+  t.cx, t.cy = cx, cy
+  if z and t.anchorObj then
+    local q = geotile.quad(t.anchorObj, z, x, y)
+    local hx = 0
+    for _, c in ipairs(q) do hx = math.max(hx, math.abs(c[1] - cx), math.abs(c[2] - cy)) end
+    t.half = hx
+  end
+end
+
+-- A geotile's placement into anchor a.
+local function geoPlacement(frame, a, pivot)
+  return geotile.placement(frame, a, 0, 0, pivot)
+end
+M.geoPlacement = geoPlacement
+
 -- A 'veg_tile' message: { anchorId, key, path, n }. Returns the tile's data (its ambience: ambience.lua).
-function M.onTile(msg, currentAnchor)
-  if msg.anchorId ~= currentAnchor or type(msg.path) ~= 'string' then return end
+function M.onTile(msg, currentAnchor, anchorObj)
+  local isGeo = geotile.isKey(msg.key)
+  if isGeo then
+    if not anchorObj or type(msg.path) ~= 'string' then return end
+  elseif msg.anchorId ~= currentAnchor or type(msg.path) ~= 'string' then return end
   -- the file's JSON in the message (server staging.inline_json: Windows' first read of a file the server just wrote took
   -- up to 0.5 s in the frame), else the file: { groups, stride, flat } (hello.vegFlat), or { groups, items } (rows)
   local ok, data = true, msg.data
   if type(data) ~= 'table' then ok, data = pcall(jsonDecode, readFile(msg.path) or '') end
   local stride = type(data) == 'table' and tonumber(data.stride)
+  local geo = nil
+  if isGeo and ok and type(data) == 'table' then
+    local frame = geotile.frameOf({ frame = msg.frame or data.frame, key = msg.key })
+    local pivot = tonumber(msg.pivot) or tonumber(data.pivot) or 0
+    if not frame then M.errors = M.errors + 1; return end
+    geo = { frame = frame, pivot = pivot, pl = geoPlacement(frame, anchorObj, pivot) }
+  end
   if ok and type(data) == 'table' and type(data.flat) == 'table' and stride and stride >= M.STRIDE
       and stride == math.floor(stride) then
-    addTile(msg.anchorId, msg.key, data.flat, stride, data.groups)
+    addTile(msg.anchorId, msg.key, data.flat, stride, data.groups, geo)
   elseif ok and type(data) == 'table' and type(data.items) == 'table' then
-    M.onRows(msg.anchorId, msg.key, data.items, data.groups)
+    addTile(msg.anchorId, msg.key, M.flatten(data.items, M.STRIDE), M.STRIDE, data.groups, geo)
   else
     M.errors = M.errors + 1
     return
+  end
+  if geo then
+    local t = tiles['g:' .. tostring(msg.key)]
+    t.key, t.anchorObj = msg.key, anchorObj
+    M.placeGeo(t)
+    -- the ambience's nodes (x, y, z, depth, size, count rows) placed into this anchor's world (ambience.lua)
+    if type(data.audio) == 'table' then
+      local a, out = data.audio, {}
+      for i = 1, #a - 5, 6 do
+        local x, y, z = geotile.apply(geo.pl, a[i], a[i + 1], a[i + 2])
+        out[i], out[i + 1], out[i + 2], out[i + 3], out[i + 4], out[i + 5] = x, y, z, a[i + 3], a[i + 4], a[i + 5]
+      end
+      data = { audio = out, biome = data.biome, geo = { cx = t.cx, cy = t.cy } }
+    end
   end
   return data
 end
@@ -656,7 +723,7 @@ end
 
 -- A 'veg_drop' message: the tile's items go.
 function M.onDrop(msg)
-  local t = tiles[msg.anchorId .. ':' .. tostring(msg.key)]
+  local t = tiles[(geotile.isKey(msg.key) and 'g' or msg.anchorId) .. ':' .. tostring(msg.key)]
   if t then t.drop = true; dirty = true end
 end
 
@@ -716,11 +783,15 @@ M.GHOST_MAX_S = 120
 M.GHOST_FAR_M = 1536
 M.GHOST_FAR_WAIT_S = 2
 
-function M.transform(xf, geodesy)
+function M.transform(xf, geodesy, newAnchor)
   local bx, by, bz, bw = xf:beamngQuat()
   local any = false
   for _, t in pairs(tiles) do
-    if not t.drop then
+    if t.geo and not t.drop and newAnchor then
+      M.replaceGeo(t, newAnchor)
+    elseif t.geo then
+      t.drop = true; dirty = true       -- (no anchor to place it in: the server sends it again)
+    elseif not t.drop then
       local q = t.fq or { 0, 0, 0, 1 }
       local x, y, z, w = geodesy.quatMul(q[1], q[2], q[3], q[4], bx, by, bz, bw)
       t.fq = { x, y, z, w }
@@ -738,6 +809,35 @@ function M.transform(xf, geodesy)
   if any then ghostSince = stopwatch.new(); dirty = true end
 end
 
+-- A geotile into anchor a's world: its Forest takes the move from where its items were made (madePl) to the new
+-- placement (the drawing at once); a tile that must collide is flushed and made again there (update).
+function M.replaceGeo(t, a)
+  t.anchorObj = a
+  t.pl = geoPlacement(t.frame, a, t.pivot)
+  M.placeGeo(t)
+  local f = t.forestId and scenetree.findObjectById(t.forestId)
+  if next(t.made) == nil then
+    t.madePl, t.madeYaw, t.moved = t.pl, nil, nil       -- (nothing made yet: made at the new placement)
+    if f then f:setPosRot(0, 0, 0, 0, 0, 0, 1) end
+  else
+    local d = geotile.between(t.madePl, t.pl)
+    local x, y, z, w = d:beamngQuat()
+    t.moved = { d.t[1], d.t[2], d.t[3], x, y, z, w }
+    if f then f:setPosRot(d.t[1], d.t[2], d.t[3], x, y, z, w) end
+  end
+  t.pending = true
+  M.geoMoved = M.geoMoved + 1
+  dirty = true
+end
+
+-- A teleport's new anchor (core.lua commitTeleport): the geotiles here placed into its world (the server drops the far
+-- ones; a teleport near keeps what is around).
+function M.reanchor(a)
+  for _, t in pairs(tiles) do
+    if t.geo and not t.drop and a then M.replaceGeo(t, a) end
+  end
+end
+
 -- Ghost tiles whose square the current anchor's filled tiles cover go (emptied by update's first loop).
 releaseGhosts = function(anchorId, player)
   if not ghostSince then return end
@@ -745,9 +845,15 @@ releaseGhosts = function(anchorId, player)
   local done = {}
   if not all then
     for _, t in pairs(tiles) do
-      if t.anchor == anchorId and not t.ghost and not t.drop then
-        local k = math.floor(t.cx / 256) .. '_' .. math.floor(t.cy / 256)
-        done[k] = (done[k] ~= false) and not t.pending and (t.shown or 0) > 0
+      if (t.anchor == anchorId or t.geo) and not t.ghost and not t.drop then
+        local ok = not t.pending and (t.shown or 0) > 0
+        local h = t.geo and t.half or 128
+        for gx = math.floor((t.cx - h) / 256), math.floor((t.cx + h - 1e-6) / 256) do
+          for gy = math.floor((t.cy - h) / 256), math.floor((t.cy + h - 1e-6) / 256) do
+            local k = gx .. '_' .. gy
+            done[k] = (done[k] ~= false) and ok
+          end
+        end
       end
     end
   end
@@ -819,7 +925,7 @@ function M.update(anchorId, player, view, frameMs)
   touched, touchedItems = {}, 0
   releaseGhosts(anchorId, player)
   for key, t in pairs(tiles) do
-    if (t.anchor ~= anchorId and not t.ghost) or t.drop then
+    if (not t.geo and t.anchor ~= anchorId and not t.ghost) or t.drop or t.flush then
       local f = t.forestId and scenetree.findObjectById(t.forestId)
       local fd = f and f:getData()
       local left = false
@@ -832,7 +938,14 @@ function M.update(anchorId, player, view, frameMs)
           budget = budget - 1
         else left = true end
       end
-      if not left then
+      if not left and t.flush and not t.drop then
+        -- (a moved geotile emptied: made again at its placement, the Forest back where it was made)
+        if f then f:setPosRot(0, 0, 0, 0, 0, 0, 1) end
+        t.flush, t.moved, t.madePl, t.madeYaw = nil, nil, t.pl, nil
+        t.shown, t.band, t.near, t.pending, t.scan = 0, nil, nil, true, nil
+        M.geoFlushed = M.geoFlushed + 1
+        dirty = true
+      elseif not left then
         releaseForest(t)
         tiles[key] = nil
       else dirty = true end
@@ -842,12 +955,13 @@ function M.update(anchorId, player, view, frameMs)
   -- nearest tiles first (to the camera when it is away: view); [3] the distance to the car (the colliding items)
   local order = {}
   local function boxDist(p, t)
-    local dx = math.max(math.abs(p.x - t.cx) - 128, 0)
-    local dy = math.max(math.abs(p.y - t.cy) - 128, 0)
+    local h = t.half or 128
+    local dx = math.max(math.abs(p.x - t.cx) - h, 0)
+    local dy = math.max(math.abs(p.y - t.cy) - h, 0)
     return math.sqrt(dx * dx + dy * dy)
   end
   for key, t in pairs(tiles) do
-    if t.anchor ~= anchorId or t.drop then goto continue end     -- still being emptied
+    if (not t.geo and t.anchor ~= anchorId) or t.drop or t.flush then goto continue end     -- still being emptied
     local dCar = boxDist(player, t)
     order[#order + 1] = { key, view and math.min(boxDist(view, t), dCar) or dCar, dCar }
     ::continue::
@@ -891,6 +1005,12 @@ function M.update(anchorId, player, view, frameMs)
     local want = tileThreshold(o[2], t)
     local band = groupBand(t, o[2])
     local near = o[3] <= M.SOLID_M or (t.near and o[3] <= M.SOLID_M + M.SOLID_HYST_M) or nearFocus(t) or false
+    if near and t.moved then
+      -- a moved geotile that must collide: its items made again at its placement first (the first loop, next pass)
+      t.flush = true
+      dirty = true
+      goto nexttile
+    end
     if want ~= t.shown or band ~= t.band or near ~= t.near or t.pending then
       if rowsScanned > M.ROWS_PER_FRAME then dirty = true; finish(); return end   -- (its pass in a later frame: pending kept)
       t.pending = false
@@ -963,6 +1083,7 @@ function M.update(anchorId, player, view, frameMs)
       t.near = near
       if skipped then t.pending = true; t.scan = { from = skipped, want = want, band = band, near = near }; dirty = true end
     end
+    ::nexttile::
   end
   finish()
   -- nothing changed this frame: a spare Forest made for the pool (its ~9 ms alone, not in a frame of items)
