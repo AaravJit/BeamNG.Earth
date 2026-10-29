@@ -1116,7 +1116,8 @@ function M.status()
     if t.pending or t.shown == 0 then pending = pending + 1 end
     for _ in pairs(t.made) do items = items + 1 end
   end
-  return { tiles = n, items = items, pending = pending, made = M.made, removed = M.removed, errors = M.errors }
+  return { tiles = n, items = items, pending = pending, made = M.made, removed = M.removed, errors = M.errors,
+    geoMoved = M.geoMoved, geoFlushed = M.geoFlushed }   -- (geotiles: placed again at a rebase, made again)
 end
 
 return M
