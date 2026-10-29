@@ -131,7 +131,11 @@
       <!-- the other players of a BeamMP session, nearest first: follow one on the map, or a GPS route to them -->
       <div v-if="state.others" class="layers-wrap">
         <button class="map-btn" :class="{ on: playersPanel || typeof follow === 'string' }"
-                @click="playersPanel = !playersPanel; layersPanel = false" title="The other players">Players ({{ otherList.length }})</button>
+                @click="playersPanel = !playersPanel; layersPanel = false"
+                :title="followedPlayer ? 'Following ' + followedPlayer.name + ' (drag the map to stop)' : 'The other players'">
+          <span v-if="followedPlayer" class="following">Following {{ followedPlayer.name }}</span>
+          <template v-else>Players ({{ otherList.length }})</template>
+        </button>
         <div v-if="playersPanel" class="layers-panel players-panel" :style="{ maxHeight: `calc(${h}px - 74px - 6.5vh)` }"
              @mousedown.stop @wheel.stop @dblclick.stop>
           <div class="players-head">
@@ -146,7 +150,7 @@
             </div>
             <div class="item-btns">
               <button class="map-btn small" :class="{ on: follow === p.pid }" @click="followPlayer(p)"
-                      title="Keep the map on them as they move (the map only: your car stays where it is)">Follow</button>
+                      :title="follow === p.pid ? 'Stop following' : 'Keep the map on them as they move, until you drag the map (the map only: your car stays where it is)'">{{ follow === p.pid ? "Following" : "Follow" }}</button>
               <button class="map-btn small" @click="gpsToPlayer(p)" title="A GPS route to where they are now">GPS</button>
             </div>
           </div>
@@ -349,9 +353,9 @@ function poll() {
     if (!s) { state.value = { places: [], recent: [], missing: true }; return }
     state.value = { places: [], recent: [], ...s }
     if (!s.others && playersPanel.value) closePlayers()   // (out of the session: not open again by itself in the next)
-    if (typeof follow.value === "string") {
-      const o = otherList.value.find(p => p.pid === follow.value)
-      if (o) centreOn(o.lat, o.lon, view.value.z)
+    if (followingPlayer()) {
+      const o = followedPlayer.value
+      if (o) glideTo(o.lat, o.lon)
       else { follow.value = false; showToast("That player is no longer on the map") }
     } else if (s.player && follow.value) {
       centreOn(s.player.lat, s.player.lon, seenPlayer.value ? view.value.z : 12)
@@ -507,9 +511,13 @@ const placeMarkers = computed(() =>
 
 // state.others: mpsession.others() ({ pid, name, lat, lon, h }), nil outside a BeamMP session
 const otherList = computed(() => toArray(state.value.others))
+// (a followed player at the centre: the view is on them or gliding there, glideTo; drawn at their latest position the
+// arrow jumped ahead at each update and the map slid after it)
 const otherMarkers = computed(() =>
-  otherList.value.map(o => { const s = screen(o.lat, o.lon); return { ...o, sx: s.x, sy: s.y } })
-    .filter(o => onScreen({ x: o.sx, y: o.sy })))
+  otherList.value.map(o => {
+    const s = o.pid === follow.value ? { x: w.value / 2, y: h.value / 2 } : screen(o.lat, o.lon)
+    return { ...o, sx: s.x, sy: s.y }
+  }).filter(o => onScreen({ x: o.sx, y: o.sy })))
 
 const playerScreen = computed(() => {
   const p = state.value.player
@@ -682,6 +690,9 @@ function onWheel(ev) {
   const p = localXY(ev)
   const v = view.value
   const z2 = v.z + (ev.deltaY < 0 ? 0.5 : -0.5)
+  // following a player: zoomed round them (the centre), still following (a pan stops it; the user, 2026-10-28: "it
+  // actually follows the player icon, until you move the map around manually")
+  if (followingPlayer()) { view.value = mm.zoomAt(v.lat, v.lon, v.z, z2, w.value / 2, h.value / 2, w.value, h.value); return }
   const r = mm.zoomAt(v.lat, v.lon, v.z, z2, p.x, p.y, w.value, h.value)
   if (Math.abs(p.x - w.value / 2) > 2 || Math.abs(p.y - h.value / 2) > 2) follow.value = false
   view.value = r
@@ -693,6 +704,7 @@ function onDblClick(ev) {
   if (Date.now() - followedAt < 500) return
   const p = localXY(ev)
   const v = view.value
+  if (followingPlayer()) { view.value = mm.zoomAt(v.lat, v.lon, v.z, v.z + 1, w.value / 2, h.value / 2, w.value, h.value); return }
   view.value = mm.zoomAt(v.lat, v.lon, v.z, v.z + 1, p.x, p.y, w.value, h.value)
   follow.value = false
 }
@@ -724,13 +736,45 @@ function closePlayers() {
   playersPanel.value = false
   if (lost && rootEl.value) rootEl.value.focus({ preventScroll: true })
 }
-// the map's view stays on them as they move (poll), until a pan; the car stays where it is
+// the map's view stays on them as they move (poll, glideTo), until a pan (a zoom keeps it: onWheel, onDblClick, the
+// pad's triggers); the car stays where it is
 let followedAt = 0
+const followingPlayer = () => typeof follow.value === "string"
+const followedPlayer = computed(() => (followingPlayer() ? otherList.value.find(p => p.pid === follow.value) || null : null))
 function followPlayer(o) {
   closePlayers()
+  // (Following again: stop, the view left where it is; not the second click of a double-click on their name)
+  if (follow.value === o.pid) { if (Date.now() - followedAt > 500) follow.value = false; return }
   followedAt = Date.now()
   follow.value = o.pid
+  glide = null
   view.value = { lat: o.lat, lon: o.lon, z: Math.max(view.value.z, 12) }
+}
+// Their positions come every 2 s (mpsession.POSE_S, the plugin's TICK_MS): the view glides to each, at an even speed
+// over that time, so a moving player (drawn at the centre: otherMarkers) moves on smoothly rather than in jumps; a jump
+// farther than the view (a teleport) is shown at once. Each glide frame is a pan's work, only while following a player
+// who moves.
+const GLIDE_MS = 2000
+let glide = null, glideFrame = 0
+function glideTo(lat, lon) {
+  // (the poll is every second, a new position every 2 s: the same one again keeps its glide, else it never got there)
+  if (glide && glide.lat === lat && glide.lon === lon) return
+  const v = view.value, s = screen(lat, lon)
+  const dx = s.x - w.value / 2, dy = s.y - h.value / 2
+  if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return
+  if (Math.abs(dx) > w.value || Math.abs(dy) > h.value) { glide = null; view.value = { lat, lon, z: v.z }; return }
+  glide = { lat, lon, lat0: v.lat, lon0: v.lon, dLat: lat - v.lat, dLon: mm.wrapLon(lon - v.lon), t0: performance.now() }
+  if (!glideFrame) glideFrame = nextFrame(glideStep) || 1
+}
+function glideStep(now) {
+  glideFrame = 0
+  const g = glide
+  if (!g || !followingPlayer()) { glide = null; return }      // (a pan, Me, a search: the glide stops with the follow)
+  // (a frame's time can be from just before glideTo: not backwards)
+  const t = Math.max(0, Math.min(1, ((typeof now === "number" ? now : performance.now()) - g.t0) / GLIDE_MS))
+  view.value = { lat: g.lat0 + g.dLat * t, lon: mm.wrapLon(g.lon0 + g.dLon * t), z: view.value.z }
+  if (t < 1) glideFrame = nextFrame(glideStep) || 1
+  else glide = null
 }
 // to where they are now (the route does not follow them)
 function gpsToPlayer(o) {
@@ -775,7 +819,7 @@ function padTick(ts) {
   const sx = sq(pad.lr) + kx, sy = sq(pad.ud) + ky
   const dz = (pad.zin > PAD_DEAD ? pad.zin : 0) - (pad.zout > PAD_DEAD ? pad.zout : 0) + sq(pad.zaxis)
   if (sx || sy || dz) {
-    follow.value = false
+    if (sx || sy || !followingPlayer()) follow.value = false     // (the triggers' zoom: still on a followed player)
     const v = view.value
     let nv = v
     if (sx || sy) {
@@ -1299,6 +1343,8 @@ onUnmounted(() => {
   window.removeEventListener("mousemove", onMove)
   window.removeEventListener("mouseup", onUp)
   if (padFrame && window.cancelAnimationFrame) window.cancelAnimationFrame(padFrame)
+  if (glideFrame && window.cancelAnimationFrame) window.cancelAnimationFrame(glideFrame)
+  glide = null
   padFrame = 0
   engineLua("if beamngEarth_settings and beamngEarth_settings.mapOpened then beamngEarth_settings.mapOpened(false) end")
 })
@@ -1463,6 +1509,8 @@ const fmtLatLon = mm.fmtLatLon
 .layer-opt input { margin: 0 6px 0 0; vertical-align: -2px; cursor: pointer; }
 .layer-hint { font-size: 11px; color: #9aa4ae; }
 .players-panel { width: 300px; box-sizing: border-box; overflow-y: auto; }
+.map-btn .following { display: inline-block; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  vertical-align: bottom; }
 .players-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
 .players-head .panel-sub { margin: 0; }
 .map-btn.small { padding: 4px 8px; font-size: 12px; }
