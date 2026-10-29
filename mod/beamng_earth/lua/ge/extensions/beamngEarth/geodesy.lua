@@ -80,7 +80,15 @@ end
 -- z that of the point at its height. At its height a point lands h x distance / earth radius farther out (2-3 m at
 -- 1650 m, 13 km from the anchor), so a lat / lon read from (x, y, z) with z in it missed the road it stood on.
 function Anchor:worldToGeodetic(x, y, z)
-  local lat, lon = self:enuToGeodetic(x, y, 0)
+  -- (the place whose h = 0 point has these x, y: the plane point (x, y, 0) lies d^2 / 2R over the ellipsoid, its
+  -- lat / lon cm off at 15 km; two corrections make it exact to well under a mm)
+  local qx, qy = x, y
+  local lat, lon = self:enuToGeodetic(qx, qy, 0)
+  for _ = 1, 2 do
+    local ex, ey = self:geodeticToEnu(lat, lon, 0)
+    qx, qy = qx + (x - ex), qy + (y - ey)
+    lat, lon = self:enuToGeodetic(qx, qy, 0)
+  end
   local _, _, h = self:enuToGeodetic(x, y, z or 0)
   return lat, lon, h
 end
