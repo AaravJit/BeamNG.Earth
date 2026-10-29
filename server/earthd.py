@@ -1540,12 +1540,19 @@ class Server:
                                  clip=box, follow=True, q=self.anchor_q(anchor), drawn=drawn)
         mesh = blockworker._with_plazas(mesh, anchor.frame, roadsmod.tile_bbox(tx, ty), elev, (x0, y0, 0.0),
                                         self.surface)
+        pads = []
+        if anchor.bridges is not None:  # (the junctions on the bridges paved: roads.deck_pads)
+            try:
+                pads = roadsmod.deck_pads([(f, sp, xy, z) for f, sp, xy, z, _lon in deck_parts], near_roads, box,
+                                          anchor.bridges._ground)
+            except Exception as ex:
+                log.warning("deck pads: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
         dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0),
                                  anchor.bridges.piers_in(roadsmod.tile_bbox(tx, ty)) if anchor.bridges is not None else (),
                                  ctx,
                                  anchor.bridges.beams_in(roadsmod.tile_bbox(tx, ty)) if anchor.bridges is not None else (),
                                  ground=cover, parapets=parapets,
-                                 low_parapet_decks=low_parapet_decks)
+                                 low_parapet_decks=low_parapet_decks, pads=pads)
         tmesh = roadmeshmod.tunnel(chunks, (x0, y0, 0.0), rwalls)
         import railways
         rmesh = railways.tile_mesh(anchor.frame, tx, ty,

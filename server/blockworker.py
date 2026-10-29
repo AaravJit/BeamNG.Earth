@@ -745,8 +745,14 @@ def _tile_parts(mark, frame, tile, zoom, g, buildings, left_hand, mph, gas_stati
     guardrail_rows = guardrail_rows + _median_rows(frame, near_roads, box, elev, left_hand, country, guardrail_rows,
                                                    tx, ty, deck_parts)
     mark("medians")
+    try:                            # (the junctions on the bridges paved: roads.deck_pads)
+        pads = roadsmod.deck_pads([(f, sp, xy, z) for f, sp, xy, z, _lon in deck_parts], near_roads, box,
+                                  bridges._ground)
+    except Exception as ex:
+        log.warning("deck pads: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
+        pads = []
     P.dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0), bridges.piers_in(box), ctx, bridges.beams_in(box), ground=cover,
-                               parapets=parapets, low_parapet_decks=low_parapet_decks)
+                               parapets=parapets, low_parapet_decks=low_parapet_decks, pads=pads)
     mark("deck_mesh")
     P.tmesh = roadmeshmod.tunnel(chunks, (x0, y0, 0.0), rwalls)
     mark("tunnel_mesh")
