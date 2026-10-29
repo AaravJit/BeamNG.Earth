@@ -21,6 +21,7 @@ Z = 17                  # content tiles (the mod's hello cap geoTiles = Z)
 PLAN_Z = 10             # planning regions (grading)
 CHAIN_Z = 12            # bridge / tunnel chain profile stores (~8 km: a deck solved in a nearly level frame)
 NEED = 103              # earthfast's geotiles kernels
+NEED_CONTENT = 104      # ... and the road geotiles' (geo_owns, clip_tris_convex, cdae_zstats / cdae_shear)
 
 
 def _ef():
@@ -180,3 +181,98 @@ def tile_cell(x, y, z=Z, cell_z=14):
     """The map cell (z, x, y) a tile lies in (nested: zoom z >= cell_z)."""
     sh = int(z) - int(cell_z)
     return (int(cell_z), int(x) >> sh, int(y) >> sh)
+
+
+# --- road geotiles (phase 1c): a geotile as the road builders take a tile ------------------------------------------
+
+OWN_EDGE_M = 0.003      # m: points this far inside the quad's inner box are the tile's, this far outside its outer box
+                        # not, without asking the exact test (the edges bow < 1 mm between the corners at z17)
+
+
+class OwnedBox(tuple):
+    """A tile's box (x0, y0, x1, y1) that knows which points are its own (owns): a geotile's, whose quad in its own
+    frame is not quite the box (the meridians converge: its west / east edges lean in by ~3.5 mm at 39 deg). roads.
+    box_owns asks it; a plain tuple is the anchor tiles' half-open box."""
+
+    def __new__(cls, box, owner):
+        self = super().__new__(cls, tuple(float(v) for v in box))
+        self.owner = owner
+        return self
+
+    def owns(self, x, y):
+        return self.owner.owns(x, y)
+
+    @property
+    def quad(self):
+        return self.owner.quad
+
+
+class GeoBox:
+    """Geotile (gx, gy) as the road tile builders take a tile: roads.tile_bbox(tile, None) is its quad's bounding box
+    in its own frame (an OwnedBox), roads.cells_of_tile its map cells; owns() tells its own points exactly (by their
+    lat / lon: each place in one tile, whatever the frames). The builders' "tx" for it is this object, "ty" None."""
+
+    def __init__(self, gx, gy, z=Z):
+        self.gx, self.gy, self.z = int(gx), int(gy), int(z)
+        self.key = key(gx, gy, z)
+        self.frame = frame(gx, gy, z)
+        q = np.asarray(quad(self.frame, gx, gy, z), np.float64)
+        self.quad = q
+        s, w, n, e = info(gx, gy, z)[2:]
+        # (the edges' middles: a parallel bows from its chord between the corners)
+        mids = []
+        for la, lo in (((s, 0.5 * (w + e))), (n, 0.5 * (w + e)), (0.5 * (s + n), w), (0.5 * (s + n), e)):
+            x, y, _ = self.frame.geodetic_to_enu(la, lo, 0.0)
+            mids.append((float(x), float(y)))
+        mids = np.asarray(mids)
+        allp = np.vstack([q, mids])
+        self.box = OwnedBox((allp[:, 0].min(), allp[:, 1].min(), allp[:, 0].max(), allp[:, 1].max()), self)
+        self.inner = (max(q[0, 0], q[3, 0], mids[2, 0]) + OWN_EDGE_M, max(q[0, 1], q[1, 1], mids[0, 1]) + OWN_EDGE_M,
+                      min(q[1, 0], q[2, 0], mids[3, 0]) - OWN_EDGE_M, min(q[2, 1], q[3, 1], mids[1, 1]) - OWN_EDGE_M)
+
+    def __repr__(self):
+        return self.key
+
+    def owns(self, x, y):
+        """Whether each point (x, y) of this frame's world (h = 0) lies in the tile: scalars in, a bool out; arrays in,
+        a bool array."""
+        scalar = np.ndim(x) == 0 and np.ndim(y) == 0
+        X, Y = np.broadcast_arrays(np.atleast_1d(np.asarray(x, np.float64)), np.atleast_1d(np.asarray(y, np.float64)))
+        X, Y = X.ravel(), Y.ravel()
+        i0, j0, i1, j1 = self.inner
+        b = self.box
+        inside = (X >= i0) & (X <= i1) & (Y >= j0) & (Y <= j1)
+        outside = (X < b[0] - OWN_EDGE_M) | (X > b[2] + OWN_EDGE_M) | (Y < b[1] - OWN_EDGE_M) | (Y > b[3] + OWN_EDGE_M)
+        out = inside.copy()
+        ask = ~inside & ~outside
+        if ask.any():
+            fast.require(NEED_CONTENT, "geo_owns")
+            out[ask] = fast._ef.geo_owns(float(self.frame.lat0), float(self.frame.lon0), self.z, self.gx, self.gy,
+                                         np.ascontiguousarray(X[ask]), np.ascontiguousarray(Y[ask]))
+        if scalar:
+            return bool(out[0])
+        return out.reshape(np.broadcast(np.asarray(x), np.asarray(y)).shape)
+
+    def side(self):
+        """m: the side of a square of the tile's area (buildings.coverage)."""
+        x0, y0, x1, y1 = self.box
+        return float(np.sqrt((x1 - x0) * (y1 - y0)))
+
+
+@functools.lru_cache(maxsize=2048)
+def geobox(gx, gy, z=Z):
+    return GeoBox(gx, gy, z)
+
+
+def box_owns(box, x, y):
+    """Whether point(s) (x, y) are the tile's own (each place in exactly one tile): a geotile's box (OwnedBox) by the
+    points' lat / lon, an anchor tile's by its half-open box [x0, x1) x [y0, y1). Scalars: a bool; arrays: a bool
+    array."""
+    own = getattr(box, "owns", None)
+    if own is not None:
+        return own(x, y)
+    x0, y0, x1, y1 = box[:4]
+    if np.ndim(x) == 0 and np.ndim(y) == 0:
+        return bool(x0 <= x < x1 and y0 <= y < y1)
+    x, y = np.asarray(x, np.float64), np.asarray(y, np.float64)
+    return (x >= x0) & (x < x1) & (y >= y0) & (y < y1)

@@ -606,8 +606,8 @@ def last_tile_stages():
     return dict(getattr(_tile_stages, "last", {}))
 
 
-def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, buildings, left_hand, mph, q,
-                gas_stations, buried=0.0, lamp_region=None, country=None):
+def _stage_clock():
+    """(stages {name: s}, mark(name)): this thread's road tile stage timers, started now (last_tile_stages)."""
     stages = _tile_stages.last = {}
     clock = [time.perf_counter()]
 
@@ -615,18 +615,32 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
         t = time.perf_counter()
         stages[name] = stages.get(name, 0.0) + t - clock[0]
         clock[0] = t
+    return stages, mark
+
+
+class _Parts:
+    """What a road tile is built from and made of (_tile_parts): its chunks and their context, its sidewalk pieces,
+    the meshes and rows of everything else."""
+
+
+def _tile_parts(mark, frame, tile, zoom, g, buildings, left_hand, mph, gas_stations, buried, lamp_region, country,
+                q, rkey, centre, skin_margin=0.0, walks_raw=None):
+    """A road tile's parts in frame: tile (tx, ty) of an anchor, or a geotiles.GeoBox (its own frame, no anchor in
+    it). g: the frame's grading.Grader view (None: no grading); q: the height quantum the sidewalks' curbs are put on
+    (None: the ground as it is: a geotile's content); rkey: the railways' ground cache key; centre (lat, lon): the
+    place's (the brick pavement's region). skin_margin, walks_raw: roads.build_tile's (a geotile's skin pieces)."""
     import parking as parkingmod
     import rails as railsmod
     import roadmesh as roadmeshmod
     import roads as roadsmod
-    frame = geodesy.EnuFrame(lat, lon)
+    tx, ty = (tile, None) if hasattr(tile, "box") else tile
+    P = _Parts()
     # everything the tile will ask for, fetched at once (one after another, a fresh place's first tile took ~1 min)
     _s.md.warm(roadsmod.tile_needs(frame, tx, ty, buildings, _s.widths is not None,
                                    1 + seacarvemod.LINE_CELLS if _s.sea is not None else 0))
     if getattr(_s, "fra", None) is not None:       # (the US's level crossings' devices, alongside)
         _s.fra.prefetch(roadsmod.cells_of_tile(frame, tx, ty))
     mark("warm")
-    g, _ = _s.anchor(aid, lat, lon)
     cells = [_s.md.cell(k, layers=("roads",), kind="demand").layers.get("roads")
              for k in roadsmod.cells_of_tile(frame, tx, ty)]
     mark("anchor")
@@ -634,8 +648,10 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
     def elev(la, lo):           # the physics ground (lifted under roads: grading.ROAD_LIFT)
         z = ground(frame, la, lo, _s.dem.sample(la, lo, zoom))
         return g.apply(la, lo, z, gradingmod.ROAD_LIFT) if g is not None else z
-    bridges = _bridges(aid, frame, elev)
-    tunnels = tunnel_profiles(aid, frame, elev, g)
+    P.elev = elev
+    bridges = _bridges(None, frame, elev)
+    tunnels = tunnel_profiles(None, frame, elev, g)
+    P.bridges, P.tunnels = bridges, tunnels
     mark("profiles")
     walks = []
     urban = _s.surface.urban if _s.surface is not None else None
@@ -649,22 +665,24 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
     wires = [] if buildings else None
     park = [] if buildings else None
     items = town = None
+    box = roadsmod.tile_bbox(tx, ty)
+    side = roadsmod.tile_side(tx, ty)
     if buildings:
         import buildings as buildingsmod
         # (on the graded ground, the one the terrain is drawn with: on the raw elevation a building beside a road's
         # cutting stood over the cut; hashk014's PR #69)
         items = buildingsmod.road_tile_items(frame, tx, ty, _s.md, elev, decks=_tile_decks(bridges, cells, tx, ty),
                                              skip=skip)
-        town = buildingsmod.coverage(items) < buildingsmod.POLES_COVERAGE
+        town = buildingsmod.coverage(items, side) < buildingsmod.POLES_COVERAGE
     mark("items")
     rwalls = []
     ctx = []
-    box = roadsmod.tile_bbox(tx, ty)
     cell_fn = lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads")   # noqa: E731
 
     def drawn(la, lo):          # the block's ground: raised over the low arches as the terrain is (_make_heightmap)
         return roadsmod.block_arch_raise(tunnels, cell_fn, frame, la, lo, elev(la, lo),
                                          (box[0] - 8, box[1] - 8, box[2] + 8, box[3] + 8))
+    P.drawn = drawn
     cover = []                          # the ground carriageways for the decks' parapets (roadmesh.deck ground=)
     marks = []                          # stall lines along parking aisles (parking.finish_markings adds the lot polygons')
     near_roads = []                     # the ground carriageways near the tile (the median barriers': medians.tile_rows)
@@ -676,7 +694,7 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
                                  tunnels=tunnels, walls=rwalls,
                                  ground=lambda x, y: roadmeshmod.drawn_ground(frame, drawn, np.c_[x, y], q),
                                  terrain_paint=getattr(_s, "surface", None) is not None, cover_out=cover, marks=marks,
-                                 roads_out=near_roads,
+                                 roads_out=near_roads, skin_margin=skin_margin, walks_raw=walks_raw,
                                  signals=furniture.signals_for(_s.md, frame,
                                                                roadsmod.cells_of_tile(frame, tx, ty, SIGNALS_MARGIN_M)))
     mark("build_tile")
@@ -685,7 +703,7 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
     if _s.airports is not None:         # runway markings, drawn by the road mesh like the lane lines
         chunks += _s.airports.tile_chunks(frame, tx, ty, elev, roadsmod.tile_bbox)
     mark("airports")
-    x0, y0, _, _ = roadsmod.tile_bbox(tx, ty)
+    x0, y0, _, _ = box
     if items is not None:               # front doors and shopfronts, driveways into the road mesh
         drives = []
         props.extend(buildingsmod.doors(items, lines, x0, y0, drives))
@@ -697,7 +715,9 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
         if fuel:
             import gasstations
             park = gasstations.clear_park(park, fuel)
-        buildingsmod.brick_walks(walks, items, lat, lon)
+        buildingsmod.brick_walks(walks, items, centre[0], centre[1], side)
+        if walks_raw is not None:
+            buildingsmod.brick_walks(walks_raw, items, centre[0], centre[1], side)
     mark("doors_park")
     chunks += parkingmod.finish_markings(frame, tx, ty, _s.md, elev, items, marks)
     mark("markings")
@@ -723,20 +743,14 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
     guardrail_rows = guardrail_rows + _median_rows(frame, near_roads, box, elev, left_hand, country, guardrail_rows,
                                                    tx, ty, deck_parts)
     mark("medians")
-    mesh = roadmeshmod.build(frame, chunks, elev, (x0, y0, 0.0), lift, clip=box, follow=True, q=q, drawn=drawn,
-                             context=ctx)
-    mark("mesh")
-    mesh = _with_plazas(mesh, frame, tx, ty, elev, (x0, y0, 0.0), getattr(_s, "surface", None))
-    mark("plazas")
-    dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0), bridges.piers_in(roadsmod.tile_bbox(tx, ty)), ctx,
-                              bridges.beams_in(roadsmod.tile_bbox(tx, ty)), ground=cover, parapets=parapets,
-                              low_parapet_decks=low_parapet_decks)
+    P.dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0), bridges.piers_in(box), ctx, bridges.beams_in(box), ground=cover,
+                               parapets=parapets, low_parapet_decks=low_parapet_decks)
     mark("deck_mesh")
-    tmesh = roadmeshmod.tunnel(chunks, (x0, y0, 0.0), rwalls)
+    P.tmesh = roadmeshmod.tunnel(chunks, (x0, y0, 0.0), rwalls)
     mark("tunnel_mesh")
     import railways
     rcells = [cell_fn(k) for k in roadsmod.cells_of_tile(frame, tx, ty, railways.REACH_M)]
-    rground = railways.point_ground(frame, elev, (aid, lat, lon))
+    rground = railways.point_ground(frame, elev, rkey)
     fra_kits = None                 # (the US: the FRA inventory's gates and lamps, else the road classes')
     if getattr(_s, "fra", None) is not None:
         try:
@@ -746,10 +760,10 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
     rr_kits = railways.crossing_props(frame, tx, ty, rcells, rground, left_hand, fra_kits)   # level crossings
     if rr_kits:
         props = (props or []) + rr_kits
-    rmesh = railways.tile_mesh(frame, tx, ty, rcells, rground,
-                               far_ground=railways.point_ground(
-                                   frame, lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)),
-                                   ("raw", aid, lat, lon)))
+    P.rmesh = railways.tile_mesh(frame, tx, ty, rcells, rground,
+                                 far_ground=railways.point_ground(
+                                     frame, lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)),
+                                     ("raw",) + tuple(rkey)))
     mark("railways")
     bld = None
     garage_sound = ()
@@ -759,8 +773,7 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
         import oilwells
         bld = buildingsmod.road_tile(frame, tx, ty, _s.md, elev, None, None, items)
         mark("bld")
-        garage_sound = buildingsmod.garage_sound_boxes(items, *roadsmod.tile_bbox(tx, ty)[:2],
-                                                       roadsmod.SOUND_GARAGE)
+        garage_sound = buildingsmod.garage_sound_boxes(items, *box[:2], roadsmod.SOUND_GARAGE)
         oil_wells = oilwells.tile_wells(frame, tx, ty, elev)     # (the mod's pump jacks)
         import powerlines
         # high-voltage towers and conductors, on the ground as the DEM has it: graded heights at towers up to a span
@@ -772,11 +785,517 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
         garage_sound = (garage_sound + industry.refinery_sound_rows(frame, tx, ty, _s.md, elev)
                         + industry.power_plant_sound_rows(frame, tx, ty, _s.md, elev))
         mark("powerlines")
-    out = roadsmod.write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks if sidewalks else None, mesh, dmesh,
-                              bld, props, wires, park, tunnel_mesh=tmesh, fuel=fuel, rail_mesh=rmesh,
-                              guardrail_rows=guardrail_rows, garage_sound=garage_sound, wells=oil_wells) + (fuel_pads,)
+    P.chunks, P.ctx, P.walks, P.box, P.origin = chunks, ctx, walks, box, (x0, y0, 0.0)
+    P.bld, P.props, P.wires, P.park, P.fuel, P.fuel_pads = bld, props, wires, park, fuel, fuel_pads
+    P.guardrail_rows, P.garage_sound, P.wells = guardrail_rows, garage_sound, oil_wells
+    return P
+
+
+def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, buildings, left_hand, mph, q,
+                gas_stations, buried=0.0, lamp_region=None, country=None):
+    """An anchor's road tile (tx, ty) built and written (the anchor tiles: --geo-tiles off, an older mod)."""
+    import roadmesh as roadmeshmod
+    import roads as roadsmod
+    _stages, mark = _stage_clock()
+    frame = geodesy.EnuFrame(lat, lon)
+    g, _ = _s.anchor(aid, lat, lon)
+    P = _tile_parts(mark, frame, (tx, ty), zoom, g, buildings, left_hand, mph, gas_stations, buried, lamp_region,
+                    country, q, (aid, lat, lon), (lat, lon))
+    mesh = roadmeshmod.build(frame, P.chunks, P.elev, P.origin, lift, clip=P.box, follow=True, q=q, drawn=P.drawn,
+                             context=P.ctx)
+    mark("mesh")
+    mesh = _with_plazas(mesh, frame, P.box, P.elev, P.origin, getattr(_s, "surface", None))
+    mark("plazas")
+    out = roadsmod.write_tile(out_dir, vfs_dir, aid, tx, ty, P.chunks, P.walks if sidewalks else None, mesh, P.dmesh,
+                              P.bld, P.props, P.wires, P.park, tunnel_mesh=P.tmesh, fuel=P.fuel, rail_mesh=P.rmesh,
+                              guardrail_rows=P.guardrail_rows, garage_sound=P.garage_sound,
+                              wells=P.wells) + (P.fuel_pads,)
     mark("write")
     return out
+
+
+# --- road geotiles (phase 1c): content once per geotile, a skin per anchor ----------------------------------------
+
+GEO_SKIN_MARGIN_M = 3.0     # m past a geotile's box its content keeps the skin's pieces (roads.build_tile skin_margin)
+GEO_FRAMES_KEPT = 64        # geotile frames' grading views kept per process (_frame_grader)
+GEO_INPUTS_KEPT = 96        # geotiles' skin inputs kept in memory per process (_skin_inputs)
+EXACT_TOL_COL_M = 0.03      # m a colliding part placed rigidly may be off before it gets its exact variant ...
+EXACT_TOL_M = 0.10          # ... and a render-only part
+GEO_COLLIDING = ("bldcol", "deck", "tunnel", "railcol", "rail")     # parts the car hits ("bld*" too without a bldcol)
+_geo_lock = threading.Lock()
+_geo_graders = {}           # (lat0, lon0) -> grading.Grader view of a geotile's frame
+_geo_inputs = {}            # geotile key -> its skin inputs (dict), the most recently used last
+
+
+def _frame_grader(frame):
+    """A grading.Grader view of frame (a geotile's), sharing the process's PlanStore (heights: the planning regions',
+    whatever the frame); None without grading."""
+    if not _s.grading:
+        return None
+    k = (float(frame.lat0), float(frame.lon0))
+    with _geo_lock:
+        got = _geo_graders.get(k)
+        if got is not None:
+            return got
+    with _s.lock:
+        if getattr(_s, "plan_store", None) is None:     # (one store for every frame: _State.anchor's)
+            _s.plan_store = gradingmod.PlanStore(
+                _s.md, lambda la, lo: _s.dem.sample(la, lo, gradingmod.PROFILE_ZOOM), _s.widths)
+    gr = gradingmod.Grader(frame, _s.md, _s.plan_store.elev, _s.widths, store=_s.plan_store)
+    gr.wet = _s.sea.depth if getattr(_s, "sea", None) is not None else None
+    gr.dem = _s.dem
+    if getattr(_s.plan_store, "shared", None) is None:
+        gr.shared = plancache.for_grader(_s.cache_dir, gr, _s.widths, gr.wet)
+    with _geo_lock:
+        got = _geo_graders.setdefault(k, gr)
+        while len(_geo_graders) > GEO_FRAMES_KEPT:
+            _geo_graders.pop(next(iter(_geo_graders)))
+    return got
+
+
+def geo_names(key, aid=None):
+    """The session files of geotile key: {"json", "skin", what -> shape} of its content (aid None) or of anchor aid's
+    skin ("json", "road", "walk", "walkcol")."""
+    import roads as roadsmod
+    if aid is None:
+        out = {"json": f"rg_{key}.json", "inputs": f"rg_{key}.skin.pkl"}
+        for what in roadsmod.shape_files(0, 0, 0):
+            if what not in ("road", "walk", "walkcol"):
+                out[what] = f"rg_{key}_{what}.cdae"
+        return out
+    return {"json": f"rs_{aid}_{key}.json", "road": f"rs_{aid}_{key}_road.cdae", "walk": f"rs_{aid}_{key}_walk.cdae",
+            "walkcol": f"rs_{aid}_{key}_walkcol.cdae"}
+
+
+def _shape_info(path, pos, what):
+    """{shape, pos, pivot, relief, col} of a written content shape (earthfast.cdae_zstats: pivot the median height of
+    its vertices in the tile's frame, relief the farthest one from it)."""
+    import fast
+    import geotiles
+    fast.require(geotiles.NEED_CONTENT, "cdae_zstats")
+    with open(path, "rb") as f:
+        n, med, lo, hi = fast._ef.cdae_zstats(f.read())
+    oz = float(pos[2])
+    piv = oz + float(med) if n else oz
+    rel = max(abs(oz + float(hi) - piv), abs(piv - oz - float(lo))) if n else 0.0
+    return {"pivot": round(piv, 3), "relief": round(rel, 3)}
+
+
+def _content_hash(text, vfs_dir):
+    import hashlib
+    return hashlib.sha1(text.replace(f"{vfs_dir}/", "@V@/").encode("utf-8")).hexdigest()[:16]
+
+
+def _write_geo_content(out_dir, vfs_dir, tile, P):
+    """A geotile's content written to the session folder: its shapes (rg_<key>_<what>.cdae, each with its pivot and
+    relief), its rows (props, guard rails, parking, stations, wells, sound) and colliders in its own frame, and the
+    skin's inputs (rg_<key>.skin.pkl: the chunks, their deck context and the sidewalk pieces). Returns (vfs path of
+    the JSON, chunk count, its info for the tracker: {"h", "parts": {what: {pivot, relief, col}}})."""
+    import json
+    import pickle
+    import roads as roadsmod
+    names = geo_names(tile.key)
+    tmpdir = os.path.join(out_dir, f".rg_{tile.key}_{os.getpid()}_{threading.get_ident()}")
+    os.makedirs(tmpdir, exist_ok=True)
+    try:
+        # (roads.write_tile writes the shapes and the rows; its names are the anchor tile's: written aside, renamed)
+        _, n = roadsmod.write_tile(tmpdir, vfs_dir, 0, tile, None, P.chunks, None, None, P.dmesh, P.bld, P.props,
+                                   P.wires, P.park, tunnel_mesh=P.tmesh, fuel=P.fuel, rail_mesh=P.rmesh,
+                                   guardrail_rows=P.guardrail_rows, garage_sound=P.garage_sound, wells=P.wells,
+                                   decals=False)
+        with open(os.path.join(tmpdir, f"roads_0_{tile}_None.json"), encoding="utf-8") as f:
+            data = json.loads(f.read())
+        files = roadsmod.shape_files(0, tile, None)
+        parts = {}
+        for what, fname in files.items():
+            e = data.get(what)
+            src = os.path.join(tmpdir, fname)
+            if not isinstance(e, dict) or not os.path.exists(src):
+                continue
+            info = _shape_info(src, e["pos"], what)
+            dst = names[what]
+            _write_bytes(os.path.join(out_dir, dst), open(src, "rb").read())
+            e["shape"] = f"{vfs_dir}/{dst}"
+            e.update(info)
+            parts[what] = dict(info)
+        data["chunks"] = []                 # (the draped surfaces are the skin's)
+        data.pop("walk", None)
+        data.pop("walkcol", None)
+        data.pop("road", None)
+        cols = data.get("colliders") or {}
+        for w in ("walk", "walkcol"):
+            cols.pop(w, None)
+        if cols:
+            data["colliders"] = cols
+        else:
+            data.pop("colliders", None)
+        lean = "bldcol" in parts
+        for what, info in parts.items():
+            info["col"] = what in GEO_COLLIDING or (what.startswith("bld") and not lean)
+        data["key"] = tile.key
+        data["frame"] = [float(tile.frame.lat0), float(tile.frame.lon0)]
+        data["box"] = [round(float(v), 4) for v in tile.box]
+        text = json.dumps(data, separators=(",", ":"), sort_keys=True)
+        h = _content_hash(text, vfs_dir)
+        data["h"] = h
+        text = json.dumps(data, separators=(",", ":"), sort_keys=True)
+        _write_bytes(os.path.join(out_dir, names["json"]), text.encode("utf-8"))
+        inputs = {"chunks": P.chunks, "ctx": P.ctx, "walks": P.walks_raw, "h": h}
+        _write_bytes(os.path.join(out_dir, names["inputs"]), pickle.dumps(inputs, protocol=4))
+        with _geo_lock:
+            _geo_inputs[tile.key] = inputs
+            while len(_geo_inputs) > GEO_INPUTS_KEPT:
+                _geo_inputs.pop(next(iter(_geo_inputs)))
+        return f"{vfs_dir}/{names['json']}", n, {"h": h, "parts": parts}
+    finally:
+        import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _geo_content_key(key, zoom, buildings, left_hand, mph, gas_stations, buried, lamp_region, country):
+    import revisit
+    return revisit.key("roadsg", str(key), int(zoom), bool(buildings), bool(left_hand), bool(mph), bool(gas_stations),
+                       _md_versions(), float(buried), lamp_region, country, GEO_SKIN_MARGIN_M)
+
+
+def _geo_content(gx, gy, zoom, out_dir, vfs_dir, buildings, left_hand, mph, gas_stations, buried, lamp_region,
+                 country):
+    """Geotile (gx, gy)'s content (_write_geo_content), from the revisit cache (kind "roadsg": its key, settings and
+    code; no anchor, no height quantum, no lift) or built in its own frame. (vfs path, chunks, info, fuel pads)."""
+    import geotiles
+    import revisit
+    tile = geotiles.geobox(gx, gy)
+    names = geo_names(tile.key)
+    k = _geo_content_key(tile.key, zoom, buildings, left_hand, mph, gas_stations, buried, lamp_region, country)
+    got = revisit.load(_s.cache_dir, "roadsg", k)
+    if got is not None:
+        blobs, extra = got
+        for name, data in blobs.items():
+            if name.endswith(".json"):
+                data = data.decode("utf-8").replace("@V@/", f"{vfs_dir}/").encode("utf-8")
+            _write_bytes(os.path.join(out_dir, name), data)
+        _geo_stats["content_hits"] += 1
+        return (f"{vfs_dir}/{names['json']}", int(extra.get("n", 0)), extra.get("info") or {},
+                [(sid, [(np.asarray(la), np.asarray(lo)) for la, lo in rs]) for sid, rs in extra.get("pads", [])])
+    stages, mark = _stage_clock()
+    f0 = revisit.faults()
+    g = _frame_grader(tile.frame)
+    walks_raw = []
+    P = _tile_parts(mark, tile.frame, tile, zoom, g, buildings, left_hand, mph, gas_stations, buried, lamp_region,
+                    country, None, ("g", tile.key), geotiles.centre(gx, gy), GEO_SKIN_MARGIN_M, walks_raw)
+    P.walks_raw = walks_raw
+    path, n, info = _write_geo_content(out_dir, vfs_dir, tile, P)
+    mark("write")
+    _geo_stats["content_built"] += 1
+    if revisit.ON and revisit.faults() == f0:     # (complete: nothing it read failed or was missing)
+        try:
+            blobs = {}
+            for what, name in names.items():
+                p = os.path.join(out_dir, name)
+                if os.path.exists(p):
+                    with open(p, "rb") as fh:
+                        data = fh.read()
+                    if name.endswith(".json"):
+                        data = data.decode("utf-8").replace(f"{vfs_dir}/", "@V@/").encode("utf-8")
+                    blobs[name] = data
+            s, w, nn, e = geotiles.info(gx, gy)[2:]
+            wh = revisit.where(*geotiles.centre(gx, gy), s, w, nn, e,
+                               revisit.sig(buildings=bool(buildings), gas_stations=bool(gas_stations),
+                                           md=_md_versions()))
+            revisit.store(_s.cache_dir, "roadsg", k, blobs,
+                          {"n": int(n), "info": info,
+                           "pads": [[sid, [[np.asarray(la).tolist(), np.asarray(lo).tolist()] for la, lo in rs]]
+                                    for sid, rs in P.fuel_pads]}, where=wh)
+        except Exception as ex:          # (not kept rather than no tile)
+            log.debug("revisit: geotile %s not kept: %s: %s", tile.key, type(ex).__name__, ex)
+    return path, n, info, P.fuel_pads
+
+
+def _skin_inputs(key, out_dir, content):
+    """The skin inputs of geotile key (_write_geo_content): kept in memory, else its session file, else content()
+    (its content built or loaded again, which writes the file). None when there are none."""
+    import pickle
+    with _geo_lock:
+        got = _geo_inputs.get(key)
+    if got is not None:
+        return got
+    p = os.path.join(out_dir, geo_names(key)["inputs"])
+    if not os.path.exists(p):
+        content()
+    try:
+        with open(p, "rb") as f:
+            got = pickle.load(f)
+    except (OSError, EOFError, pickle.UnpicklingError):
+        return None
+    with _geo_lock:
+        _geo_inputs[key] = got
+        while len(_geo_inputs) > GEO_INPUTS_KEPT:
+            _geo_inputs.pop(next(iter(_geo_inputs)))
+    return got
+
+
+def _map_chunks(src, dst, chunks):
+    """Chunks of src's world in dst's world (geotiles.world_map: their nodes exactly, heights too: a deck's surface;
+    a filled polygon's corners)."""
+    import geotiles
+    if not chunks:
+        return []
+    pts, idx = [], []
+    for k, c in enumerate(chunks):
+        n = c.get("n")
+        if n is not None and len(n):
+            a = np.asarray(n, np.float64)
+            pts.append(np.c_[a[:, :2], a[:, 2] if a.shape[1] > 2 else np.zeros(len(a))])
+            idx.append((k, "n", len(a), a.shape[1]))
+        pq = c.get("poly")
+        if pq is not None and len(pq):
+            a = np.asarray(pq, np.float64)
+            pts.append(np.c_[a[:, :2], a[:, 2] if a.shape[1] > 2 else np.zeros(len(a))])
+            idx.append((k, "poly", len(a), a.shape[1]))
+    out = [dict(c) for c in chunks]
+    if not pts:
+        return out
+    m = geotiles.world_map(src, dst, np.concatenate(pts))
+    at = 0
+    for k, field, ln, cols in idx:
+        v = m[at:at + ln, :max(2, min(cols, 3))]
+        at += ln
+        out[k][field] = v if field == "n" else v.tolist()
+    return out
+
+
+def _map_walks(src, dst, walks):
+    """Sidewalk pieces (roads.build_tile walks, before draping) of src's world in dst's: their points exactly
+    (geotiles.world_map), a corner's inward vectors turned with the frames."""
+    import geotiles
+    if not walks:
+        return []
+    r, _t, _c = geotiles.placement(src, dst, (0.0, 0.0, 0.0))
+    r2 = r[:2, :2]
+
+    def mp(a):
+        a = np.asarray(a, np.float64)
+        if not len(a):
+            return a
+        q = np.c_[a[:, :2], a[:, 2] if a.shape[1] > 2 else np.zeros(len(a))]
+        w = geotiles.world_map(src, dst, q)
+        return w[:, :max(2, min(a.shape[1], 3))]
+    out = []
+    for wk in walks:
+        wk = dict(wk)
+        if "corner" in wk:
+            c = dict(wk["corner"])
+            c["arc"] = mp(c["arc"])
+            c["outer"] = [tuple(v) for v in mp(np.asarray(c["outer"], np.float64).reshape(-1, 3))]
+            inw = np.asarray(c["inward"], np.float64).reshape(-1, 2) @ r2.T
+            c["inward"] = inw / np.maximum(np.hypot(*inw.T), 1e-12)[:, None]
+            wk["corner"] = c
+        else:
+            wk["pts"] = mp(wk["pts"])
+        out.append(wk)
+    return out
+
+
+def _clip_mesh(mesh, origin, quad):
+    """A mesh (positions relative to origin, tris, uvs, materials, tri material) cut to quad (4, 2: a geotile's, in the
+    mesh's world; earthfast.clip_tris_convex), or None when nothing is left."""
+    import fast
+    import geotiles
+    if mesh is None:
+        return None
+    P, T, UV, mats, M = mesh
+    if not len(T):
+        return None
+    fast.require(geotiles.NEED_CONTENT, "clip_tris_convex")
+    o = np.asarray(origin, np.float64)
+    q = np.ascontiguousarray(np.asarray(quad, np.float64)[:, :2] - o[:2])
+    P2, UV2, T2, src = fast._ef.clip_tris_convex(np.ascontiguousarray(np.asarray(P, np.float64)[:, :3]),
+                                                 np.ascontiguousarray(np.asarray(UV, np.float64)[:, :2]),
+                                                 np.ascontiguousarray(np.asarray(T, np.int64)), q)
+    if not len(T2):
+        return None
+    used = np.unique(T2)
+    remap = np.full(len(P2), -1, np.int64)
+    remap[used] = np.arange(len(used))
+    return P2[used], remap[T2], UV2[used], mats, np.asarray(M)[src]
+
+
+def _write_mesh_cdae(path, mesh, write):
+    write(path, mesh)
+
+
+def _geo_skin(aid, lat, lon, zoom, gx, gy, out_dir, vfs_dir, sidewalks, lift, q, content):
+    """Anchor aid's skin of geotile (gx, gy): the draped road surfaces (the road mesh and plazas: roadmesh.build on the
+    anchor's lattice and height quantum q, follow) and the sidewalks (curbs on the drawn ground, their lean collision
+    mesh), from the content's skin inputs mapped into the anchor's world, cut exactly at the tile's quad there (its
+    corners bit-equal with the neighbours': no overlap, no gap). Written as rs_<aid>_<key>*; returns (vfs path of its
+    JSON, {"lift": m}) or None without inputs."""
+    import json
+    import cdae
+    import geotiles
+    import roadmesh as roadmeshmod
+    import roads as roadsmod
+    import sidewalks as sidewalksmod
+    stages, mark = _stage_clock()
+    tile = geotiles.geobox(gx, gy)
+    inputs = _skin_inputs(tile.key, out_dir, content)
+    mark("inputs")
+    if inputs is None:
+        return None
+    frame = geodesy.EnuFrame(lat, lon)
+    g, _ = _s.anchor(aid, lat, lon)
+    quad = np.asarray(geotiles.quad(frame, gx, gy), np.float64)
+    qx0, qy0 = float(quad[:, 0].min()), float(quad[:, 1].min())
+    qx1, qy1 = float(quad[:, 0].max()), float(quad[:, 1].max())
+    bbox = (qx0, qy0, qx1, qy1)
+    origin = (qx0, qy0, 0.0)
+
+    def elev(la, lo):
+        z = ground(frame, la, lo, _s.dem.sample(la, lo, zoom))
+        return g.apply(la, lo, z, gradingmod.ROAD_LIFT) if g is not None else z
+    tunnels = tunnel_profiles(aid, frame, elev, g)
+    cell_fn = lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads")   # noqa: E731
+
+    def drawn(la, lo):
+        return roadsmod.block_arch_raise(tunnels, cell_fn, frame, la, lo, elev(la, lo),
+                                         (qx0 - 8, qy0 - 8, qx1 + 8, qy1 + 8))
+    chunks = _map_chunks(tile.frame, frame, inputs.get("chunks") or [])
+    ctx = _map_chunks(tile.frame, frame, inputs.get("ctx") or [])
+    mark("map")
+    mesh = roadmeshmod.build(frame, chunks, elev, origin, lift, clip=bbox, follow=True, q=q, drawn=drawn,
+                             context=ctx, clip_poly=quad)
+    mark("mesh")
+    mesh = _with_plazas(mesh, frame, bbox, elev, origin, getattr(_s, "surface", None), quad=quad)
+    mark("plazas")
+    names = geo_names(tile.key, aid)
+    data = {"v": roadsmod.VERSION, "key": tile.key, "anchorId": aid, "lift": round(float(lift), 3),
+            "q": float(q) if q else 0.0}
+    # its pivot: the quad's centre at the median height of its road mesh (the mod moves a kept skin there at a rebase)
+    pz = float(np.median(np.asarray(mesh[0], np.float64)[:, 2])) if mesh is not None and len(mesh[0]) else 0.0
+    data["pivot"] = [round(float(quad[:, 0].mean()), 3), round(float(quad[:, 1].mean()), 3), round(pz, 3)]
+    if mesh is not None:
+        roadmeshmod.write(os.path.join(out_dir, names["road"]), mesh)
+        data["road"] = {"shape": f"{vfs_dir}/{names['road']}", "pos": list(origin)}
+    elif chunks:                    # (no mesh: the mod's DecalRoads, as an anchor tile's)
+        data["chunks"] = [dict(c, n=np.asarray(c["n"]).tolist()) if c.get("n") is not None else c
+                          for c in chunks if not c.get("tube_only")]
+    walks = _map_walks(tile.frame, frame, inputs.get("walks") or []) if sidewalks else []
+    if walks:
+        roadsmod.drape_walks(frame, elev, walks,
+                             lambda x, y: roadmeshmod.drawn_ground(frame, drawn, np.c_[x, y], q))
+        b = sidewalksmod.Builder(origin, collision=True)
+        for wk in walks:
+            if "corner" in wk:
+                c = wk["corner"]
+                b.add_corner(c["arc"], c["inward"], c["outer"], ramps=c.get("ramps", ()))
+                continue
+            ww = wk.get("w", roadsmod.SIDEWALK["w"])
+            curb, outv = sidewalksmod.run_geometry(wk["pts"], wk["side"], ww)
+            b.add_run(curb, outv, ww, caps=wk["caps"], ramps=wk.get("ramps", ()),
+                      slab=sidewalksmod.BRICK if wk.get("brick") else 1)
+        mark("walks")
+        if not b.empty():
+            P_, T_, UV_, M_ = b.arrays()
+            wm = _clip_mesh((P_, T_, UV_, list(sidewalksmod.MATERIALS), M_), origin, quad)
+            if wm is not None:
+                cdae.write(os.path.join(out_dir, names["walk"]), wm[0], wm[1], uvs=wm[2], material=wm[3],
+                           tri_materials=wm[4], object_name="walk")
+                data["walk"] = {"shape": f"{vfs_dir}/{names['walk']}", "pos": list(origin)}
+                P_, T_, UV_, M_ = b.col.arrays()
+                cm = _clip_mesh((P_, T_, UV_, [sidewalksmod.MATERIALS[0]], M_), origin, quad)
+                if cm is not None:
+                    cdae.write(os.path.join(out_dir, names["walkcol"]), cm[0], cm[1], uvs=cm[2],
+                               material=sidewalksmod.MATERIALS[0], collision_only=True)
+                    data["walkcol"] = {"shape": f"{vfs_dir}/{names['walkcol']}", "pos": list(origin)}
+                boxes = roadsmod.collider_boxes(walks, None)
+                if boxes.get("walk"):
+                    data["colliders"] = {"walk": boxes["walk"]}
+                    if "walkcol" in data:
+                        data["colliders"]["walkcol"] = boxes["walk"]
+    mark("write")
+    _write_bytes(os.path.join(out_dir, names["json"]), json.dumps(data, separators=(",", ":")).encode("utf-8"))
+    _geo_stats["skins"] += 1
+    return f"{vfs_dir}/{names['json']}", {"lift": float(lift)}
+
+
+_geo_stats = {"content_built": 0, "content_hits": 0, "skins": 0, "exact": 0}
+
+
+def geo_stats():
+    """This process's road geotile counters (content built / from the revisit cache, skins, exact variants)."""
+    return dict(_geo_stats)
+
+
+def _geo_exact(aid, lat, lon, gx, gy, out_dir, vfs_dir, parts):
+    """Exact variants of geotile (gx, gy)'s parts for anchor aid (parts: {what: {pivot}}): each shape's vertices moved
+    by s (z - pivot) (earthfast.cdae_shear; s = R^T c of geotiles.placement at the pivot), so the mod's rigid
+    placement there lands them where the exact world map does. {what: vfs path of rx_<aid>_<key>_<what>.cdae}."""
+    import fast
+    import geotiles
+    fast.require(geotiles.NEED_CONTENT, "cdae_shear")
+    tile = geotiles.geobox(gx, gy)
+    frame = geodesy.EnuFrame(lat, lon)
+    names = geo_names(tile.key)
+    out = {}
+    import json
+    try:
+        with open(os.path.join(out_dir, names["json"]), encoding="utf-8") as f:
+            data = json.loads(f.read())
+    except (OSError, ValueError):
+        return out
+    for what, info in parts.items():
+        e = data.get(what)
+        src = os.path.join(out_dir, names.get(what, ""))
+        if not isinstance(e, dict) or not os.path.exists(src):
+            continue
+        piv = float(info.get("pivot", e.get("pivot", 0.0)))
+        r, _t, c = geotiles.placement(tile.frame, frame, (0.0, 0.0, piv))
+        s = r.T @ c
+        with open(src, "rb") as f:
+            blob = fast._ef.cdae_shear(f.read(), float(e["pos"][2]), float(s[0]), float(s[1]), float(s[2]), piv)
+        name = f"rx_{aid}_{tile.key}_{what}.cdae"
+        _write_bytes(os.path.join(out_dir, name), blob)
+        out[what] = f"{vfs_dir}/{name}"
+        _geo_stats["exact"] += 1
+    return out
+
+
+def roads_geo(aid, lat, lon, zoom, gx, gy, gzoom, out_dir, vfs_dir, sidewalks, lift, buildings, left_hand, mph, q,
+              gas_stations, buried=0.0, lamp_region=None, country=None, content=True, skin=True, exact=None):
+    """earthd.Server.build_roads_geo here (road-tile pool): geotile (gx, gy)'s content (content: built in its own
+    frame, or from the revisit cache; gzoom its DEM zoom, the rules its own place's), anchor aid's skin (skin) and its
+    parts' exact variants for that anchor (exact: {what: {pivot}}, or "auto": those of the content built here that its
+    rigid placement would leave off, roads.geo_exact_auto). Returns {"content": (vfs path, chunks, info,
+    fuel pads) or None, "skin": (vfs path, info) or None, "exact": {what: vfs path}, "stages": {...}}."""
+    watch = _stack_watch(f"road geotile {gx}_{gy}")
+    try:
+        out = {"content": None, "skin": None, "exact": {}, "stages": {}}
+        t0 = time.perf_counter()
+        c0 = time.process_time()
+
+        def build_content():
+            return _geo_content(gx, gy, gzoom, out_dir, vfs_dir, buildings, left_hand, mph, gas_stations, buried,
+                                lamp_region, country)
+        if content:
+            out["content"] = build_content()
+            out["stages"]["content"] = last_tile_stages()
+        t1, c1 = time.perf_counter(), time.process_time()
+        if skin:
+            out["skin"] = _geo_skin(aid, lat, lon, zoom, gx, gy, out_dir, vfs_dir, sidewalks, lift, q, build_content)
+            out["stages"]["skin"] = last_tile_stages()
+        t2, c2 = time.perf_counter(), time.process_time()
+        if exact == "auto":             # (a fresh content: the parts its anchor needs exact, roads.geo_exact_auto)
+            import geotiles
+            import roads as roadsmod
+            info = out["content"][2] if out["content"] is not None else {}
+            exact = roadsmod.geo_exact_auto(geotiles.frame(gx, gy), geodesy.EnuFrame(lat, lon), info.get("parts"))
+        if exact:
+            out["exact"] = _geo_exact(aid, lat, lon, gx, gy, out_dir, vfs_dir, exact)
+        out["time"] = {"content_s": t1 - t0, "content_cpu": c1 - c0, "skin_s": t2 - t1, "skin_cpu": c2 - c1,
+                       "exact_s": time.perf_counter() - t2}
+        return out
+    finally:
+        watch.cancel()
 
 
 def _median_rows(frame, near_roads, box, elev, left_hand, country, mapped, tx, ty, decks=()):
@@ -790,15 +1309,20 @@ def _median_rows(frame, near_roads, box, elev, left_hand, country, mapped, tx, t
         return []
 
 
-def _with_plazas(mesh, frame, tx, ty, elev, origin, surface):
-    """The road mesh with the tile's squares and pedestrian areas paved (plazas.py), from the cached land use (none
-    when it is not cached yet: surface.Surface.lots never waits)."""
+PLAZA_GEO_MARGIN_M = 12.0    # m past a geotile's quad its skin's plazas are made (then cut exactly at the quad)
+
+
+def _with_plazas(mesh, frame, box, elev, origin, surface, quad=None):
+    """The road mesh with the tile's squares and pedestrian areas paved (plazas.py) over box (x0, y0, x1, y1), from the
+    cached land use (none when it is not cached yet: surface.Surface.lots never waits). quad (4, 2): a geotile's skin:
+    the plazas made PLAZA_GEO_MARGIN_M past the box and cut exactly at the quad (as its road mesh)."""
     if surface is None or not hasattr(surface, "lots"):
         return mesh
     import plazas
-    import roads as roadsmod
     try:
-        box = roadsmod.tile_bbox(tx, ty)
+        if quad is not None:
+            m = PLAZA_GEO_MARGIN_M
+            box = (box[0] - m, box[1] - m, box[2] + m, box[3] + m)
         la, lo, _ = frame.enu_to_geodetic(np.array([box[0], box[2]]), np.array([box[1], box[3]]), np.zeros(2))
         rings = plazas.polygons(surface.lots(la, lo))
         if not rings:
@@ -807,9 +1331,12 @@ def _with_plazas(mesh, frame, tx, ty, elev, origin, surface):
         if mesh is not None and len(mesh[1]):
             P, T = np.asarray(mesh[0], np.float64), np.asarray(mesh[1], np.int64)
             cover = (P[T][:, :, :2] + np.asarray(origin, np.float64)[:2]).reshape(-1, 6)
-        return plazas.merge(mesh, plazas.mesh(frame, box, rings, elev, origin, cover))
+        pm = plazas.mesh(frame, tuple(box), rings, elev, origin, cover)
+        if quad is not None:
+            pm = _clip_mesh(pm, origin, quad)
+        return plazas.merge(mesh, pm)
     except Exception:                   # no plazas rather than no road tile
-        log.exception("plazas of tile %s_%s", tx, ty)
+        log.exception("plazas of the tile at %s", tuple(round(float(v), 1) for v in box[:2]))
         return mesh
 
 

@@ -1308,6 +1308,54 @@ class Server:
             roadz.PROVIDER.warm(sorted({kl[0] for kl in order if kl[1] == "roads"}, key=lambda k: (where(k), str(k))))
         return n
 
+    def roads_geo_ok(self):
+        """Road tiles as geotiles (--geo-tiles on, road tiles in worker processes): content kept across rebases."""
+        return bool(self.geo_tiles) and self.road_pool is not None and self.mapdata is not None
+
+    def geo_rules(self, gx, gy):
+        """(left_hand, mph, buried share, lamp region, country, DEM zoom) at geotile (gx, gy)'s centre: its content's
+        own place's rules (an anchor's were the anchor's), kept per tile."""
+        import geotiles
+        cache = self.__dict__.setdefault("_geo_rules", {})
+        got = cache.get((gx, gy))
+        if got is None:
+            la, lo = geotiles.centre(gx, gy)
+            c = navgraphmod.country_near(self.airports_db, la, lo)
+            got = (bool(navgraphmod.road_rules(c)["rightHandDrive"]), bool(navgraphmod.road_rules(c)["mph"]),
+                   furnituremod.buried_share(c),
+                   furnituremod.lamp_region(c, navgraphmod.region_near(self.airports_db, la, lo)),
+                   c if self.airports_db else None, demmod.zoom_for(la, 1.25, demmod.FINE_ZOOM))
+            if len(cache) > 20000:
+                cache.clear()
+            cache[(gx, gy)] = got
+        return got
+
+    def build_roads_geo(self, aid, gx, gy, content=True, skin=True, exact=None):
+        """blockworker.roads_geo in a road process: geotile (gx, gy)'s content (once: kept by the mod across
+        rebases), anchor aid's skin and exact variants. Its gas station pads kept for the ground's painters. None
+        when the anchor is gone. Worker threads (roads.GeoTracker)."""
+        anchor = self.anchors.get(aid)
+        if anchor is None or self.mapdata is None or self.road_pool is None:
+            return None
+        lh, mph, buried, lamps, country, gzoom = self.geo_rules(gx, gy)
+        fut = self.road_pool.submit(
+            blockworker.roads_geo, aid, anchor.lat, anchor.lon, anchor.zooms[0], gx, gy, gzoom, self.out_dir,
+            self.vfs_dir, self.sidewalks, DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0,
+            self.buildings, lh, mph, self.anchor_q(anchor) if skin else None, self.gas_stations, buried, lamps,
+            country, content, skin, exact)
+        try:
+            res = fut.result(timeout=ROAD_TILE_TIMEOUT_S)
+        except concurrent.futures.TimeoutError:
+            fut.cancel()
+            log.warning("road geotile %d_%d: no answer from its worker in %.0f s: built again", gx, gy,
+                        ROAD_TILE_TIMEOUT_S)
+            if hasattr(self.road_pool, "recycle"):
+                self.road_pool.recycle(f"road geotile {gx}_{gy} hung for {ROAD_TILE_TIMEOUT_S:.0f} s")
+            raise
+        if res is not None and res.get("content") is not None:
+            self.keep_fuel_pads(res["content"][3])
+        return res
+
     def build_roads_tile(self, aid, tx, ty):
         """roads.py: one road tile of anchor aid, written to the session folder. Returns (vfs path,
         chunks) or None if the anchor is gone. Worker threads (fetches the map cells it lacks)."""
@@ -1434,7 +1482,8 @@ class Server:
         mesh = roadmeshmod.build(anchor.frame, chunks, elev, (x0, y0, 0.0),
                                  DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0,
                                  clip=box, follow=True, q=self.anchor_q(anchor), drawn=drawn)
-        mesh = blockworker._with_plazas(mesh, anchor.frame, tx, ty, elev, (x0, y0, 0.0), self.surface)
+        mesh = blockworker._with_plazas(mesh, anchor.frame, roadsmod.tile_bbox(tx, ty), elev, (x0, y0, 0.0),
+                                        self.surface)
         dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0),
                                  anchor.bridges.piers_in(roadsmod.tile_bbox(tx, ty)) if anchor.bridges is not None else (),
                                  ctx,
@@ -3092,6 +3141,7 @@ class Connection:
         self.radius_sent = None
         self.zmax_region = None
         self.weather = weathermod.Tracker()     # real weather: fetch rule, last message sent
+        self.road_geo = False                   # road tiles as geotiles (hello.geoTiles, Server.roads_geo_ok)
         self.roads = roadsmod.Tracker()         # road tiles sent to the mod (--roads on)
         self.signs = signstream.Tracker()       # their highway signs (key "s<tx>_<ty>")
         self.signs_on = True                    # the mod's highwaySigns setting (message highway_signs)
@@ -3575,6 +3625,10 @@ class Connection:
         """Server.build_veg_tile in this mod's format (veg_flat). The vegetation tracker's worker threads."""
         return self.s.build_veg_tile(aid, tx, ty, flat=self.veg_flat)
 
+    def new_road_tracker(self):
+        """The road tiles' tracker: geotiles (roads.GeoTracker) when this mod places them, else the anchor's."""
+        return roadsmod.GeoTracker() if self.road_geo else roadsmod.Tracker()
+
     def build_veg_geo(self, gx, gy):
         """Server.build_veg_geo in this mod's format (veg_flat): the geotile tracker's worker threads."""
         return self.s.build_veg_geo(gx, gy, flat=self.veg_flat, aid=self.active)
@@ -3646,6 +3700,15 @@ class Connection:
                 self.veg = vegetationmod.Tracker(old.send_m, old.drop_m, geo=geo)
             if geo:
                 m["geoTiles"] = geotiles.Z
+            # ... and the road tiles too when it places those (hello.roadGeo: roads.lua's ROAD_GEO; content kept across
+            # rebases, a skin per anchor: roads.GeoTracker)
+            road_geo = geo and msg.get("roadGeo") == roadsmod.ROAD_GEO and self.s.roads_geo_ok()
+            if road_geo != self.road_geo:
+                self.road_geo = road_geo
+                self.roads.close()
+                self.roads = self.new_road_tracker()
+            if road_geo:
+                m["roadGeo"] = roadsmod.ROAD_GEO
             self.send(m)
             if self.weather.msg is not None:        # a reconnected mod gets the weather again
                 self.send(self.weather.msg)
@@ -3721,7 +3784,7 @@ class Connection:
                     log.info("game: %s", line[:PERF_LOG_CHARS].replace("\n", " "))
         elif kind == "roads_reset":             # the mod dropped its roads (settings): send them all again
             self.roads.close()
-            self.roads = roadsmod.Tracker()
+            self.roads = self.new_road_tracker()
             self.signs.close()
             self.signs = signstream.Tracker()
         elif kind == "highway_signs":           # the settings page's switch: no sign tiles built while it is off
@@ -3731,7 +3794,7 @@ class Connection:
         elif kind == "gas_stations":            # the settings page's switch: the road tiles again, with or without
             if self.s.set_gas_stations(msg.get("on")):
                 self.roads.close()
-                self.roads = roadsmod.Tracker()
+                self.roads = self.new_road_tracker()
         else:
             log.debug("ignoring message type %r", kind)
 
@@ -4224,13 +4287,23 @@ class Connection:
             self.pads_refresh(aid)
             self.roads_refresh(aid)
         if self.s.mapdata is not None and aid == self.active:
-            self.roads.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_roads_tile,
-                               vel=self.vel, ground_busy=self.terrain_wait > 0, view=self.view_at,
-                               foci=self.foci)
+            if getattr(self.roads, "geo", False):
+                anchor = self.s.anchors.get(aid)
+                self.roads.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_roads_geo,
+                                   vel=self.vel, ground_busy=self.terrain_wait > 0, view=self.view_at,
+                                   foci=self.foci, frame=anchor.frame if anchor is not None else None)
+                # (the sign tiles stay the anchor's: those round the car once its road geotiles are in)
+                ready = (set(roadsmod.tiles_near(*self.focus, roadsmod.SEND_M))
+                         if self.roads.progress()[0] >= self.roads.progress()[1] else set())
+            else:
+                self.roads.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_roads_tile,
+                                   vel=self.vel, ground_busy=self.terrain_wait > 0, view=self.view_at,
+                                   foci=self.foci)
+                ready = self.roads.sent
             source = getattr(self.s.mapdata, "highway_signs", None)
             if source is not None and self.signs_on:      # (after the roads: signs only for road tiles sent)
                 self.signs.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_signs_tile,
-                                   self.roads.sent, version=source.tags.known())
+                                   ready, version=source.tags.known())
         if self.s.veg is not None and aid == self.active:
             anchor = self.s.anchors.get(aid)
             if anchor is not None:                            # a teleport's cells built at once, ahead

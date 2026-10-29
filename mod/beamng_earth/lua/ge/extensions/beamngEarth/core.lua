@@ -495,6 +495,7 @@ local function commitTeleport(msg)
 
   st.anchor, st.anchorId, st.anchorKey = geodesy.newAnchor(msg.lat, msg.lon), msg.anchorId, msg.anchorKey
   trees.reanchor(st.anchor)       -- (the geotiles it has: placed into the new world; the server drops the far ones)
+  roads.replace(st.anchor, msg.anchorId)     -- (road geotiles too: roads.lua)
   st.anchorSession, st.resync = st.sessionId, false
   mpanchor.announceOwn(msg.lat, msg.lon)
   st.block, st.terrainPending, st.terrainErrorAt = { cx = tr.cx, cy = tr.cy }, nil, nil
@@ -527,6 +528,9 @@ local function finishRebase()
   pumpjacks.transform(xf)
   nightlights.transform(xf)
   gasstations.transform(xf)
+  -- road geotiles: their content placed exactly into the new anchor (its rows' modules after their transforms above),
+  -- the skins moved and lifted until the new anchor's come (roads.lua M.replace)
+  roads.replace(rb.newAnchor, msg.anchorId)
   sea.transform(xf, msg.anchorId)
   -- a resync with a restarted server keeps the previous session's tiles the same way (st.sessionId
   -- is the new session's): they go once the new session's tiles cover them
@@ -801,7 +805,8 @@ local function onMessage(msg)
     -- vegFlat: the vegetation tiles may come as one flat array of numbers (trees.lua onTile), no table per tree
     net.send({ type = 'hello', protocol = PROTOCOL, format = FORMAT, modVersion = MOD_VERSION,
       sessions = farfield.heldSessions(), slotSession = farfield.session(), slotsHeld = held, vegFlat = true,
-      geoTiles = require('beamngEarth/geotile').Z })   -- (geotiles: vegetation in the global tiles' frames: trees.lua)
+      geoTiles = require('beamngEarth/geotile').Z,
+      roadGeo = roads.ROAD_GEO })      -- (road tiles as geotiles too: roads.lua)   -- (geotiles: vegetation in the global tiles' frames: trees.lua)
     setStatus('Connected to companion server')
   elseif t == '_disconnected' then
     st.pending, st.sessionId, st.terrainPending = nil, nil, nil
@@ -822,8 +827,10 @@ local function onMessage(msg)
     -- road tiles belong to the session that sent them: a restarted server (anchor ids start again
     -- at 1) never drops the old session's tiles, so they stayed forever (2026-10-11: meshes of four
     -- sessions in the scene, some built by older code)
+    roads.setGeo(msg.roadGeo == roads.ROAD_GEO)     -- (road tiles as geotiles: roads.lua)
     if roadsSession ~= msg.sessionId then
-      roads.clear()
+      -- (road geotiles stay: the new session's content with the same hash keeps them, the rest go once far or old)
+      roads.newSession()
       roadsSession = msg.sessionId
     end
     roads.prewarm(msg.prewarm)  -- the materials of the server's shapes set up now, not at their first tile
@@ -963,7 +970,11 @@ local function onMessage(msg)
     st.terrainErrorAt = st.clock -- the edge guard holds the car meanwhile
     setStatus('Terrain request failed: ' .. tostring(msg.error))
   elseif t == 'roads_tile' then
-    roads.onTile(msg, st.anchorId)
+    roads.onTile(msg, st.anchorId, st.anchor)
+  elseif t == 'roads_skin' then           -- a road geotile's draped surfaces for this anchor (roads.lua)
+    roads.onSkin(msg, st.anchorId)
+  elseif t == 'roads_exact' then          -- ... its tall parts' exact variants for this anchor
+    roads.onExact(msg, st.anchorId)
   elseif t == 'roads_drop' then
     roads.onDrop(msg)
   elseif t == 'far_tile' then
@@ -1977,7 +1988,7 @@ local function onUpdate(dtReal, dtSim)
     -- the roads before the far tiles: they share the governor's budget and the first to ask gets it; after a
     -- teleport the far field's hundreds of tiles took it frame after frame and the road meshes under the car
     -- came after it had passed (Brasov, Sinaia 2026-10-15: the car drove bare ground)
-    roads.update(gov, st.anchorId, st.player, M.viewAway())
+    roads.update(gov, st.anchorId, st.player, M.viewAway(), st.anchor)
     gasstations.update(gov)
     t = mark('roads', t)
     farfield.update(gov, (gov.w1 or dtReal * 1000) / 1000, st.cam, st.player)

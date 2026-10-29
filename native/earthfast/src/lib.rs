@@ -22,6 +22,7 @@ mod speedsigns;
 mod cachemap;
 mod areacover;
 mod geotiles;
+mod geocontent;
 mod roadz;
 
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, IntoPyArray};
@@ -5316,6 +5317,10 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(geotiles::geo_world_map, m)?)?;
     m.add_function(wrap_pyfunction!(geotiles::geo_world_to_geodetic, m)?)?;
     m.add_function(wrap_pyfunction!(geotiles::geo_placement, m)?)?;
-    m.add("VERSION", 103)?;
+    m.add_function(wrap_pyfunction!(geocontent::geo_owns, m)?)?;
+    m.add_function(wrap_pyfunction!(geocontent::clip_tris_convex, m)?)?;
+    m.add_function(wrap_pyfunction!(geocontent::cdae_zstats, m)?)?;
+    m.add_function(wrap_pyfunction!(geocontent::cdae_shear, m)?)?;
+    m.add("VERSION", 104)?;
     Ok(())
 }

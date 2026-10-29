@@ -379,6 +379,19 @@ function M.onSpaces(key, flat)
 end
 
 -- The tile goes (roads.lua dropTile).
+-- A road geotile's spaces placed again (roads.lua M.replace: the rows mapped into the new anchor's world): moved where
+-- the count is the same, made again else.
+function M.placeSpaces(key, flat)
+  local list = spaces[key]
+  if not list or type(flat) ~= 'table' or #list ~= math.floor(#flat / 8) then return M.onSpaces(key, flat) end
+  for k, s in ipairs(list) do
+    local i = (k - 1) * 8 + 1
+    s.row = { flat[i], flat[i + 1], flat[i + 2], flat[i + 3], flat[i + 4], flat[i + 5], flat[i + 6], flat[i + 7] }
+    local o = scenetree.findObjectById(s.id)
+    if o then placeSpace(o, s.row) end
+  end
+end
+
 function M.dropSpaces(key)
   for _, s in ipairs(spaces[key] or {}) do
     local o = scenetree.findObjectById(s.id)
