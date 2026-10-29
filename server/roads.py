@@ -2224,7 +2224,8 @@ def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, li
     # (curve mode for a deck that clears something; one over nothing but the ground keeps the ground envelope's rounded
     # crest: Lombard Street, Baltimore's deck over its embankment, test_no_step_onto_a_steep_abutment)
     if curve and lines and bridge_profile_mode() == "curve" and len(crossings):
-        got = deck_curve(lines, ground_fn, _curve_crossings(crossings, n_road, levels), (), clear, lift)
+        cl, cg = _unpinned(lines, ground_fn, pins)
+        got = deck_curve(cl, cg, _curve_crossings(crossings, n_road, levels), (), clear, lift)
         if got is not None:
             g = _curve_grade(lines, got)
             if g <= DECK_STEEP_GRADE or _end_step(lines, got) <= DECK_STEEP_GRADE:
@@ -2944,6 +2945,58 @@ def _smooth_pinned(z, step, sigma):
 
 PIN_M = 1.0             # m: a ground road's end this near a joint of decks makes the joint an abutment (_pin) ...
 PIN_ROAD_M = 20.0       # ... a road at least this long (a shorter piece between decks is a gap in the map's bridge tags)
+
+
+PIN_SPLIT_M = 0.7      # m between the ends of the parts at a pinned joint as _unpinned parts them (> _EndJoin's 0.5)
+
+
+def _unpinned(lines, ground_fn, pins):
+    """(lines, ground_fn) for deck_curve with each joint at pins (_pin: a ground road goes on from it) made an end of
+    each part there: their ends moved PIN_SPLIT_M apart (one more step east each), ground_fn giving the ground at the
+    joint itself there. deck_curve's graph joined them, the path went through the joint, and the ground road went on
+    from it 8.5 m under the deck (Charles Street over I-83 in Baltimore: the AI crashed at the step, 2026-10-29). The
+    heights stay one per point of each line. Pure."""
+    if pins is None or not len(pins) or len(lines) < 2:
+        return lines, ground_fn
+    nodes, edges, _adj = _chain_graph(lines)
+    deg = np.zeros(len(nodes), int)
+    for a, b, _ in edges:
+        deg[a] += 1
+        deg[b] += 1
+    pinned = _pin(nodes, deg, pins)
+    split = [i for i in range(len(nodes)) if deg[i] > 1 and pinned[i] == 1]
+    if not split:
+        return lines, ground_fn
+    out = [np.array(ln, np.float64, copy=True) for ln in lines]
+    moved = []                      # (moved point, the joint)
+    for nd in split:
+        q = np.asarray(nodes[nd], np.float64)
+        n = 0
+        for k, (a, b, _s) in enumerate(edges):
+            for at, end in ((0, a), (-1, b)):
+                if end != nd:
+                    continue
+                n += 1
+                if n == 1:
+                    continue        # (the first part keeps the joint's point)
+                out[k][at, 0] = q[0] + PIN_SPLIT_M * (n - 1)
+                out[k][at, 1] = q[1]
+                moved.append((out[k][at, :2].copy(), q))
+    if not moved:
+        return lines, ground_fn
+    M = np.array([m for m, _ in moved], np.float64)
+    Q = np.array([q for _, q in moved], np.float64)
+
+    def ground_at(xy):
+        xy = np.asarray(xy, np.float64).reshape(-1, 2)
+        hit = np.full(len(xy), -1)
+        for j, m in enumerate(M):
+            hit[(np.abs(xy[:, 0] - m[0]) < 1e-6) & (np.abs(xy[:, 1] - m[1]) < 1e-6)] = j
+        if not (hit >= 0).any():
+            return ground_fn(xy)
+        q = np.where((hit >= 0)[:, None], Q[np.maximum(hit, 0)], xy)
+        return ground_fn(q)
+    return out, ground_at
 
 
 def _pin(nodes, deg, pins):
@@ -4405,7 +4458,7 @@ class BridgeProfiles:
         # _observed) (_end_ons)
         over = {}
         ons = self._end_ons_of(lines, [pool[c][0].width / 2 for c in comp], levels, ground)
-        final = self._observed(comp, pool, lines, zs) if ons else zs
+        final = self._observed(comp, pool, lines, zs, pins=_ground_pins(lines, gl)) if ons else zs
         for k, at, j, arc in ons:
             lj = np.asarray(lines[j], np.float64)[:, :2]
             sj = np.r_[0.0, np.cumsum(np.hypot(*np.diff(lj, axis=0).T))]
@@ -4432,9 +4485,9 @@ class BridgeProfiles:
                       MIN_BRIDGE_HEADROOM_M, [(comp[i], round(h, 2)) for i, h in deficits[:3]])
         if ons and not over:
             return final
-        return self._observed(comp, pool, lines, zs)
+        return self._observed(comp, pool, lines, zs, pins=_ground_pins(lines, gl))
 
-    def _observed(self, comp, pool, lines, zs, level=1):
+    def _observed(self, comp, pool, lines, zs, level=1, pins=None):
         """The chain's deck heights where a source measured them (roadz.py: IGN BD TOPO, NVDB, US lidar), the solved
         ones (the inference) elsewhere. Each joint ends up at one height: an abutment (a joint no other part of the
         chain shares) at the solved one (the graded road it meets), a joint between parts at the mean of their measured
@@ -4470,6 +4523,16 @@ class BridgeProfiles:
         for a, b in ends:
             deg[a] = deg.get(a, 0) + 1
             deg[b] = deg.get(b, 0) + 1
+        # a joint a ground road goes on from (pins: the solve's abutment there) keeps the solve's height, the graded
+        # road's, as an abutment does: eased to the decks' measured mean, the street went on 2.5 m over them (Charles
+        # Street over I-83 in Baltimore, 2026-10-29)
+        if pins is not None and len(pins):
+            P = np.asarray(pins, np.float64).reshape(-1, 2)
+            for i_, (a, b) in enumerate(ends):
+                for nd, at in ((a, 0), (b, -1)):
+                    q = np.asarray(lines[i_], np.float64)[at, :2]
+                    if deg[nd] > 1 and (np.hypot(P[:, 0] - q[0], P[:, 1] - q[1]) < PIN_M).any():
+                        deg[nd] = 1
         # a measured deck whose end is far off the graded road it meets there is a map gap (a flyover's untagged
         # stretch drawn on the ground: Springfield's 15 m): the inference keeps that part rather than a long ramp
         for i, (o, z, (a, b)) in enumerate(zip(obs, zs, ends)):
