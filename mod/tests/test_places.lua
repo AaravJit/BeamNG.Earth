@@ -243,6 +243,12 @@ T.check(okGo and #tele == 1 and tele[1][1] == 36.506422 and tele[1][2] == -118.4
   'go: beamngEarth_core.teleport(lat, lon, name) with the place\'s values, with no car')
 function getPlayerVehicle() return { id = 1 } end
 T.check(places.cannotGo() == nil, 'go: with a car too')
+beamngEarth_core.groundReady = function() return false end
+okGo, err = places.go(5)
+T.check(not okGo and err == 'Loading the ground: wait a moment' and #tele == 1, 'go: refused while the ground is loading')
+beamngEarth_core.groundReady = function() return true end
+T.check(places.cannotGo() == nil, 'go: once the ground is in')
+beamngEarth_core.groundReady = nil
 T.check(places.uiState().cannotGo == nil, 'page: can go')
 okGo, err = places.go(6)
 T.check(not okGo and err:match('no such') and #tele == 1, 'go: unknown id')

@@ -1224,6 +1224,20 @@ local dropHold = drophold.new()
 local dropHoldFailed = false
 M.dropHoldState = function() return dropHold end      -- (tests, tools)
 
+-- Whether the ground where the player is has loaded (the status bar's "Loading the ground" is over: loadLine's
+-- placed): Go waits for it (places.cannotGo; the user, 2026-10-28: "double check that it waits for the ground to load
+-- before allowing teleport. gray out the button"). Never for good: a teleport whose ground failed and waits to be
+-- asked again (teleportRetry) lets another place be asked, and one the server has not answered in GO_WAIT_MAX_S too.
+M.GO_WAIT_MAX_S = 120
+function M.groundReady()
+  if st.teleportRetry then return true end
+  local p = st.pending
+  if p and (p.purpose == 'teleport' or p.purpose == 'resync') then
+    return st.clock - (p.sentAt or st.clock) > M.GO_WAIT_MAX_S
+  end
+  return st.anchor ~= nil and st.placeFrames == nil and not dropHold.active
+end
+
 -- The game's own pause (simTimeAuthority, what the pause key does): holding the car by setting its position every frame
 -- strained it (its damage rose 0 -> 93k in 7 s of holding, the user 2026-10-18: "the hold seems to damage my car",
 -- "can you use the actual pause system"). Resumed only if the hold paused it; the player resuming it ends the hold.

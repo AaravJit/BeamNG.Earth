@@ -199,6 +199,7 @@ cam.lag = 3
 cam.pos = vec3(cam.pos.x + 500, cam.pos.y, cam.pos.z + 900)      -- flown away and up
 local okGo = places.goTo(47.37, 8.54, 'Zurich')
 T.check(okGo, 'places.goTo with no car: sent')
+T.check(places.cannotGo() == 'Loading the ground: wait a moment', 'a teleport under way: Go greyed until its ground is in')
 groundAt = function() return 400 end
 req = answer(405)
 commits = #received('commit_anchor')
@@ -211,6 +212,7 @@ T.check(st.player and near(st.player.x, tx) and near(st.player.y, ty) and st.pla
     st.player and st.player.y or 0 / 0, st.player and st.player.z or 0 / 0))
 T.check(pumpUntil(function() return st.placeFrames == nil end, 10), 'placed')
 T.check(pumpUntil(function() return st.camAt == nil end, 10), 'the camera read back there: let go')
+T.check(places.cannotGo() == nil, 'on the ground there: Go on again')
 T.check(near(cam.pos.x, tx) and near(cam.pos.y, ty), 'the camera at the target')
 T.check(st.player and near(st.player.x, tx) and near(st.player.z, cam.pos.z), 'the player follows the camera again')
 local flown = vec3(cam.pos.x + 30, cam.pos.y, cam.pos.z + 40)
@@ -218,6 +220,22 @@ cam.pos = flown
 frames(2)
 T.check(near(st.player.x, flown.x) and near(st.player.z, flown.z), 'flown on afterwards: the player is where the camera is')
 cam.lag = 0
+
+-- 2b. Go never waits for good: a teleport whose ground failed (anchor_error, asked again later) lets another place
+-- be asked; so does one the server has not answered in GO_WAIT_MAX_S
+core.teleport(30.0, 30.0)
+T.check(places.cannotGo() ~= nil, 'asked: greyed')
+serverSend({ type = 'anchor_error', requestId = last('prepare_anchor').requestId, error = 'test: elevation download failed' })
+T.check(pumpUntil(function() return st.teleportRetry ~= nil end, 20), 'its ground failed: to be asked again')
+T.check(places.cannotGo() == nil, 'its ground failed: Go on (another place may be asked)')
+core.teleport(31.0, 31.0)
+T.check(places.cannotGo() ~= nil and st.pending and st.pending.purpose == 'teleport', 'a new place asked: greyed')
+st.pending.sentAt = st.clock - core.GO_WAIT_MAX_S - 1
+T.check(places.cannotGo() == nil, 'not answered in GO_WAIT_MAX_S: Go on again')
+answer(405)
+commits = #received('commit_anchor')
+T.check(pumpUntil(function() return #received('commit_anchor') == commits + 1 end), 'answered late: committed')
+T.check(pumpUntil(function() return st.placeFrames == nil end, 10) and places.cannotGo() == nil, 'placed: Go on')
 
 -- 3. a camera that never reads back (a setPosRot the game ignores): let go after CAM_HOLD_FRAMES, the camera's own
 -- spot again (as before this change)

@@ -765,7 +765,9 @@ over to AWS, a 400 wrote a permanent `.404` marker, and the User-Agent lived in 
   goes (its name stays when the new one has none), at most 10. A refused teleport (no server,
   invalid lat/lon) is not recorded. The recording is a pcall: a file problem never stops a teleport.
 - Go (`places.goTo`): only with `beamngEarth_core` loaded, the server connected and the BeamNG.Earth level
-  loaded (`_state().inOurLevel`), else the reason (the page shows it and disables Go); then
+  loaded (`_state().inOurLevel`) and the ground where the player is in (`groundReady`: no teleport under way, set
+  down, no drop hold; never for good: a failed teleport waiting to be asked again, or one unanswered for
+  `GO_WAIT_MAX_S`, lets another place be asked), else the reason (the page shows it and disables Go); then
   `beamngEarth_core.teleport(lat, lon, name)`. No car is needed: with none the free camera goes to the target
   (core `moveCamera` in the commit frame, then over the ground there in `placePlayer`, held as the player until it
   reads back there; a later move down onto a tunnel's floor leaves a camera flown away alone); with a car and the free

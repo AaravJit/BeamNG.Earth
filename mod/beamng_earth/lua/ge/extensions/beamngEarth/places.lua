@@ -460,6 +460,8 @@ function M.cannotGo()
   -- locations without being in a vehicle". The car stood in for a level being loaded)
   local st = core._state and core._state() or nil
   if not (st and st.inOurLevel) then return 'Load the BeamNG.Earth level first' end
+  -- (the ground where the player is loaded first: a teleport under way, being set down; core.groundReady)
+  if core.groundReady and not core.groundReady() then return 'Loading the ground: wait a moment' end
   return nil
 end
 
