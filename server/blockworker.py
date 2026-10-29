@@ -90,6 +90,8 @@ class _State:
                     # (one store for every anchor: the plans are the planning regions', whatever the anchor)
                     self.plan_store = gradingmod.PlanStore(
                         self.md, lambda la, lo: self.dem.sample(la, lo, gradingmod.PROFILE_ZOOM), self.widths)
+                    # (its tunnels' drowned question asked of the road tiles' chain store: resolved once for both)
+                    self.plan_store.tunnel_store = lambda: self.__dict__.get("chain_stores", {}).get("tunnels")
                 self.graders[aid] = (gradingmod.Grader(frame, self.md, self.plan_store.elev, self.widths,
                                                        store=self.plan_store)
                                      if self.grading else None)
@@ -841,6 +843,7 @@ def _frame_grader(frame):
         if getattr(_s, "plan_store", None) is None:     # (one store for every frame: _State.anchor's)
             _s.plan_store = gradingmod.PlanStore(
                 _s.md, lambda la, lo: _s.dem.sample(la, lo, gradingmod.PROFILE_ZOOM), _s.widths)
+            _s.plan_store.tunnel_store = lambda: _s.__dict__.get("chain_stores", {}).get("tunnels")
     gr = gradingmod.Grader(frame, _s.md, _s.plan_store.elev, _s.widths, store=_s.plan_store)
     gr.wet = _s.sea.depth if getattr(_s, "sea", None) is not None else None
     gr.dem = _s.dem
@@ -914,7 +917,8 @@ def _write_geo_content(out_dir, vfs_dir, tile, P):
                 continue
             info = _shape_info(src, e["pos"], what)
             dst = names[what]
-            _write_bytes(os.path.join(out_dir, dst), open(src, "rb").read())
+            with open(src, "rb") as fh:
+                _write_bytes(os.path.join(out_dir, dst), fh.read())
             e["shape"] = f"{vfs_dir}/{dst}"
             e.update(info)
             parts[what] = dict(info)
@@ -1183,6 +1187,7 @@ def _geo_skin(aid, lat, lon, zoom, gx, gy, out_dir, vfs_dir, sidewalks, lift, q,
     if walks:
         roadsmod.drape_walks(frame, elev, walks,
                              lambda x, y: roadmeshmod.drawn_ground(frame, drawn, np.c_[x, y], q))
+        mark("drape")
         b = sidewalksmod.Builder(origin, collision=True)
         for wk in walks:
             if "corner" in wk:

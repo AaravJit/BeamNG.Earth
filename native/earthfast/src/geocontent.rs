@@ -165,6 +165,65 @@ pub fn clip_tris_convex<'py>(py: Python<'py>, p: PyReadonlyArray2<'py, f64>, uv:
     Ok((p2.into_pyarray(py), u2.into_pyarray(py), t2.into_pyarray(py), c.src.into_pyarray(py)))
 }
 
+/// grading.trim_plan by a convex polygon (a map cell's quad in a planning region's frame): per segment of xy (n, 2)
+/// the (t0, t1) of its part inside poly (k, 2), NaN when none (as earthfast.clip_segments for a box). Each edge's side
+/// is evaluated with its ends in canonical order (side), so two cells sharing an edge cut a road at the very same t.
+#[pyfunction]
+pub fn clip_segments_convex<'py>(py: Python<'py>, xy: PyReadonlyArray2<'py, f64>, poly: PyReadonlyArray2<'py, f64>)
+                                 -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let p = xy.as_array();
+    let q = poly.as_array();
+    if p.ncols() < 2 || q.ncols() < 2 || q.nrows() < 3 {
+        return Err(PyValueError::new_err("clip_segments_convex: xy (n, 2), poly (k >= 3, 2)"));
+    }
+    let k = q.nrows();
+    let pts: Vec<[f64; 2]> = (0..k).map(|i| [q[[i, 0]], q[[i, 1]]]).collect();
+    let (mut cx, mut cy) = (0.0, 0.0);
+    for v in &pts {
+        cx += v[0];
+        cy += v[1];
+    }
+    let c = [cx / k as f64, cy / k as f64];
+    let edges: Vec<([f64; 2], [f64; 2], f64)> = (0..k).map(|e| {
+        let (a, b) = (pts[e], pts[(e + 1) % k]);
+        (a, b, if side(a, b, c) >= 0.0 { 1.0 } else { -1.0 })
+    }).collect();
+    let n = p.nrows().saturating_sub(1);
+    let mut out = vec![f64::NAN; n * 2];
+    for i in 0..n {
+        let a = [p[[i, 0]], p[[i, 1]]];
+        let b = [p[[i + 1, 0]], p[[i + 1, 1]]];
+        let (mut t0, mut t1) = (0.0f64, 1.0f64);
+        let mut inside = true;
+        for &(e0, e1, sg) in &edges {
+            let da = sg * side(e0, e1, a);
+            let db = sg * side(e0, e1, b);
+            if da < 0.0 && db < 0.0 {
+                inside = false;
+                break;
+            }
+            if da >= 0.0 && db >= 0.0 {
+                continue;
+            }
+            let t = da / (da - db);
+            if da < 0.0 {
+                t0 = t0.max(t);
+            } else {
+                t1 = t1.min(t);
+            }
+            if t1 <= t0 {
+                inside = false;
+                break;
+            }
+        }
+        if inside && t1 > t0 {
+            out[2 * i] = t0;
+            out[2 * i + 1] = t1;
+        }
+    }
+    Ok(numpy::ndarray::Array2::from_shape_vec((n, 2), out).unwrap().into_pyarray(py))
+}
+
 // --- shapes (.cdae, server cdae.py: a msgpack body) -----------------------------------------------------------------
 
 struct Rd<'a> {
