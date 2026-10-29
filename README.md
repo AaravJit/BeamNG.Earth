@@ -148,7 +148,7 @@ You can help support development by reporting [issues](https://github.com/TecnaG
   out to the real horizon, for the strongest PCs (it is never picked for you). The Graphics page's settings:
   - **Terrain detail** (Low to Extreme): how far out each finer level of the distant land reaches (Extreme builds
     about twice as many distant ground pieces).
-  - **Ground photo resolution** (1024 / 2048 / 4096): the sharpness of the aerial photo and the painted roads on the
+  - **Ground photo** (1024 / 2048 / 4096): the sharpness of the aerial photo and the painted roads on the
     ground around you; from the next level load.
   - **Tree density** and **Tree draw distance** (about 0.6 to 1.7 miles; 0.8 miles at Normal).
   - **Building draw distance**: the simple far buildings, the skyline and far bridges (Near to Max, twice Normal's 1
