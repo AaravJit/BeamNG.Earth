@@ -1601,9 +1601,12 @@ class Server:
             return None
         with self.grader_lock:
             if anchor.grader is None:
-                anchor.grader = gradingmod.Grader(anchor.frame, self.mapdata,
-                                                  lambda la, lo: self.dem.sample(la, lo, gradingmod.PROFILE_ZOOM),
-                                                  self.road_widths)
+                # (every anchor's view of one store: the plans are the planning regions', whatever the anchor)
+                if getattr(self, "plan_store", None) is None:
+                    self.plan_store = gradingmod.PlanStore(
+                        self.mapdata, lambda la, lo: self.dem.sample(la, lo, gradingmod.PROFILE_ZOOM), self.road_widths)
+                anchor.grader = gradingmod.Grader(anchor.frame, self.mapdata, self.plan_store.elev, self.road_widths,
+                                                  store=self.plan_store)
                 anchor.grader.wet = self.sea.depth if self.sea is not None else None    # (no dams: underwater tunnels)
                 anchor.grader.dem = self.dem                # (its urgent lane: _plan_missing)
                 anchor.grader.shared = plancachemod.for_grader(self.cache_dir, anchor.grader, self.road_widths,

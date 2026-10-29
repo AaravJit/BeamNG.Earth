@@ -86,9 +86,13 @@ class _State:
             if aid not in self.chunks:
                 frame = geodesy.EnuFrame(lat, lon)
                 self.chunks[aid] = heightmap.ChunkCache()
-                self.graders[aid] = (gradingmod.Grader(
-                    frame, self.md, lambda la, lo: self.dem.sample(la, lo, gradingmod.PROFILE_ZOOM), self.widths)
-                    if self.grading else None)
+                if self.grading and getattr(self, "plan_store", None) is None:
+                    # (one store for every anchor: the plans are the planning regions', whatever the anchor)
+                    self.plan_store = gradingmod.PlanStore(
+                        self.md, lambda la, lo: self.dem.sample(la, lo, gradingmod.PROFILE_ZOOM), self.widths)
+                self.graders[aid] = (gradingmod.Grader(frame, self.md, self.plan_store.elev, self.widths,
+                                                       store=self.plan_store)
+                                     if self.grading else None)
                 if self.graders[aid] is not None:
                     self.graders[aid].wet = self.sea.depth if getattr(self, "sea", None) is not None else None
                     self.graders[aid].dem = self.dem          # (its urgent lane: _plan_missing)
@@ -582,8 +586,32 @@ def _write_bytes(path, data):
     staging.replace(tmp, path)
 
 
+# Phase 0 of the origin-independent tiles (geotiles): a road tile's stages timed. "content" stages make what does not
+# depend on the anchor but for its placement (buildings, decks, tunnels, walls, wires, rails, props, guardrails,
+# parking, fuel, wells, sound); "skin" stages follow the anchor's 2 m lattice and height quantum (the draped road mesh,
+# plazas, sidewalks / walk collision in write_tile); "shared" are the stores both read (grading plans, chain profiles).
+TILE_STAGE_KIND = {"warm": "shared", "anchor": "shared", "profiles": "shared", "fuel": "content", "items": "content",
+                   "build_tile": "content", "rails": "content", "airports": "content", "doors_park": "content",
+                   "markings": "content", "guardrails": "content", "medians": "content", "mesh": "skin",
+                   "plazas": "skin", "deck_mesh": "content", "tunnel_mesh": "content", "railways": "content",
+                   "bld": "content", "powerlines": "content", "write": "skin"}
+_tile_stages = threading.local()
+
+
+def last_tile_stages():
+    """{stage: s} of the last road tile this thread built (_roads_tile; {} before one or on a revisit hit)."""
+    return dict(getattr(_tile_stages, "last", {}))
+
+
 def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, buildings, left_hand, mph, q,
                 gas_stations, buried=0.0, lamp_region=None, country=None):
+    stages = _tile_stages.last = {}
+    clock = [time.perf_counter()]
+
+    def mark(name):
+        t = time.perf_counter()
+        stages[name] = stages.get(name, 0.0) + t - clock[0]
+        clock[0] = t
     import parking as parkingmod
     import rails as railsmod
     import roadmesh as roadmeshmod
@@ -594,21 +622,25 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
                                    1 + seacarvemod.LINE_CELLS if _s.sea is not None else 0))
     if getattr(_s, "fra", None) is not None:       # (the US's level crossings' devices, alongside)
         _s.fra.prefetch(roadsmod.cells_of_tile(frame, tx, ty))
+    mark("warm")
     g, _ = _s.anchor(aid, lat, lon)
     cells = [_s.md.cell(k, layers=("roads",), kind="demand").layers.get("roads")
              for k in roadsmod.cells_of_tile(frame, tx, ty)]
+    mark("anchor")
 
     def elev(la, lo):           # the physics ground (lifted under roads: grading.ROAD_LIFT)
         z = ground(frame, la, lo, _s.dem.sample(la, lo, zoom))
         return g.apply(la, lo, z, gradingmod.ROAD_LIFT) if g is not None else z
     bridges = _bridges(aid, frame, elev)
     tunnels = tunnel_profiles(aid, frame, elev, g)
+    mark("profiles")
     walks = []
     urban = _s.surface.urban if _s.surface is not None else None
     fuel, skip, fuel_cuts, fuel_pads = [], frozenset(), [], []
     if gas_stations:                    # pumps and refuel areas; their canopy outlines left out of the buildings
         import gasstations
         fuel, skip = gasstations.tile_sites(frame, tx, ty, _s.md, elev, cuts=fuel_cuts, pads=fuel_pads)
+    mark("fuel")
     props = [] if buildings else None
     lines = [] if buildings else None
     wires = [] if buildings else None
@@ -621,6 +653,7 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
         items = buildingsmod.road_tile_items(frame, tx, ty, _s.md, elev, decks=_tile_decks(bridges, cells, tx, ty),
                                              skip=skip)
         town = buildingsmod.coverage(items) < buildingsmod.POLES_COVERAGE
+    mark("items")
     rwalls = []
     ctx = []
     box = roadsmod.tile_bbox(tx, ty)
@@ -643,9 +676,12 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
                                  roads_out=near_roads,
                                  signals=furniture.signals_for(_s.md, frame,
                                                                roadsmod.cells_of_tile(frame, tx, ty, SIGNALS_MARGIN_M)))
+    mark("build_tile")
     chunks += railsmod.tile_chunks(frame, tx, ty, cells)     # railway and tram tracks on the ground
+    mark("rails")
     if _s.airports is not None:         # runway markings, drawn by the road mesh like the lane lines
         chunks += _s.airports.tile_chunks(frame, tx, ty, elev, roadsmod.tile_bbox)
+    mark("airports")
     x0, y0, _, _ = roadsmod.tile_bbox(tx, ty)
     if items is not None:               # front doors and shopfronts, driveways into the road mesh
         drives = []
@@ -659,7 +695,9 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
             import gasstations
             park = gasstations.clear_park(park, fuel)
         buildingsmod.brick_walks(walks, items, lat, lon)
+    mark("doors_park")
     chunks += parkingmod.finish_markings(frame, tx, ty, _s.md, elev, items, marks)
+    mark("markings")
     # Share the bridge mesh's exact parapet geometry with the tile builder.
     parapets = roadmeshmod.parapet_runs(chunks, ctx, ground=cover)
     import guardrails as guardrailsmod
@@ -678,15 +716,21 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
         log.warning("mapped guardrails: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
         low_parapet_decks.clear()
         guardrail_rows = []
+    mark("guardrails")
     guardrail_rows = guardrail_rows + _median_rows(frame, near_roads, box, elev, left_hand, country, guardrail_rows,
                                                    tx, ty, deck_parts)
+    mark("medians")
     mesh = roadmeshmod.build(frame, chunks, elev, (x0, y0, 0.0), lift, clip=box, follow=True, q=q, drawn=drawn,
                              context=ctx)
+    mark("mesh")
     mesh = _with_plazas(mesh, frame, tx, ty, elev, (x0, y0, 0.0), getattr(_s, "surface", None))
+    mark("plazas")
     dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0), bridges.piers_in(roadsmod.tile_bbox(tx, ty)), ctx,
                               bridges.beams_in(roadsmod.tile_bbox(tx, ty)), ground=cover, parapets=parapets,
                               low_parapet_decks=low_parapet_decks)
+    mark("deck_mesh")
     tmesh = roadmeshmod.tunnel(chunks, (x0, y0, 0.0), rwalls)
+    mark("tunnel_mesh")
     import railways
     rcells = [cell_fn(k) for k in roadsmod.cells_of_tile(frame, tx, ty, railways.REACH_M)]
     rground = railways.point_ground(frame, elev, (aid, lat, lon))
@@ -703,6 +747,7 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
                                far_ground=railways.point_ground(
                                    frame, lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)),
                                    ("raw", aid, lat, lon)))
+    mark("railways")
     bld = None
     garage_sound = ()
     oil_wells = []
@@ -710,6 +755,7 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
         import buildings as buildingsmod
         import oilwells
         bld = buildingsmod.road_tile(frame, tx, ty, _s.md, elev, None, None, items)
+        mark("bld")
         garage_sound = buildingsmod.garage_sound_boxes(items, *roadsmod.tile_bbox(tx, ty)[:2],
                                                        roadsmod.SOUND_GARAGE)
         oil_wells = oilwells.tile_wells(frame, tx, ty, elev)     # (the mod's pump jacks)
@@ -722,9 +768,12 @@ def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, 
         import industry
         garage_sound = (garage_sound + industry.refinery_sound_rows(frame, tx, ty, _s.md, elev)
                         + industry.power_plant_sound_rows(frame, tx, ty, _s.md, elev))
-    return roadsmod.write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks if sidewalks else None, mesh, dmesh,
-                               bld, props, wires, park, tunnel_mesh=tmesh, fuel=fuel, rail_mesh=rmesh, guardrail_rows=guardrail_rows,
-                               garage_sound=garage_sound, wells=oil_wells) + (fuel_pads,)
+        mark("powerlines")
+    out = roadsmod.write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks if sidewalks else None, mesh, dmesh,
+                              bld, props, wires, park, tunnel_mesh=tmesh, fuel=fuel, rail_mesh=rmesh,
+                              guardrail_rows=guardrail_rows, garage_sound=garage_sound, wells=oil_wells) + (fuel_pads,)
+    mark("write")
+    return out
 
 
 def _median_rows(frame, near_roads, box, elev, left_hand, country, mapped, tx, ty, decks=()):
