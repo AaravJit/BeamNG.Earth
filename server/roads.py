@@ -271,7 +271,7 @@ def level_ranges(feats, i):
         _cell_ranges(feats)
         got = memo.get(i)
         if got is None:
-            got = memo[i] = _skew_decks(feats, i, raw_level_ranges(feats, i))
+            got = memo[i] = _deck_gaps(feats, i, _skew_decks(feats, i, raw_level_ranges(feats, i)))
     return list(got)
 
 
@@ -677,6 +677,88 @@ def _skew_decks(feats, i, rngs):
             out[-1] = (pa, max(pb, b), "tunnel" if "tunnel" in (pk, k) else "bridge")
         else:
             out.append((a, b, k))
+    return out
+
+
+# A ground piece of a road shorter than GAP_DECK_M with a deck on both sides (a bridge range of its own, or another
+# road's bridge going on from its end with nothing else meeting there) and no road joining it is deck too: a viaduct's
+# stretch the map leaves untagged between two bridges was drawn on the ground, each deck eased down to it and up again
+# (with the measured decks, 10-15 m: the Springfield Interchange, 2026-10-28). A junction on it keeps it on the ground.
+GAP_DECK_ON = os.environ.get("BNE_DECK_GAPS", "on") != "off"
+GAP_DECK_M = 60.0
+GAP_JUNCTION_M = 1.5
+GAP_JOIN_M = 0.75           # (_skew_decks' tolerance for a road's end at another's)
+
+
+def _first_ring_ends(feats):
+    """(n, 2, 2) lon / lat of each feature's first ring's two ends (NaN: none), kept on feats."""
+    got = feats.__dict__.get("_first_ring_ends")
+    if got is None:
+        n = len(feats)
+        got = np.full((n, 2, 2), np.nan)
+        for i in range(n):
+            if feats.part_off[i + 1] <= feats.part_off[i]:
+                continue
+            r = feats.ring_off[feats.part_off[i]]
+            a, b = feats.coord_off[r], feats.coord_off[r + 1]
+            if b - a >= 2:
+                got[i, 0], got[i, 1] = feats.lonlat[a][:2], feats.lonlat[b - 1][:2]
+        feats.__dict__["_first_ring_ends"] = got
+    return got
+
+
+def _deck_gaps(feats, i, rngs):
+    """rngs (feature i's level ranges) with its short ground gaps between decks made bridge (GAP_DECK_*;
+    earthfast.deck_gaps). A road with a tunnel range keeps its own. Pure given feats."""
+    if not GAP_DECK_ON or any(k == "tunnel" for _, _, k in rngs):
+        return rngs
+    if not any(k == "bridge" for _, _, k in rngs):
+        near = _near_bridge_ends(feats)
+        if near is not None and not near[i]:
+            return rngs                         # (no bridge of its own, none ending at it)
+    if _structure_width(feats, i) is None:
+        return rngs                             # (railways: their own pieces)
+    rings = [np.asarray(r, np.float64) for part in feats.parts(i) for r in part if len(r) >= 2]
+    if not rings:
+        return rngs
+    ring = rings[0][:, :2]
+    kx, ky = 111320.0 * math.cos(math.radians(float(ring[0, 1]))), 111320.0
+    m = (ring - ring[0]) * [kx, ky]
+    L = float(np.hypot(*np.diff(m, axis=0).T).sum())
+    if L <= 0:
+        return rngs
+    specs = road_specs(feats)
+    ends = _first_ring_ends(feats)
+    boxes = _feature_boxes(feats)
+    end_deck = []
+    for e, p in ((0, ring[0]), (1, ring[-1])):
+        d = np.hypot((ends[:, :, 0] - p[0]) * kx, (ends[:, :, 1] - p[1]) * ky)
+        d[i] = np.inf
+        hit = [(int(j), int(k)) for j, k in zip(*np.nonzero(d < GAP_JOIN_M))]
+        ok = len(hit) == 1
+        if ok:
+            j, k = hit[0]
+            rj = raw_level_ranges(feats, j)
+            ok = any(kk == "bridge" and (a <= 1e-6 if k == 0 else b >= 1.0 - 1e-6) for a, b, kk in rj)
+        end_deck.append(ok)
+    bridges = [(a * L, b * L) for a, b, k in rngs if k == "bridge"]
+    pad = (GAP_JUNCTION_M + 1.0) / np.array([kx, ky])
+    lo, hi = ring.min(0) - pad, ring.max(0) + pad
+    near = np.flatnonzero((boxes[:, 0] <= hi[0]) & (boxes[:, 2] >= lo[0]) & (boxes[:, 1] <= hi[1]) &
+                          (boxes[:, 3] >= lo[1]))
+    others = [(ends[j, k] - ring[0]) * [kx, ky] for j in near if j != i and specs[j] is not None for k in (0, 1)
+              if np.isfinite(ends[j, k]).all()]
+    import fast
+    fast.require(105, "deck_gaps")
+    got = np.asarray(fast._ef.deck_gaps(np.ascontiguousarray(m), np.asarray(bridges, np.float64).reshape(-1, 2),
+                                        np.asarray(end_deck, np.int64),
+                                        np.asarray(others, np.float64).reshape(-1, 2), GAP_DECK_M, GAP_JUNCTION_M),
+                     np.float64).reshape(-1, 2)
+    if len(got) == len(bridges) and np.allclose(got, np.asarray(bridges, np.float64).reshape(-1, 2)):
+        return rngs
+    out = [(float(min(max(a / L, 0.0), 1.0)), float(min(max(b / L, 0.0), 1.0)), "bridge") for a, b in got]
+    out[0] = (0.0, out[0][1], "bridge") if got[0, 0] <= 1e-6 else out[0]
+    out[-1] = (out[-1][0], 1.0, "bridge") if got[-1, 1] >= L - 1e-6 else out[-1]
     return out
 
 
@@ -1564,6 +1646,47 @@ def _dijkstra(adj, seeds):
 
 MERGE_TOUCH_M = 1.5     # m: decks side by side this close (edge to edge) are pulled together too (the Queensboro
                         # Bridge's upper roadway's two directions met at a 0.5-2 m step, a wall and stubs on it)
+
+
+# A deck part's end that no other part's end meets (within _EndJoin's 0.5 m) and no ground road goes on from (within
+# END_JOIN_GROUND_M) is no abutment when it lies on another deck part's end, along it: a carriageway's split or merge
+# drawn a few metres off the joint. Held at the ground as an abutment, the branch's deck rose from the street under the
+# viaduct beside the main deck, a cliff of 7-14 m across a motorway's lanes the AI drove off (I-83 in Baltimore, 3.3 m
+# off the joint, the Springfield Interchange; 2026-10-29). Such an end is solved as joined there (earthfast.
+# deck_end_joins): within min(END_JOIN_M, the wider part's half width), directions within acos(END_JOIN_COS).
+END_JOIN_ON = os.environ.get("BNE_DECK_END_JOINS", "on") != "off"
+END_JOIN_M = 6.0
+END_JOIN_COS = 0.8
+END_JOIN_GROUND_M = 2.5     # (grading's APPROACH_TOUCH_M: a road ending this near leads onto the deck)
+END_JOIN_MIN_M = 10.0       # m: shorter parts keep their ends
+
+
+def _end_joins(lines, halves, ground_lines):
+    """[(part, 0 | -1, (x, y))]: the free ends of deck lines (k, 2+) that join another line's end there (END_JOIN_*;
+    earthfast.deck_end_joins), halves their half widths, ground_lines the ground roads near them. Pure."""
+    if not END_JOIN_ON or len(lines) < 2:
+        return []
+    import fast
+    fast.require(105, "deck_end_joins")
+    pts = [np.asarray(ln, np.float64)[:, :2] for ln in lines]
+    off = np.r_[0, np.cumsum([len(p) for p in pts])].astype(np.int64)
+    gl = [np.asarray(g, np.float64)[:, :2] for g in ground_lines if len(g) >= 2]
+    gends = np.array([p for g in gl for p in (g[0], g[-1])], np.float64).reshape(-1, 2)
+    got = np.asarray(fast._ef.deck_end_joins(
+        np.ascontiguousarray(np.concatenate(pts)), off, np.asarray(halves, np.float64), np.ascontiguousarray(gends),
+        np.array([0.5, END_JOIN_M, END_JOIN_COS, END_JOIN_GROUND_M, END_JOIN_MIN_M], np.float64)), np.float64)
+    return [(e // 2, 0 if e % 2 == 0 else -1, (float(got[e, 0]), float(got[e, 1])))
+            for e in range(len(got)) if np.isfinite(got[e, 0])]
+
+
+def _joined_lines(lines, joins):
+    """lines with each end of joins moved onto its joint (copies; the others as they are)."""
+    out = list(lines)
+    for k, at, p in joins:
+        ln = np.array(out[k], np.float64, copy=True)
+        ln[at, 0], ln[at, 1] = p
+        out[k] = ln
+    return out
 
 
 def _ground_pins(lines, ground_lines):
@@ -3927,6 +4050,28 @@ class BridgeProfiles:
             cache.setdefault(str(key), got)
             return cache[str(key)]
 
+    END_JOINS = True        # (TunnelProfiles: none)
+
+    def _end_joins_of(self, lines, halves, ground):
+        """_end_joins of deck lines with the ground roads of ground ({(fid, "g"): lines}); [] for tunnels."""
+        if not self.END_JOINS:
+            return []
+        return _end_joins(lines, halves, [g for k, v in ground.items() if k[1] == "g" for g in v])
+
+    def _end_join_pairs(self, lines, halves, ground):
+        """(i, j): line i's free end joins line j's end (_end_joins)."""
+        joins = self._end_joins_of(lines, halves, ground)
+        if not joins:
+            return []
+        moved = {(k, at): p for k, at, p in joins}
+        out = set()
+        for k, at, p in joins:
+            for j, ln in enumerate(lines):
+                if j != k and any(np.hypot(*(np.asarray(moved.get((j, a2), np.asarray(ln)[a2, :2]), np.float64) -
+                                             np.asarray(p))) < 1e-6 for a2 in (0, -1)):
+                    out.add((min(k, j), max(k, j)))
+        return sorted(out)
+
     def _resolve(self, start, pool, ground, loaded):
         """The chain of part `start` (keys), loading the cell at each loose end until closed."""
         while True:
@@ -3944,6 +4089,10 @@ class BridgeProfiles:
             # and side by side / one over the other (solved apart, the Queensboro Bridge's two upper roadways met at
             # a 0.5 m step and its tiles' decks at different heights stood as blocks in the lanes, 2026-10-17)
             for a, b in _deck_beside([pool[k][1] for k in keys], [pool[k][0].width for k in keys]):
+                crossing.setdefault(keys[a], set()).add(keys[b])
+                crossing.setdefault(keys[b], set()).add(keys[a])
+            # and a free end joining another part's end (_end_joins): solved as one
+            for a, b in self._end_join_pairs([pool[k][1] for k in keys], [pool[k][0].width / 2 for k in keys], ground):
                 crossing.setdefault(keys[a], set()).add(keys[b])
                 crossing.setdefault(keys[b], set()).add(keys[a])
             comp, stack = {start}, [start]
@@ -3978,6 +4127,9 @@ class BridgeProfiles:
     def _solve(self, comp, pool, ground):
         """Deck heights of the chain comp (keys of pool)."""
         lines = [pool[k][1] for k in comp]
+        # (solved with its free ends that join another part's moved onto those joints: _end_joins; the heights are
+        # per point, so the parts keep their own lines)
+        lines = _joined_lines(lines, self._end_joins_of(lines, [pool[k][0].width / 2 for k in comp], ground))
         gl = [g for k, v in ground.items() if k[1] == "g" for g in v]
         rl = [g for k, v in ground.items() if k[1] == "r" for g in v]
         cr = _crossings(lines, gl)
@@ -4402,6 +4554,7 @@ class TunnelProfiles(BridgeProfiles):
     specs_of = staticmethod(lambda feats: tunnel_specs(feats))
     parts_of = staticmethod(lambda feats, i: tunnel_parts(feats, i))
     levels_of = staticmethod(lambda feats, i: [-1.0] * len(tunnel_parts(feats, i)))
+    END_JOINS = False
 
     def _structure(self, chain):                # (no truss over a tunnel)
         return [], []

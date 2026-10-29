@@ -77,3 +77,279 @@ pub fn deck_beside<'py>(py: Python<'py>, q: PyReadonlyArray2<'py, f64>, qoff: Py
     let k = out.len() / 2;
     numpy::ndarray::Array2::from_shape_vec((k, 2), out).expect("pairs").into_pyarray(py)
 }
+
+/// The unit direction of a polyline (rows a..b of pts) leaving its start (at_end false) or its end (true), into the
+/// line: from that end to the point `look` m along it (or its other end, if shorter).
+fn end_dir(pts: &numpy::ndarray::ArrayView2<f64>, a: usize, b: usize, at_end: bool, look: f64) -> [f64; 2] {
+    let idx = |k: usize| if at_end { b - 1 - k } else { a + k };
+    let (x0, y0) = (pts[[idx(0), 0]], pts[[idx(0), 1]]);
+    let (mut tx, mut ty) = (pts[[idx(b - a - 1), 0]], pts[[idx(b - a - 1), 1]]);
+    let mut run = 0.0;
+    for k in 1..b - a {
+        let (px, py) = (pts[[idx(k - 1), 0]], pts[[idx(k - 1), 1]]);
+        let (qx, qy) = (pts[[idx(k), 0]], pts[[idx(k), 1]]);
+        let seg = (qx - px).hypot(qy - py);
+        if run + seg >= look && seg > 0.0 {
+            let t = (look - run) / seg;
+            tx = px + t * (qx - px);
+            ty = py + t * (qy - py);
+            break;
+        }
+        run += seg;
+    }
+    let (dx, dy) = (tx - x0, ty - y0);
+    let l = dx.hypot(dy);
+    if l > 1e-9 { [dx / l, dy / l] } else { [0.0, 0.0] }
+}
+
+/// Where the free ends of deck parts join another part of their road (roads.BridgeProfiles: a carriageway's split or
+/// merge the map draws a few metres off the joint, Overture's lines not meeting: the branch's end was taken for an
+/// abutment and held at the ground under the deck, a cliff of 7-14 m across a motorway's lanes, I-83 in Baltimore and
+/// the Springfield Interchange, 2026-10-29). Parts: pts rows poff[k]..poff[k + 1] (m, the anchor frame), half[k] their
+/// half widths; ground (m, 2): the ends of the ground roads near them. End e = 2k (part k's start) or 2k + 1 (its
+/// end) is free when no other part's end lies within join_m (roads._EndJoin's tolerance) and no ground road's end
+/// within ground_m (a road going on on the ground: an abutment). A free end of a part at least min_len long joins
+/// the nearest end of another part within min(snap_m, the larger half width) whose direction into its part runs
+/// along this one's (|cos| >= min_cos: a split, a merge or the road going on, not a road crossing). Ends are taken in
+/// order: a free end joins only non-free ends or free ends before it (at their joined place), so two free ends facing
+/// each other meet at the first one's. params: join_m, snap_m, min_cos, ground_m, min_len. (2 * parts, 2): each
+/// end's joined place, NaN where it stays.
+#[pyfunction]
+pub fn deck_end_joins<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>, poff: PyReadonlyArray1<'py, i64>,
+                           half: PyReadonlyArray1<'py, f64>, ground: PyReadonlyArray2<'py, f64>,
+                           params: PyReadonlyArray1<'py, f64>) -> Bound<'py, PyArray2<f64>> {
+    let (pts, poff, half, ground, params) = (pts.as_array(), poff.as_array(), half.as_array(), ground.as_array(),
+                                             params.as_array());
+    let (join_m, snap_m, min_cos, ground_m, min_len) = (params[0], params[1], params[2], params[3], params[4]);
+    let n = poff.len().saturating_sub(1);
+    let out = py.allow_threads(|| {
+        let ne = 2 * n;
+        let mut pos = vec![[f64::NAN; 2]; ne];
+        let mut dir = vec![[0.0f64; 2]; ne];
+        let mut len = vec![0.0f64; n];
+        let mut ok = vec![false; n];
+        for k in 0..n {
+            let (a, b) = (poff[k] as usize, poff[k + 1] as usize);
+            if b < a + 2 {
+                continue;
+            }
+            ok[k] = true;
+            let mut l = 0.0;
+            for v in a..b - 1 {
+                l += (pts[[v + 1, 0]] - pts[[v, 0]]).hypot(pts[[v + 1, 1]] - pts[[v, 1]]);
+            }
+            len[k] = l;
+            pos[2 * k] = [pts[[a, 0]], pts[[a, 1]]];
+            pos[2 * k + 1] = [pts[[b - 1, 0]], pts[[b - 1, 1]]];
+            let look = (0.5 * l).min(5.0);
+            dir[2 * k] = end_dir(&pts, a, b, false, look);
+            dir[2 * k + 1] = end_dir(&pts, a, b, true, look);
+        }
+        let d = |p: [f64; 2], q: [f64; 2]| (p[0] - q[0]).hypot(p[1] - q[1]);
+        // a grid of the ends and of the ground roads' ends (cells of the widest reach): the near ones only
+        // (twice the reach: a free end before this one may have moved up to snap_m from where it is filed)
+        let cell = 2.0 * join_m.max(ground_m).max(snap_m).max(1.0);
+        let key = |p: [f64; 2]| ((p[0] / cell).floor() as i64, (p[1] / cell).floor() as i64);
+        let mut grid: std::collections::HashMap<(i64, i64), Vec<usize>> = std::collections::HashMap::new();
+        for e in 0..ne {
+            if ok[e / 2] {
+                grid.entry(key(pos[e])).or_default().push(e);
+            }
+        }
+        let mut ggrid: std::collections::HashMap<(i64, i64), Vec<usize>> = std::collections::HashMap::new();
+        for g in 0..ground.nrows() {
+            ggrid.entry(key([ground[[g, 0]], ground[[g, 1]]])).or_default().push(g);
+        }
+        let near = |grid: &std::collections::HashMap<(i64, i64), Vec<usize>>, p: [f64; 2]| -> Vec<usize> {
+            let (gx, gy) = key(p);
+            let mut v = Vec::new();
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    if let Some(c) = grid.get(&(gx + dx, gy + dy)) {
+                        v.extend_from_slice(c);
+                    }
+                }
+            }
+            v.sort_unstable();
+            v
+        };
+        let mut free = vec![false; ne];
+        for e in 0..ne {
+            if !ok[e / 2] {
+                continue;
+            }
+            let joined = near(&grid, pos[e]).into_iter().any(|f| f != e && d(pos[e], pos[f]) < join_m);
+            let grounded = near(&ggrid, pos[e]).into_iter()
+                .any(|g| d(pos[e], [ground[[g, 0]], ground[[g, 1]]]) < ground_m);
+            free[e] = !joined && !grounded;
+        }
+        let mut at = pos.clone();           // (where each end is once joined)
+        let mut out = vec![f64::NAN; 2 * ne];
+        for e in 0..ne {
+            let k = e / 2;
+            if !free[e] || len[k] < min_len {
+                continue;
+            }
+            let mut best: Option<(f64, usize)> = None;
+            for f in near(&grid, pos[e]) {
+                let j = f / 2;
+                if j == k || (free[f] && f > e) {
+                    continue;
+                }
+                let r = snap_m.min(half[k].max(half[j]));
+                let dd = d(pos[e], at[f]);
+                if dd > r {
+                    continue;
+                }
+                let c = (dir[e][0] * dir[f][0] + dir[e][1] * dir[f][1]).abs();
+                if c < min_cos {
+                    continue;
+                }
+                if best.map_or(true, |(bd, bf)| dd < bd || (dd == bd && f < bf)) {
+                    best = Some((dd, f));
+                }
+            }
+            if let Some((_, f)) = best {
+                at[e] = at[f];
+                out[2 * e] = at[f][0];
+                out[2 * e + 1] = at[f][1];
+            }
+        }
+        out
+    });
+    numpy::ndarray::Array2::from_shape_vec((2 * n, 2), out).expect("joins").into_pyarray(py)
+}
+
+/// The ground gaps of one road between decks made deck (roads.level_ranges: a few metres of a viaduct the map leaves
+/// untagged between two bridges are drawn on the ground, each deck eased down to them and up again). line (k, 2): the
+/// road's line in m; bridges (r, 2): its bridge ranges, m along it (ascending, apart); end_deck[0 / 1]: a deck goes on
+/// from its start / end (another road's bridge ends there and nothing else meets it); others (m, 2): the ends of the
+/// other roads near it (junctions). A ground piece shorter than gap_m with a deck on both sides (a bridge range of its
+/// own, or end_deck at a road end) becomes bridge unless another road's end lies within junction_m of it (a junction
+/// at grade between two bridges: kept on the ground). Pure. (r', 2): the bridge ranges after, in m, ascending.
+pub fn fill_gaps(line: &[[f64; 2]], bridges: &[[f64; 2]], end_deck: [bool; 2], others: &[[f64; 2]], gap_m: f64,
+                 junction_m: f64) -> Vec<[f64; 2]> {
+    let n = line.len();
+    let mut s = vec![0.0f64; n];
+    for v in 1..n {
+        s[v] = s[v - 1] + (line[v][0] - line[v - 1][0]).hypot(line[v][1] - line[v - 1][1]);
+    }
+    let total = if n > 0 { s[n - 1] } else { 0.0 };
+    if n < 2 || total <= 0.0 {
+        return bridges.to_vec();
+    }
+    // the distance from point p to the line between arcs a and b
+    let near = |p: [f64; 2], a: f64, b: f64| -> f64 {
+        let mut best = f64::INFINITY;
+        let at = |t: f64| -> [f64; 2] {
+            let v = s.partition_point(|&x| x < t).clamp(1, n - 1);
+            let seg = (s[v] - s[v - 1]).max(1e-12);
+            let u = ((t - s[v - 1]) / seg).clamp(0.0, 1.0);
+            [line[v - 1][0] + u * (line[v][0] - line[v - 1][0]), line[v - 1][1] + u * (line[v][1] - line[v - 1][1])]
+        };
+        let mut pts = vec![at(a)];
+        for v in 0..n {
+            if s[v] > a && s[v] < b {
+                pts.push(line[v]);
+            }
+        }
+        pts.push(at(b));
+        for w in pts.windows(2) {
+            let (px, py) = (w[0][0], w[0][1]);
+            let (abx, aby) = (w[1][0] - px, w[1][1] - py);
+            let l2 = (abx * abx + aby * aby).max(1e-12);
+            let t = (((p[0] - px) * abx + (p[1] - py) * aby) / l2).clamp(0.0, 1.0);
+            best = best.min((p[0] - (px + t * abx)).hypot(p[1] - (py + t * aby)));
+        }
+        best
+    };
+    // the ground pieces (a, b, deck before, deck after)
+    let mut pieces: Vec<(f64, f64, bool, bool)> = Vec::new();
+    let mut at = 0.0;
+    let mut deck_before = end_deck[0];
+    for r in bridges {
+        if r[0] > at {
+            pieces.push((at, r[0], deck_before, true));
+        }
+        at = at.max(r[1]);
+        deck_before = true;
+    }
+    if total > at {
+        pieces.push((at, total, deck_before, end_deck[1]));
+    }
+    let mut out: Vec<[f64; 2]> = bridges.to_vec();
+    for (a, b, d0, d1) in pieces {
+        if !(d0 && d1) || b - a >= gap_m {
+            continue;
+        }
+        // (a junction at either end of the road was ruled out by end_deck; inside it, any road ending on the piece)
+        let (ia, ib) = (if a <= 0.0 { junction_m } else { 0.0 }, if b >= total { junction_m } else { 0.0 });
+        let lo = a + ia;
+        let hi = (b - ib).max(lo);
+        if others.iter().any(|&p| near(p, lo, hi) < junction_m) {
+            continue;
+        }
+        out.push([a, b]);
+    }
+    out.sort_by(|x, y| x[0].partial_cmp(&y[0]).unwrap_or(std::cmp::Ordering::Equal));
+    let mut merged: Vec<[f64; 2]> = Vec::new();
+    for r in out {
+        if let Some(last) = merged.last_mut() {
+            if r[0] <= last[1] + 1e-9 {
+                last[1] = last[1].max(r[1]);
+                continue;
+            }
+        }
+        merged.push(r);
+    }
+    merged
+}
+
+/// fill_gaps for Python: line (k, 2) m, bridges (r, 2) m along it, end_deck (2,) 0 / 1, others (m, 2), gap_m,
+/// junction_m. (r', 2) the bridge ranges after, m.
+#[pyfunction]
+pub fn deck_gaps<'py>(py: Python<'py>, line: PyReadonlyArray2<'py, f64>, bridges: PyReadonlyArray2<'py, f64>,
+                      end_deck: PyReadonlyArray1<'py, i64>, others: PyReadonlyArray2<'py, f64>, gap_m: f64,
+                      junction_m: f64) -> Bound<'py, PyArray2<f64>> {
+    let rows = |a: &numpy::ndarray::ArrayView2<f64>| -> Vec<[f64; 2]> {
+        (0..a.nrows()).map(|i| [a[[i, 0]], a[[i, 1]]]).collect()
+    };
+    let (l, b, o) = (rows(&line.as_array()), rows(&bridges.as_array()), rows(&others.as_array()));
+    let ed = end_deck.as_array();
+    let got = fill_gaps(&l, &b, [ed.len() > 0 && ed[0] != 0, ed.len() > 1 && ed[1] != 0], &o, gap_m, junction_m);
+    let flat: Vec<f64> = got.iter().flat_map(|r| [r[0], r[1]]).collect();
+    numpy::ndarray::Array2::from_shape_vec((got.len(), 2), flat).expect("ranges").into_pyarray(py)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fill_gaps;
+
+    #[test]
+    fn a_short_gap_between_decks_is_deck() {
+        let line = [[0.0, 0.0], [300.0, 0.0]];
+        let got = fill_gaps(&line, &[[0.0, 100.0], [140.0, 300.0]], [false, false], &[], 60.0, 1.5);
+        assert_eq!(got, vec![[0.0, 300.0]]);
+    }
+
+    #[test]
+    fn a_long_gap_or_a_junction_stays_ground() {
+        let line = [[0.0, 0.0], [300.0, 0.0]];
+        let b = [[0.0, 100.0], [180.0, 300.0]];
+        assert_eq!(fill_gaps(&line, &b, [false, false], &[], 60.0, 1.5), b.to_vec());
+        let b2 = [[0.0, 100.0], [140.0, 300.0]];
+        assert_eq!(fill_gaps(&line, &b2, [false, false], &[[120.0, 1.0]], 60.0, 1.5), b2.to_vec());
+    }
+
+    #[test]
+    fn an_end_piece_needs_a_deck_going_on() {
+        let line = [[0.0, 0.0], [100.0, 0.0]];
+        let b = [[30.0, 100.0]];
+        assert_eq!(fill_gaps(&line, &b, [false, false], &[], 60.0, 1.5), b.to_vec());
+        assert_eq!(fill_gaps(&line, &b, [true, false], &[], 60.0, 1.5), vec![[0.0, 100.0]]);
+        // (the other road at the joint itself is the deck going on: not a junction)
+        assert_eq!(fill_gaps(&line, &b, [true, false], &[[0.0, 0.5]], 60.0, 1.5), vec![[0.0, 100.0]]);
+        // a whole road between two decks
+        assert_eq!(fill_gaps(&line, &[], [true, true], &[], 120.0, 1.5), vec![[0.0, 100.0]]);
+    }
+}

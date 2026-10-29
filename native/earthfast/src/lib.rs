@@ -5201,6 +5201,8 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(power::power_line_layout, m)?)?;
     m.add_function(wrap_pyfunction!(lamps::lamp_stations, m)?)?;
     m.add_function(wrap_pyfunction!(decks::deck_beside, m)?)?;
+    m.add_function(wrap_pyfunction!(decks::deck_end_joins, m)?)?;
+    m.add_function(wrap_pyfunction!(decks::deck_gaps, m)?)?;
     m.add_function(wrap_pyfunction!(islands::road_cycles, m)?)?;
     m.add_function(wrap_pyfunction!(ribbons::ribbon_edges, m)?)?;
     m.add_function(wrap_pyfunction!(groundpaint::mask_segments, m)?)?;
@@ -5316,6 +5318,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(geotiles::geo_world_map, m)?)?;
     m.add_function(wrap_pyfunction!(geotiles::geo_world_to_geodetic, m)?)?;
     m.add_function(wrap_pyfunction!(geotiles::geo_placement, m)?)?;
-    m.add("VERSION", 103)?;
+    m.add("VERSION", 105)?;
     Ok(())
 }
