@@ -2518,6 +2518,7 @@ class Server:
             base = seacarvemod.SeaDem(base, self.sea if lvl <= seacarvemod.CARVE_MAX_LEVEL else None)
         src = gradingmod.GradedDem(base, g) if g is not None else base
         done = None             # (texture file, bytes, sources used) when the worker rendered it (blockworker.far_tile)
+        geo = None              # the geometry's future while this thread renders the texture
         if self.far_pool is not None and self.imagery is not None and self.deshadow is None \
                 and self.colormatch is None:
             # the texture in the far-tile process too, from the imagery on disk (no analyses to apply here)
@@ -2542,13 +2543,17 @@ class Server:
             if got is not None:
                 done = (texture, got[0], got[1])
         elif self.far_pool is not None:
-            built = self.far_pool.submit(blockworker.far_geometry, anchor.id, anchor.lat, anchor.lon, tile,
-                                         anchor.zooms[max(lvl, 0)], q, ref_zoom, self.near_visual in BLOCK_DRAWN,
-                                         self.layout).result()
+            # the geometry in a far-tile process while this thread warps the texture from the finished imagery (no
+            # analysis waits there any more: imagery.Imagery.finished); the steps that need both after it
+            geo = self.far_pool.submit(blockworker.far_geometry, anchor.id, anchor.lat, anchor.lon, tile,
+                                       anchor.zooms[max(lvl, 0)], q, ref_zoom, self.near_visual in BLOCK_DRAWN,
+                                       self.layout)
+            built = None
         else:
             built = farfield.build_tile(anchor.frame, src, tile, anchor.zooms[max(lvl, 0)], q,
                                         ref_zoom, with_sink=self.near_visual in BLOCK_DRAWN, layout=self.layout)
         t1 = time.perf_counter()
+        geo_wait = 0.0
         material = texture = used = None
         tex_bytes = 0
         ck = (anchor.id, tile.key)
@@ -2576,6 +2581,10 @@ class Server:
                     f0 = revisitmod.faults()
                     rgb, used = self.imagery.render(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px),
                                                     px, pending=pending)
+                    if geo is not None:
+                        w0 = time.perf_counter()
+                        built, geo = geo.result(), None
+                        geo_wait = time.perf_counter() - w0
                     rgb = self.rock_faces(anchor, tile, px, rgb, built.grid)
                     rgb = self.road_faces(anchor, tile, px, rgb)
                     self.write_road_mask(anchor, tile, px, texture)
@@ -2590,18 +2599,23 @@ class Server:
                 if self.imagery_failures % 100 == 1:
                     log.warning("tile %s of anchor %d: no imagery (%s), palette material (%d tiles so far)",
                                 tile.key, anchor.id, e, self.imagery_failures)
+        if geo is not None:             # (a revisit hit, or no imagery)
+            w0 = time.perf_counter()
+            built = geo.result()
+            geo_wait += time.perf_counter() - w0
         t2 = time.perf_counter()
         size = farfield.write_built(path, built, self.far_format, material or farfield.MATERIAL,
                                     textured=material is not None, tex_px=self.tex_size(lvl))
         dt = time.perf_counter() - t0
         self.build_stats.append(dt)
-        self.level_stats.setdefault(lvl, deque(maxlen=200)).append((dt - (t2 - t1), t2 - t1, size, tex_bytes))
+        tex_s = t2 - t1 - geo_wait
+        self.level_stats.setdefault(lvl, deque(maxlen=200)).append((dt - tex_s, tex_s, size, tex_bytes))
         sources = frozenset()
         if self.credits is not None:        # the tile's imagery and DEM sources (data credits)
             sources = creditsmod.tile_sources(anchor.frame, tile.bbox, self.dem, anchor.zooms[max(lvl, 0)],
                                               used if material is not None else None)
         info = TileInfo(built.pos, built.err, built.sink, built.skirt, built.grid, size, dt,
-                        material, texture, tex_bytes, t2 - t1, credits=sources)
+                        material, texture, tex_bytes, tex_s, credits=sources)
         if material is not None and self.far_format == "cdae":    # the pooled shape path (matslots.py)
             info.shape = matslotsmod.MatSlots.file(material)
             matslotsmod.place(path, os.path.join(self.out_dir, info.shape))

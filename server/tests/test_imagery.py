@@ -115,7 +115,8 @@ class ReprojectionTest(unittest.TestCase):
         clat = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * cy_px / W))))
         ce, cn, _ = frame.geodetic_to_enu(clat, clon, float(h))
         col, row = (ce - x0) / t - 0.5, (y0 + size - cn) / t - 0.5      # texel centres at +0.5
-        lum = rgb[..., 0].astype(float) - 20
+        # (above the background's 20 by more than the finished tiles' JPEG ringing round the mark: imagery.FIN_QUALITY)
+        lum = rgb[..., 0].astype(float) - 40
         w = np.clip(lum, 0, None)
         rr, cc = np.mgrid[0:px, 0:px]
         cy, cx = (w * rr).sum() / w.sum(), (w * cc).sum() / w.sum()
@@ -262,7 +263,7 @@ class ChainTest(unittest.TestCase):
         self.assertTrue((a == b).all() and (a == c).all())
         self.assertEqual(set(used), {"eox2023"})
         stats = im2.stats_snapshot()
-        self.assertGreater(stats.get("eox2023:disk", 0), 0)
+        self.assertGreater(stats.get("finished:disk", 0), 0)    # (the finished tiles: no raw tile read again)
         markers = [f for _, _, fs in os.walk(os.path.join(self.tmp.name, "usgs")) for f in fs if f.endswith(".404")]
         self.assertTrue(markers)
 
