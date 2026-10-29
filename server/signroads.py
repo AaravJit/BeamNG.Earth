@@ -44,6 +44,25 @@ class Pavements(list):
         self.plans = {}
 
 
+_specs_lock = threading.Lock()
+
+
+def cell_specs(feats, urban=None, widths=None, left_hand=False):
+    """roads.road_specs of a decoded map cell, kept on it (the sign rows and the speed signs share one: road_specs
+    is the costly part of both)."""
+    key = (urban, widths, bool(left_hand))
+    with _specs_lock:
+        memo = feats.__dict__.setdefault('_sign_specs', {})
+        got = memo.get(key)
+    if got is None:
+        got = roads.road_specs(feats, urban, widths, left_hand)
+        with _specs_lock:
+            if len(memo) >= CELL_FRAMES:
+                memo.pop(next(iter(memo)))
+            memo[key] = got
+    return got
+
+
 def spec(value, link=False):
     return Spec(value.width, value.cls, value.oneway, value.dir, link)
 
@@ -96,7 +115,7 @@ class Context(signcontext.Context):
         if got is not None:
             return got
         rows, polys = [], []
-        specs = roads.road_specs(feats, self.urban, self.widths, left_hand)
+        specs = cell_specs(feats, self.urban, self.widths, left_hand)
         for i, value in enumerate(specs):
             if value is None:
                 continue

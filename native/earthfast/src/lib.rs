@@ -17,6 +17,7 @@ mod decks;
 mod islands;
 mod ribbons;
 mod groundpaint;
+mod speedsigns;
 
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, IntoPyArray};
 use pyo3::types::PyBytes;
@@ -5288,6 +5289,8 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(photofill::fill_photo, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 97)?;
+    m.add_function(wrap_pyfunction!(speedsigns::speed_sign_place, m)?)?;
+    m.add_function(wrap_pyfunction!(speedsigns::speed_sign_mesh, m)?)?;
+    m.add("VERSION", 98)?;
     Ok(())
 }
