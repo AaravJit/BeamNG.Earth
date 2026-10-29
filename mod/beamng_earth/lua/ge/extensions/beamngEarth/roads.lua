@@ -31,9 +31,16 @@ M.MATERIAL_FILES = { '/levels/west_coast_usa/art/road/main.materials.json',
   '/levels/italy/art/shapes/buildings/main.materials.json',        -- italy_cobblestone (paving stones)
   '/levels/driver_training/art/road/main.materials.json',          -- m_metal_grid_drain (storm drains)
   '/levels/gridmap_v2/art/shapes/grid/main.materials.json',        -- m_gm_concrete_plain (concrete streets)
-  '/levels/beamng_earth/art/shapes/beamngEarth/buildings.materials.json' } -- buildings (server/buildings.py)
+  '/levels/beamng_earth/art/shapes/beamngEarth/buildings.materials.json',  -- buildings (server/buildings.py)
+  -- highway signs (server/signstream.py: exit and overhead panels, mile markers, merge warnings)
+  '/levels/beamng_earth/art/shapes/beamngEarth/roadside/exit.materials.json',
+  '/levels/beamng_earth/art/shapes/beamngEarth/roadside/merge.materials.json' }
 M.FADE = '450 150'          -- distanceFade: start, range (m)
 M.enabled = true
+-- the highway signs (server signstream.py, from cody196's PR #363): sign tiles (key "s<tx>_<ty>") carry the render-only
+-- shapes SIGN_WHATS; switched off, their objects go but each tile keeps its data (signData) to show again at once
+M.signsEnabled = true
+M.SIGN_WHATS = { 'exits', 'mileposts', 'merges' }
 -- be:reloadCollision() at most this often: every rebuild is a ~20 ms physics frame (2026-10-13, the
 -- engine's frame metrics), and while driving new sidewalk tiles arrive all the time. They arrive ~640 m
 -- ahead (11 s at 58 m/s), so a few seconds before they collide do not matter. A terrain commit rebuilds
@@ -252,6 +259,7 @@ local function dropTile(key)
   if t.deck then deleteQ[#deleteQ + 1] = t.deck end
   for _, w in ipairs({ 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'walkcol', 'tunnel', 'rail' }) do if t[w] then deleteQ[#deleteQ + 1] = t[w] end end
   if t.wire then deleteQ[#deleteQ + 1] = t.wire end
+  for _, w in ipairs(M.SIGN_WHATS) do if t[w] then deleteQ[#deleteQ + 1] = t[w] end end
   -- and its meshes not made yet (from KyzoFox's 1.5.4, PR #64): a tile sent again under the same key left its old
   -- walkQ / held / createQ entries, which were then made for the new tile from pooled shape paths that had just been
   -- reported gone and refilled with another tile's shape: that tile's buildings drawn here at its ground height (houses
@@ -452,7 +460,8 @@ function M.onTile(msg, currentAnchor)
   end
   -- pooled shape files: the server's slot paths instead of the tile's own files
   local slots = {}
-  for _, what in ipairs({ 'road', 'deck', 'walk', 'walkcol', 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'wire', 'tunnel', 'rail' }) do
+  for _, what in ipairs({ 'road', 'deck', 'walk', 'walkcol', 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'wire', 'tunnel', 'rail',
+      'exits', 'mileposts', 'merges' }) do
     local sl = msgSlot(msg, what)
     if sl then
       if type(data[what]) == 'table' and type(data[what].pos) == 'table' then
@@ -502,9 +511,21 @@ function M.onTile(msg, currentAnchor)
   if type(data.wire) == 'table' and data.wire.shape and type(data.wire.pos) == 'table' then    -- pole wires
     walkQ[#walkQ + 1] = { key = key, walk = data.wire, what = 'wire', tile = tiles[key] }
   end
+  -- a sign tile (key "s<tx>_<ty>"): its render-only sign shapes, kept in signData for setSignsEnabled
+  tiles[key].signOnly = tostring(msg.key):match('^s%-?%d+_') ~= nil
+  tiles[key].signData = {}
+  for _, what in ipairs(M.SIGN_WHATS) do
+    local sign = data[what]
+    if type(sign) == 'table' and sign.shape and type(sign.pos) == 'table' then
+      tiles[key].signData[what] = sign
+      if M.signsEnabled then
+        walkQ[#walkQ + 1] = { key = key, walk = sign, what = what, tile = tiles[key], renderOnly = true }
+      end
+    end
+  end
   -- sidewalks, bridge decks, buildings (split in parts under the engine's 16-bit index limit), the buildings'
   -- lean collision mesh: colliders only near the car (M.COLLIDE_M); with a bldcol the drawn buildings only render
-  local tx, ty = tostring(msg.key):match('^(%-?%d+)_(%-?%d+)$')
+  local tx, ty = tostring(msg.key):match('^s?(%-?%d+)_(%-?%d+)$')
   tiles[key].cx = tx and (tonumber(tx) + 0.5) * M.TILE_M or nil
   tiles[key].cy = ty and (tonumber(ty) + 0.5) * M.TILE_M or nil
   -- a lean collision mesh ("bldcol", "walkcol": server cdae collision_only) makes the drawn ones render-only
@@ -642,7 +663,8 @@ M.GHOST_FAR_M = 960         -- ... and once farther from the player than this (t
 M.GHOST_FAR_WAIT_S = 2      -- ... from this long after the rebase on
 local ghostSince = nil      -- stopwatch since the last rebase that left ghosts
 
-local WHATS = { 'walk', 'road', 'deck', 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'walkcol', 'wire', 'tunnel', 'rail' }
+local WHATS = { 'walk', 'road', 'deck', 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'walkcol', 'wire', 'tunnel', 'rail',
+  'exits', 'mileposts', 'merges' }
 
 function M.transform(xf, geodesy)
   local bx, by, bz, bw = xf:beamngQuat()
@@ -689,11 +711,12 @@ end
 
 -- Is the square of side M.TILE_M around (cx, cy) covered by made tiles of the current anchor (every one of the new
 -- grid's squares it overlaps has a tile with nothing queued)?
--- done: the new grid's squares whose tile is made (madeSquares).
-local function madeSquares(aid, busy)
+-- done: the new grid's squares whose tile is made (madeSquares). signs: the sign tiles' squares instead (a sign
+-- tile is no road tile: it never covers a road ghost, nor a road tile a sign ghost)
+local function madeSquares(aid, busy, signs)
   local n, done = M.TILE_M, {}
   for key, t in pairs(tiles) do
-    if t.anchor == aid and not t.ghost and t.cx then
+    if t.anchor == aid and not t.ghost and t.cx and (t.signOnly == true) == (signs == true) then
       done[math.floor(t.cx / n) .. '_' .. math.floor(t.cy / n)] = t.queued <= 0 and not busy[key]
     end
   end
@@ -706,7 +729,7 @@ function M.settledFor(aid, x, y)
   if anchorId ~= aid or #deleteQ > 0 or collisionDirty then return false end
   local n = M.TILE_M
   for _, t in pairs(tiles) do
-    if t.anchor ~= aid or t.ghost then
+    if not t.signOnly and (t.anchor ~= aid or t.ghost) then   -- (a sign tile has no collision)
       if not t.cx or (math.abs(t.cx - x) < 1.5 * n and math.abs(t.cy - y) < 1.5 * n) then return false end
     end
   end
@@ -732,6 +755,7 @@ local function releaseGhosts(player)
   local all = ghostSince() > M.GHOST_MAX_S * 1000
   local left = false
   local done = madeSquares(anchorId, busyKeys)
+  local signsDone = madeSquares(anchorId, busyKeys, true)
   local p = player             -- core's player (the camera's focus: a test drive's vehicle is not the player's car)
   for key, t in pairs(tiles) do
     if t.ghost then
@@ -739,9 +763,9 @@ local function releaseGhosts(player)
       -- ghost looked kilometres away and all went: 46 road tiles -> 0 at each rebase, 2026-10-17)
       local far = p and t.cx and ghostSince() > M.GHOST_FAR_WAIT_S * 1000
         and math.max(math.abs(p.x - t.cx), math.abs(p.y - t.cy)) - M.TILE_M / 2 > M.GHOST_FAR_M
-      if all or far or (t.cx and covered(done, t.cx, t.cy)) then
+      if all or far or (t.cx and covered(t.signOnly and signsDone or done, t.cx, t.cy)) then
         dropTile(key)
-        collisionDirty = true
+        if not t.signOnly then collisionDirty = true end
       else left = true end
     end
   end
@@ -1146,6 +1170,30 @@ function M.setEnabled(on)
   M.enabled = on and true or false
   if not M.enabled then M.clear() end
   return M.enabled and not was
+end
+
+-- The highway signs on / off (the settings page's highwaySigns, through core.setHighwaySigns): only the sign objects
+-- go or come back (from each tile's signData); the roads, their colliders and the held shape slots stay. Returns true
+-- if it changed.
+function M.setSignsEnabled(on)
+  on = on and true or false
+  if M.signsEnabled == on then return false end
+  M.signsEnabled = on
+  local isSign = {}
+  for _, w in ipairs(M.SIGN_WHATS) do isSign[w] = true end
+  local keep = {}
+  for _, q in ipairs(walkQ) do if not isSign[q.what] then keep[#keep + 1] = q end end
+  walkQ = keep
+  for key, t in pairs(tiles) do
+    for _, what in ipairs(M.SIGN_WHATS) do
+      if t[what] then deleteQ[#deleteQ + 1] = t[what]; t[what] = nil end
+      local sign = t.signData and t.signData[what]
+      if on and M.enabled and not t.ghost and sign then
+        walkQ[#walkQ + 1] = { key = key, walk = sign, what = what, tile = t, renderOnly = true }
+      end
+    end
+  end
+  return true
 end
 
 -- The state of the road tiles along a line (tools: how far ahead of a fast car its tiles are ready). From (x, y)

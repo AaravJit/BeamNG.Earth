@@ -833,6 +833,8 @@ local function onMessage(msg)
     if settings and settings.cacheCapGb then net.send({ type = 'cache', capGb = settings.cacheCapGb() }) end
     -- gas stations on, after every hello (a server started without them too; this comes before any tile request)
     net.send({ type = 'gas_stations', on = true })
+    -- the highway signs' switch (settings highwaySigns): no sign tiles built while it is off
+    net.send({ type = 'highway_signs', on = roads.signsEnabled })
     -- the on-screen credits: this session's own follow (the attribution line until then)
     credits.clear()
     -- M4: the terrain block size first (everything below may use the lattice / follow table); a
@@ -2470,6 +2472,10 @@ end
 -- The Roads setting: off removes them; on again asks the server to send the tiles once more.
 function M.setRoadsEnabled(on)
   if roads.setEnabled(on) then net.send({ type = 'roads_reset' }) end
+end
+-- The highway signs on / off (settings highwaySigns): shown or hidden at once, built by the server only while on.
+function M.setHighwaySigns(on)
+  if roads.setSignsEnabled(on) then net.send({ type = 'highway_signs', on = roads.signsEnabled }) end
 end
 
 M.onUpdate = onUpdate

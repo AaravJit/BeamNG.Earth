@@ -192,6 +192,7 @@ const settingsSchema = [
       { id: "clouds", type: "bool", default: true, name: "Clouds", desc: "A volumetric cloud layer that follows the ground under you." },
       { id: "realGravity", type: "bool", default: true, name: "Real gravity", desc: "Gravity as it really is where you are (it varies a little with latitude, height and the ground below). Off: the usual 9.81 m/s2." },
       { id: "roads", type: "bool", default: true, name: "Roads", desc: "Real roads, bridges and buildings near you from OpenStreetMap and Overture. Off: bare terrain only." },
+      { id: "highwaySigns", type: "bool", default: true, name: "Highway signs", desc: "Exit and overhead destination signs, merge warnings and Interstate mile markers along US highways, from the signs mapped in OpenStreetMap. Needs Roads." },
       { id: "rebaseDistance", type: "float", min: 2000, max: 16000, step: 100, default: 15000, name: "Rebase distance (m)", desc: "Advanced. How far you drive before the world quietly moves back under you (keeps the physics precise). 15 km keeps precision at about 1 mm." },
     ],
   },

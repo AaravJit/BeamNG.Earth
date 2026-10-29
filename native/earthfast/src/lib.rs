@@ -10,6 +10,7 @@ mod ambience;
 mod power;
 mod underpass;
 mod coarseease;
+mod tunnelcover;
 mod gradesep;
 mod lamps;
 mod decks;
@@ -3787,6 +3788,58 @@ fn tunnel_holes(py: Python<'_>, mut mask: numpy::PyReadwriteArray2<'_, bool>, u:
         for j in 1..k { sj[j] = sj[j - 1] + (xv[[j, 0]] - xv[[j - 1, 0]]).hypot(xv[[j, 1]] - xv[[j - 1, 1]]); }
         let total = sj[k - 1];
         let reach = if low { hw + side_extra } else { hw };
+        if low && !squares {
+            // a low arch's mouths (end_m: arch_raise's flat band at the floor; the samples further in raised over the
+            // vault): the squares with corners in both, the slope from the floor up to the soil across the opening.
+            // (Cut by their origin sample, every square within end_m, the squares of a portal facing +x / +y reached
+            // a grid step out past its face: a hole in the road in front, cars fell through; GitHub #450, Malaga.)
+            let (mut lox, mut loy, mut hix, mut hiy) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+            for j in 0..k {
+                lox = lox.min(xv[[j, 0]]); loy = loy.min(xv[[j, 1]]); hix = hix.max(xv[[j, 0]]); hiy = hiy.max(xv[[j, 1]]);
+            }
+            let g = reach + square;
+            let ix0 = (((lox - g - x0) / square).floor() as i64).max(0);
+            let iy0 = (((loy - g - y0) / square).floor() as i64).max(0);
+            let ix1 = (((hix + g - x0) / square).ceil() as i64).min(n - 2);
+            let iy1 = (((hiy + g - y0) / square).ceil() as i64).min(n - 2);
+            // a point: 0 off the arch (beside it, or past a portal), 1 in a mouth band, 2 over the vault
+            let class = |x: f64, y: f64| -> u8 {
+                let (mut bd, mut bs, mut bt) = (f64::INFINITY, 0.0, 0.5);
+                for j in 0..k - 1 {
+                    let (ax, ay) = (xv[[j, 0]], xv[[j, 1]]);
+                    let (abx, aby) = (xv[[j + 1, 0]] - ax, xv[[j + 1, 1]] - ay);
+                    let l2 = (abx * abx + aby * aby).max(1e-12);
+                    let t0 = ((x - ax) * abx + (y - ay) * aby) / l2;
+                    let t = t0.clamp(0.0, 1.0);
+                    let d = (x - (ax + t * abx)).hypot(y - (ay + t * aby));
+                    if d < bd {
+                        bd = d;
+                        bs = sj[j] + t * (sj[j + 1] - sj[j]);
+                        bt = if (j == 0 && t0 < 0.0) || (j == k - 2 && t0 > 1.0) { -1.0 } else { t };
+                    }
+                }
+                // (within the tube's own width: a square past it had no floor under it, a void beside the road)
+                if bd > hw || bt < 0.0 { return 0; }
+                if (bs <= end_m && m0) || (bs >= total - end_m && m1) { 1 } else { 2 }
+            };
+            if ix0 > ix1 || iy0 > iy1 { return; }
+            let cols = (ix1 - ix0 + 2) as usize;
+            let mut cls = vec![0u8; cols * (iy1 - iy0 + 2) as usize];
+            for iy in iy0..=iy1 + 1 {
+                for ix in ix0..=ix1 + 1 {
+                    cls[(iy - iy0) as usize * cols + (ix - ix0) as usize] =
+                        class(x0 + ix as f64 * square, y0 + iy as f64 * square);
+                }
+            }
+            for iy in iy0..=iy1 {
+                for ix in ix0..=ix1 {
+                    let at = |dx: i64, dy: i64| cls[(iy - iy0 + dy) as usize * cols + (ix - ix0 + dx) as usize];
+                    let c = [at(0, 0), at(1, 0), at(0, 1), at(1, 1)];
+                    if c.contains(&1) && c.contains(&2) { mv[[iy as usize, ix as usize]] = true; }
+                }
+            }
+            return;
+        }
         for j in 0..k - 1 {
             let (ax, ay, bx, by) = (xv[[j, 0]], xv[[j, 1]], xv[[j + 1, 0]], xv[[j + 1, 1]]);
             let (lox, loy, hix, hiy) = (ax.min(bx) - hw, ay.min(by) - hw, ax.max(bx) + hw, ay.max(by) + hw);
@@ -5128,6 +5181,8 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(roadgeom::curve_deck, m)?)?;
     m.add_function(wrap_pyfunction!(underpass::underpass_offsets, m)?)?;
     m.add_function(wrap_pyfunction!(coarseease::ease_coarse, m)?)?;
+    m.add_function(wrap_pyfunction!(tunnelcover::tunnel_cover_roads, m)?)?;
+    m.add_function(wrap_pyfunction!(tunnelcover::tunnel_reach, m)?)?;
     m.add_function(wrap_pyfunction!(gradesep::gradesep_candidates, m)?)?;
     m.add_function(wrap_pyfunction!(gradesep::gradesep_spans, m)?)?;
     m.add_function(wrap_pyfunction!(shore::shore_steps, m)?)?;
@@ -5233,6 +5288,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paint_lines, m)?)?;
     m.add_function(wrap_pyfunction!(photofill::fill_photo, m)?)?;
     m.add_function(wrap_pyfunction!(rtin_mesh, m)?)?;
-    m.add("VERSION", 94)?;
+    m.add("VERSION", 97)?;
     Ok(())
 }

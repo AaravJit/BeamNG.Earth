@@ -58,6 +58,10 @@ You can help support development by reporting [issues](https://github.com/TecnaG
   and tram tracks (street track where trams run on the road).
 - Gas stations with pumps, canopies and forecourts in the region's style, where the stock refuel prompt fills the
   tank.
+- Highway signs on US freeways (from cody196's contribution): green exit signs at 1 mile, 1/2 mile and 1/4 mile and
+  in the gore, overhead destination signs, Interstate / US / state route shields in each state's style, yellow merge
+  warnings at entrance ramps and Interstate mile markers, from the destinations and milestones mapped in
+  OpenStreetMap (rebuilt weekly). Settings > World > Highway signs turns them off.
 - Bridges drawn as their real type (beam, truss, arch, cable-stayed, suspension) with real heights and spans, piers
   that keep clear of the roads under them and 6 m (20 ft) of headroom over roads where the ground allows; a divided
   road's two decks joined across a narrow median; tunnels through hills, with portals, lights and low arches where
@@ -316,6 +320,9 @@ The repository contains only code; all map data is downloaded at runtime and cac
 - Roads, buildings, water and places: Overture Maps / OpenStreetMap contributors (lane counts, widths and speed limits from OpenStreetMap via OSM US Layercake); trees from a
   canopy height model; airports from OurAirports.
 - Oil wells and refineries: OpenStreetMap contributors (ODbL; the bundled `oil_wells.npz` and `refineries.npz`).
+- Highway signs: OpenStreetMap contributors (ODbL; exit and overhead destinations and mile references, rebuilt
+  weekly from the planet by the BeamNG.Earth-data repo); lettering: the Roadgeek 2014 font (MIT, Sammi De Guzman);
+  US state outlines: U.S. Census Bureau TIGERweb (public domain).
 - Railways: OpenStreetMap contributors (ODbL; railway tags, rebuilt weekly from the planet by the [BeamNG.Earth-data](https://github.com/TecnaGamer/BeamNG.Earth-data) repo's GitHub Action); US level crossings: the Federal Railroad Administration's Highway-Rail Crossing Inventory (public domain).
 - Climate zones (the forest sounds' set): Beck et al. (2023), High-resolution (1 km) Köppen-Geiger maps for
   1901–2099, Scientific Data 10, 724 (CC BY 4.0).
