@@ -1381,3 +1381,27 @@ class WorldConventionTest(unittest.TestCase):
         e, n, _ = FRAME.geodetic_to_enu(la, lo, 0.0)
         np.testing.assert_allclose(got[2000.0][:, 0], e, atol=1e-6)
         np.testing.assert_allclose(got[2000.0][:, 1], n, atol=1e-6)
+
+
+class RetainingWallTest(unittest.TestCase):
+    def _walls(self, ground_n):
+        """retaining_walls beside a primary road along y = 0 (x 0..200) at 10 m, the ground ground_n(north m) + 10."""
+        spec = roads.road_specs(features([[(0.0, 0.0), (200.0, 0.0)]], ["primary"]), None)[0]
+        pts = np.c_[np.arange(0.0, 201.0, 5.0), np.zeros(41), np.full(41, 10.0)]
+
+        def elev(la, lo):
+            _e, n, _ = FRAME.geodetic_to_enu(np.asarray(la), np.asarray(lo), np.zeros(np.shape(la)))
+            return 10.0 + ground_n(np.asarray(n))
+        return [w for w in roads.retaining_walls(FRAME, [("r", spec, pts, LON)], elev, (0.0, -128.0, 256.0, 128.0))
+                if "base" in w]
+
+    def test_a_cut_step_gets_its_wall_a_natural_bank_none(self):
+        """The grading's cut: flat to the core's edge, then 3 m up within a metre: a wall. A natural bank 3 m high over
+        3 m (US-163 in Utah, a low eroded bank, 2026-10-29): the terrain draws it, no wall."""
+        import grading
+        rh = roads.carriageway("primary", "paved", True, None, False) / 2
+        edge = rh + grading.shoulder(roads.Spec(2 * rh, "paved", False, "primary")) + grading.WALL_FLAT_M
+        step = self._walls(lambda n: np.clip((n - edge) / 0.8, 0.0, 1.0) * 3.0)
+        self.assertTrue(step, "a cutting's step: a wall")
+        bank = self._walls(lambda n: np.clip((n - edge + 1.0) / 3.0, 0.0, 1.0) * 3.0)
+        self.assertFalse(bank, "a natural bank: no wall")

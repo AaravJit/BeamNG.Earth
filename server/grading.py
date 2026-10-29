@@ -103,6 +103,11 @@ SHARP_STEP_M = 1.0
 SHARP_MIN_M = 2.0
 SHARP_GRADE = 0.6
 SHARP_RUN_N = 3             # consecutive plan vertices (VERTEX_STEP apart) a cutting holds for at least
+# A cutting under this deep is a wall only in a trench (a cutting on both sides: Munich's McGraw-Graben, Central Park's
+# transverses); a lone bank of a metre or two beside a road is a graded slope, as real ones are (a 1.5 m concrete wall
+# stood in the flat desert beside US-163 in Utah, where there is a low eroded rock bank: Mapillary, 2026-10-29).
+# Hillside roads' deeper cuttings keep their walls (WALL_MAX_H_M high at most)
+SHARP_LONE_MIN_M = 4.0
 SEP_FROM_M = 2.0
 SEP_FULL_M = 4.0
 CORE_FADE_M = 2.0
@@ -481,6 +486,12 @@ def _add_cuts(frame, plans, elev):
             # (a cutting's wall at most WALL_MAX_H_M tall, the ground above it sloping back to the hill as real pass
             # walls do; a 12 m wall stood between the Stelvio's hairpin legs, 2026-10-21)
             zmin = np.minimum(p.z[:-1], p.z[1:])
+            # (a shallow climb on one side only: no cutting there, SHARP_LONE_MIN_M)
+            climb = np.isfinite(cut[:, [1, 4]])
+            shallow = climb & ((cut[:, [1, 4]] - zmin[:, None]) < SHARP_LONE_MIN_M)
+            lone = shallow & ~climb[:, ::-1]
+            for side, c0 in ((0, 0), (1, 3)):
+                cut[lone[:, side], c0:c0 + 3] = np.nan
             for c in (1, 4):
                 cut[:, c] = np.minimum(cut[:, c], zmin + getattr(p, "max_wall", WALL_MAX_H_M))
             if np.isfinite(cut[:, 0]).any() or np.isfinite(cut[:, 3]).any():

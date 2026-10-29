@@ -4801,6 +4801,12 @@ WALL_STEP_UP_M = 0.5     # m the graded ground climbs over the road where a wall
 WALL_KEEP_M = 1.2       # m: a wall goes on while the cut stays this deep (it starts at grading.WALL_CUT_M) ...
 WALL_GAP_N = 3          # ... over gaps of up to this many WALL_STEPs, and none shorter than WALL_MIN_N (the cut's depth
 WALL_MIN_N = 3          # wavered round 2 m: stubs of wall with gaps, the 97th Street Transverse, 2026-10-17)
+# A wall stands only where the graded ground behind its face climbs at least this steeply (m per m, its median over
+# the wall; across WALL_STEEP_SPAN from 1 m in front of the face): the step the grading cut. A natural bank the
+# terrain already draws as a slope is no cutting: a 1.5 m concrete wall stood in front of a low eroded bank beside
+# US-163 in Utah (its ground rose 0.4-1.2 m per m; Munich's McGraw-Graben's cut walls 5-9, measured 2026-10-29)
+WALL_STEEP = 2.0
+WALL_STEEP_SPAN = (-1.0, 6.0)
 
 
 def _wall_runs(cut):
@@ -5125,6 +5131,16 @@ def _hash01(*key):
     return int.from_bytes(h, "little") / 2.0 ** 64
 
 
+def _cut_behind(base, out_n, z, ground):
+    """Whether the graded ground behind a wall's face line base (k, 2) (out_n: unit vectors away from the road; z: the
+    road's heights) climbs as steeply as a cutting does (WALL_STEEP over 1 m, its median along the wall)."""
+    offs = np.arange(WALL_STEEP_SPAN[0], WALL_STEEP_SPAN[1] + 0.01, 0.5)
+    P = (base[:, None, :] + out_n[:, None, :] * offs[None, :, None]).reshape(-1, 2)
+    g = np.asarray(ground(P), np.float64).reshape(len(base), len(offs))
+    rise = (g[:, 2:] - g[:, :-2]).max(axis=1)           # (over 1 m: two 0.5 m steps)
+    return bool(np.median(rise) >= WALL_STEEP)
+
+
 def retaining_walls(frame, roads, elev, exact, decks=()):
     """Stone retaining walls along the ground roads cut deeper than grading.WALL_CUT_M into the ground (the grading
     leaves the ground at its natural height right behind them): [dict(base (k, 2) the wall's face line, top (k,),
@@ -5242,6 +5258,9 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
                 th = np.maximum.reduce([np.r_[th[:1].repeat(m), th[:len(th) - m]] for m in range(WALL_EVEN_N + 1)]
                                        + [np.r_[th[m:], th[-1:].repeat(m)] for m in range(1, WALL_EVEN_N + 1)])
                 base = xy[sl] + out_n[sl] * face[sl][:, None]
+                if not _cut_behind(base, out_n[sl], z[sl], ground):        # (a natural slope: no wall, WALL_STEEP)
+                    i = j + 1
+                    continue
                 # (never over another road: a hairpin's wall top covered the road above, the Stelvio Pass, the user's
                 # report 2026-10-21)
                 th = np.minimum(th, _clear_depth(base, out_n[sl], th, others, fid))
