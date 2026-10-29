@@ -6507,6 +6507,78 @@ def _abutments(pts, ground_fn):
         return []
 
 
+# Junction pads on bridges: where deck parts meet (with each other, or with a ground road going on from the joint), the
+# convex hull of their carriageways within PAD_REACH_M of the joint is paved at their heights (roadmesh.deck draws it,
+# colliding): the corner of a turn, the wedge where a ramp leaves, a wider deck's edge past a narrower street's. The map
+# leaves those open, over whatever lies under the bridge: at North Charles Street over I-83 in Baltimore the AI cut the
+# corner onto the station's road and fell 6 m into the motorway's cut, 2 of 2 runs (2026-10-29). None where a deck simply
+# goes on straight from another part (BNE_DECK_PADS=off: none at all).
+PADS_ON = os.environ.get("BNE_DECK_PADS", "on") != "off"
+PAD_REACH_M = 12.0
+PAD_STEP_M = 2.0
+PAD_JOIN_M = 0.75           # m: ends this near are one joint (_skew_decks' tolerance)
+PAD_GROUND_M = 1.0          # m: a ground road's end this near a joint goes on from it
+PAD_STRAIGHT_COS = -0.97    # two parts leaving a joint this straight need none
+
+
+def deck_pads(decks, ground_roads, box, ground_fn):
+    """[(ring (k, 3), centre (3,))] of the junction pads of the joints of decks [(fid, spec, xy (k, 2), z (k,))] (the
+    bridge parts round tile box, as bridges.parts gives them) whose joint the box owns; ground_roads [(fid, spec, pts
+    (k, 2+), _)] the ground carriageways near it (build_tile roads_out), their heights ground_fn(xy) (the decks'
+    abutments' ground). earthfast.deck_pad. Pure given ground_fn."""
+    if not PADS_ON or not decks:
+        return []
+    import fast
+    fast.require(110, "deck_pad")
+    join = _EndJoin(PAD_JOIN_M)
+    nodes, inc = [], {}
+    for fid, spec, xy, z in decks:
+        xy = np.asarray(xy, np.float64)[:, :2]
+        z = np.asarray(z, np.float64)
+        if len(xy) < 2 or not np.isfinite(z).all():
+            continue
+        for at in (0, -1):
+            nd = join(xy[at])
+            if nd == len(nodes):
+                nodes.append(xy[at].copy())
+            line, zz = (xy, z) if at == 0 else (xy[::-1], z[::-1])
+            inc.setdefault(nd, []).append((line, zz, spec.width / 2))
+    out = []
+    gl = [(np.asarray(pts, np.float64)[:, :2], spec.width / 2) for _fid, spec, pts, _ in ground_roads
+          if spec is not None and len(pts) >= 2]
+    for nd, parts in sorted(inc.items()):
+        q = nodes[nd]
+        if not box_owns(box, float(q[0]), float(q[1])):
+            continue
+        parts = list(parts)
+        for line, half in gl:
+            for at in (0, -1):
+                if np.hypot(*(line[at] - q)) < PAD_GROUND_M:
+                    ln = line if at == 0 else line[::-1]
+                    s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(ln, axis=0).T))]
+                    keep = s <= PAD_REACH_M + 2 * PAD_STEP_M
+                    ln = ln[keep] if keep.sum() >= 2 else ln[:2]
+                    parts.append((ln, np.asarray(ground_fn(ln), np.float64), half))
+        if len(parts) < 2:
+            continue
+        if len(parts) == 2:
+            d = []
+            for line, _z, _h in parts:
+                v = line[min(len(line) - 1, 1)] - line[0]
+                d.append(v / max(np.hypot(*v), 1e-9))
+            if float(np.dot(d[0], d[1])) < PAD_STRAIGHT_COS:
+                continue                        # (a deck going on straight: its own end, an abutment, no corner)
+        pts = np.ascontiguousarray(np.concatenate([p[0] for p in parts]), np.float64)
+        zz = np.ascontiguousarray(np.concatenate([p[1] for p in parts]), np.float64)
+        off = np.r_[0, np.cumsum([len(p[0]) for p in parts])].astype(np.int64)
+        hull = np.asarray(fast._ef.deck_pad(pts, zz, off, np.array([p[2] for p in parts], np.float64), PAD_REACH_M,
+                                            PAD_STEP_M), np.float64)
+        if len(hull) >= 3:
+            zc = float(np.mean([p[1][0] for p in parts]))
+            out.append((hull, np.array([q[0], q[1], zc])))
+    return out
+
+
 def _deck_chunks(decks, exact, ground_fn=None, depths=None):
     """Deck + line chunks of bridge parts [(fid, spec, pts (k, 3), lon)] clipped to the box `exact`, and their decks
     within DECK_CONTEXT_M of it as "ctx" chunks (not drawn: build_tile's caller hands them to roadmesh.deck).
