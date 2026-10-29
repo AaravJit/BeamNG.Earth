@@ -152,10 +152,11 @@ pub fn tunnel_reach<'py>(
     let st: Vec<usize> = starts.as_array().iter().map(|&v| v.max(0) as usize).collect();
     let hw: Vec<f64> = halves.as_array().to_vec();
     let prm = prm.as_array();
-    if a.len() != s.len() || st.len() != hw.len() + 1 || prm.len() < 5 || ra.ncols() != 2 {
+    if a.len() != s.len() || st.len() != hw.len() + 1 || prm.len() < 7 || ra.ncols() != 2 {
         return Err(pyo3::exceptions::PyValueError::new_err("tunnel_reach: array sizes differ"));
     }
     let (clear, min_sin, reach, grow, end_m) = (prm[0], prm[1], prm[2], prm[3], prm[4]);
+    let (shrink, min_len) = (prm[5], prm[6]);
     let total = s.last().copied().unwrap_or(0.0);
     let mut crossings = Vec::new();         // (arc on the road, half reach along it)
     for r in 0..hw.len() {
@@ -186,10 +187,58 @@ pub fn tunnel_reach<'py>(
                 hi = hi.max(sc + ext);
             }
         }
-        out[[r, 0]] = lo.max(lo0 - grow).max(0.0);
-        out[[r, 1]] = hi.min(hi0 + grow).min(total);
+        let (mut lo, mut hi) = (lo.max(lo0 - grow).max(0.0), hi.min(hi0 + grow).min(total));
+        // a portal inside the carriageway of a road running along the tunnel (not across it: the map's ground stretch
+        // of a service tunnel laid in a motorway's lanes, its portal there; the Gotthard road tunnel's service gallery
+        // at Goeschenen stood as an arch and a mound in the A2's lanes): moved into the tunnel until clear, at most
+        // shrink m; less than min_len of tunnel left: none (lo = hi)
+        let (lo_start, hi_start) = (lo, hi);
+        while lo < hi - min_len && lo - lo_start < shrink && alongside(&a, &s, lo, &p, &st, &hw, clear, min_sin) {
+            lo += 1.0;
+        }
+        while hi > lo + min_len && hi_start - hi < shrink && alongside(&a, &s, hi, &p, &st, &hw, clear, min_sin) {
+            hi -= 1.0;
+        }
+        if hi - lo <= min_len
+            && (alongside(&a, &s, lo, &p, &st, &hw, clear, min_sin) || alongside(&a, &s, hi, &p, &st, &hw, clear, min_sin))
+        {
+            hi = lo;
+        }
+        out[[r, 0]] = lo;
+        out[[r, 1]] = hi;
     }
     Ok(out.into_pyarray(py))
+}
+
+/// Does the point at arc t of polyline a lie inside the carriageway (half width + clear) of one of the lines p (starts
+/// st, half widths hw) running along a there (the sine of the angle under min_sin)?
+#[allow(clippy::too_many_arguments)]
+fn alongside(a: &[[f64; 2]], s: &[f64], t: f64, p: &[[f64; 2]], st: &[usize], hw: &[f64], clear: f64, min_sin: f64) -> bool {
+    let at = point_at(a, s, t);
+    let (t0, t1) = (point_at(a, s, (t - 1.0).max(0.0)), point_at(a, s, t + 1.0));
+    let (dx, dy) = (t1[0] - t0[0], t1[1] - t0[1]);
+    let dl = (dx * dx + dy * dy).sqrt();
+    if dl < 1e-9 {
+        return false;
+    }
+    let (ux, uy) = (dx / dl, dy / dl);
+    for r in 0..hw.len() {
+        let (b0, b1) = (st[r], st[r + 1].min(p.len()));
+        for j in b0..b1.saturating_sub(1) {
+            let (q, w) = (p[j], p[j + 1]);
+            let (ex, ey) = (w[0] - q[0], w[1] - q[1]);
+            let el2 = ex * ex + ey * ey;
+            if el2 < 1e-12 {
+                continue;
+            }
+            let u = (((at[0] - q[0]) * ex + (at[1] - q[1]) * ey) / el2).clamp(0.0, 1.0);
+            let d = ((q[0] + u * ex - at[0]).powi(2) + (q[1] + u * ey - at[1]).powi(2)).sqrt();
+            if d < hw[r] + clear && (ux * ey - uy * ex).abs() / el2.sqrt() < min_sin {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// The point at arc length t along polyline a (arc lengths s).

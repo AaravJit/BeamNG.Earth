@@ -189,6 +189,20 @@ class LowArch(unittest.TestCase):
         self.assertFalse(used & {roadmesh.TUNNEL_STONE, roadmesh.TUNNEL_STONE_IN}, used)
 
 
+class PortalCover(unittest.TestCase):
+    def test_a_major_road_s_shallow_open_end_is_covered_a_park_road_s_is_not(self):
+        # the Gotthard road tunnel's north portal: a cut-and-cover box under ~3 m of meadow, then the mountain
+        kinds = np.array([0, 0, 0, 0, 2, 2, 2, 2, 0])
+        cover = np.array([3.0, 3.0, 2.5, 3.5, 50.0, 80.0, 60.0, 9.0, 0.2])
+        trunk = Spec(9.0, "paved", False, "trunk")
+        got = roads.portal_cover(kinds, cover, trunk)
+        self.assertEqual(got[:4].tolist(), [1, 1, 1, 1])
+        self.assertEqual(got[-1], 0, "no ground over it: an open approach stays open")
+        park = Spec(7.0, "paved", False, "secondary")
+        self.assertEqual(roads.portal_cover(kinds, cover, park).tolist(), kinds.tolist())
+        self.assertEqual(roads.portal_cover(np.zeros(5, np.int64), np.full(5, 3.0), trunk).tolist(), [0] * 5)
+
+
 class ArchRaise(unittest.TestCase):
     def test_ground_over_a_low_arch_stays_over_its_vault(self):
         xy = np.array([[0.0, 0.0], [30.0, 0.0]])
@@ -439,6 +453,16 @@ class Underwater(unittest.TestCase):
         tp, f = self.one_piece(lambda la, lo: np.where(np.abs((np.asarray(lo) - LON) * M_LON) < 20, 6.0, 0.0))
         box = (-256.0, -64.0, 256.0, 64.0)
         self.assertEqual(tp.parts([f], box) + tp.open_parts([f], box), [])
+
+    def test_a_mountain_lake_far_over_a_deep_tunnel_is_no_river(self):
+        # the Gotthard road tunnel: one pond ~900 m over it left all 17 km out (2026-10-28)
+        from test_roads import features, FRAME, LON, M_LON
+        f = features([[(-300, 0), (300, 0)]], ["motorway"], flags=[(0, "is_tunnel")])
+        mountain = lambda la, lo: 30.0 + np.maximum(0.0, 600.0 - 2.0 * np.abs((np.asarray(lo) - LON) * M_LON))
+        tp = roads.TunnelProfiles(FRAME, lambda key: f, mountain)
+        tp.wet = lambda la, lo: np.where(np.abs((np.asarray(lo) - LON) * M_LON) < 20, 3.0, 0.0)
+        box = (-256.0, -64.0, 256.0, 64.0)
+        self.assertTrue(tp.parts([f], box) + tp.open_parts([f], box))
 
     def test_a_portal_on_a_bank_stays(self):
         # Fort Pitt: one end a little "in" the river, the tunnel itself under the hill

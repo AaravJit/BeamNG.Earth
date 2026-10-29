@@ -519,6 +519,12 @@ TUNNEL_PORTAL_CLEAR_M = 3.0
 TUNNEL_PORTAL_REACH_M = 10.0
 TUNNEL_PORTAL_GROW_M = 30.0
 TUNNEL_PORTAL_END_M = 2.0   # m: a crossing this close to the other road's end is a junction
+# A portal inside the carriageway of a road running along the tunnel (the map's ground stretch of a service tunnel laid
+# in a motorway's lanes: the Gotthard road tunnel's service gallery at Goeschenen, an arch and a mound in the A2's
+# lanes, 2026-10-28) moves into the tunnel until clear, TUNNEL_PORTAL_SHRINK_M at most; a tunnel shorter than
+# TUNNEL_PORTAL_MIN_M left that way is none.
+TUNNEL_PORTAL_SHRINK_M = 60.0
+TUNNEL_PORTAL_MIN_M = 8.0
 
 
 def _tunnel_reach(feats, i, rngs):
@@ -554,19 +560,20 @@ def _tunnel_reach(feats, i, rngs):
     if not gl:
         return rngs
     import fast
-    fast.require(96, "tunnel_reach")
+    fast.require(97, "tunnel_reach")
     got = fast._ef.tunnel_reach(
         np.ascontiguousarray(m), np.ascontiguousarray(sm),
         np.ascontiguousarray([[rngs[n][0] * L, rngs[n][1] * L] for n in tun], np.float64),
         np.ascontiguousarray(np.concatenate(gl)), np.r_[0, np.cumsum([len(g) for g in gl])].astype(np.int64),
         np.asarray(hw, np.float64), np.array([TUNNEL_PORTAL_CLEAR_M, TUNNEL_ROAD_MIN_SIN, TUNNEL_PORTAL_REACH_M,
-                                              TUNNEL_PORTAL_GROW_M, TUNNEL_PORTAL_END_M], np.float64))
+                                              TUNNEL_PORTAL_GROW_M, TUNNEL_PORTAL_END_M, TUNNEL_PORTAL_SHRINK_M,
+                                              TUNNEL_PORTAL_MIN_M], np.float64))
     out = list(rngs)
     for q, n in enumerate(tun):
         prev = out[n - 1][1] if n > 0 else 0.0
         nxt = out[n + 1][0] if n + 1 < len(out) else 1.0
         out[n] = (max(float(got[q, 0]) / L, prev), min(float(got[q, 1]) / L, nxt), "tunnel")
-    return out
+    return [r for r in out if r[1] > r[0]]      # (a tunnel left shorter than nothing: ground)
 
 
 def _bridge_ends(feats):
@@ -2700,6 +2707,7 @@ TUNNEL_COVER = 8.0      # m from the floor up to the ground over it wanted insid
 TUNNEL_GRADE = 0.05     # a tunnel floor falls no steeper than this from a portal
 TUNNEL_STEP = 4.0       # m between tunnel profile points
 TUNNEL_WET_SHARE = 0.25 # a tunnel part with more of its points under water is left out (TunnelProfiles.wet)
+TUNNEL_WET_COVER_M = 60.0   # m: water this far over the chain's lower portal is no underwater tunnel's (_mark_drowned)
 TUNNEL_WET_RUN_M = 20.0 # ... and a tunnel chain passing under water this far away from its ends (_mark_drowned)
 TUNNEL_OPEN_COVER = 4.0 # m: a 'tunnel' whose ground nowhere rises this far over the straight line between its portals
                         # is an underpass in the open (under a bridge the map does not draw as a deck over it): a road
@@ -2723,6 +2731,7 @@ ROAD_CAP_JOIN_M = 20.0  # a road with an end this near a low arch's mouth joins 
 ROAD_CAP_GAP_M = 0.5    # m a low arch's stone top stops short of a carriageway over its mouth ...
 ROAD_CAP_OVER_M = 1.0   # ... and its portal face reaches at most this far over that road
 TUNNEL_LOW_H = 3.6      # m: the lowest tube (floor to vault)
+MAJOR_LOW_H = 5.0       # m: ... on a major road (CONCRETE_WALL_CLASSES: road tunnels clear ~4.5 m, a truck ~4 m)
 # A covered section (a low arch or a tube) goes on along the tunnel until every ground road crossing over it within
 # TUNNEL_ROAD_REACH_M of its ends is covered, its carriageway and TUNNEL_ROAD_CLEAR_M past it (along the tunnel: / the
 # sine of the crossing angle, at least TUNNEL_ROAD_MIN_SIN). On lidar each carriageway of a divided motorway over an
@@ -2731,6 +2740,32 @@ TUNNEL_LOW_H = 3.6      # m: the lowest tube (floor to vault)
 TUNNEL_ROAD_CLEAR_M = 2.0
 TUNNEL_ROAD_MIN_SIN = 0.35
 TUNNEL_ROAD_REACH_M = 15.0
+
+
+PORTAL_SHALLOW_COVER_M = 1.5    # m: a major road's open end run with at least this much ground over its floor is covered
+
+
+def portal_cover(kinds, cover, spec):
+    """kinds with a major road's (CONCRETE_WALL_CLASSES) open run at either end of its tunnel covered (a low arch, in
+    concrete: roadmesh) where the median ground over its floor is PORTAL_SHALLOW_COVER_M or more: the map's portal is a
+    cut-and-cover box under shallow ground there (the Gotthard road tunnel's north portal under the meadow at
+    Goeschenen stood 90 m further in, an open cut before it, 2026-10-28). Park roads keep their open cuts (Central
+    Park's transverses). The meshes (TunnelProfiles) and the grading both."""
+    kinds = np.array(kinds, np.int64)
+    if spec is None or spec.cls not in CONCRETE_WALL_CLASSES or not (kinds > 0).any():
+        return kinds
+    cover = np.asarray(cover, np.float64)
+    n = len(kinds)
+    for rng in (range(n), range(n - 1, -1, -1)):
+        run = []
+        for q in rng:
+            if kinds[q] != 0:
+                break
+            run.append(q)
+        if run and len(run) < n and np.isfinite(cover[run]).any() and \
+                float(np.nanmedian(cover[run])) >= PORTAL_SHALLOW_COVER_M:
+            kinds[run] = 1
+    return kinds
 
 
 def cover_roads(xy, s, kinds, lines, halves):
@@ -4239,12 +4274,25 @@ class TunnelProfiles(BridgeProfiles):
         if self.wet is None:
             return
         wet = False
+        gfn = self._raw_ground if self.raw is not None else self._ground
+        low = None                      # (the lowest ground at the parts' ends: the lower portal's)
+        for k in comp:
+            xy = np.asarray(pool[k][1], np.float64)
+            if len(xy) >= 2:
+                ge = np.asarray(gfn(xy[[0, -1]]), np.float64)
+                if np.isfinite(ge).any():
+                    low = float(np.nanmin(ge)) if low is None else min(low, float(np.nanmin(ge)))
         for k in comp:
             xy = np.asarray(pool[k][1], np.float64)
             if len(xy) < 2:
                 continue
             la, lo, _ = self.frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
             w = np.asarray(self.wet(la, lo), np.float64) > 0.5
+            if w.any() and low is not None:
+                # (water far above the portals is a mountain lake over a deep tunnel, not a river over a shallow one:
+                # one pond 900 m over the Gotthard road tunnel left all 17 km of it out, 2026-10-28)
+                g = np.asarray(gfn(xy), np.float64)
+                w &= ~(g - low > TUNNEL_WET_COVER_M)
             if w.mean() > TUNNEL_WET_SHARE or wet_run_inside(xy, w) >= TUNNEL_WET_RUN_M:
                 wet = True
                 break
@@ -4300,6 +4348,7 @@ class TunnelProfiles(BridgeProfiles):
             g = g.copy()
             g[0], g[-1] = ge[0], ge[-1]
             floor, kinds = tunnel_sections(s, g)
+            kinds = portal_cover(kinds, g - floor, pool[k][0])
             kinds = self._cover_roads(xy, s, kinds, ground)
             secs, i = [], 0
             while i < len(kinds):
@@ -4329,7 +4378,9 @@ class TunnelProfiles(BridgeProfiles):
                     inner = (s_ >= s_[0] + ARCH_SIZE_SKIP_M) & (s_ <= s_[-1] - ARCH_SIZE_SKIP_M)
                     if inner.any():
                         base = min(base, float(c_[inner].min()))
-                    th = float(np.clip(base - TUNNEL_SOIL_M, TUNNEL_LOW_H, roadmesh.TUNNEL_H))
+                    low_h = MAJOR_LOW_H if pool[k][0] is not None and pool[k][0].cls in CONCRETE_WALL_CLASSES \
+                        else TUNNEL_LOW_H         # (a motorway's box clears a truck, its top in a mound if need be)
+                    th = float(np.clip(base - TUNNEL_SOIL_M, low_h, roadmesh.TUNNEL_H))
                 ups = []
                 for near in (s[a:b + 1] <= s[a] + PORTAL_LOOK_M, s[a:b + 1] >= s[b] - PORTAL_LOOK_M):
                     cv = float(np.max(cover[a:b + 1][near])) if near.any() else th
