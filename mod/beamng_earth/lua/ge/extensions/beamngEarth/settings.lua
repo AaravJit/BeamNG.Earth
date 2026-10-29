@@ -39,10 +39,29 @@ M.LEVEL_ID = 'beamng_earth'
 M.SCHEMA = {
   -- the quality presets (M.PRESETS; the user, 2026-10-28: "proper quality presets", picked from the hardware on the
   -- first run: M.detectQuality); 'custom' once a knob is changed away from every preset
-  quality = { kind = 'enum', default = 'auto', values = { 'auto', 'low', 'medium', 'high', 'ultra', 'custom' },
+  quality = { kind = 'enum', default = 'auto', values = { 'auto', 'low', 'medium', 'high', 'ultra', 'extreme', 'custom' },
     label = 'Quality' },
-  trees = { kind = 'enum', default = 'normal', values = { 'low', 'medium', 'normal', 'high', 'ultra' }, label = 'Trees' },
+  -- tree density (trees.lua QUALITY_LEVELS: ranks and tile caps) and draw distance (DISTANCES: the rings and the
+  -- server's tree tile reach), split 2026-10-28 (the user: "give player much more control in the graphics settings")
+  trees = { kind = 'enum', default = 'normal', values = { 'low', 'medium', 'normal', 'high', 'ultra', 'extreme' },
+    label = 'Tree density' },
+  treeDistance = { kind = 'enum', default = 'normal', values = { 'near', 'medium', 'normal', 'far', 'farther', 'max' },
+    label = 'Tree draw distance' },
   nightLights = { kind = 'enum', default = 'normal', values = { 'few', 'normal', 'many' }, label = 'Street lamp lights' },
+  -- the far field's terrain detail: the server's K table times M.TERRAIN_DETAIL (the 'graphics' message's lodScale)
+  terrainDetail = { kind = 'enum', default = 'normal', values = { 'low', 'normal', 'high', 'ultra', 'extreme' },
+    label = 'Terrain detail' },
+  -- how far the far buildings, the skyline and the far bridges reach (M.BUILDING_DISTANCE: buildingScale)
+  buildingDistance = { kind = 'enum', default = 'normal', values = { 'near', 'normal', 'far', 'max' },
+    label = 'Building draw distance' },
+  -- the drawn terrain block's aerial photo (px over the 1 km block; terrain.setPhotoSize, the server's photoPx):
+  -- from the next level load
+  groundPhoto = { kind = 'enum', default = '2048', values = { '1024', '2048', '4096' }, label = 'Ground photo resolution' },
+  -- the grass's reach (groundcover.lua DISTANCE)
+  grassDistance = { kind = 'enum', default = 'normal', values = { 'near', 'normal', 'far' }, label = 'Grass draw distance' },
+  -- the engine's shape detail in our level (enginepref.lua: $pref::TS::detailAdjust; 'game': the game's Mesh Quality)
+  objectDetail = { kind = 'enum', default = 'game', values = { 'game', 'low', 'normal', 'high', 'ultra', 'extreme' },
+    label = 'Object detail' },
   -- not on the page: what the first run's detection found ("Steam Deck: Medium")
   qualityDetected = { kind = 'string', default = '', maxLen = 120, label = 'Detected hardware' },
   rebaseDistance = { kind = 'number', default = rebase.DEFAULT_DISTANCE, min = rebase.MIN_DISTANCE,
@@ -88,7 +107,8 @@ M.SCHEMA = {
   -- not on the page: the newer version whose update notice the player dismissed (core.lua drawUpdateNotice)
   updateDismissed = { kind = 'string', default = '', maxLen = 40, label = 'Update notice dismissed (version)' },
 }
-M.ORDER = { 'quality', 'trees', 'nightLights', 'rebaseDistance', 'viewDistanceMode', 'viewDistanceKm', 'hazeStrength', 'skyMode', 'clouds',
+M.ORDER = { 'quality', 'terrainDetail', 'groundPhoto', 'trees', 'treeDistance', 'buildingDistance', 'objectDetail',
+  'grassDistance', 'nightLights', 'rebaseDistance', 'viewDistanceMode', 'viewDistanceKm', 'hazeStrength', 'skyMode', 'clouds',
   'weatherMode', 'realGravity', 'groundCover', 'groundCoverDensity', 'rocks', 'roads', 'highwaySigns', 'dashboardSatellite',
   'hudVisible', 'statusBar',
   'placeNamesOnline', 'creditsVisible', 'beammpOnLaunch',
@@ -99,20 +119,38 @@ M.HIDDEN = { welcomeSeen = true, updateDismissed = true, qualityDetected = true 
 
 -- The quality presets: each sets these knobs at once ('high' = the defaults before presets existed, 2026-10-28). A
 -- Steam Deck on Handheld in a forest (Patapsco, 2026-10-28): low 37.0 fps, high 31.5, ultra 30.9; 'medium' (its first-run
--- pick) thins the trees too: the same trees as 'high' gave it only 32.2.
-M.PRESET_KEYS = { 'trees', 'groundCover', 'groundCoverDensity', 'rocks', 'nightLights', 'viewDistanceMode',
-  'viewDistanceKm' }
+-- pick) thins the trees too: the same trees as 'high' gave it only 32.2. 'extreme' (the user, 2026-10-28: "an extreme
+-- quality setting that puts everything at max quality to the real horizon"): every knob at its most, never picked by
+-- the first run (M.detectQuality).
+M.PRESET_KEYS = { 'trees', 'treeDistance', 'groundCover', 'groundCoverDensity', 'grassDistance', 'rocks', 'nightLights',
+  'viewDistanceMode', 'viewDistanceKm', 'terrainDetail', 'buildingDistance', 'groundPhoto', 'objectDetail' }
 M.PRESETS = {
-  low = { trees = 'low', groundCover = false, groundCoverDensity = 'low', rocks = true, nightLights = 'few',
-    viewDistanceMode = 'fixed', viewDistanceKm = 40 },
-  medium = { trees = 'medium', groundCover = true, groundCoverDensity = 'low', rocks = true, nightLights = 'few',
-    viewDistanceMode = 'horizon', viewDistanceKm = 100 },
-  high = { trees = 'normal', groundCover = true, groundCoverDensity = 'normal', rocks = true, nightLights = 'normal',
-    viewDistanceMode = 'horizon', viewDistanceKm = 100 },
-  ultra = { trees = 'high', groundCover = true, groundCoverDensity = 'high', rocks = true, nightLights = 'many',
-    viewDistanceMode = 'horizon', viewDistanceKm = 100 },
+  low = { trees = 'low', treeDistance = 'near', groundCover = false, groundCoverDensity = 'low', grassDistance = 'near',
+    rocks = true, nightLights = 'few', viewDistanceMode = 'fixed', viewDistanceKm = 40, terrainDetail = 'low',
+    buildingDistance = 'near', groundPhoto = '1024', objectDetail = 'game' },
+  medium = { trees = 'medium', treeDistance = 'medium', groundCover = true, groundCoverDensity = 'low',
+    grassDistance = 'normal', rocks = true, nightLights = 'few', viewDistanceMode = 'horizon', viewDistanceKm = 100,
+    terrainDetail = 'normal', buildingDistance = 'normal', groundPhoto = '2048', objectDetail = 'game' },
+  high = { trees = 'normal', treeDistance = 'normal', groundCover = true, groundCoverDensity = 'normal',
+    grassDistance = 'normal', rocks = true, nightLights = 'normal', viewDistanceMode = 'horizon', viewDistanceKm = 100,
+    terrainDetail = 'normal', buildingDistance = 'normal', groundPhoto = '2048', objectDetail = 'game' },
+  ultra = { trees = 'high', treeDistance = 'far', groundCover = true, groundCoverDensity = 'high', grassDistance = 'normal',
+    rocks = true, nightLights = 'many', viewDistanceMode = 'horizon', viewDistanceKm = 100, terrainDetail = 'high',
+    buildingDistance = 'far', groundPhoto = '2048', objectDetail = 'game' },
+  extreme = { trees = 'extreme', treeDistance = 'max', groundCover = true, groundCoverDensity = 'high',
+    grassDistance = 'far', rocks = true, nightLights = 'many', viewDistanceMode = 'horizon', viewDistanceKm = 100,
+    terrainDetail = 'extreme', buildingDistance = 'max', groundPhoto = '4096', objectDetail = 'extreme' },
 }
-M.PRESET_ORDER = { 'low', 'medium', 'high', 'ultra' }
+M.PRESET_ORDER = { 'low', 'medium', 'high', 'ultra', 'extreme' }
+
+-- The server's knobs (core.sendGraphics, the 'graphics' message): the far field's K table times TERRAIN_DETAIL (64
+-- cells, Baltimore's first selection, 2026-10-28: 0.75 -> 0.78x the far tiles, 1.3 -> ~1.3x, 1.6 -> ~1.6x, 2 -> 2.1x;
+-- L1 splits at 288 / 384 / 499 / 614 / 768 m), the far buildings' / skyline's / far bridges' reach times
+-- BUILDING_DISTANCE (1.6 / 4.8 / 4.8 km at 1).
+M.TERRAIN_DETAIL = { low = 0.75, normal = 1.0, high = 1.3, ultra = 1.6, extreme = 2.0 }
+M.BUILDING_DISTANCE = { near = 0.6, normal = 1.0, far = 1.5, max = 2.0 }
+-- A file saved before the tree distance had its own setting: the distance its tree level had (trees.lua, before)
+M.TREE_DISTANCE_OF = { low = 'near', medium = 'medium', normal = 'normal', high = 'far', ultra = 'farther' }
 
 -- Pure: the preset a first run picks for this hardware (Engine.Platform.getGPUInfo: { name, memoryMB }) and why.
 -- A Steam Deck (its APU: "AMD Custom GPU 0405 / 0932 (RADV VANGOGH)") or a GPU with under 3 GB: medium / low.
@@ -189,6 +227,7 @@ function M.load(path)
         if val ~= nil then values[k] = val else warnings[#warnings + 1] = err end
       end
     end
+    M.fillNewKnobs(data)
   elseif ok and data ~= nil then
     warnings[#warnings + 1] = 'settings file is not an object'
   elseif not ok and data ~= nil then
@@ -197,6 +236,19 @@ function M.load(path)
   for _, w in ipairs(warnings) do log('W', 'beamngEarth', 'settings: ' .. w) end
   if values.quality == 'auto' then M.resolveAuto() end
   return values, warnings
+end
+
+-- A file from before some preset knobs existed (the graphics knobs of 2026-10-28): each knob it lacks follows its
+-- quality preset (a player on Ultra gets Ultra's terrain detail), on Custom its default, the tree distance the one
+-- its tree level had then (TREE_DISTANCE_OF). Nothing for a first run (quality 'auto': resolveAuto).
+function M.fillNewKnobs(data)
+  local preset = M.PRESETS[values.quality]
+  for _, k in ipairs(M.PRESET_KEYS) do
+    if data[k] == nil then
+      if preset then values[k] = preset[k]
+      elseif k == 'treeDistance' and data.trees ~= nil then values[k] = M.TREE_DISTANCE_OF[values.trees] or values[k] end
+    end
+  end
 end
 
 -- Pure-ish: the preset whose knobs all equal the current values, or nil.
@@ -307,6 +359,8 @@ local function applyViewDistance()
       li.visibleDistance = M.SCHEMA.viewDistanceKm.default * 1000
       if li.postApply then li:postApply() end
       appliedView = nil
+      local core = ext('beamngEarth_core')
+      if core and core.refreshHorizon then core.refreshHorizon() end    -- (the horizon's own distance at once)
     end
     return
   end
@@ -318,13 +372,39 @@ local function applyViewDistance()
   appliedView = m
 end
 
+-- The server's graphics knobs now ({ lodScale, treeScale, buildingScale, photoPx, viewM }: core.sendGraphics). photoPx: the
+-- ground photo size of the block in the level now, or of the next one (terrain.photoSize).
+function M.serverGraphics()
+  local okT, trees = pcall(require, 'beamngEarth/trees')
+  local okR, terrain = pcall(require, 'beamngEarth/terrain')
+  return {
+    lodScale = M.TERRAIN_DETAIL[values.terrainDetail] or 1.0,
+    treeScale = okT and trees.distanceScale and trees.distanceScale(values.treeDistance) or 1.0,
+    buildingScale = M.BUILDING_DISTANCE[values.buildingDistance] or 1.0,
+    photoPx = okR and terrain.photoSize and terrain.photoSize() or tonumber(values.groundPhoto),
+    -- a fixed view distance: the far field's radius at most (nothing past it is drawn); 0 = the real horizon
+    viewM = values.viewDistanceMode == 'fixed' and values.viewDistanceKm * 1000 or 0,
+  }
+end
+
+local function sendGraphics()
+  local core = ext('beamngEarth_core')
+  if core and core.sendGraphics then core.sendGraphics() end
+end
+
+local function inOurLevel()
+  local core = ext('beamngEarth_core')
+  local st = core and core._state and core._state() or nil
+  return st and st.inOurLevel or false
+end
+
 M.APPLY = {
   rebaseDistance = function(v)
     local core = ext('beamngEarth_core')
     if core and core.setRebaseDistance then core.setRebaseDistance(v) else rebase.setDistance(v) end
   end,
-  viewDistanceMode = applyViewDistance,
-  viewDistanceKm = applyViewDistance,
+  viewDistanceMode = function() applyViewDistance(); sendGraphics() end,
+  viewDistanceKm = function() applyViewDistance(); sendGraphics() end,
   skyMode = function(v)
     local sky = ext('beamngEarth_sky')
     if sky and sky.setMode and sky.getMode and sky.getMode() ~= v then sky.setMode(v) end
@@ -346,6 +426,18 @@ M.APPLY = {
     if w and w.setGravityEnabled and w.GRAVITY_ENABLED ~= v then w.setGravityEnabled(v) end
   end,
   trees = function(v) require('beamngEarth/trees').setQuality(v) end,
+  treeDistance = function(v)
+    require('beamngEarth/trees').setDistance(v)
+    sendGraphics()          -- (the server's tree tiles reach as far)
+  end,
+  terrainDetail = sendGraphics,
+  buildingDistance = sendGraphics,
+  groundPhoto = function(v)
+    require('beamngEarth/terrain').setPhotoSize(tonumber(v))
+    sendGraphics()
+  end,
+  grassDistance = function(v) require('beamngEarth/groundcover').setDistance(v) end,
+  objectDetail = function(v) require('beamngEarth/enginepref').setLevel(v, inOurLevel()) end,
   nightLights = function(v) require('beamngEarth/nightlights').setLightCount(v) end,
   groundCover = function(v) require('beamngEarth/groundcover').setEnabled(v) end,
   groundCoverDensity = function(v) require('beamngEarth/groundcover').setDensity(v) end,

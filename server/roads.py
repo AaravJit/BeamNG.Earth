@@ -40,7 +40,7 @@ log = logging.getLogger("earthd.roads")
 VERSION = 1
 TILE = 256.0            # m, tile side in the anchor frame
 SEND_M = float(os.environ.get("BNE_ROADS_SEND_M", "640"))     # tiles whose square comes this close to the player
-                                                                # (Chebyshev) are sent
+                                                                # (Euclidean, tiles_near: a disc) are sent
 DROP_M = float(os.environ.get("BNE_ROADS_DROP_M", str(SEND_M + 320)))   # ... and dropped beyond this
 OVERLAP = 2.0           # m a road reaches past its tile's edge (no gap at tile seams)
 SIMPLIFY_M = 0.25       # RDP tolerance (Road Spline's layerMgr)
@@ -3404,16 +3404,32 @@ def tile_bbox(tx, ty):
     return tx * TILE, ty * TILE, (tx + 1) * TILE, (ty + 1) * TILE
 
 
+def box_gap(x0, y0, x1, y1, x, y):
+    """m from (x, y) to the nearest point of the box [x0, x1] x [y0, y1] (Euclidean; 0 inside)."""
+    return math.hypot(max(x0 - x, x - x1, 0.0), max(y0 - y, y - y1, 0.0))
+
+
 def tiles_near(x, y, radius):
-    """Tile keys whose square comes within `radius` of (x, y) (Chebyshev)."""
+    """Tile keys whose square comes within `radius` of (x, y): the Euclidean distance to its nearest point, a disc (the
+    user, 2026-10-28: "change the quality/view distance radius from a square to a circle"). Before it was the square
+    (Chebyshev): its corners reached 41 % farther than its sides, ~27 % more tiles than the disc for no reach ahead
+    (the anchor frame's axes are not the way the car drives). Order: tx, then ty (as before)."""
     t0x, t1x = int(math.floor((x - radius) / TILE)), int(math.floor((x + radius) / TILE))
     t0y, t1y = int(math.floor((y - radius) / TILE)), int(math.floor((y + radius) / TILE))
-    return [(tx, ty) for tx in range(t0x, t1x + 1) for ty in range(t0y, t1y + 1)]
+    r2 = radius * radius
+    out = []
+    for tx in range(t0x, t1x + 1):
+        dx = max(tx * TILE - x, x - (tx + 1) * TILE, 0.0)
+        for ty in range(t0y, t1y + 1):
+            dy = max(ty * TILE - y, y - (ty + 1) * TILE, 0.0)
+            if dx * dx + dy * dy <= r2:
+                out.append((tx, ty))
+    return out
 
 
 def tile_distance(tx, ty, x, y):
-    x0, y0, x1, y1 = tile_bbox(tx, ty)
-    return max(x0 - x, x - x1, y0 - y, y - y1, 0.0)
+    """m from (x, y) to tile (tx, ty)'s square (Euclidean, as tiles_near; 0 inside)."""
+    return box_gap(*tile_bbox(tx, ty), x, y)
 
 
 def wanted_tiles(x, y, vx=0.0, vy=0.0):
@@ -4785,6 +4801,12 @@ WALL_STEP_UP_M = 0.5     # m the graded ground climbs over the road where a wall
 WALL_KEEP_M = 1.2       # m: a wall goes on while the cut stays this deep (it starts at grading.WALL_CUT_M) ...
 WALL_GAP_N = 3          # ... over gaps of up to this many WALL_STEPs, and none shorter than WALL_MIN_N (the cut's depth
 WALL_MIN_N = 3          # wavered round 2 m: stubs of wall with gaps, the 97th Street Transverse, 2026-10-17)
+# A wall stands only where the graded ground behind its face climbs at least this steeply (m per m, its median over
+# the wall; across WALL_STEEP_SPAN from 1 m in front of the face): the step the grading cut. A natural bank the
+# terrain already draws as a slope is no cutting: a 1.5 m concrete wall stood in front of a low eroded bank beside
+# US-163 in Utah (its ground rose 0.4-1.2 m per m; Munich's McGraw-Graben's cut walls 5-9, measured 2026-10-29)
+WALL_STEEP = 2.0
+WALL_STEEP_SPAN = (-1.0, 6.0)
 
 
 def _wall_runs(cut):
@@ -5109,6 +5131,16 @@ def _hash01(*key):
     return int.from_bytes(h, "little") / 2.0 ** 64
 
 
+def _cut_behind(base, out_n, z, ground):
+    """Whether the graded ground behind a wall's face line base (k, 2) (out_n: unit vectors away from the road; z: the
+    road's heights) climbs as steeply as a cutting does (WALL_STEEP over 1 m, its median along the wall)."""
+    offs = np.arange(WALL_STEEP_SPAN[0], WALL_STEEP_SPAN[1] + 0.01, 0.5)
+    P = (base[:, None, :] + out_n[:, None, :] * offs[None, :, None]).reshape(-1, 2)
+    g = np.asarray(ground(P), np.float64).reshape(len(base), len(offs))
+    rise = (g[:, 2:] - g[:, :-2]).max(axis=1)           # (over 1 m: two 0.5 m steps)
+    return bool(np.median(rise) >= WALL_STEEP)
+
+
 def retaining_walls(frame, roads, elev, exact, decks=()):
     """Stone retaining walls along the ground roads cut deeper than grading.WALL_CUT_M into the ground (the grading
     leaves the ground at its natural height right behind them): [dict(base (k, 2) the wall's face line, top (k,),
@@ -5226,6 +5258,9 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
                 th = np.maximum.reduce([np.r_[th[:1].repeat(m), th[:len(th) - m]] for m in range(WALL_EVEN_N + 1)]
                                        + [np.r_[th[m:], th[-1:].repeat(m)] for m in range(1, WALL_EVEN_N + 1)])
                 base = xy[sl] + out_n[sl] * face[sl][:, None]
+                if not _cut_behind(base, out_n[sl], z[sl], ground):        # (a natural slope: no wall, WALL_STEEP)
+                    i = j + 1
+                    continue
                 # (never over another road: a hairpin's wall top covered the road above, the Stelvio Pass, the user's
                 # report 2026-10-21)
                 th = np.minimum(th, _clear_depth(base, out_n[sl], th, others, fid))
@@ -5655,7 +5690,12 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         lon = np.concatenate([r[:, 0] for _, _, r in rings])     # is per call: 2026-10-11 profile,
         lat = np.concatenate([r[:, 1] for _, _, r in rings])     # 1,240 calls took 7 of a tile's 8 s)
         h = np.asarray(elev(lat, lon), np.float64)
-        e, n, u = frame.geodetic_to_enu(lat, lon, h)
+        # east / north of the point at h = 0, as the ground's (heightmap.surface: its samples' lat / lon at plane
+        # z 0) and every outline's (mapgeom.enu_xy); up of the point at its height. At its height the point lands
+        # h x distance / earth radius farther out: US-163 in Utah at 1650 m, 13 km out, the lines lay 2.8 m east and
+        # 2.0 m north of the asphalt and grip painted into the ground (the user's screenshot, 2026-10-29)
+        e, n, _ = frame.geodetic_to_enu(lat, lon, 0.0)
+        u = frame.geodetic_to_enu(lat, lon, h)[2]
         k = 0
         for fid, spec, ring in rings:
             m = len(ring)

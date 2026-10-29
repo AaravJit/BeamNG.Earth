@@ -151,9 +151,22 @@ You can help support development by reporting [issues](https://github.com/TecnaG
 - Easy setup: one download per system (Windows .exe, Linux AppImage) that installs the mod and starts the server
   and the game; from the source, `install.py` installs everything and `start.py` keeps the mod in sync.
 - Runs on a Steam Deck (aim: 30 fps on the Handheld graphics preset).
-- Quality presets (Low / Medium / High / Ultra) in BeamNG.Earth's own pause-menu tab (pause menu > BeamNG.Earth >
-  Graphics; every settings page is listed down the side there): trees, grass, rocks, street-lamp lights and view distance at one press, each
-  fine-tunable; the first start picks one for your hardware (Medium on a Steam Deck).
+- Quality presets (Low / Medium / High / Ultra / Extreme) in BeamNG.Earth's own pause-menu tab (pause menu >
+  BeamNG.Earth > Graphics; every settings page is listed down the side there), each fine-tunable; the first start
+  picks Low, Medium or High for your hardware (Medium on a Steam Deck). **Extreme** puts every setting at its most,
+  out to the real horizon, for the strongest PCs (it is never picked for you). The Graphics page's settings:
+  - **Terrain detail** (Low to Extreme): how far out each finer level of the distant land reaches (Extreme builds
+    about twice as many distant ground pieces).
+  - **Ground photo** (1024 / 2048 / 4096): the sharpness of the aerial photo and the painted roads on the
+    ground around you; from the next level load.
+  - **Tree density** and **Tree draw distance** (about 0.6 to 1.7 miles; 0.8 miles at Normal).
+  - **Building draw distance**: the simple far buildings, the skyline and far bridges (Near to Max, twice Normal's 1
+    and 3 miles).
+  - **Object detail**: how far out objects keep their detailed models (Game setting = the game's Mesh Quality).
+  - **Grass and shrubs**, **Grass draw distance**, **Rocks**, **Street lamp lights**, **View distance** (the real
+    horizon or a fixed distance).
+  - What loads around you reaches the same distance in every direction (a circle; before it was a square, whose
+    corners reached about 40 % farther).
 - Uses your graphics card for some of the world server's work (colour matching of the photos, compressing the distant
   textures) when it can, so the server needs less of your CPU; without a usable one the CPU does it as before.
 - Offline play from the download cache (with a size cap and "clear cache").

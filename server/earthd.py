@@ -256,7 +256,20 @@ BASE_PX = 2048                  # ... and as the game gets it: enlarged (a plain
 # The photo is rendered over the square moved back by that much.
 BASE_SHIFT_M = heightmap.SQUARE / 2
 BASE_AO_VFS = "/levels/beamng_earth/art/terrains/bngEarth_base_ao.png"   # every surface layer's aoBaseTex
+# The ground photo sizes the mod may choose (its graphics setting groundPhoto, the 'graphics' message's photoPx; the
+# user, 2026-10-28: "much more control in the graphics settings"): the level ships the flat base maps of each
+# (tools/make_level_assets.py BASE_SIZES: BASE_PX's under the old names, the others with a _<px> suffix), and every
+# layer's aoBaseTex is the one of the size in use, so the packed cache entry's key (terraincache.base_key) follows it.
+# Measured 2026-10-28 (quality-presets notes): 4096 costs ~1-3 s a block on a PC, 6-12 s on a Steam Deck.
+BASE_SIZES = (1024, 2048, 4096)
+
+
+def base_ao_vfs(px):
+    """The level's flat AO map of ground photo size px (every surface layer's aoBaseTex at that size)."""
+    return BASE_AO_VFS if px == BASE_PX else f"{BASE_AO_VFS[:-4]}_{px}.png"
 BASE_AO = 251                   # its flat value (tools/make_level_assets.py)
+GRAPHICS_SCALE = (0.5, 3.0)     # the 'graphics' message's scales are clamped to this (Connection.set_graphics)
+VIEW_CAP_MIN_M = 10000.0        # ... and its fixed view distance (viewM, the far field's radius cap) to at least this
 DETAIL_ROAD_LIFT = 0.025        # detail mode: road surfaces over the drawn block, within roadmesh.FOLLOW_TOL of it (0.05
                                 # before, over a coarser surface it still cut through on hills: the tyres sank into it,
                                 # the user 2026-10-20)
@@ -576,6 +589,7 @@ class Server:
         self.matslots = matslotsmod.MatSlots(self.sid[-4:], held=self.slot_held)    # pooled names and shape files
         self.reslot_serial = itertools.count(1)
         self.slot_serial = itertools.count(1)      # far_tile slotSerial (matslots.py)
+        self.base_px = BASE_PX              # detail mode: the ground photo's size (px), the mod's graphics.photoPx
         self.lod_px = farfield.SSE_TAU_PX   # screen-space LOD: the largest split pop allowed on screen (px; 0: off)
         self.update_check = False       # ask GitHub for a newer version after a hello (main_async turns it on; tests
                                         # never reach GitHub: its small daily budget ran out over a day of test runs)
@@ -811,11 +825,12 @@ class Server:
         # with it: blocks evicted during a run took theirs (prune), but whatever a run left behind stayed for good,
         # ~1.4 MB a block, 3.9 GB of them by 2026-10-18
         for path in glob.glob(os.path.join(self.root, sid, "*_base*.png")):
-            key = terraincache.base_key(f"/temp/beamngEarth/{sid}/{os.path.basename(path)}", BASE_AO_VFS)
-            try:
-                os.remove(os.path.join(terraincache.cache_dir(self.user_dir), key + ".dds"))
-            except OSError:
-                pass
+            for px in BASE_SIZES:           # (whichever size it was made at)
+                key = terraincache.base_key(f"/temp/beamngEarth/{sid}/{os.path.basename(path)}", base_ao_vfs(px))
+                try:
+                    os.remove(os.path.join(terraincache.cache_dir(self.user_dir), key + ".dds"))
+                except OSError:
+                    pass
         shutil.rmtree(os.path.join(self.root, sid), ignore_errors=True)
         shutil.rmtree(os.path.join(self.cdae_root, sid.lower()), ignore_errors=True)
 
@@ -1502,6 +1517,23 @@ class Server:
             "plans": f"w{int(self.road_widths is not None)}s{int(self.sea is not None)}",
         }
 
+    def set_base_px(self, px):
+        """The ground photo's size (px) the mod's terrain texture set has (its graphics setting groundPhoto, applied at
+        a level's start: the 'graphics' message's photoPx); one of BASE_SIZES, else nothing changes. The blocks built
+        at another size get their photo again (base_stale: base_refresh sends it), the next ones are made at it.
+        Returns whether it changed."""
+        try:
+            px = int(px)
+        except (TypeError, ValueError):
+            return False
+        if px not in BASE_SIZES or px == self.base_px:
+            return False
+        self.base_px = px
+        if self.near_visual == "detail":
+            self.base_stale.update(k for k in self.hm if k[0] in self.anchors)
+        log.info("ground photo %d px (settings)", px)
+        return True
+
     def keep_fuel_pads(self, pads):
         """A road tile's gas station pads kept for the ground's painters (surface.Surface.add_fuel_pads); the blocks
         a new station's pad lies on get their photo rendered again (pads_stale)."""
@@ -1913,8 +1945,8 @@ class Server:
                               cy - size / 2 - BASE_SHIFT_M, size,
                               BASE_RENDER_PX, tex, bool(self.buildings and self.mapdata is not None), anchor.zooms[0],
                               os.path.join(self.out_dir, name),
-                              (self.user_dir, f"{self.vfs_dir}/{name}", BASE_AO_VFS, BASE_AO),
-                              fuel_pads=self.block_fuel_pads(anchor, cx, cy, size), out_px=BASE_PX).result()
+                              (self.user_dir, f"{self.vfs_dir}/{name}", base_ao_vfs(self.base_px), BASE_AO),
+                              fuel_pads=self.block_fuel_pads(anchor, cx, cy, size), out_px=self.base_px).result()
         except Exception as e:
             log.info("base photo %s in the block process: %s", key, e)
             return None
@@ -1995,7 +2027,7 @@ class Server:
         return self.hm_name(key)[:-4] + ("_base.png" if not rev else f"_base_r{rev}.png")
 
     def write_base(self, anchor, cx, cy, pool=None, rev=0, photo=None, quick=False):
-        """Detail mode: the block footprint's aerial photo (BASE_PX² PNG, row 0 = north, the same imagery
+        """Detail mode: the block footprint's aerial photo (base_px² PNG, row 0 = north, the same imagery
         chain and corrections as the far tiles), the drawn block's base colour. The game would pack it into
         BC7 on its main thread (1.5 s for a new 1024² photo); terraincache writes that packed texture into
         the game's cache first (~0.4 s here), so the game takes it as it is. Returns the file name, or None
@@ -2033,7 +2065,7 @@ class Server:
                 rgb = surfacemod.unghost_square(rgb, anchor.frame, x0, y0, size, self.surface, self.road_widths)
             except Exception as e:      # the photo stays as it is
                 log.info("base photo %s: road ghosts: %s", (anchor.id, cx, cy), e)
-        rgb = surfacemod.enlarge(rgb, BASE_PX)
+        rgb = surfacemod.enlarge(rgb, self.base_px)
         stamps.append(("buildings", time.perf_counter()))
         if roadsmod.ROADS_IN_GROUND and not quick:      # the carriageways in the ground (surface.photo_roads)
             try:
@@ -2067,7 +2099,7 @@ class Server:
         staging.replace(tmp, path)
         t2 = time.perf_counter()
         try:            # after the photo: the cache entry must be the newer file
-            args = (self.user_dir, f"{self.vfs_dir}/{name}", BASE_AO_VFS, rgb, BASE_AO)
+            args = (self.user_dir, f"{self.vfs_dir}/{name}", base_ao_vfs(self.base_px), rgb, BASE_AO)
             if pool is not None:            # the BC7 encode on the block process's core
                 pool.submit(blockworker.base_entry, *args).result()
             else:
@@ -2164,8 +2196,9 @@ class Server:
                 self._remove(os.path.join(self.out_dir, info["ter"]))
             if self.near_visual == "detail":     # its packed copies in the game's terrain texture cache
                 for name in {self.base_name(key), info.get("base") or self.base_name(key)}:
-                    self._remove(os.path.join(terraincache.cache_dir(self.user_dir),
-                                              terraincache.base_key(f"{self.vfs_dir}/{name}", BASE_AO_VFS) + ".dds"))
+                    for px in BASE_SIZES:       # (whichever size it was made at)
+                        self._remove(os.path.join(terraincache.cache_dir(self.user_dir), terraincache.base_key(
+                            f"{self.vfs_dir}/{name}", base_ao_vfs(px)) + ".dds"))
             if self.surface is not None:        # its surface masks (only read at import)
                 for name in surfacemod.mask_names(self.hm_name(key)[:-4]):
                     self._remove(os.path.join(self.out_dir, name))
@@ -3066,6 +3099,11 @@ class Connection:
         self.roads_busy = False                 # ... with the roads of map cells that came after it (roads_refresh)
         self.ground_sent = None                 # (anchor id, z, monotonic) of the last ground_ahead sent
         self.following = True                   # the mod moves its block (pose "follow"; false high up)
+        # the mod's graphics settings (message 'graphics', after every hello and on a change; set_graphics): the far
+        # field's detail (lodScale times the layout's K: the distance a level splits at), the tree tiles' reach
+        # (treeScale) and the far buildings', skyline's and far bridges' (buildingScale); 1 = the defaults
+        self.lod_scale = self.tree_scale = self.building_scale = 1.0
+        self.view_cap = None                    # the far field's radius at most (m): the mod's fixed view distance
 
     async def map_tiles(self, msg):
         """The world map's tiles {"tiles": [[z, x, y, layer?], ...]} (layer "sat" by default, "map", "labels"; the
@@ -3641,12 +3679,66 @@ class Connection:
             self.signs = signstream.Tracker()
         elif kind == "highway_signs":           # the settings page's switch: no sign tiles built while it is off
             self.signs_on = bool(msg.get("on", True))
+        elif kind == "graphics":                # the settings page's graphics knobs (set_graphics)
+            self.set_graphics(msg)
         elif kind == "gas_stations":            # the settings page's switch: the road tiles again, with or without
             if self.s.set_gas_stations(msg.get("on")):
                 self.roads.close()
                 self.roads = roadsmod.Tracker()
         else:
             log.debug("ignoring message type %r", kind)
+
+    def set_graphics(self, msg):
+        """The settings page's graphics (the user, 2026-10-28: "give player much more control in the graphics settings
+        (view distance, LOD quality, ETC."), message 'graphics' {lodScale, treeScale, buildingScale, photoPx}, each
+        optional (viewM: the fixed view distance in m, the far field's radius at most; 0 = the real horizon):
+        lodScale times the K table (the far field's terrain detail: >1 splits each level farther out, finer
+        ground to the horizon; Baltimore's first selection, 64 cells: 0.75 -> 0.78x the tiles, 1.3 -> ~1.3x, 2 ->
+        2.1x), treeScale the tree tiles' reach (vegetation.SEND_M times it), buildingScale the far buildings', the
+        skyline's and the far bridges' (buildings.FAR_SEND_M / SKY_SEND_M / BRIDGE_FAR_SEND_M times it), photoPx the
+        ground photo's size (Server.set_base_px). Scales are clamped to GRAPHICS_SCALE; the far field is selected
+        again at once, the trackers send and drop by their new reach at the next pose."""
+        def scale(name, cur):
+            v = msg.get(name)
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+                return cur
+            return min(GRAPHICS_SCALE[1], max(GRAPHICS_SCALE[0], float(v)))
+        lod, tree, bld = (scale("lodScale", self.lod_scale), scale("treeScale", self.tree_scale),
+                          scale("buildingScale", self.building_scale))
+        far = lod != self.lod_scale
+        self.lod_scale = lod
+        if tree != self.tree_scale:
+            self.tree_scale = tree
+            self.veg.send_m = vegetationmod.SEND_M * tree
+            self.veg.drop_m = self.veg.send_m + (vegetationmod.DROP_M - vegetationmod.SEND_M)
+        if bld != self.building_scale:
+            self.building_scale = bld
+            self.bldfar.send_m = buildingsmod.FAR_SEND_M * bld
+            self.bldfar.drop_m = self.bldfar.send_m + (buildingsmod.FAR_DROP_M - buildingsmod.FAR_SEND_M)
+            if self.bldsky is not None:
+                self.bldsky.send_m = buildingsmod.SKY_SEND_M * bld
+                self.bldsky.drop_m = self.bldsky.send_m + (buildingsmod.SKY_DROP_M - buildingsmod.SKY_SEND_M)
+                self.bldsky.inner = (self.bldfar.send_m, buildingsmod.SKY_UNIT)
+            if self.brfar is not None:
+                self.brfar.send_m = buildingsmod.BRIDGE_FAR_SEND_M * bld
+                self.brfar.drop_m = self.brfar.send_m + (buildingsmod.BRIDGE_FAR_DROP_M - buildingsmod.BRIDGE_FAR_SEND_M)
+        if msg.get("photoPx") is not None:
+            self.s.set_base_px(msg.get("photoPx"))
+        v = msg.get("viewM")
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v):
+            cap = max(VIEW_CAP_MIN_M, float(v)) if v > 0 else None
+            far = far or cap != self.view_cap
+            self.view_cap = cap
+        log.info("graphics: terrain detail x%.2f, trees to %.0f m, far buildings to %.0f m, ground photo %d px, view %s",
+                 self.lod_scale, self.veg.send_m, self.bldfar.send_m, self.s.base_px,
+                 "to the horizon" if self.view_cap is None else f"{self.view_cap / 1000:.0f} km")
+        if far and self.active is not None:
+            self.update_far()
+
+    def kfun(self):
+        """K(L) of this connection's far field: the server's times the mod's terrain detail (lodScale)."""
+        k, s = self.s.kfun, self.lod_scale
+        return k if s == 1.0 else (lambda lvl: k(lvl) * s)
 
     async def terrain_patch(self, msg):
         """The mod's terrainpatch.lua: the ground's collision patch over box (x0, y0, x1, y1, the active anchor's
@@ -4469,7 +4561,9 @@ class Connection:
         self.retired = {ck: t for ck, t in self.retired.items() if now - t < self.s.retired_keep}
         self.node_changed = {n: t for n, t in self.node_changed.items() if now - t < farfield.HOLD_S}
         radius, extra = (self.horizon_select() if self.s.horizon else (self.s.radius, {}))
-        new, refined = farfield.select(*self.view_focus, self.forced(), self.refined, self.s.kfun,
+        if self.view_cap is not None:       # (a fixed view distance: nothing past it is drawn; a disc, as the horizon)
+            radius, extra = min(radius, self.view_cap), dict(extra, disc=True)
+        new, refined = farfield.select(*self.view_focus, self.forced(), self.refined, self.kfun(),
                                        self.s.hysteresis, radius, hold=set(self.node_changed),
                                        min_level=self.s.min_level, radii=self.s.near_radii, layout=self.s.layout,
                                        forced_level=self.s.forced_level, view=self.view(), **extra)

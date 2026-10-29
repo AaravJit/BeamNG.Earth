@@ -259,16 +259,35 @@ class SharpCutTest(unittest.TestCase):
 
         def elev(la, lo):
             _e, n, _ = FRAME.geodetic_to_enu(np.asarray(la), np.asarray(lo), np.zeros(np.shape(la)))
-            return 10.0 + 4.0 / (1.0 + np.exp(-(n - 8.0) / 0.8))
+            return 10.0 + 5.0 / (1.0 + np.exp(-(n - 8.0) / 0.8))
         grading._add_cuts(FRAME, [p], elev)
         self.assertIsNotNone(p.cut)
         self.assertEqual(p.cut.shape, (10, 6))
         wall, top, reach = p.cut[:, 0], p.cut[:, 1], p.cut[:, 2]
         self.assertTrue(np.isfinite(wall).all() and np.isfinite(top).all())
         np.testing.assert_allclose(wall, 8.0, atol=1.01)                # the half-way point of the climb
-        np.testing.assert_allclose(top, 10.0 + 3.6, atol=0.4)          # 90 % of it
+        np.testing.assert_allclose(top, 10.0 + 4.5, atol=0.5)          # 90 % of it
         self.assertTrue((reach > wall).all())
         self.assertTrue(np.isnan(p.cut[:, 3:]).all(), "the open side: no cutting")
+
+    def test_a_low_bank_on_one_side_is_no_wall_but_a_trench_is(self):
+        """A 2.5 m bank beside a road: a graded slope (US-163, Utah: a low rock bank was a concrete wall); the same depth
+        on both sides (a trench, as Munich's McGraw-Graben): its walls."""
+        import types
+        xy = np.c_[np.arange(0.0, 81.0, 8.0), np.zeros(11)]
+        for both in (False, True):
+            p = types.SimpleNamespace(xy=xy, z=np.full(11, 10.0), half=5.0, road_half=4.0, cut=None)
+
+            def elev(la, lo, both=both):
+                _e, n, _ = FRAME.geodetic_to_enu(np.asarray(la), np.asarray(lo), np.zeros(np.shape(la)))
+                up = 2.5 / (1.0 + np.exp(-(n - 8.0) / 0.8))
+                return 10.0 + up + (2.5 / (1.0 + np.exp((n + 8.0) / 0.8)) if both else 0.0)
+            grading._add_cuts(FRAME, [p], elev)
+            if not both:
+                self.assertTrue(p.cut is None or np.isnan(p.cut[:, [1, 4]]).all(), "a lone low bank: no cutting")
+            else:
+                self.assertIsNotNone(p.cut)
+                self.assertTrue(np.isfinite(p.cut[:, 1]).all() and np.isfinite(p.cut[:, 4]).all(), "a trench: both walls")
 
     def test_gentle_slope_is_no_wall(self):
         import types

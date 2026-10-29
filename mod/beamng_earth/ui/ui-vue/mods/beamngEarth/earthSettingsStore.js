@@ -10,12 +10,25 @@ export const settingsSchema = [
   {
     name: "Graphics",
     presets: true,
-    intro: "Pick a preset, then fine-tune the settings below if you like. Each change applies at once.",
+    intro: "Pick a preset, then fine-tune the settings below if you like. Each change applies at once (the ground photo resolution at the next level load).",
     items: [
-      { id: "trees", type: "select", default: "normal", name: "Trees", desc: "How many trees and how far out they are drawn. Low: thinner forests and a shorter reach (the most frame time saved in wooded places). Ultra: denser and farther forests (strong GPUs).",
-        options: [ { label: "Low", value: "low" }, { label: "Medium", value: "medium" }, { label: "Normal", value: "normal" }, { label: "High", value: "high" }, { label: "Ultra", value: "ultra" } ] },
+      { id: "terrainDetail", type: "select", default: "normal", name: "Terrain detail", desc: "How detailed the distant ground is: how far out each finer level of the land's shape reaches, out to the horizon. Low: coarser hills sooner (fewer pieces to build and draw: about 20 % less). High, Ultra and Extreme: sharper mountains and coastlines far away; Extreme builds about twice as many pieces of distant ground, so new places take longer to fill in. Applies at once.",
+        options: [ { label: "Low", value: "low" }, { label: "Normal", value: "normal" }, { label: "High", value: "high" }, { label: "Ultra", value: "ultra" }, { label: "Extreme", value: "extreme" } ] },
+      { id: "groundPhoto", type: "select", default: "2048", name: "Ground photo", desc: "The sharpness of the aerial photo and the painted roads on the ground around you (each 1 km square). 1024: 1 m a pixel, the lightest (handhelds). 2048: 0.5 m, the default. 4096: 0.25 m, the crispest road edges and markings in the ground, but each square takes 1-3 s longer to make on a fast PC (much longer on a handheld) and uses 4 times the video memory.",
+        note: "Takes effect when the level next loads.",
+        options: [ { label: "1024 (light)", value: "1024" }, { label: "2048 (default)", value: "2048" }, { label: "4096 (sharpest)", value: "4096" } ] },
+      { id: "trees", type: "select", default: "normal", name: "Tree density", desc: "How many trees and bushes are drawn at each distance. Low: thinner forests (the most frame time saved in wooded places). Ultra and Extreme: denser forests far out (strong GPUs).",
+        options: [ { label: "Low", value: "low" }, { label: "Medium", value: "medium" }, { label: "Normal", value: "normal" }, { label: "High", value: "high" }, { label: "Ultra", value: "ultra" }, { label: "Extreme", value: "extreme" } ] },
+      { id: "treeDistance", type: "select", default: "normal", name: "Tree draw distance", desc: "How far out trees, rocks, poles and roadside props are drawn: about 1.3 km at Normal, 1 km at Near, 2.8 km at Max. Farther needs more memory and a stronger GPU, and the app builds more tree tiles around you.",
+        options: [ { label: "Near", value: "near" }, { label: "Medium", value: "medium" }, { label: "Normal", value: "normal" }, { label: "Far", value: "far" }, { label: "Farther", value: "farther" }, { label: "Max", value: "max" } ] },
+      { id: "buildingDistance", type: "select", default: "normal", name: "Building draw distance", desc: "How far out buildings and bridges are drawn: simple far buildings to about 1.6 km and the skyline's big buildings to about 4.8 km at Normal; Near 60 %, Far 150 %, Max twice as far. The buildings near you are always drawn in full.",
+        options: [ { label: "Near", value: "near" }, { label: "Normal", value: "normal" }, { label: "Far", value: "far" }, { label: "Max", value: "max" } ] },
+      { id: "objectDetail", type: "select", default: "game", name: "Object detail", desc: "How far out trees, buildings, props and cars keep their detailed models before switching to simpler ones, in BeamNG.Earth's world only. Game setting: the game's own Mesh Quality (Options, Graphics). Low to Extreme override it here (Ultra is the game's highest; Extreme 1.5 times more). Higher costs GPU time where much is in view.",
+        options: [ { label: "Game setting", value: "game" }, { label: "Low", value: "low" }, { label: "Normal", value: "normal" }, { label: "High", value: "high" }, { label: "Ultra", value: "ultra" }, { label: "Extreme", value: "extreme" } ] },
       { id: "grass", type: "select", virtual: true, default: "normal", name: "Grass and shrubs", desc: "3D grass and scrub near the car (the game's own Hirochi Raceway and West Coast USA plants). Off saves the most on handhelds. Without the optional grass patch (tools/gcpatch, Linux) the game regrows the grass in one slower frame each time the ground under the car moves; denser grass makes that frame longer.",
         options: [ { label: "Off", value: "off" }, { label: "Low", value: "low" }, { label: "Normal", value: "normal" }, { label: "High", value: "high" } ] },
+      { id: "grassDistance", type: "select", default: "normal", name: "Grass draw distance", desc: "How far out the 3D grass reaches (about 50-70 m at Normal; Near 70 %, Far 150 %). The same density over a larger area: Far draws about twice as many blades, and the regrow frame when the ground moves gets longer.", showIf: c => c.groundCover !== false,
+        options: [ { label: "Near", value: "near" }, { label: "Normal", value: "normal" }, { label: "Far", value: "far" } ] },
       { id: "rocks", type: "bool", default: true, name: "Rocks", desc: "Rocks and boulders on bare, rocky and steep ground. Off removes them (and their collision)." },
       { id: "nightLights", type: "select", default: "normal", name: "Street lamp lights", desc: "How many street lamps near you cast real light on the road at night (the lamps further out still glow). Fewer: cheaper nights.",
         options: [ { label: "Few", value: "few" }, { label: "Normal", value: "normal" }, { label: "Many", value: "many" } ] },
@@ -123,10 +136,11 @@ export const pageId = (name, i) => i === 0 ? "beamngEarth-settings" : "beamngEar
 
 // The quality presets' cards (settings.lua PRESETS: what each sets)
 export const qualityPresets = [
-  { id: "low", name: "Low", short: "Thin forests, no grass, 40 km view", desc: "For older laptops and weak GPUs: fewer, nearer trees, no grass, few lamp lights at night and a 40 km view distance." },
-  { id: "medium", name: "Medium", short: "Lighter forests, light grass", desc: "Somewhat thinner forests, light grass and few lamp lights at night, the real horizon. The Steam Deck's preset." },
-  { id: "high", name: "High", short: "The full look", desc: "Normal trees and grass, all lamp lights, the real horizon (BeamNG.Earth's look before presets existed)." },
-  { id: "ultra", name: "Ultra", short: "Denser, farther forests", desc: "Denser and farther forests, thick grass and more lamp lights at night. For strong GPUs." },
+  { id: "low", name: "Low", short: "Thin forests, no grass, 40 km view", desc: "For older laptops and weak GPUs: fewer, nearer trees and buildings, no grass, coarser distant terrain, a lighter ground photo (1024), few lamp lights at night and a 40 km view distance." },
+  { id: "medium", name: "Medium", short: "Lighter forests, light grass", desc: "Somewhat thinner and nearer forests, light grass and few lamp lights at night, the real horizon. The Steam Deck's preset." },
+  { id: "high", name: "High", short: "The full look", desc: "Normal trees, buildings, terrain and grass, all lamp lights, the real horizon (BeamNG.Earth's look before presets existed)." },
+  { id: "ultra", name: "Ultra", short: "Denser, farther forests", desc: "Denser and farther forests, buildings farther out, finer distant terrain, thick grass and more lamp lights at night. For strong GPUs." },
+  { id: "extreme", name: "Extreme", short: "Everything at its most", desc: "Every setting at its most, out to the real horizon: the finest distant terrain, the sharpest ground photo (4096), the densest forests and buildings as far as they go, far grass and the most detailed objects. For the strongest PCs only: new places take longer to build and the frame rate drops." },
 ]
 
 export const devPresets = [

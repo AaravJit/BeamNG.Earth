@@ -980,6 +980,18 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
   local shard folder), placed on the roads' own pavement rows (`signroads.Context`, per map cell); only where a US
   state is (every face is MUTCD; `BNE_SIGNS_WORLD=1` everywhere). The mod's Highway signs switch sends
   `highway_signs` {on}: no sign tiles are built while it is off.
+- Graphics settings (2026-10-28; settings.lua PRESETS low / medium / high / ultra / extreme): the mod sends
+  `graphics` {lodScale, treeScale, buildingScale, photoPx} after every hello and on a change (core.sendGraphics):
+  the far field's K times lodScale, the tree tiles' and the far buildings' / skyline's / far bridges' reach times
+  their scales, the block photo's size (terrain.lua points the texture set and every layer's flat base maps at that
+  size before a level's first block). Mod-only knobs: tree density (trees.lua QUALITY_LEVELS), grass distance
+  (groundcover.lua DISTANCE), object detail ($pref::TS::detailAdjust in our level, enginepref.lua).
+- Every reach that decides what is loaded or shown is a disc (2026-10-28): roads.tiles_near / tile_distance and the
+  vegetation trackers' squares (tree tiles, far buildings' groups, skyline squares, far bridges) by the Euclidean
+  distance to the square's nearest point, dropped beyond their drop distance by the same rule (the hysteresis), and
+  the mod's ghost releases after a rebase likewise. Purely internal squares stay: the terrain block and its
+  follow / prefetch rules (Chebyshev from the block centre), the map cells warmed around a place, the AI graph's
+  graded square (blockworker.NAV_GRADED_M), the sea's physics water block, the far field's quadtree (already a disc).
 - Speed-limit signs (`server/speedsigns.py`, kernels `speed_sign_place` / `speed_sign_mesh` in
   `native/earthfast/src/speedsigns.rs`): in the same sign tiles (shape `speeds`), everywhere. The value is
   `navgraph.road_mph`'s (the AI's: Overture's / OpenStreetMap's limit, else the class default) in the posted unit.
