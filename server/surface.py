@@ -373,10 +373,40 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, e
     out = idx.copy()
     out[mask(lawn)] = LAWN
     v = mask(verge)
+    # the rounded corners of curbless junctions (roadcorners.py): asphalt as their roads (ROAD_EDGE_M past the arc), a
+    # verge round them
+    lonlat_bounds = (float(np.min(lon)), float(np.min(lat)), float(np.max(lon)), float(np.max(lat)))
+    corner, corner_verge = (_corner_mask(feats_list, urban_fn, widths, lonlat_bounds, to_px, (h, w), grow)
+                            for grow in (ROAD_EDGE_M, ROAD_EDGE_M + VERGE_M))
+    if corner_verge is not None:
+        v |= corner_verge
     out[v & np.isin(out, VERGE_FROM)] = VERGE
     for k in ROAD_ORDER:
         out[mask(segs[k])] = ROAD_MATERIAL[k]
+    if corner is not None:
+        out[corner] = ROAD_MATERIAL["paved"]
     return out
+
+
+def _corner_mask(feats_list, urban_fn, widths, lonlat_bounds, to_px, shape, grow):
+    """The samples (bool (h, w), to_px: (lon, lat) -> (col, row)) inside the rounded corners of feats_list's junctions
+    (roadcorners.pads, their arcs grown by grow m), or None (none on the grid)."""
+    import roadcorners
+    pads = roadcorners.pads(feats_list, urban_fn, widths, lonlat_bounds=lonlat_bounds, grow=grow)
+    if not pads:
+        return None
+    h, w = shape
+    im = None
+    for la, lo in pads:
+        c, r = to_px(np.asarray(lo), np.asarray(la))
+        c, r = np.asarray(c, np.float64), np.asarray(r, np.float64)
+        if c.max() < 0 or c.min() > w or r.max() < 0 or r.min() > h:
+            continue
+        if im is None:
+            im = Image.new("L", (w, h), 0)
+            draw = ImageDraw.Draw(im)
+        draw.polygon(list(zip(c.tolist(), r.tolist())), fill=255)
+    return None if im is None else np.asarray(im) > 0
 
 
 # Roads in the ground (the user, 2026-10-22: "I dont love that we are applying a floating road texture over the normal
@@ -545,11 +575,23 @@ def photo_roads(rgb, frame, x0, y0, size, feats_list, urban_fn=None, widths=None
     (earthfast.paint_lines, PHOTO_ROAD_RGBA). Pure (a new array)."""
     fast.require(49, "roads in the ground")
     h, w = rgb.shape[:2]
+    # the rounded corners of curbless junctions (roadcorners.py) in the asphalt's colour, under the roads
+    rgb = photo_corners(rgb, frame, x0, y0, size, corner_pads(frame, x0, y0, size, feats_list, urban_fn, widths))
     got = _road_segments(frame, x0, y0, size, w, h, feats_list, urban_fn, widths)
     if got is None:
         return rgb
     colors = np.array([PHOTO_ROAD_RGBA[k] for k in PHOTO_ROAD_RGBA], np.float32)
     return fast._ef.paint_lines(np.ascontiguousarray(rgb, np.uint8), *got, colors)
+
+
+def corner_pads(frame, x0, y0, size, feats_list, urban_fn=None, widths=None):
+    """The rounded corners (roadcorners.pads) that may reach a photo square [x0, x0 + size]² of frame, their arcs grown
+    by PHOTO_ROAD_EDGE_M as the roads' paint (a few metres of margin: the bounds are rounded out anyway)."""
+    import roadcorners
+    if not feats_list:
+        return []
+    return roadcorners.pads(feats_list, urban_fn, widths, frame, bounds=(x0 - 4.0, y0 - 4.0, x0 + size + 4.0,
+                                                                          y0 + size + 4.0), grow=PHOTO_ROAD_EDGE_M)
 
 
 def _square_roads(frame, x0, y0, size, surface):
@@ -644,12 +686,14 @@ def road_mask(frame, x0, y0, size, px, surface, widths=None):
     lots = lots_mask(frame, x0, y0, size, px, _square_lots(frame, x0, y0, size, surface))
     feats = _square_roads(frame, x0, y0, size, surface)
     got = _road_segments(frame, x0, y0, size, px, px, feats, surface.urban, widths) if feats else None
+    corners = corners_mask(frame, x0, y0, size, px, corner_pads(frame, x0, y0, size, feats, surface.urban, widths)) \
+        if feats else None
     out = None
     if got is not None:
         colors = np.array([(255.0, 255.0, 255.0, 1.0 if k in ROAD_MASK_KINDS else 0.0) for k in PHOTO_ROAD_RGBA],
                           np.float32)
         out = fast._ef.paint_lines(np.zeros((px, px, 3), np.uint8), *got, colors)[..., 0]
-    for extra in (pads, lots):
+    for extra in (pads, lots, corners):
         if extra is not None:
             out = extra if out is None else np.maximum(out, extra)
     return None if out is None or not out.any() else out
@@ -735,6 +779,60 @@ def _pads_px(frame, x0, y0, size, w, h, pads):
     sub = np.asarray(im, np.float32).reshape((r1 - r0) // k, k, (c1 - c0) // k, k).mean(axis=(1, 3)) / 255.0
     out = np.zeros((h, w), np.float32)
     out[r0 // k:r1 // k, c0 // k:c1 // k] = sub
+    return out
+
+
+def _windows_px(frame, x0, y0, size, w, h, pads):
+    """Each pad's coverage in a w x h photo over [x0, x0 + size]² of frame (row 0 north) in its own small window: [(r0,
+    c0, coverage (float 0..1, 2x supersampled edges))]. (The rounded corners lie all over a photo: one image over their
+    common box was the whole photo, 0.15 s a 2048 px square.)"""
+    k = 2
+    px_m = w * k / size
+    out = []
+    for la, lo in pads:
+        e, n, _ = frame.geodetic_to_enu(np.asarray(la), np.asarray(lo), np.zeros(len(la)))
+        c = (np.asarray(e) - x0) * px_m
+        r = (y0 + size - np.asarray(n)) * px_m
+        c0 = max(0, int(c.min()) // k * k)
+        r0 = max(0, int(r.min()) // k * k)
+        c1 = min(w * k, -(-int(c.max() + 1) // k) * k)
+        r1 = min(h * k, -(-int(r.max() + 1) // k) * k)
+        if c1 <= c0 or r1 <= r0:
+            continue
+        im = Image.new("L", (c1 - c0, r1 - r0), 0)
+        ImageDraw.Draw(im).polygon(list(zip((c - c0).tolist(), (r - r0).tolist())), fill=255)
+        sub = np.asarray(im, np.float32).reshape((r1 - r0) // k, k, (c1 - c0) // k, k).mean(axis=(1, 3)) / 255.0
+        out.append((r0 // k, c0 // k, sub))
+    return out
+
+
+def photo_corners(rgb, frame, x0, y0, size, pads):
+    """photo_pads for many small pads spread over the photo (the rounded junction corners), each in its own window.
+    Pure."""
+    if not pads:
+        return rgb
+    h, w = rgb.shape[:2]
+    r_, g_, b_, op = PHOTO_ROAD_RGBA["paved"]
+    colour = np.array([r_, g_, b_], np.float32)
+    out = None
+    for r0, c0, a in _windows_px(frame, x0, y0, size, w, h, pads):
+        if out is None:
+            out = rgb.copy()
+        r1, c1 = r0 + a.shape[0], c0 + a.shape[1]
+        sub = (a * op)[..., None]
+        out[r0:r1, c0:c1] = np.clip(np.round(out[r0:r1, c0:c1].astype(np.float32) * (1.0 - sub) + colour * sub),
+                                    0, 255).astype(np.uint8)
+    return rgb if out is None else out
+
+
+def corners_mask(frame, x0, y0, size, px, pads):
+    """pads_mask for the rounded junction corners (each in its own window): px x px uint8, or None."""
+    out = None
+    for r0, c0, a in _windows_px(frame, x0, y0, size, px, px, pads):
+        if out is None:
+            out = np.zeros((px, px), np.uint8)
+        r1, c1 = r0 + a.shape[0], c0 + a.shape[1]
+        out[r0:r1, c0:c1] = np.maximum(out[r0:r1, c0:c1], np.round(a * 255.0).astype(np.uint8))
     return out
 
 

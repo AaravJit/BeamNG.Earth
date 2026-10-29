@@ -3028,10 +3028,14 @@ def extras(spec, pts, lon, left_hand=False, country=None, osm=None):
     motorway = cls == "motorway"
     lw_ = st.w_motorway if motorway else st.w           # a line's width
 
-    def mark(kind_, mat, width, along, pattern=None):
-        """A solid line, or a broken one's dashes (pattern: dash, gap); kind_: "centre", "lane" or "edge"."""
+    def mark(kind_, mat, width, along, pattern=None, side=None):
+        """A solid line, or a broken one's dashes (pattern: dash, gap); kind_: "centre", "lane" or "edge"; side: an edge
+        line's (+1 left / -1 right of the geometry: build_tile cuts it at a rounded corner, roadcorners.tile)."""
         if pattern is None:
-            out.append(({"m": mat, "tl": EDGE_LINE["tl"], "p": CENTRE["p"], "kind": kind_}, width, along))
+            look = {"m": mat, "tl": EDGE_LINE["tl"], "p": CENTRE["p"], "kind": kind_}
+            if side is not None:
+                look["side"] = side
+            out.append((look, width, along))
             return
         for piece in markings.dashes(along, pattern):
             out.append(({"m": mat, "tl": max(1.0, pattern[0]), "p": CENTRE["p"], "kind": kind_}, width, piece))
@@ -3111,7 +3115,7 @@ def extras(spec, pts, lon, left_hand=False, country=None, osm=None):
         for side in (1, -1):
             inset = motorway_shoulder(spec) if rural_motorway(spec) else EDGE_LINE["inset"]
             mat = st.left_edge if (st.left_edge and spec.oneway and side == travel_left) else "line_white"
-            mark("edge", mat, ew, offset_polyline(pts, side * (w / 2 - inset)))
+            mark("edge", mat, ew, offset_polyline(pts, side * (w / 2 - inset)), side=side)
     return out
     if has_sidewalks(spec):
         for side in walk_sides(spec, left_hand):
@@ -5555,6 +5559,54 @@ def drains(run, side, caps, walk_w=None):
     return res
 
 
+GOING_ON_DEG = 20.0     # a road whose end meets another's end turning by under this (the straightest there) goes on in it
+
+
+def _going_on(roads):
+    """{(fid, fid2)} (both ways) of the roads [(fid, spec, pts (k, 3), lon)] whose gravel edge decals need not keep
+    EDGE_DECAL_GAP_M off each other's carriageway (meant for a ramp's gore, it left a ~10 m gap on the far side of every
+    T junction, the user 2026-10-28, Carroll County MD): roads at one junction node, not both one-way (a merge's or a
+    diverge's gore keeps it) and the second without sidewalks (its slab's end), and a road going on in another at a
+    shared end (the map splits a road at every junction:
+    the straightest of each other's there). Pure."""
+    import junctions
+    ends = {}                                   # node key -> [(fid, outward unit direction)]
+    at_node = {}                                # node key -> {fid: one-way}
+    for fid, sp, pts, _ in roads:
+        if len(pts) < 2 or sp.kind not in BUILT:
+            continue
+        keys = np.round(np.asarray(pts[:, :2], np.float64) / junctions.NODE_TOL).astype(np.int64)
+        for key in {(int(a), int(b)) for a, b in keys}:
+            at_node.setdefault(key, {})[fid] = (bool(sp.oneway), has_sidewalks(sp))
+        for a, b in ((0, 1), (-1, -2)):
+            d = pts[a, :2] - pts[b, :2]
+            n = math.hypot(d[0], d[1])
+            if n > 1e-6:
+                ends.setdefault((int(keys[a, 0]), int(keys[a, 1])), []).append((fid, d / n))
+    out = set()
+    for key in sorted(at_node):
+        fids = at_node[key]
+        if len(fids) >= 2:
+            for f1 in fids:
+                for f2 in fids:
+                    if f1 != f2 and not (fids[f1][0] and fids[f2][0]) and not fids[f2][1]:
+                        out.add((f1, f2))       # (f1's decal by f2: up to f2's curb when it has one)
+    lim = -math.cos(math.radians(GOING_ON_DEG))
+    for key in sorted(ends):
+        at = ends[key]
+        best = {}
+        for fid, u in at:
+            # the straightest other road ending here: going on is turning least (outward directions opposite)
+            got = min(((float(u @ v), f2) for f2, v in at if f2 != fid), default=None)
+            if got is not None and got[0] <= lim:
+                best[fid] = got[1]
+        for fid, f2 in best.items():
+            if best.get(f2) == fid:             # each the other's (a ramp leaving a motorway is not its going on)
+                out.add((fid, f2))
+                out.add((f2, fid))
+    return out
+
+
 def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=None, widths=None, props=None,
                lines=None, wires=None, town=None, park=None, left_hand=False, structures=(), mph=True, tunnels=None,
                buried=0.0, lamp_region=None, country=None,
@@ -5747,14 +5799,24 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
     # stood across the asphalt between the stall rows, Canton, 2026-10-28)
     lot_aisles = {fid for fid, (f, i, sp) in seen.items()
                   if sp.kind == "paved" and _rule_value(f.rules.get("subclass"), i) == "parking_aisle"}
+    # rounded corners where curbless paved roads meet (roadcorners.py, from PR #363): their fills when the roads are
+    # meshes (else painted into the ground: surface.py), the gravel edge decal along each arc and a curved edge line
+    # where both roads have them; corner_cuts end those road sides' straight edge lines and decals at the tangents
+    import roadcorners
+    corner_chunks, corner_cuts = roadcorners.tile(
+        roads, box, not ROADS_IN_GROUND, country, left_hand,
+        rings={fid for fid, (f, i, sp) in seen.items() if is_ring(f, i)}, no_decal=lot_aisles, exact=exact)
+    chunks.extend(corner_chunks)
+    going_on = _going_on(roads)
     for fid, spec, pts, lon in roads:
         ex = extras(spec, pts, lon, left_hand, country, lane_tags(*seen[fid][:2]) if fid in seen else None) \
             if fid not in jinternal else []    # inside a junction: none
         if not ex:
             continue
         blockers = [(p2[:, :2], s2.width / 2 + CUT_MARGIN) for f2, s2, p2, _ in roads if f2 != fid]
-        decal_blockers = [(p2[:, :2], s2.width / 2 + EDGE_DECAL["w"] + EDGE_DECAL_GAP_M) for f2, s2, p2, _ in roads
-                          if f2 != fid and s2.kind in BUILT]
+        decal_blockers = [(p2[:, :2], s2.width / 2 + (CUT_MARGIN if (fid, f2) in going_on else
+                                                      EDGE_DECAL["w"] + EDGE_DECAL_GAP_M))
+                          for f2, s2, p2, _ in roads if f2 != fid and s2.kind in BUILT]
         walk_blockers = [(p2[:, :2], s2.width / 2 if (fid, f2) in cornered else sidewalk_stop(spec, fid, s2, f2))
                          for f2, s2, p2, _ in roads if f2 != fid] + list(walk_cuts)
         # a median's band stops at the other carriageways' curbs only (their sidewalk is on their far side: it cut
@@ -5787,6 +5849,8 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                 pieces = [cp for p in clip_polyline(line, *box) for cp, _ in junctions.apply_cuts(p, jlines[fid])]
             else:
                 pieces = clip_polyline(line, *box)
+            if (look.get("kind") == "edge" or look["m"] == EDGE_DECAL["m"]) and (fid, side) in corner_cuts:
+                pieces = [cp for p in pieces for cp, _ in junctions.apply_cuts(p, corner_cuts[(fid, side)])]
             if look["m"] == EDGE_DECAL["m"]:
                 if fid in lot_aisles:
                     continue

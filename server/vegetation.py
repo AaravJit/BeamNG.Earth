@@ -33,8 +33,9 @@ import staging
 
 log = logging.getLogger("earthd.vegetation")
 
-VERSION = 17          # (the cached cells hold their groups: 14 for the regional rules of GitHub #110; 16: the roads'
-                      # drawn widths and sidewalks kept clear; 17: BC's lidar canopy heights, mapdata's canopy layer 2)
+VERSION = 18          # (the cached cells hold their groups: 14 for the regional rules of GitHub #110; 16: the roads'
+                      # drawn widths and sidewalks kept clear; 17: BC's lidar canopy heights, mapdata's canopy layer 2;
+                      # 18: the rounded junction corners kept clear, roadcorners.py)
 TREE_MIN_M = 3.0
 CROWN_SPACING = 0.5          # tops kept this many crown radii apart (0.8 looked sparse: the user, 2026-10-13)
 BUSH_MIN_M = 1.0
@@ -299,6 +300,7 @@ class Vegetation:
         curb = np.zeros(h.shape, bool)      # the roads themselves (+ TREE_PIT_M): where a street tree may not land
         push = np.zeros((3,) + h.shape, np.float32)
         push[2] = np.inf
+        road_cells = []
         for dy in (-1, 0, 1):
             for dx in (-1, 0, 1):
                 kk = (mapcells.ZOOM, x + dx, y + dy)
@@ -311,6 +313,9 @@ class Vegetation:
                 _mask_polys(c2.layers.get("water"), blocked, chm, 0.0, kind=3)
                 _mask_roads(c2.layers.get("roads"), road, chm, specs=self._specs, walks=True)
                 _mask_roads(c2.layers.get("roads"), curb, chm, push, clear=TREE_PIT_M, specs=self._specs)
+                road_cells.append(c2.layers.get("roads"))
+        # the rounded corners of curbless junctions (roadcorners.py): no tree, bush or rock on their asphalt
+        _mask_corners(road_cells, (road, curb), chm, cd.bounds, getattr(self.surface, "urban", None), self.widths)
         # smoothed heights (3 x 3 mean), then the local maxima by height band
         p = np.pad(h, 1, mode="edge")
         hs = sum(p[a:a + n_r, b:b + n_c] for a in range(3) for b in range(3)) / 9.0
@@ -563,6 +568,28 @@ def _mask_polys(f, mask, chm, grow_m, kind=3, select=None):
                         np.ascontiguousarray(f.coord_off, np.int64), np.ascontiguousarray(f.ring_off, np.int64),
                         np.ascontiguousarray(f.part_off, np.int64), feats, float(chm.x0), float(chm.y0),
                         float(chm.dx), float(chm.dy), grow_m / chm.dx)
+
+
+def _mask_corners(road_cells, masks, chm, bounds, urban=None, widths=None, grow=ROAD_CLEAR_M):
+    """Mark the rounded corners of the junctions among road_cells (road Features; roadcorners.pads, their arcs grown by
+    grow m) that may reach the cell's bounds (lon0, lat0, lon1, lat1) on each CHM-grid mask of masks: a tree whose top
+    lands on one is not moved off it (no road corridor pushes it: _build drops it), nor is a bush or rock scattered."""
+    import mapgeom
+    import roadcorners
+    cells = [f for f in road_cells if isinstance(f, mapgeom.Features) and len(f)]
+    if not cells:
+        return
+    try:
+        pads = roadcorners.pads(cells, urban, widths, lonlat_bounds=tuple(bounds), grow=grow)
+    except Exception as e:      # (the roads' masks alone)
+        log.debug("vegetation: road corners: %s: %s", type(e).__name__, e)
+        return
+    if not pads:
+        return
+    feats = mapgeom.build("roadcorners", np.array([str(i) for i in range(len(pads))]),
+                          [(mapgeom.POLYGON, [[np.c_[lo, la]]]) for la, lo in pads])
+    for m in masks:
+        _mask_polys(feats, m, chm, 0.0)
 
 
 def _mask_roads(f, mask, chm, push=None, clear=ROAD_CLEAR_M, specs=None, walks=False):
