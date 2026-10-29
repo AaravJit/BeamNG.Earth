@@ -111,7 +111,7 @@ Works with BeamNG.drive 0.40.3.
   contribution).
 - Reduced the chance of autodrive and traffic crawling at 30 km/h on narrow country roads with a higher limit
   (GitHub #451, the Netherlands' 60 km/h roads).
-- **Underpasses are open roads under a bridge** (GitHub #450, the A-7 near Málaga; #228, #231, #243, the A7 in
+- **Underpasses are open roads under a bridge** (GitHub #450, the A-7 near Málaga; #228, #243, the A7 in
   Germany): the map often marks the road under a highway as a short tunnel, and it was built as a tube in an
   embankment, its vault and openings in the highway's lanes. A short road tunnel (under about 260 ft, counting all of
   its pieces) with little ground over it is now a road under a bridge, as are streets over a railway the map marks
