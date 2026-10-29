@@ -19,6 +19,7 @@ mod ribbons;
 mod groundpaint;
 mod medians;
 mod speedsigns;
+mod roadz;
 
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, IntoPyArray};
 use pyo3::types::PyBytes;
@@ -5294,6 +5295,11 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(medians::median_rows, m)?)?;
     m.add_function(wrap_pyfunction!(speedsigns::speed_sign_place, m)?)?;
     m.add_function(wrap_pyfunction!(speedsigns::speed_sign_mesh, m)?)?;
-    m.add("VERSION", 100)?;
+    m.add_function(wrap_pyfunction!(roadz::las_decode, m)?)?;
+    m.add_function(wrap_pyfunction!(roadz::roadz_match, m)?)?;
+    m.add_function(wrap_pyfunction!(roadz::profile_clean, m)?)?;
+    m.add_function(wrap_pyfunction!(roadz::deck_lidar, m)?)?;
+    m.add_function(wrap_pyfunction!(roadz::deck_blend, m)?)?;
+    m.add("VERSION", 102)?;
     Ok(())
 }

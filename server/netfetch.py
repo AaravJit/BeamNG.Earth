@@ -225,6 +225,16 @@ POLICIES = {
     # MB per new area); optional: without it roads keep their width guesses
     "data.openstreetmap.us": HostPolicy(rate=4.0, burst=8.0, max_conc=2, daily_budget=5000, allow_prefetch=True,
                                         offline_ok=True, miss_ttl=None, binary=True, timeout=30.0, optional=True),
+    # USGS 3DEP lidar point clouds (roadz.py: the US bridge decks, BNE_LIDAR_DECKS): EPT metadata (kept on disk) and
+    # ~0.3 MB LAZ nodes along a cell's bridges once (the decks made from them are kept); optional (the inference)
+    "s3-us-west-2.amazonaws.com": HostPolicy(rate=10.0, burst=30.0, max_conc=4, daily_budget=20000, daily_hard=40000,
+                                             allow_prefetch=True, offline_ok=True, miss_ttl=None, binary=True,
+                                             timeout=30.0, optional=True),
+    # Norway's road database (roadz.py: road, bridge and tunnel heights, NVDB API v4): a few pages per map-data cell
+    # once, kept on disk; a modest rate for a public API that asks clients to name themselves (X-Client, no user data)
+    "nvdbapiles.atlas.vegvesen.no": HostPolicy(rate=2.0, burst=4.0, max_conc=2, daily_budget=3000, daily_hard=6000,
+                                               allow_prefetch=True, offline_ok=True, miss_ttl=None, timeout=30.0,
+                                               max_attempts=3, base_delay=2.0, optional=True),
     # never at runtime (OSM Overpass, OSMF vector tiles, Protomaps builds): §3.3
     "overpass-api.de": HostPolicy(denied=True, daily_hard=0),
     "vector.openstreetmap.org": HostPolicy(denied=True, daily_hard=0),
@@ -281,6 +291,8 @@ ROLES = {
     "gis.ngdc.noaa.gov": "sea depths; new coasts get a plain sloping sea floor meanwhile",
     "davidmegginson.github.io": "the airport list; the copy on disk is used meanwhile",
     "data.openstreetmap.us": "road details from OpenStreetMap (lanes, widths, sidewalks); estimated meanwhile",
+    "s3-us-west-2.amazonaws.com": "US lidar for bridge deck heights; estimated meanwhile",
+    "nvdbapiles.atlas.vegvesen.no": "Norway's measured road, bridge and tunnel heights; estimated meanwhile",
     "tecnagamer.github.io": "railway details, US railroad crossing equipment and lane markings; estimated meanwhile",
     "api.open-meteo.com": "live weather; the weather stays as it is meanwhile",
     "downloads.sourceforge.net": "the gravity model; standard gravity meanwhile",
