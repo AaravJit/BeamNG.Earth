@@ -179,6 +179,9 @@ CHAIN_LOOK_M = 10.0         # m along each part its direction at the node is tak
 # removes bridges and interpolates across the gap, at about the deck's height: the road under ran 0.7-2.5 m under the
 # girders (A28 near Zwolle, I-84 over NE 181st Ave in Portland, I-395 in Springfield VA, 2026-10-22). Never raises.
 UNDER_ON = os.environ.get("BNE_UNDERPASS", "on") != "off"
+# Rounded junction corners (roadcorners.py, from PR #363): the fan of asphalt between a curbless corner's arc and its
+# roads' old square corner graded at the roads' heights (Grader._make_cell)
+CORNERS_ON = os.environ.get("BNE_GRADE_CORNERS", "on") != "off"
 UNGRADED = {"raceway"}      # classes planned by nobody: the terrain is their surface (an oval's banking, GitHub #143) ...
 UNGRADED_MARGIN_M = 2.0     # ... and nothing else grades their carriageway (+ this: kerbs, apron): a road crossing a
                             # track, or a tunnel's open approach under one, cut a flat trench through Daytona's banking
@@ -813,6 +816,7 @@ class Grader:
                 except Exception as e:      # each part smoothed alone rather than no grading
                     log.debug("grading: road chains of %s: %s: %s", key, type(e).__name__, e)
             pclip = []
+            pparts = []                         # (fid, spec, lon/lat ring) of each plan (roadcorners.grade_rows)
             coarse = COARSE_EASE_ON and self._coarse(key)
             for fid, part, cl, p in zip(ids, parts, clipped, plan_roads(self.frame, parts, self.elev, abut, ext, pins,
                                                                          coarse=coarse)):
@@ -821,6 +825,7 @@ class Grader:
                     plans.append((fid, p))
                     pspecs.append(part[1])
                     pclip.append(cl)
+                    pparts.append((fid, part[1], part[0]))
             if JUNCTION_SNAP_ON and plans:
                 try:
                     snap_junctions([p for _f, p in plans], pspecs)
@@ -841,6 +846,18 @@ class Grader:
                     self._lower_underpasses(key, plans)
                 except Exception as e:      # as the data has it rather than no grading
                     log.debug("grading: underpasses of %s: %s: %s", key, type(e).__name__, e)
+            if CORNERS_ON and plans:
+                # the rounded corners of curbless junctions (roadcorners.py): the ground under each graded to its roads'
+                # solved heights (trimmed to the cell's box with the roads' plans below)
+                try:
+                    import roadcorners
+                    rings = roadcorners.ring_ids(feats)
+                    crows, heights = roadcorners.grade_rows(pparts, [p for _f, p in plans], self.frame, rings)
+                    corner_plans = roadcorners.grade(crows, rings, self._clip_box(key, 0.0), heights)
+                    plans.extend(corner_plans)
+                    pclip.extend([True] * len(corner_plans))
+                except Exception as e:      # the roads' own grading rather than none
+                    log.debug("grading: road corners of %s: %s: %s", key, type(e).__name__, e)
             # a long road's piece (planned with CLIP_MARGIN_M of the road either side for its profile) kept only within
             # the cell's own box: every stretch of road in one cell's plans, once (overlapping pieces from neighbouring
             # cells counted a road up to 9 times, and every batch of points graded differently: patches of ground
