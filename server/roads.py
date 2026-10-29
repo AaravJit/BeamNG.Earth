@@ -4098,7 +4098,8 @@ class BridgeProfiles:
                 else:
                     # never under both the solve (its clearances) and the measurement: an easing toward a joint
                     # pulled a deck through the road under it (-1.8 m over I-95 at Springfield)
-                    zz = np.maximum(zz, np.minimum(z, o))
+                    # (the ends as eased: the parts at a joint keep meeting at one height)
+                    zz = np.r_[zz[0], np.maximum(zz, np.minimum(z, o))[1:-1], zz[-1]]
             out.append(zz)
         return out
 
