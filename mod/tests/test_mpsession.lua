@@ -204,6 +204,13 @@ handlers.bngeAnchors('o')
 local o = ms.others()
 T.check(#o == 2 and o[1].name == 'bob' and o[1].h == 271.5 and o[2].name == 'player 3' and o[2].h == nil,
   'others: the other players, named, with headings')
+T.check(o[1].pid == '2' and o[2].pid == '3', 'others: with their server ids (the map keys and follows players by them)')
+-- two players of the same name stay two (their ids), in the same order every time
+decoded.same = { ['4'] = { aLat = 0, aLon = 179.9, lat = 0, lon = 179.9, name = 'bob' }, ['2'] = decoded.o['2'] }
+handlers.bngeAnchors('same')
+o = ms.others()
+T.check(#o == 2 and o[1].pid == '2' and o[2].pid == '4' and o[1].name == o[2].name, 'others: same-named players apart, by id')
+handlers.bngeAnchors('o')
 
 -- a car the game deleted here (BeamMP's sphere) comes back once its owner is near, not again at once
 local restored = {}

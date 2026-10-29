@@ -78,10 +78,11 @@
       <div v-if="target" class="marker target" :style="{ left: targetScreen.x + 'px', top: targetScreen.y + 'px' }">
         <div class="cross"></div>
       </div>
-      <!-- the other players (a BeamMP session) -->
-      <div v-for="o in otherMarkers" :key="'o' + o.name" class="marker other" :style="{ left: o.sx + 'px', top: o.sy + 'px' }">
+      <!-- the other players (a BeamMP session): a click on a name follows that player (as the Players list's Follow) -->
+      <div v-for="o in otherMarkers" :key="'o' + o.pid" class="marker other" :class="{ followed: follow === o.pid }"
+           :style="{ left: o.sx + 'px', top: o.sy + 'px' }">
         <div class="arrow" :style="{ transform: 'rotate(' + (o.h || 0) + 'deg)' }" :class="{ noheading: o.h == null }"></div>
-        <span class="marker-label">{{ o.name }}</span>
+        <span class="marker-label" title="Follow on the map" @mousedown.stop @click.stop="followPlayer(o)" @dblclick.stop>{{ o.name }}</span>
       </div>
       <!-- the player -->
       <div v-if="playerScreen" class="marker player" :style="{ left: playerScreen.x + 'px', top: playerScreen.y + 'px' }">
@@ -126,9 +127,34 @@
       </div>
       <button class="map-btn" @click="zoomBy(1)" title="Zoom in">+</button>
       <button class="map-btn" @click="zoomBy(-1)" title="Zoom out">-</button>
-      <button class="map-btn" :class="{ on: follow }" @click="centreOnMe" title="Centre on the car and follow it">Me</button>
+      <button class="map-btn" :class="{ on: follow === true }" @click="centreOnMe" title="Centre on the car and follow it">Me</button>
+      <!-- the other players of a BeamMP session, nearest first: follow one on the map, or a GPS route to them -->
+      <div v-if="state.others" class="layers-wrap">
+        <button class="map-btn" :class="{ on: playersPanel || typeof follow === 'string' }"
+                @click="playersPanel = !playersPanel; layersPanel = false" title="The other players">Players ({{ otherList.length }})</button>
+        <div v-if="playersPanel" class="layers-panel players-panel" :style="{ maxHeight: `calc(${h}px - 74px - 6.5vh)` }"
+             @mousedown.stop @wheel.stop @dblclick.stop>
+          <div class="players-head">
+            <span class="panel-sub">Other players</span>
+            <button class="map-btn small" :disabled="!otherList.length" @click="showAllPlayers"
+                    title="Zoom out to show everyone">Show all</button>
+          </div>
+          <div v-for="p in playerRows" :key="p.pid" class="panel-item">
+            <div class="item-text" @click="followPlayer(p)" title="Follow on the map">
+              <div class="item-name">{{ p.name }}</div>
+              <div class="item-sub">{{ p.dist == null ? "" : fmtMiles(p.dist) + " away" }}</div>
+            </div>
+            <div class="item-btns">
+              <button class="map-btn small" :class="{ on: follow === p.pid }" @click="followPlayer(p)"
+                      title="Keep the map on them as they move (the map only: your car stays where it is)">Follow</button>
+              <button class="map-btn small" @click="gpsToPlayer(p)" title="A GPS route to where they are now">GPS</button>
+            </div>
+          </div>
+          <div v-if="!otherList.length" class="panel-empty">No other players on the map yet.</div>
+        </div>
+      </div>
       <div class="layers-wrap">
-        <button class="map-btn" :class="{ on: layersPanel }" @click="layersPanel = !layersPanel" title="Base map and overlays">Layers</button>
+        <button class="map-btn" :class="{ on: layersPanel }" @click="layersPanel = !layersPanel; playersPanel = false" title="Base map and overlays">Layers</button>
         <div v-if="layersPanel" class="layers-panel" @mousedown.stop @wheel.stop @dblclick.stop>
           <div class="panel-sub">Base map</div>
           <label class="layer-opt"><input type="radio" value="sat" v-model="baseLayer" /> Satellite</label>
@@ -297,7 +323,8 @@ const embedded = props.embedded
 const rootEl = ref(null), viewEl = ref(null), searchEl = ref(null)
 const w = ref(1280), h = ref(720)
 const view = ref({ lat: 20, lon: 0, z: 3 })
-const follow = ref(true)              // the view follows the car until the user pans
+// what the view follows until the user pans: true the car, a player's pid (the Players list) that player, false nothing
+const follow = ref(true)
 const state = ref({ places: [], recent: [] })
 const target = ref(null)              // { lat, lon, name } waiting for "Teleport here?"
 const teleportMsg = ref("")
@@ -321,11 +348,26 @@ function poll() {
   engineLua("beamngEarth_settings and beamngEarth_settings.uiMapState and beamngEarth_settings.uiMapState() or nil", s => {
     if (!s) { state.value = { places: [], recent: [], missing: true }; return }
     state.value = { places: [], recent: [], ...s }
-    if (s.player && follow.value) {
-      view.value = { ...view.value, lat: s.player.lat, lon: s.player.lon, z: seenPlayer.value ? view.value.z : 12 }
+    if (!s.others && playersPanel.value) closePlayers()   // (out of the session: not open again by itself in the next)
+    if (typeof follow.value === "string") {
+      const o = otherList.value.find(p => p.pid === follow.value)
+      if (o) centreOn(o.lat, o.lon, view.value.z)
+      else { follow.value = false; showToast("That player is no longer on the map") }
+    } else if (s.player && follow.value) {
+      centreOn(s.player.lat, s.player.lon, seenPlayer.value ? view.value.z : 12)
       seenPlayer.value = true
     }
   })
+}
+// a new view only when it moved (to half a pixel: a parked car's position still wobbles in the last digits): a parked
+// car, or a player's position (sent every 2 s), would redraw the tiles, borders and labels every second for nothing
+function centreOn(lat, lon, z) {
+  const v = view.value
+  if (v.z === z) {
+    const a = mm.project(v.lat, v.lon, z), b = mm.project(lat, lon, z)
+    if (Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5) return
+  }
+  view.value = { lat, lon, z }
 }
 
 // Tiles are files the server writes into the game's temp folder on request (the game's UI browser cancels every
@@ -463,8 +505,10 @@ const placeMarkers = computed(() =>
   (state.value.places || []).map(p => ({ ...p, ...(() => { const s = screen(p.lat, p.lon); return { sx: s.x, sy: s.y } })() }))
     .filter(p => onScreen({ x: p.sx, y: p.sy })))
 
+// state.others: mpsession.others() ({ pid, name, lat, lon, h }), nil outside a BeamMP session
+const otherList = computed(() => toArray(state.value.others))
 const otherMarkers = computed(() =>
-  (state.value.others || []).map(o => { const s = screen(o.lat, o.lon); return { ...o, sx: s.x, sy: s.y } })
+  otherList.value.map(o => { const s = screen(o.lat, o.lon); return { ...o, sx: s.x, sy: s.y } })
     .filter(o => onScreen({ x: o.sx, y: o.sy })))
 
 const playerScreen = computed(() => {
@@ -575,6 +619,8 @@ function localXY(ev) {
 function onDown(ev) {
   if (ev.button !== 0) return
   layersPanel.value = false
+  // (a click beside the Players list only closes it, as a menu: not a GPS route there or a drag)
+  if (playersPanel.value) { closePlayers(); return }
   if (ctx.value) { closeCtx(); return }
   results.value = []
   const p = localXY(ev)
@@ -643,6 +689,8 @@ function onWheel(ev) {
 
 function onDblClick(ev) {
   clearTimeout(clickTimer)
+  // (the second click of a double-click on a player's name, which the first click's Follow moved: no zoom, still on them)
+  if (Date.now() - followedAt < 500) return
   const p = localXY(ev)
   const v = view.value
   view.value = mm.zoomAt(v.lat, v.lon, v.z, v.z + 1, p.x, p.y, w.value, h.value)
@@ -658,6 +706,46 @@ function centreOnMe() {
   follow.value = true
   const p = state.value.player
   if (p) view.value = { ...view.value, lat: p.lat, lon: p.lon, z: Math.max(view.value.z, 12) }
+}
+
+// ---- the Players list (a BeamMP session) ---------------------------------------------------
+const playersPanel = ref(false)
+// nearest first (Lua's order, by name, without our position); only worked out while the list is open (nothing
+// else reads it)
+const playerRows = computed(() => {
+  const me = state.value.player
+  const rows = otherList.value.map(o => ({ ...o, dist: me ? mm.distanceM(me.lat, me.lon, o.lat, o.lon) : null }))
+  return me ? rows.sort((a, b) => a.dist - b.dist) : rows
+})
+// a focused button of the list goes with it: the focus back on the map (its keys: Esc)
+function closePlayers() {
+  const el = document.activeElement
+  const lost = !el || el === document.body || !!(el.closest && el.closest(".players-panel"))
+  playersPanel.value = false
+  if (lost && rootEl.value) rootEl.value.focus({ preventScroll: true })
+}
+// the map's view stays on them as they move (poll), until a pan; the car stays where it is
+let followedAt = 0
+function followPlayer(o) {
+  closePlayers()
+  followedAt = Date.now()
+  follow.value = o.pid
+  view.value = { lat: o.lat, lon: o.lon, z: Math.max(view.value.z, 12) }
+}
+// to where they are now (the route does not follow them)
+function gpsToPlayer(o) {
+  closePlayers()
+  setGps(o.lat, o.lon, o.name)
+}
+// everyone, us included, in the part of the map the Places panel leaves free (as .map-bottom.beside-panel)
+function showAllPlayers() {
+  const pts = state.value.player ? [state.value.player, ...otherList.value] : otherList.value
+  if (!pts.length) return
+  closePlayers()
+  follow.value = false
+  const right = panelOpen.value ? 376 : 0
+  const v = mm.fitView(pts, w.value - right, h.value, 80)
+  view.value = { ...mm.pan(v.lat, v.lon, v.z, -right / 2, 0), z: v.z }
 }
 
 // ---- controller (settings.lua mapControls: the stock big map's actions and bindings while this map is open) ---------
@@ -1040,8 +1128,9 @@ function fmtHeight(m) {
   return state.value.gps && state.value.gps.metric ? `${Math.round(m)} m` : `${Math.round(m * 3.28084)} ft`
 }
 function fmtMiles(m) {
-  // (the game's own length unit, Options > Display: gps.lua's metric; GitHub #327)
-  if (state.value.gps && state.value.gps.metric) {
+  // (the game's own length unit, Options > Display: gps.lua's metric; GitHub #327. uiMapState's own metric with no
+  // GPS route: the Players list)
+  if ((state.value.gps || state.value).metric) {
     const km = m / 1000
     return km < 1 ? `${Math.round(m / 10) * 10} m` : `${km < 10 ? km.toFixed(1) : Math.round(km)} km`
   }
@@ -1177,6 +1266,7 @@ function close() {
 }
 
 function onEscape() {
+  if (playersPanel.value) { closePlayers(); return }
   if (layersPanel.value) { layersPanel.value = false; return }
   if (target.value) { target.value = null; return }
   if (results.value.length) { results.value = []; return }
@@ -1314,6 +1404,10 @@ const fmtLatLon = mm.fmtLatLon
 }
 .marker.player .arrow.noheading { clip-path: circle(45%); }
 .marker.other { z-index: 3; pointer-events: none; }
+.marker.other .marker-label { pointer-events: auto; cursor: pointer; }
+.marker.other .marker-label:hover { color: #c5ffdd; }
+.marker.other.followed { z-index: 4; }
+.marker.other.followed .marker-label { background: #17613c; box-shadow: 0 0 0 1px #3ddc84; }
 .marker.other .arrow {
   position: absolute; left: -9px; top: -11px; width: 18px; height: 22px;
   background: #3ddc84;
@@ -1368,6 +1462,9 @@ const fmtLatLon = mm.fmtLatLon
 .layer-opt { display: block; padding: 4px 0; font-size: 13px; white-space: nowrap; cursor: pointer; }
 .layer-opt input { margin: 0 6px 0 0; vertical-align: -2px; cursor: pointer; }
 .layer-hint { font-size: 11px; color: #9aa4ae; }
+.players-panel { width: 300px; box-sizing: border-box; overflow-y: auto; }
+.players-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.players-head .panel-sub { margin: 0; }
 .map-btn.small { padding: 4px 8px; font-size: 12px; }
 .map-btn.danger { background: #a3302a; border-color: #a3302a; }
 

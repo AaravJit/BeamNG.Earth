@@ -91,6 +91,33 @@ export function zoomAt(clat, clon, z, z2, sx, sy, w, h) {
   return { lat: clampLat(r.lat), lon: r.lon, z: z2 }
 }
 
+// Great-circle distance in metres (the Players list: the other players can be anywhere on Earth)
+export function distanceM(lat1, lon1, lat2, lon2) {
+  const r = Math.PI / 180
+  const a = Math.sin((lat2 - lat1) * r / 2) ** 2 +
+    Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin((lon2 - lon1) * r / 2) ** 2
+  return 2 * 6371008.8 * Math.asin(Math.min(1, Math.sqrt(a)))
+}
+
+// The view showing every point of `points` ([{ lat, lon }], at least one) in a w x h view with pad px round them,
+// at most maxZ (a single point: maxZ) and at least MIN_Z (the world can be taller than the view). The widest gap
+// between their longitudes is the part of the world left out, so points either side of the antimeridian are shown
+// side by side, not a world apart.
+export function fitView(points, w, h, pad = 60, maxZ = 12) {
+  const lons = points.map(p => ((p.lon % 360) + 360) % 360).sort((a, b) => a - b)
+  let gap = lons[0] + 360 - lons[lons.length - 1], west = lons[0]      // (the gap across 0 / 360 first)
+  for (let i = 1; i < lons.length; i++) {
+    if (lons[i] - lons[i - 1] > gap) { gap = lons[i] - lons[i - 1]; west = lons[i] }
+  }
+  const span = 360 - gap
+  const ys = points.map(p => project(p.lat, 0, 0).y)
+  const y0 = Math.min(...ys), y1 = Math.max(...ys)
+  // (a zero span is an infinite zoom: maxZ)
+  const zx = Math.log2(Math.max(1, w - 2 * pad) / (span / 360 * TILE))
+  const zy = Math.log2(Math.max(1, h - 2 * pad) / (y1 - y0))
+  return { lat: unproject(0, (y0 + y1) / 2, 0).lat, lon: wrapLon(west + span / 2), z: Math.max(MIN_Z, Math.min(maxZ, zx, zy)) }
+}
+
 // Places whose name contains every word of the query (case-insensitive), best (name starts with
 // the query) first; at most `limit`.
 export function searchPlaces(list, query, limit = 8) {
