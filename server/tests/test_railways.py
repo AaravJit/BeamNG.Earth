@@ -100,6 +100,30 @@ class RailwayTest(unittest.TestCase):
         self.assertGreater(n_sleepers, 256 / railways.SLEEPER_EVERY * 0.95)
         self.assertGreaterEqual(P[:, 0].min(), -roads.OVERLAP - railways.STEP_M - 3.0)
 
+    def test_lean_collider_without_rails_and_sleepers(self):
+        # (PR #41) the collider is the bed alone: most of the track's triangles are its rails and sleepers
+        f = features([[(-50.0, 100.0), (300.0, 100.0)]], ["standard_gauge"], subtypes=["rail"])
+        mesh = railways.tile_mesh(FRAME, 0, 0, [f], flat)
+        P, T, UV, mats, M = mesh
+        cP, cT, cUV, cmats, cM = railways.collision_mesh(mesh)
+        self.assertTrue({mats[k] for k in np.unique(cM)} <= {railways.BALLAST, railways.CONCRETE})
+        self.assertEqual(len(cT), int(np.isin(M, [mats.index(railways.BALLAST)]).sum()))
+        self.assertLess(len(cT), 0.3 * len(T), "rails and sleepers were most of it")
+        np.testing.assert_array_equal(cT, T[M == mats.index(railways.BALLAST)])
+        self.assertIs(cP, P)
+        self.assertIsNone(railways.collision_mesh(None))
+        rails_only = (P, T[M == 2], UV, mats, M[M == 2])
+        self.assertIsNone(railways.collision_mesh(rails_only), "nothing left: no collider")
+        with tempfile.TemporaryDirectory() as tmp:      # written by the road tile beside the drawn track
+            path, _n = roads.write_tile(tmp, "/v", 1, 0, 0, [], rail_mesh=mesh)
+            import json
+            with open(os.path.join(tmp, os.path.basename(path))) as fh:
+                data = json.load(fh)
+            self.assertEqual(data["railcol"]["shape"], "/v/railcol_1_0_0.cdae")
+            self.assertTrue(os.path.getsize(os.path.join(tmp, "railcol_1_0_0.cdae"))
+                            < 0.5 * os.path.getsize(os.path.join(tmp, "rail_1_0_0.cdae")))
+        self.assertEqual(roads.shape_files(1, 0, 0)["railcol"], "railcol_1_0_0.cdae")
+
     def test_roads_and_trams_are_not_tracks(self):
         f = features([[(0.0, 50.0), (200.0, 50.0)], [(0.0, 80.0), (200.0, 80.0)]], ["residential", "tram"],
                      subtypes=["road", "rail"])

@@ -169,15 +169,40 @@ def init(cache_dir, offline, roads, grading, road_widths, surface, warm_q, log_l
     xproc.PRIORITY = nice
     _s = _State(cache_dir, offline, roads, grading, road_widths, surface, airports, sea, gas_stations)
     threading.Thread(target=_watch_parent, args=(os.getppid(),), daemon=True, name="parent-watch").start()
-    threading.Thread(target=_read_warm, args=(warm_q,), daemon=True, name="warm-read").start()
-    threading.Thread(target=_warm_loop, daemon=True, name="roads-ahead").start()
+    if warm_q is not None:      # (only the block pools plan roads ahead: the far, road and far building pools pass None)
+        threading.Thread(target=_read_warm, args=(warm_q,), daemon=True, name="warm-read").start()
+        threading.Thread(target=_warm_loop, daemon=True, name="roads-ahead").start()
 
 
 def _watch_parent(ppid):
-    """Exit with the server: a killed server (SIGTERM) left its block processes running."""
+    """Exit with the server: a killed server (SIGTERM) left its block processes running. Windows: os.getppid() keeps
+    the parent's id after it is gone, so the poll never saw it go (from Madderose's PR #41: orphaned workers held the
+    cache's files across server restarts); there the process handle is waited on."""
+    if os.name == "nt":
+        _wait_process(ppid)
+        os._exit(0)
     while os.getppid() == ppid:
         time.sleep(PARENT_POLL_S)
     os._exit(0)
+
+
+def _wait_process(pid):
+    """Windows: return once process pid has exited (at once if it cannot be opened: gone already)."""
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.WaitForSingleObject.restype = wintypes.DWORD
+    k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    h = k32.OpenProcess(0x00100000, False, int(pid))       # SYNCHRONIZE
+    if not h:
+        return
+    try:
+        k32.WaitForSingleObject(h, 0xFFFFFFFF)             # INFINITE
+    finally:
+        k32.CloseHandle(h)
 
 
 PARENT_POLL_S = 2.0
