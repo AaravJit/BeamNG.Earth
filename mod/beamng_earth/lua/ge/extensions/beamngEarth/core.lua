@@ -196,6 +196,8 @@ local function resetState()
     status = '',
     placeFrames = nil,       -- countdown to placing the player after a teleport
     placeZ = nil,
+    camAt = nil,             -- no car: where a teleport put the camera, until it reads back there (heldCamera)
+    placedCam = nil,         -- where a teleport's placement put the free camera (cameraStill)
     floorZ = nil,            -- a teleport into a tunnel: its floor (the car moved down once the tube collides)
     floorUntil = nil,
     poseTimer = 0,
@@ -455,6 +457,59 @@ local function tickMotionBlur()
   blurHold.saved = nil
 end
 
+-- A teleport with no car (a BeamMP join without one, the free camera after the car was removed; the user, 2026-10-28:
+-- "teleport to locations without being in a vehicle"): the world follows the free camera then (updatePlayer), and the
+-- teleport leaves the camera at its old coordinates, anywhere in the new frame (underground: a black screen), so it is
+-- moved to the target as a car is: over it in the commit frame, then over the ground there (placePlayer). Until the
+-- camera reads back there (the game may say where it is a frame late) the target is the player (heldCamera). With a
+-- car and the free camera on, the camera goes along behind the car.
+M.CAM_ABOVE_M = 2                -- over where a car is set down (the ground + 1): 3 m over the ground, as mpsession's
+M.CAM_BEHIND_M, M.CAM_OVER_M = 6, 3     -- the free camera with a car: behind it, over it
+M.CAM_HOLD_FRAMES = 30
+-- Whether the view is the free camera (as tools/benchmark.lua isFree)
+function M.freeCamera()
+  local c = rawget(_G, 'commands')
+  if c and c.isFreeCamera then
+    local ok, v = pcall(c.isFreeCamera)
+    if ok then return v and true or false end
+  end
+  local cam = rawget(_G, 'core_camera')
+  if cam and cam.getActiveCamName then
+    local ok, n = pcall(cam.getActiveCamName)
+    if ok then return n == 'free' end
+  end
+  return false
+end
+-- The camera at (x, y, z) facing (fx, fy) (default: its own heading), looking a little down (as mpsession.placeCamera)
+function M.moveCamera(x, y, z, fx, fy)
+  local cam = rawget(_G, 'core_camera')
+  if not cam or not cam.setPosRot then return end
+  if not fx then fx, fy = st.cam and st.cam.fx or 0, st.cam and st.cam.fy or 1 end
+  local l = math.sqrt(fx * fx + fy * fy)
+  if l < 1e-3 then fx, fy, l = 0, 1, 1 end
+  local q = quatFromDir(vec3(fx / l, fy / l, -0.15), vec3(0, 0, 1))
+  if not pcall(cam.setPosRot, 0, x, y, z, q.x, q.y, q.z, q.w) then return end
+  if not getPlayerVehicle(0) then st.camAt = { x = x, y = y, z = z, frames = M.CAM_HOLD_FRAMES } end
+end
+-- Whether the camera is still where a teleport's placement put it (st.placedCam, within 5 m): a later move of the
+-- player (floorCheck: down onto a tunnel's floor once its tube collides) leaves a free camera flown away alone
+function M.cameraStill()
+  local pc, c = st.placedCam, st.cam
+  return pc ~= nil and c ~= nil and (c.x - pc.x) ^ 2 + (c.y - pc.y) ^ 2 + (c.z - pc.z) ^ 2 < 25
+end
+-- The camera's position as the player's (no car): the teleport's target while the camera has not read back there
+-- (within 2 m) for CAM_HOLD_FRAMES frames
+function M.heldCamera(c)
+  local h = st.camAt
+  if not h then return c end
+  h.frames = h.frames - 1
+  if h.frames <= 0 or (c and (c.x - h.x) ^ 2 + (c.y - h.y) ^ 2 + (c.z - h.z) ^ 2 < 4) then
+    st.camAt = nil
+    return c
+  end
+  return h
+end
+
 local function commitTeleport(msg)
   local tr, err = anchorTerrain(msg)
   gov:heavyNow() -- the user asked for a jump: no waiting for a calm frame
@@ -486,6 +541,8 @@ local function commitTeleport(msg)
     veh:setClusterPosRelRot(-1, st.placeX, st.placeY, st.placeZ + PRE_LIFT, 0, 0, 0, 1)
     veh:applyClusterVelocityScaleAdd(-1, 0, 0, 0, 0)
   end
+  -- (no car, or the free camera: the camera over the target too, as the car)
+  if not veh or M.freeCamera() then M.moveCamera(st.placeX, st.placeY, st.placeZ + PRE_LIFT) end
   be:reloadCollision()
 
   st.anchor, st.anchorId, st.anchorKey = geodesy.newAnchor(msg.lat, msg.lon), msg.anchorId, msg.anchorKey
@@ -576,6 +633,7 @@ local function commitRebase(msg, purpose)
     return false
   end
   local sw = stopwatch.new()
+  st.camAt = nil              -- (a held camera's target is in the old frame: the camera's own spot, shifted, from now)
   local newAnchor = geodesy.newAnchor(msg.lat, msg.lon)
   local xf = st.anchor:transformTo(newAnchor)
   -- nothing to move for an identity transform (resync); setClusterPosRelRot from the GE-side
@@ -686,12 +744,10 @@ end
 -- spawn.safeTeleport with resetVehicle=true resets the vehicle, drops its bounding box onto
 -- the ground (spawn.lua:494 getBBOnGround) and zeroes velocity (spawn.lua:533-534).
 -- The heading-preserving quat follows main.lua:1306.
-local function placePlayer(z)
+-- No car: the free camera over the same spot (moveCamera); with a car and the free camera on, the camera behind it.
+-- again (floorCheck): the camera only if it is still where the first placement put it (cameraStill).
+local function placePlayer(z, again)
   local veh = getPlayerVehicle(0)
-  if not veh then return end
-  local dir = veh:getDirectionVector()
-  dir = vec3(dir.x, dir.y, 0)
-  if dir:length() < 1e-3 then dir = vec3(0, 1, 0) end
   local x, y = st.placeX or 0, st.placeY or 0
   -- (a snapped teleport's spot: the server's height there is the first block's, as at the origin; a ray from above
   -- hit the old place's buildings, still in the static collision, and the car fell 30 m, 2026-10-25)
@@ -711,8 +767,28 @@ local function placePlayer(z)
       x, y, z = sx, sy, sz + 1.0
     end
   end
-  spawn.safeTeleport(veh, vec3(x, y, z), quatFromDir(dir:normalized(), vec3(0, 0, 1)), nil, nil, false, nil, true)
+  local camToo = not again or M.cameraStill()
+  if not veh then
+    if camToo then
+      M.moveCamera(x, y, z + M.CAM_ABOVE_M)
+      st.placedCam = { x = x, y = y, z = z + M.CAM_ABOVE_M }
+    end
+    return
+  end
+  local dir = veh:getDirectionVector()
+  dir = vec3(dir.x, dir.y, 0)
+  if dir:length() < 1e-3 then dir = vec3(0, 1, 0) end
+  dir = dir:normalized()
+  spawn.safeTeleport(veh, vec3(x, y, z), quatFromDir(dir, vec3(0, 0, 1)), nil, nil, false, nil, true)
   st.placedAt = { x = x, y = y, z = z, t = st.clock }
+  if camToo and M.freeCamera() then
+    -- (over the ground behind the car too: a slope up behind it, a wall; not in a tunnel's tube, under the hill)
+    local bx, by = x - M.CAM_BEHIND_M * dir.x, y - M.CAM_BEHIND_M * dir.y
+    local g = not again and M.groundRay(z)(bx, by)
+    local bz = math.max(z + M.CAM_OVER_M, g and (g + 1 + M.CAM_ABOVE_M) or -math.huge)
+    M.moveCamera(bx, by, bz, dir.x, dir.y)
+    st.placedCam = { x = bx, y = by, z = bz }
+  end
 end
 
 -- After a teleport: a car falling far under where it was set down (through a hole nobody saw coming) is set down
@@ -758,7 +834,7 @@ function M.floorCheck()
     local z = st.floorZ
     st.floorZ, st.floorUntil = nil, nil
     log('I', 'beamngEarth', string.format('teleport: down onto the tunnel floor at %.1f', z))
-    placePlayer(z + 1.0)
+    placePlayer(z + 1.0, true)
   end
 end
 
@@ -1123,8 +1199,9 @@ local function updatePlayer(dt)
   if not st.anchor then return end
   if not veh then
     -- no car at all (a BeamMP server is joined without one, a free camera after the car was removed): the world
-    -- follows the camera, standing still (poses, terrain, rebases; nothing moves a vehicle)
-    local c = st.cam
+    -- follows the camera, standing still (poses, terrain, rebases; nothing moves a vehicle); a teleport's target
+    -- while the camera is on its way there (heldCamera)
+    local c = M.heldCamera(st.cam)
     if not c then return end
     local lat, lon = st.anchor:enuToGeodetic(c.x, c.y, c.z)
     st.player = { x = c.x, y = c.y, z = c.z, vx = 0, vy = 0, vz = 0, lat = lat, lon = lon, dist = hypot(c.x, c.y),
@@ -1132,6 +1209,7 @@ local function updatePlayer(dt)
     st.slowFor = st.slowFor + dt
     return
   end
+  st.camAt = nil              -- (a car now: the player is the car)
   local p = veh:getPosition()
   local v = veh:getVelocity()
   local lat, lon = st.anchor:enuToGeodetic(p.x, p.y, p.z)
@@ -2203,7 +2281,7 @@ teleportTo = function(lat, lon, name, kind)
     parking.onTeleport()
     navgraph.onTeleport()
     do local ok, err = pcall(farcars.onTeleport) if not ok then log('W', 'beamngEarth', 'far cars: ' .. tostring(err)) end end
-    pcall(mpsession.onTeleport, place and place.x or 0, place and place.y or 0)    -- (no car: the free camera there)
+    pcall(mpsession.onTeleport)      -- (BeamMP: the camera is ours to put at the target, commitTeleport)
     if kind ~= 'tool' then
       statusbar.reset()
       local ok, err = pcall(places.noteTeleport, lat, lon, name, kind)
