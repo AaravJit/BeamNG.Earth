@@ -5209,6 +5209,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(decks::deck_beside, m)?)?;
     m.add_function(wrap_pyfunction!(decks::deck_end_joins, m)?)?;
     m.add_function(wrap_pyfunction!(decks::deck_gaps, m)?)?;
+    m.add_function(wrap_pyfunction!(decks::deck_end_on, m)?)?;
     m.add_function(wrap_pyfunction!(islands::road_cycles, m)?)?;
     m.add_function(wrap_pyfunction!(ribbons::ribbon_edges, m)?)?;
     m.add_function(wrap_pyfunction!(groundpaint::mask_segments, m)?)?;
@@ -5316,6 +5317,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(roadz::profile_clean, m)?)?;
     m.add_function(wrap_pyfunction!(roadz::deck_lidar, m)?)?;
     m.add_function(wrap_pyfunction!(roadz::deck_blend, m)?)?;
+    m.add_function(wrap_pyfunction!(roadz::lidar_gap_stretch, m)?)?;
     m.add_function(wrap_pyfunction!(geotiles::geo_tile_of, m)?)?;
     m.add_function(wrap_pyfunction!(geotiles::geo_tile_info, m)?)?;
     m.add_function(wrap_pyfunction!(geotiles::geo_tile_quad, m)?)?;
@@ -5330,6 +5332,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(geocontent::cdae_shear, m)?)?;
     m.add_function(wrap_pyfunction!(geocontent::clip_segments_convex, m)?)?;
     m.add_function(wrap_pyfunction!(sidewalks::sidewalk_mesh, m)?)?;
-    m.add("VERSION", 105)?;
+    m.add("VERSION", 107)?;
     Ok(())
 }

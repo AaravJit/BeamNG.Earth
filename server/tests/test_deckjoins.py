@@ -105,6 +105,44 @@ class EndJoinTest(unittest.TestCase):
         self.assertEqual(roads._end_joins(lines, [1.0, 1.0, 1.0], []), [], "(beyond the half width)")
 
 
+@unittest.skipUnless(fast.AVAILABLE and getattr(fast._ef, "VERSION", 0) >= 107, "earthfast 107 (deck_end_on)")
+class EndOnDeckTest(unittest.TestCase):
+    """A cross street's bridge (p0, x -150..150 over two streets) and a ramp's deck (p1) starting on it 3 m off its
+    line, going north 150 m down to a street (p2 goes on from its end on the ground)."""
+
+    def setUp(self):
+        self.old = roadz.PROVIDER, roads.END_JOIN_ON
+        roadz.PROVIDER = None
+
+    def tearDown(self):
+        roadz.PROVIDER, roads.END_JOIN_ON = self.old
+
+    def solve(self, extra=()):
+        lines = [[(-150, 0), (150, 0)], [(0, 3), (0, 150)], [(0, 150), (0, 300)],
+                 [(-100, -200), (-100, 200)], [(100, -200), (100, 200)]] + [ln for ln, _ in extra]
+        classes = ["primary", "motorway", "motorway", "residential", "residential"] + [c for _, c in extra]
+        f = features(lines, classes, flags=[(0, "is_bridge", 0.0, 1.0), (1, "is_bridge", 0.0, 1.0)],
+                     ids=[f"p{i}" for i in range(len(lines))])
+        return _solve(f)
+
+    def test_ramp_starts_at_the_bridge_height(self):
+        d = self.solve()
+        xy0, z0 = d["p0"]
+        s0 = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy0, axis=0).T))]
+        z_at = float(np.interp(150.0, s0, z0))
+        self.assertGreater(z_at, FLAT + 2.0, "(the bridge stands over the streets)")
+        self.assertLess(abs(d["p1"][1][0] - z_at), 0.1, "the ramp's start on the bridge, not on the ground under it")
+        self.assertLessEqual(_grade(*d["p1"]), roads.DECK_STEEP_GRADE)
+
+    def test_ground_road_there_keeps_the_abutment(self):
+        d = self.solve(extra=[([(0, 3), (-80, 60)], "residential")])
+        self.assertLess(abs(d["p1"][1][0] - FLAT), 0.2)
+
+    def test_off(self):
+        roads.END_JOIN_ON = False
+        self.assertLess(abs(self.solve()["p1"][1][0] - FLAT), 0.2, "(the case it is for)")
+
+
 @unittest.skipUnless(NATIVE, "earthfast 105 (deck_end_joins, deck_gaps)")
 class GroundGapTest(unittest.TestCase):
     """A viaduct p0 - a 40 m stretch p1 the map has on the ground - a viaduct p2."""
