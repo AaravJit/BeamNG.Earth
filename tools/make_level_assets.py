@@ -201,11 +201,18 @@ pretty(os.path.join(T, "main.materials.json"), {
     },
 })
 
-Image.new("RGB", (BASE_TEX, BASE_TEX), (100, 88, 69)).save(os.path.join(T, "bngEarth_base_b.png"), optimize=True)
-Image.new("RGB", (BASE_TEX, BASE_TEX), (127, 127, 255)).save(os.path.join(T, "bngEarth_base_nm.png"), optimize=True)
-Image.new("L", (BASE_TEX, BASE_TEX), 240).save(os.path.join(T, "bngEarth_base_r.png"), optimize=True)
-Image.new("L", (BASE_TEX, BASE_TEX), 251).save(os.path.join(T, "bngEarth_base_ao.png"), optimize=True)
-Image.new("L", (BASE_TEX, BASE_TEX), 175).save(os.path.join(T, "bngEarth_base_h.png"), optimize=True)
+# The flat base maps at every ground photo size the settings offer (the mod's groundPhoto: terrain.lua setPhotoSize
+# points the texture set's base slot and every layer's base maps at one size before the level's first block; the
+# server's earthd.BASE_SIZES / base_ao_vfs): BASE_TEX's under the plain names, the others with a _<px> suffix. A map
+# whose size differs from the slot's costs a resize at every material rebuild (~240 ms a 4096 map in a 2048 slot).
+BASE_SIZES = (1024, 2048, 4096)
+for n in BASE_SIZES:
+    suf = "" if n == BASE_TEX else f"_{n}"
+    Image.new("RGB", (n, n), (100, 88, 69)).save(os.path.join(T, f"bngEarth_base_b{suf}.png"), optimize=True)
+    Image.new("RGB", (n, n), (127, 127, 255)).save(os.path.join(T, f"bngEarth_base_nm{suf}.png"), optimize=True)
+    Image.new("L", (n, n), 240).save(os.path.join(T, f"bngEarth_base_r{suf}.png"), optimize=True)
+    Image.new("L", (n, n), 251).save(os.path.join(T, f"bngEarth_base_ao{suf}.png"), optimize=True)
+    Image.new("L", (n, n), 175).save(os.path.join(T, f"bngEarth_base_h{suf}.png"), optimize=True)
 Image.new("L", (1024, 1024), 128).save(os.path.join(T, "bngEarth_flat_h_1024.png"), optimize=True)   # detail size
 # importMaps inputs, sized like the terrain block (N = 1024, docs/V1_1_SPEC.md 1a; and 512 for the
 # M4 block, docs/V1_4_SPEC.md 3.5: the layer map must match the heightmap size): one all-white

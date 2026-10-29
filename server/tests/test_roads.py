@@ -255,10 +255,32 @@ class GeometryTest(unittest.TestCase):
     def test_tiles_near(self):
         ks = roads.tiles_near(0, 0, 300)
         self.assertIn((0, 0), ks)
-        self.assertIn((-2, -2), ks)
+        self.assertIn((-2, 0), ks)              # its side 256 m away
         self.assertNotIn((2, 0), ks)
         self.assertEqual(roads.tile_distance(0, 0, 10, 10), 0.0)
         self.assertEqual(roads.tile_distance(1, 0, 10, 10), roads.TILE - 10)
+
+    def test_tiles_near_is_a_disc(self):
+        # the user, 2026-10-28: "change the quality/view distance radius from a square to a circle": a corner tile
+        # within the radius on both axes (Chebyshev 256 m) but 362 m away (Euclidean) is not wanted at 300 m
+        ks = roads.tiles_near(0, 0, 300)
+        self.assertNotIn((-2, -2), ks)
+        self.assertNotIn((1, 1), ks)
+        self.assertIn((1, 1), roads.tiles_near(0, 0, 363))
+        self.assertAlmostEqual(roads.tile_distance(1, 1, 0, 0), 256 * 2 ** 0.5)
+        self.assertAlmostEqual(roads.tile_distance(-2, 0, 0, 0), 256.0)
+        # every tile within the radius by the distance the trackers drop by, and none left out
+        for x, y, r in ((0.0, 0.0, roads.SEND_M), (130.0, -77.0, 1280.0), (5.0, 250.0, 1600.0)):
+            got = set(roads.tiles_near(x, y, r))
+            box = {(tx, ty) for tx in range(-12, 13) for ty in range(-12, 13)}
+            self.assertEqual(got, {k for k in box if roads.tile_distance(*k, x, y) <= r})
+        # fewer tiles than the square of the same radius (~15 % at the road tiles' 640 m, ~18 % at the trees' 1280 m,
+        # averaged over the car's place in its tile; the disc's limit is 21 %)
+        spots = [(x, y) for x in range(0, 256, 32) for y in range(0, 256, 32)]
+        for r, most in ((640.0, 0.88), (1280.0, 0.85)):
+            sq = sum(len(range(int((x - r) // 256), int((x + r) // 256) + 1)) *
+                     len(range(int((y - r) // 256), int((y + r) // 256) + 1)) for x, y in spots)
+            self.assertLess(sum(len(roads.tiles_near(x, y, r)) for x, y in spots), most * sq, r)
 
 
 class BuildTileTest(unittest.TestCase):
@@ -968,7 +990,9 @@ class TrackerTest(unittest.TestCase):
             car, seen = set(roads.tiles_near(0, 0, send)), set(roads.tiles_near(*cam, send))
             asyncio.run(go(cam))
             self.assertEqual(set(built), car | seen, kind)
-            self.assertEqual(set(built[:len(car)]), car, f"{kind}: the car's tiles first")
+            # (the car's tiles start first; the last ones build beside the first others: their threads end in any order)
+            self.assertLessEqual(set(built[:len(car) - 8]), car, f"{kind}: the car's tiles first")
+            self.assertLessEqual(car, set(built[:len(car) + 8]), f"{kind}: the car's tiles first")
             self.assertFalse([m for m in conn.sent if m["type"].endswith("_drop")], f"{kind}: none dropped")
             asyncio.run(go(None, 2))            # the camera back at the car: the camera's tiles go
             drops = {tuple(map(int, m["key"].split("_"))) for m in conn.sent if m["type"].endswith("_drop")}
@@ -994,7 +1018,9 @@ class TrackerTest(unittest.TestCase):
             near = set(roads.tiles_near(4000.0, 0.0, min(send, 320.0 + roads.TILE / 2)))
             asyncio.run(go((focus,)))
             self.assertEqual(set(built), car | near, kind)
-            self.assertEqual(set(built[:len(car)]), car, f"{kind}: the car's tiles first")
+            # (the car's tiles start first; the last ones build beside the first others: their threads end in any order)
+            self.assertLessEqual(set(built[:len(car) - 8]), car, f"{kind}: the car's tiles first")
+            self.assertLessEqual(car, set(built[:len(car) + 8]), f"{kind}: the car's tiles first")
             self.assertFalse([m for m in conn.sent if m["type"].endswith("_drop")], f"{kind}: none dropped")
             asyncio.run(go((), 2))              # the other car gone: its tiles go
             drops = {tuple(map(int, m["key"].split("_"))) for m in conn.sent if m["type"].endswith("_drop")}

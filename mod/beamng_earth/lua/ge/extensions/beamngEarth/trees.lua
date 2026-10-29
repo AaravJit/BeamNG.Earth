@@ -265,41 +265,65 @@ M.forests = 0
 -- MihneaTeodorStoica's PR #321.)
 -- (lampglow: the lamps' far glow, night only: nightlights.lua turns it on after dusk)
 M.groupOff = { lampglow = true }
--- The quality setting's tree levels (settings.lua 'trees', the quality presets): scales of the rings' ranks (density),
--- the tiles' item caps and the rings' distances, from the defaults above ('normal': as they are).
+-- The settings' tree density (settings.lua 'trees', the quality presets): scales of the rings' ranks (how many of a
+-- tile's items show at a distance) and of the tiles' item caps; and the tree draw distance (settings 'treeDistance',
+-- split from the density 2026-10-28, the user: "give player much more control in the graphics settings"): the rings'
+-- and caps' distances, and the server's tree tile reach (core.sendGraphics treeScale: vegetation.SEND_M times it;
+-- GHOST_FAR_M follows). 'normal': the defaults above. (Before the split 'trees' also set the distance: low 0.75,
+-- medium 0.9, high 1.3, ultra 1.6; settings.lua migrates a saved level so.)
 M.QUALITY_LEVELS = {
-  low = { rank = 0.5, cap = 0.5, dist = 0.75 },
-  medium = { rank = 0.7, cap = 0.7, dist = 0.9 },
-  normal = { rank = 1.0, cap = 1.0, dist = 1.0 },
-  high = { rank = 1.35, cap = 1.5, dist = 1.3 },
-  ultra = { rank = 1.7, cap = 2.2, dist = 1.6 },
+  low = { rank = 0.5, cap = 0.5 },
+  medium = { rank = 0.7, cap = 0.7 },
+  normal = { rank = 1.0, cap = 1.0 },
+  high = { rank = 1.35, cap = 1.5 },
+  ultra = { rank = 1.7, cap = 2.2 },
+  extreme = { rank = 2.5, cap = 2.5 },      -- (rank 2.5: every item the server sends out to ~700 m x distance)
 }
-local BASE_RINGS, BASE_CAP = nil, nil   -- (the defaults, copied at the first setQuality)
+M.DISTANCES = { near = 0.75, medium = 0.9, normal = 1.0, far = 1.3, farther = 1.6, max = 2.2 }
+M.TILE_SEND_M, M.TILE_DROP_M = 1280, 1536     -- the server's vegetation SEND_M / DROP_M at distance 1
+local BASE_RINGS, BASE_CAP = nil, nil   -- (the defaults, copied at the first setQuality / setDistance)
 M.quality = 'normal'
+M.distance = 'normal'
 
--- Pure: the rings and caps of a quality level from the base ones.
-function M.scaledRings(level, rings, caps)
+-- Pure: the rings and caps of a density level and a distance level from the base ones.
+function M.scaledRings(level, rings, caps, distance)
   local q = M.QUALITY_LEVELS[level] or M.QUALITY_LEVELS.normal
+  local d = M.DISTANCES[distance or 'normal'] or 1.0
   local r, c = {}, {}
   for i, v in ipairs(rings) do
-    r[i] = { v[1] >= 1e8 and v[1] or math.floor(v[1] * q.dist + 0.5), math.min(1.0, v[2] * q.rank) }
+    r[i] = { v[1] >= 1e8 and v[1] or math.floor(v[1] * d + 0.5), math.min(1.0, v[2] * q.rank) }
   end
   for i, v in ipairs(caps) do
-    c[i] = { v[1] >= 1e8 and v[1] or math.floor(v[1] * q.dist + 0.5), math.floor(v[2] * q.cap + 0.5) }
+    c[i] = { v[1] >= 1e8 and v[1] or math.floor(v[1] * d + 0.5), math.floor(v[2] * q.cap + 0.5) }
   end
   return r, c
 end
 
-function M.setQuality(level)
-  if not M.QUALITY_LEVELS[level] or level == M.quality then return false end
+-- The server's tree tile reach factor for a distance level (core.sendGraphics treeScale).
+function M.distanceScale(distance) return M.DISTANCES[distance or M.distance] or 1.0 end
+
+local function rescale()
   if not BASE_RINGS then
     BASE_RINGS, BASE_CAP = {}, {}
     for i, v in ipairs(M.RINGS) do BASE_RINGS[i] = { v[1], v[2] } end
     for i, v in ipairs(M.TILE_CAP) do BASE_CAP[i] = { v[1], v[2] } end
   end
-  M.RINGS, M.TILE_CAP = M.scaledRings(level, BASE_RINGS, BASE_CAP)
-  M.quality = level
+  M.RINGS, M.TILE_CAP = M.scaledRings(M.quality, BASE_RINGS, BASE_CAP, M.distance)
+  M.GHOST_FAR_M = math.floor(M.TILE_SEND_M * M.distanceScale() + 0.5) + (M.TILE_DROP_M - M.TILE_SEND_M)
   M.refresh()
+end
+
+function M.setQuality(level)
+  if not M.QUALITY_LEVELS[level] or level == M.quality then return false end
+  M.quality = level
+  rescale()
+  return true
+end
+
+function M.setDistance(level)
+  if not M.DISTANCES[level] or level == M.distance then return false end
+  M.distance = level
+  rescale()
   return true
 end
 
@@ -734,7 +758,7 @@ releaseGhosts = function(anchorId, player)
       if not ok and player and ghostSince() > M.GHOST_FAR_WAIT_S * 1000 then     -- (roads.lua GHOST_FAR_WAIT_S)
         local dx = math.max(math.abs(player.x - t.cx) - 128, 0)
         local dy = math.max(math.abs(player.y - t.cy) - 128, 0)
-        ok = math.max(dx, dy) > M.GHOST_FAR_M
+        ok = dx * dx + dy * dy > M.GHOST_FAR_M * M.GHOST_FAR_M      -- (a disc, as the server's drop: roads.tiles_near)
       end
       if not ok then
         ok = true

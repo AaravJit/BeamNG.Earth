@@ -633,7 +633,7 @@ TILE = 256.0                # m, as the road tiles (roads.tile_bbox)
 TILE_ROWS_MAX = 6000        # items a tile sends at most, the lowest ranks: the most the mod shows of one (trees.lua
                             # TILE_CAP). Dense forest has 10-20k a tile: Bodø's 145 tiles held 1.66 M rows in the game's
                             # Lua (394 MB of heap, 1.25 s garbage collection pauses on a Steam Deck; GitHub #66)
-SEND_M = 1280.0             # tiles this close to the player (Chebyshev) are sent ...
+SEND_M = 1280.0             # tiles this close to the player (Euclidean, to the square's nearest point) are sent
 DROP_M = 1536.0             # ... and dropped beyond this
 BUILD_PER_POSE = 8
 
@@ -794,6 +794,21 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, rows, flat=False):
     return f"{vfs_dir}/{name}", rows.n if isinstance(rows, JsonRows) else len(rows)
 
 
+def _squares_near(x, y, m, size):
+    """(i, j) of the size x size squares of the grid whose nearest point is within m of (x, y): a disc (Euclidean, as
+    roads.tiles_near; 2026-10-28, it was the square)."""
+    i0, i1 = math.floor((x - m) / size), math.floor((x + m) / size)
+    j0, j1 = math.floor((y - m) / size), math.floor((y + m) / size)
+    out = []
+    for i in range(i0, i1 + 1):
+        dx = max(i * size - x, x - (i + 1) * size, 0.0)
+        for j in range(j0, j1 + 1):
+            dy = max(j * size - y, y - (j + 1) * size, 0.0)
+            if dx * dx + dy * dy <= m * m:
+                out.append((i, j))
+    return out
+
+
 class Tracker:
     """Per connection: which tiles of a kind the mod has (as roads.Tracker): vegetation tiles by default
     (messages veg_tile / veg_drop); the far buildings use one too (buildings.FAR_*)."""
@@ -809,7 +824,7 @@ class Tracker:
         self.sent = set()
         self.building = set()
         self.send_m, self.drop_m, self.per_pose, self.kind = send_m, drop_m, per_pose, kind
-        # skip_m: tiles within this (Chebyshev, as roads.tiles_near) are not built: the far buildings under the road
+        # skip_m: tiles within this (as roads.tiles_near: a disc) are not built: the far buildings under the road
         # tiles, which carry the full buildings (the mod would hide them at once; ~36 of a teleport's ~196 tiles)
         self.skip_m = skip_m
         # its own threads (per_pose): in the loop's shared executor the tiles queued behind other trackers' builds
@@ -880,25 +895,21 @@ class Tracker:
         group = self.group if group is None else group
         if group:                           # (whole groups of `group` tiles; keys in `unit` squares)
             gs = roadsmod.TILE * group
-            g0x, g1x = math.floor((x - m) / gs), math.floor((x + m) / gs)
-            g0y, g1y = math.floor((y - m) / gs), math.floor((y + m) / gs)
             per = group // unit
-            return [(gx * per + i, gy * per + j) for gx in range(g0x, g1x + 1) for gy in range(g0y, g1y + 1)
+            return [(gx * per + i, gy * per + j) for gx, gy in _squares_near(x, y, m, gs)
                     for i in range(per) for j in range(per)]
         if unit == 1:
             return roadsmod.tiles_near(x, y, m)
-        us = roadsmod.TILE * unit
-        u0x, u1x = math.floor((x - m) / us), math.floor((x + m) / us)
-        u0y, u1y = math.floor((y - m) / us), math.floor((y + m) / us)
-        return [(ux, uy) for ux in range(u0x, u1x + 1) for uy in range(u0y, u1y + 1)]
+        return _squares_near(x, y, m, roadsmod.TILE * unit)
 
     def _dist(self, k, x, y):
-        """m (Chebyshev) from (x, y) to key k's square, or to its group's (the far buildings under the skyline)."""
+        """m (Euclidean, as _near) from (x, y) to key k's square, or to its group's (the far buildings under the
+        skyline)."""
         import roads as roadsmod
         size = roadsmod.TILE * (self.group or self.unit)
         per = (self.group // self.unit) if self.group else 1
         x0, y0 = (k[0] // per) * size, (k[1] // per) * size
-        return max(x0 - x, x - (x0 + size), y0 - y, y - (y0 + size), 0.0)
+        return roadsmod.box_gap(x0, y0, x0 + size, y0 + size, x, y)
 
     def _built(self, conn, aid, key, fut):
         if aid != self.aid:                 # (an old anchor's: the same key may be in flight for the new one)
