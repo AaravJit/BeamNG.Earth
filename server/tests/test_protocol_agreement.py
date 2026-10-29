@@ -176,7 +176,7 @@ SERVER_TO_MOD = {
                          "missing": F(int, OPT), "downloadBytes": F(int, OPT), "diskBytes": F(int, OPT),
                          "seconds": F(int, OPT), "days": F(NUM, OPT), "hosts": F(list, OPT),
                          "excluded": F(list, OPT), "error": F(str, OPT)},
-    # the saved areas [{id, name, s, w, n, e, state, done, total, msg}] after hello, a change and while one downloads
+    # the saved areas [{id, name, s, w, n, e, state, done, total, msg, mode}] after hello, a change and while one downloads
     # (at most every areas.STATUS_S); result: the answer to an area_add / area_cmd
     "areas": {"areas": F(list), "pinnedBytes": F(int, OPT), "result": F(dict, OPT)},
     "route_result": {"id": F(int), "points": F(list), "dist": F(NUM), "dur": F(NUM), "error": F(str, OPT),

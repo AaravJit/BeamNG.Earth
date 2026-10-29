@@ -15,7 +15,10 @@ Store: <cache>/areas/areas.json (the list; atomic writes) and <cache>/areas/<id>
 line each; appended). The plan of an area is a pure function of its box and the server's settings: a resume walks it
 again and skips what is on disk.
 
-M3 (a world pre-built for an area: area anchors) is not here yet.
+Modes and phases: an area's mode names the phases its job walks, in order (MODES); each phase is a plan of steps
+(phase_steps) the thread fetches the same way. Only "data" (the downloads) exists now; a "world" phase (the world
+generation's tiles cached for the place, once they are made the same from any anchor) can be added as a phase of
+its own without changing the store.
 """
 import json
 import logging
@@ -87,6 +90,10 @@ def check_box(s, w, n, e):
     return s, w, n, e
 
 
+MODES = {"data": ("data",)}      # mode -> its phases, in order ("world" later)
+DEFAULT_MODE = "data"
+
+
 def plan_steps(box, hm_zooms, img_zoom, layers):
     """The download plan of a box, in order: ("cell", z, x, y, layer) for the map data cells (with CELL_RING), ("dem",
     z, x, y) at the near terrain's zooms (hm_zooms(x6, y6) -> its zoom under that z6 tile) and DEM_ZOOMS_FAR, then
@@ -151,7 +158,7 @@ class Areas:
                                    "created": float(a.get("created", 0)), "paused": bool(a.get("paused")),
                                    "complete": bool(a.get("complete")), "total": int(a.get("total", 0)),
                                    "diskBytes": int(a.get("diskBytes", 0)), "done": 0, "state": "queued", "msg": "",
-                                   "retry_at": 0.0})
+                                   "retry_at": 0.0, "mode": a.get("mode") if a.get("mode") in MODES else DEFAULT_MODE})
             except (KeyError, TypeError, ValueError):
                 continue
         self.next_id = max([int(doc.get("next", 1))] + [int(a["id"][1:]) + 1 for a in self.areas
@@ -163,7 +170,7 @@ class Areas:
     def _save(self):
         doc = {"v": STORE_VERSION, "next": self.next_id,
                "areas": [{k: a[k] for k in ("id", "name", "s", "w", "n", "e", "created", "paused", "complete", "total",
-                                            "diskBytes")} for a in self.areas]}
+                                            "diskBytes", "mode")} for a in self.areas]}
         try:
             os.makedirs(self.dir, exist_ok=True)
             p = os.path.join(self.dir, STORE)
@@ -215,9 +222,19 @@ class Areas:
         import imagery as imagerymod
         return imagerymod.zoom_for((box[0] + box[2]) / 2, IMG_TEXEL_M)
 
-    def steps(self, box):
-        return plan_steps(box, self._hm_zooms(box), self._img_zoom(box),
-                          area_layers() if self.s.mapdata is not None else ())
+    def phase_steps(self, phase, box):
+        """The steps of one phase of an area's job ("data": plan_steps)."""
+        if phase == "data":
+            return plan_steps(box, self._hm_zooms(box), self._img_zoom(box),
+                              area_layers() if self.s.mapdata is not None else ())
+        raise ValueError(f"unknown area phase {phase!r}")
+
+    def steps(self, box, mode=DEFAULT_MODE):
+        """Every step of an area's job: its mode's phases in order."""
+        out = []
+        for phase in MODES[mode]:
+            out += self.phase_steps(phase, box)
+        return out
 
     def _present(self, step, done_imgs=None):
         """Is a step's data on disk already (no network)?"""
@@ -333,7 +350,7 @@ class Areas:
             self.areas.append({"id": aid, "name": label, "s": box[0], "w": box[1], "n": box[2], "e": box[3],
                                "created": time.time(), "paused": False, "complete": False, "total": est.get("items", 0),
                                "diskBytes": est.get("diskBytes", 0), "done": 0, "state": "queued", "msg": "",
-                               "retry_at": 0.0})
+                               "retry_at": 0.0, "mode": DEFAULT_MODE})
             self._save()
         self.pin_at = -1e18
         self.wake.set()
@@ -366,7 +383,8 @@ class Areas:
     def message(self):
         """The 'areas' message's fields."""
         with self.lock:
-            out = {"areas": [{k: a[k] for k in ("id", "name", "s", "w", "n", "e", "state", "done", "total", "msg")}
+            out = {"areas": [{k: a[k] for k in ("id", "name", "s", "w", "n", "e", "state", "done", "total", "msg",
+                                                "mode")}
                              for a in self.areas]}
         if self.pinned_bytes is not None:
             out["pinnedBytes"] = int(self.pinned_bytes)
@@ -472,7 +490,7 @@ class Areas:
     def _pass(self, a):
         """One walk over the area's plan: what is on disk is counted, the rest fetched."""
         box = (a["s"], a["w"], a["n"], a["e"])
-        steps = self.steps(box)
+        steps = self.steps(box, a.get("mode", DEFAULT_MODE))
         done_imgs = self._done_set(a["id"])
         with self.lock:
             a["total"], a["done"], a["state"], a["msg"] = len(steps), 0, "checking", ""

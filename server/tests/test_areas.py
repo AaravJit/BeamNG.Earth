@@ -157,6 +157,14 @@ class AreasTest(unittest.TestCase):
         self.assertEqual(len(s.mapdata.got), n_cells)
         m = a.message()["areas"][0]
         self.assertEqual((m["name"], m["done"], m["total"]), ("Harbour", len(a.steps(BOX)), len(a.steps(BOX))))
+        # the job is its mode's phases (only "data" so far; a "world" phase comes later)
+        self.assertEqual(m["mode"], "data")
+        self.assertEqual(a.steps(BOX, "data"), a.phase_steps("data", BOX))
+        with self.assertRaises(ValueError):
+            a.phase_steps("world", BOX)
+        import json
+        with open(os.path.join(self.tmp.name, areas.SUBDIR, areas.STORE)) as f:
+            self.assertEqual(json.load(f)["areas"][0]["mode"], "data")
         a.close()
         # a restart: the list comes back, the done area is not walked again
         b, s2 = self.make(server=s, start=True)
