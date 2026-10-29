@@ -6519,17 +6519,26 @@ PAD_STEP_M = 2.0
 PAD_JOIN_M = 0.75           # m: ends this near are one joint (_skew_decks' tolerance)
 PAD_GROUND_M = 1.0          # m: a ground road's end this near a joint goes on from it
 PAD_STRAIGHT_COS = -0.97    # two parts leaving a joint this straight need none
+# The pad reaches PAD_MARGIN_M past the carriageways (a turn cut across the corner stays that far from its rim); the
+# decks' parapets stand nowhere inside it, and its rim has a railing where the ground under it lies PAD_WALL_DROP_M or
+# more lower, except where a carriageway leaves it (within its half width + PAD_OPEN_M): the station road's parapet
+# began at the joint, in the turn's path, and the AI clipped its end (Charles Street over I-83, 2026-10-29).
+PAD_MARGIN_M = 2.5
+PAD_OPEN_M = 0.75
+PAD_WALL_DROP_M = 1.0
+PAD_RIM_STEP_M = 1.0
 
 
-def deck_pads(decks, ground_roads, box, ground_fn):
-    """[(ring (k, 3), centre (3,))] of the junction pads of the joints of decks [(fid, spec, xy (k, 2), z (k,))] (the
-    bridge parts round tile box, as bridges.parts gives them) whose joint the box owns; ground_roads [(fid, spec, pts
-    (k, 2+), _)] the ground carriageways near it (build_tile roads_out), their heights ground_fn(xy) (the decks'
-    abutments' ground). earthfast.deck_pad. Pure given ground_fn."""
+def deck_pads(decks, ground_roads, box, ground_fn, own=True):
+    """[(ring (k, 3), centre (3,), walls [(pts (m, 3), out (m, 2))])] of the junction pads of the joints of decks
+    [(fid, spec, xy (k, 2), z (k,))] (the bridge parts round tile box, as bridges.parts gives them) whose joint the box
+    owns (own False: every joint, the parapets' test round the tile); ground_roads [(fid, spec, pts (k, 2+), _)] the
+    ground carriageways near it (build_tile roads_out), the ground's heights ground_fn(xy) (the decks' abutments').
+    walls: the rim's railings (PAD_*). earthfast.deck_pad, deck_pad_rim. Pure given ground_fn."""
     if not PADS_ON or not decks:
         return []
     import fast
-    fast.require(110, "deck_pad")
+    fast.require(113, "deck_pad_rim")
     join = _EndJoin(PAD_JOIN_M)
     nodes, inc = [], {}
     for fid, spec, xy, z in decks:
@@ -6548,7 +6557,7 @@ def deck_pads(decks, ground_roads, box, ground_fn):
           if spec is not None and len(pts) >= 2]
     for nd, parts in sorted(inc.items()):
         q = nodes[nd]
-        if not box_owns(box, float(q[0]), float(q[1])):
+        if own and not box_owns(box, float(q[0]), float(q[1])):
             continue
         parts = list(parts)
         for line, half in gl:
@@ -6571,11 +6580,51 @@ def deck_pads(decks, ground_roads, box, ground_fn):
         pts = np.ascontiguousarray(np.concatenate([p[0] for p in parts]), np.float64)
         zz = np.ascontiguousarray(np.concatenate([p[1] for p in parts]), np.float64)
         off = np.r_[0, np.cumsum([len(p[0]) for p in parts])].astype(np.int64)
-        hull = np.asarray(fast._ef.deck_pad(pts, zz, off, np.array([p[2] for p in parts], np.float64), PAD_REACH_M,
-                                            PAD_STEP_M), np.float64)
-        if len(hull) >= 3:
-            zc = float(np.mean([p[1][0] for p in parts]))
-            out.append((hull, np.array([q[0], q[1], zc])))
+        halves = np.array([p[2] for p in parts], np.float64)
+        hull = np.asarray(fast._ef.deck_pad(pts, zz, off, halves + PAD_MARGIN_M, PAD_REACH_M, PAD_STEP_M), np.float64)
+        if len(hull) < 3:
+            continue
+        zc = float(np.mean([p[1][0] for p in parts]))
+        rim = np.asarray(fast._ef.deck_pad_rim(np.ascontiguousarray(hull), pts, off, halves, PAD_RIM_STEP_M,
+                                               PAD_OPEN_M), np.float64)
+        walls = []
+        if len(rim):
+            drop = rim[:, 2] - np.asarray(ground_fn(rim[:, :2]), np.float64)
+            wall = (rim[:, 5] < 0.5) & (drop >= PAD_WALL_DROP_M)
+            # runs round the ring (one closing over its start joined)
+            k = len(rim)
+            if wall.all():
+                walls.append((np.r_[rim[:, :3], rim[:1, :3]], np.r_[rim[:, 3:5], rim[:1, 3:5]]))
+            elif wall.any():
+                start = int(np.flatnonzero(~wall)[0])
+                order = [(start + i) % k for i in range(1, k + 1)]
+                run = []
+                for i in order:
+                    if wall[i]:
+                        run.append(i)
+                    elif run:
+                        if len(run) >= 2:
+                            walls.append((rim[run, :3], rim[run, 3:5]))
+                        run = []
+                if len(run) >= 2:
+                    walls.append((rim[run, :3], rim[run, 3:5]))
+        out.append((hull, np.array([q[0], q[1], zc]), walls))
+    return out
+
+
+def pad_inside(pads, xy, shrink=0.3):
+    """Per point of xy (n, 2): inside a pad of pads (deck_pads) by shrink m or more (its interior: no parapet). Pure."""
+    xy = np.asarray(xy, np.float64).reshape(-1, 2)
+    out = np.zeros(len(xy), bool)
+    for pad in pads:
+        r = np.asarray(pad[0], np.float64)[:, :2]
+        a, b = r, np.roll(r, -1, axis=0)
+        e = b - a
+        ln = np.maximum(np.hypot(*e.T), 1e-9)
+        # signed distance inside every edge (counter-clockwise: left of each edge is inside)
+        d = ((e[None, :, 0] * (xy[:, None, 1] - a[None, :, 1]) - e[None, :, 1] * (xy[:, None, 0] - a[None, :, 0]))
+             / ln[None, :])
+        out |= (d >= shrink).all(1)
     return out
 
 

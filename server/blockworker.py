@@ -724,7 +724,17 @@ def _tile_parts(mark, frame, tile, zoom, g, buildings, left_hand, mph, gas_stati
     chunks += parkingmod.finish_markings(frame, tx, ty, _s.md, elev, items, marks)
     mark("markings")
     # Share the bridge mesh's exact parapet geometry with the tile builder.
-    parapets = roadmeshmod.parapet_runs(chunks, ctx, ground=cover)
+    # (the junction pads on the bridges round the tile: their decks' parapets stop at them; the tile draws its own:
+    # roads.deck_pads)
+    try:
+        pad_parts = list(bridges.parts(cells, (box[0] - 40, box[1] - 40, box[2] + 40, box[3] + 40)))
+        pads_near = roadsmod.deck_pads([(f, sp, xy, z) for f, sp, xy, z, _lon in pad_parts], near_roads, box,
+                                       bridges._ground, own=False)
+    except Exception as ex:
+        log.warning("deck pads: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
+        pads_near = []
+    pads = [p for p in pads_near if roadsmod.box_owns(box, float(p[1][0]), float(p[1][1]))]
+    parapets = roadmeshmod.parapet_runs(chunks, ctx, ground=cover, pads=pads_near)
     import guardrails as guardrailsmod
     infra_fn = lambda key: _s.md.cell(key, layers=("infrastructure",), kind="demand").layers.get("infrastructure")
     low_parapet_decks = set()
@@ -745,12 +755,6 @@ def _tile_parts(mark, frame, tile, zoom, g, buildings, left_hand, mph, gas_stati
     guardrail_rows = guardrail_rows + _median_rows(frame, near_roads, box, elev, left_hand, country, guardrail_rows,
                                                    tx, ty, deck_parts)
     mark("medians")
-    try:                            # (the junctions on the bridges paved: roads.deck_pads)
-        pads = roadsmod.deck_pads([(f, sp, xy, z) for f, sp, xy, z, _lon in deck_parts], near_roads, box,
-                                  bridges._ground)
-    except Exception as ex:
-        log.warning("deck pads: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
-        pads = []
     P.dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0), bridges.piers_in(box), ctx, bridges.beams_in(box), ground=cover,
                                parapets=parapets, low_parapet_decks=low_parapet_decks, pads=pads)
     mark("deck_mesh")

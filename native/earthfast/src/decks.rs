@@ -502,6 +502,56 @@ pub fn deck_pad<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>, z: PyRead
     numpy::ndarray::Array2::from_shape_vec((hull.len(), 3), flat).expect("hull").into_pyarray(py)
 }
 
+/// A junction pad's rim (ring (k, 3), counter-clockwise) sampled every `step` m: per sample x, y, z, the outward unit
+/// normal, and whether a carriageway leaves the pad there (open: within its half width + open_m of one of the lines,
+/// rows off[j]..off[j + 1] of pts, half widths half[j]): its railing goes round the rest (roads.deck_pads). Pure.
+pub fn rim_samples(ring: &[[f64; 3]], lines: &[(Vec<[f64; 2]>, f64)], step: f64, open_m: f64) -> Vec<[f64; 6]> {
+    let k = ring.len();
+    let mut out = Vec::new();
+    if k < 3 {
+        return out;
+    }
+    for i in 0..k {
+        let (a, b) = (ring[i], ring[(i + 1) % k]);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len = dx.hypot(dy);
+        if len < 1e-9 {
+            continue;
+        }
+        let (nx, ny) = (dy / len, -dx / len);      // (counter-clockwise: the right of the edge is outside)
+        let n = (len / step).ceil().max(1.0) as usize;
+        for j in 0..n {
+            let u = j as f64 / n as f64;
+            let p = [a[0] + u * dx, a[1] + u * dy, a[2] + u * (b[2] - a[2])];
+            let open = lines.iter().any(|(line, half)| {
+                line.windows(2).any(|w| {
+                    let (sx, sy) = (w[1][0] - w[0][0], w[1][1] - w[0][1]);
+                    let l2 = (sx * sx + sy * sy).max(1e-12);
+                    let t = (((p[0] - w[0][0]) * sx + (p[1] - w[0][1]) * sy) / l2).clamp(0.0, 1.0);
+                    (p[0] - (w[0][0] + t * sx)).hypot(p[1] - (w[0][1] + t * sy)) <= half + open_m
+                })
+            });
+            out.push([p[0], p[1], p[2], nx, ny, if open { 1.0 } else { 0.0 }]);
+        }
+    }
+    out
+}
+
+/// rim_samples for Python: ring (k, 3), pts (N, 2), off (n + 1,), half (n,), step, open_m. (m, 6).
+#[pyfunction]
+pub fn deck_pad_rim<'py>(py: Python<'py>, ring: PyReadonlyArray2<'py, f64>, pts: PyReadonlyArray2<'py, f64>,
+                         off: PyReadonlyArray1<'py, i64>, half: PyReadonlyArray1<'py, f64>, step: f64, open_m: f64)
+                         -> Bound<'py, PyArray2<f64>> {
+    let (ring, pts, off, half) = (ring.as_array(), pts.as_array(), off.as_array(), half.as_array());
+    let r: Vec<[f64; 3]> = (0..ring.nrows()).map(|i| [ring[[i, 0]], ring[[i, 1]], ring[[i, 2]]]).collect();
+    let lines: Vec<(Vec<[f64; 2]>, f64)> = (0..off.len().saturating_sub(1)).map(|j| {
+        ((off[j] as usize..off[j + 1] as usize).map(|v| [pts[[v, 0]], pts[[v, 1]]]).collect(), half[j])
+    }).collect();
+    let got = rim_samples(&r, &lines, step.max(0.25), open_m);
+    let flat: Vec<f64> = got.iter().flat_map(|s| s.iter().cloned()).collect();
+    numpy::ndarray::Array2::from_shape_vec((got.len(), 6), flat).expect("rim").into_pyarray(py)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{fill_gaps, pad_hull};
