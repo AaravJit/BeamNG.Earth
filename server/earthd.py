@@ -1340,6 +1340,7 @@ class Server:
                                              (box[0] - 8, box[1] - 8, box[2] + 8, box[3] + 8))
         cover = []                      # the ground carriageways for the decks' parapets (roadmesh.deck ground=)
         marks = []                  # stall lines along parking aisles (parking.finish_markings adds the lot polygons')
+        near_roads = []             # the ground carriageways near the tile (the median barriers': medians.tile_rows)
         chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, elev, urban, walks=walks, deck_context=ctx, bridges=anchor.bridges,
                                      walk_cuts=fuel_cuts,    # (the stations' made-up driveways: no sidewalk across them)
                                      widths=self.road_widths, props=props, lines=lines, wires=wires, town=town, park=park,
@@ -1350,6 +1351,7 @@ class Server:
                                      ground=lambda x, y: roadmeshmod.drawn_ground(anchor.frame, drawn, np.c_[x, y],
                                                                                   self.anchor_q(anchor)),
                                      terrain_paint=self.surface is not None, cover_out=cover, marks=marks,
+                                     roads_out=near_roads,
                                      signals=furnituremod.signals_for(
                                          self.mapdata, anchor.frame,
                                          roadsmod.cells_of_tile(anchor.frame, tx, ty, blockworker.SIGNALS_MARGIN_M)))
@@ -1375,10 +1377,11 @@ class Server:
         import guardrails as guardrailsmod
         infra_fn = lambda key: self.mapdata.cell(key, layers=("infrastructure",), kind="demand").layers.get("infrastructure")
         low_parapet_decks = set()
+        deck_parts = []                 # the bridges' parts near the tile (the median barriers' on joined decks too)
         try:
+            deck_parts = list(anchor.bridges.parts(cells, (box[0]-10, box[1]-10, box[2]+10, box[3]+10)))
             guardrail_decks = [{"n": np.column_stack((xy, z)), "w": spec.width}
-                               for _fid, spec, xy, z, _lon in anchor.bridges.parts(
-                                   cells, (box[0]-10, box[1]-10, box[2]+10, box[3]+10))]
+                               for _fid, spec, xy, z, _lon in deck_parts]
             guardrail_rows = guardrailsmod.forest_rows(anchor.frame, infra_fn, box, elev,
                                                        decks=guardrail_decks, parapets=parapets,
                                                        bridge_rails=roadmeshmod.BRIDGE_RAILS,
@@ -1388,6 +1391,9 @@ class Server:
             # A failed mapped-data pass cannot establish that a bridge needs rails.
             low_parapet_decks.clear()
             guardrail_rows = []
+        guardrail_rows = guardrail_rows + blockworker._median_rows(
+            anchor.frame, near_roads, box, elev, self.left_hand(anchor), self.country(anchor), guardrail_rows, tx, ty,
+            deck_parts)
         mesh = roadmeshmod.build(anchor.frame, chunks, elev, (x0, y0, 0.0),
                                  DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0,
                                  clip=box, follow=True, q=self.anchor_q(anchor), drawn=drawn)

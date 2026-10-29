@@ -209,6 +209,20 @@ M.GROUP_MAX_M.guardrail_end = 4000
 M.GROUP_MAX_M.guardrail_back = 4000
 M.GROUP_MAX_M.guardrail_back_start = 4000
 M.GROUP_MAX_M.guardrail_back_end = 4000
+-- Median barriers (server medians.py) and mapped jersey / cable barriers (guardrails.py), in the same rows: the stock
+-- 3 m jersey barrier (it runs along its y axis: the rows' basis says so) and its sloped end; the mod's cable barrier
+-- (tools/build_median_props.py: four ropes and a post every 3 m).
+M.CATALOG.jersey = { { '/art/shapes/objects/jerseybarrier_3m', 0.88 } }
+M.CATALOG.jersey_end = { { '/art/shapes/objects/jerseybarrier_end', 0.88 } }
+M.CATALOG.cable = { { '/levels/beamng_earth/art/shapes/beamngEarth/bne_cable_barrier', 1.0 } }
+M.GROUP_MAX_M.jersey = 4000
+M.GROUP_MAX_M.jersey_end = 4000
+M.GROUP_MAX_M.cable = 1500
+-- Pure: whether a group is a road barrier's (guard rails, jersey and cable barriers): continuous runs, not thinned
+-- below the tile cap.
+function M.isBarrier(g)
+  return g ~= nil and (g:sub(1, 9) == 'guardrail' or g:sub(1, 6) == 'jersey' or g == 'cable')
+end
 
 -- the Vienna Convention's round km/h signs: their shapes and how far out they show (CATALOG, GROUP_MAX_M)
 vienna.install(M)
@@ -861,7 +875,7 @@ function M.update(anchorId, player, view, frameMs)
         local r = f[b + F_RANK]
         local g = names[f[b + F_GROUP] + 1]
         local cap = g and M.GROUP_MAX_M[g]
-        local isGuardrail = g and g:sub(1, 9) == 'guardrail'
+        local isGuardrail = M.isBarrier(g)
         if isGuardrail then
           -- Preserve continuous 3 m runs until a tile cap actually requires thinning.
           local rowCap

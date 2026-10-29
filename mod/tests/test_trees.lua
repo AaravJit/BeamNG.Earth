@@ -427,6 +427,15 @@ do -- GitHub #415: the static boom's copy has its lamps' material renamed (unlit
   T.check(m and m.mapTo == trees.STATIC_SIGNAL_MAT and not m.Stages[1].instanceEmissive and not m.Stages[1].emissive,
     'its material does not glow')
 end
+do -- the median barriers' groups (server guardrails.GROUPS): shapes at scale 1, never thinned like trees
+  for _, g in ipairs({ 'jersey', 'jersey_end', 'cable' }) do
+    local shape, sc = trees.pick(g, g == 'cable' and 1.0 or 0.88, 0.3)
+    T.check(trees.CATALOG[g] and shape == trees.CATALOG[g][1][1] and math.abs(sc - 1) < 1e-9, g .. ': its model at 1:1')
+    T.check(trees.isBarrier(g), g .. ': a barrier')
+  end
+  T.check(trees.isBarrier('guardrail_back_end') and not trees.isBarrier('deciduous') and not trees.isBarrier(nil),
+    'guard rails are barriers, trees not')
+end
 trees.FRAME_MS, trees.POOL_SPARE = FRAME_MS, POOL_SPARE
 -- a pass with nothing to do is skipped (the game speed pulsing, 2026-10-28): until a tile comes or goes, the car moves
 -- RECHECK_M, or RECHECK_S goes by

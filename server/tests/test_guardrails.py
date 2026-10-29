@@ -33,6 +33,14 @@ class GuardrailTagTest(unittest.TestCase):
                           "tags": np.array([json.dumps({"barrier": "fence"})])})
         self.assertFalse(guardrails._is_guardrail(f, 0))
 
+    def test_jersey_and_cable_barriers_are_kinds(self):
+        for cls, tag in (("jersey_barrier", None), ("barrier", "jersey_barrier"), ("cable_barrier", None)):
+            tags = {"barrier": tag} if tag else {}
+            f = FakeFeatures({"class": np.array([cls]), "subtype": np.array(["barrier"]),
+                              "tags": np.array([json.dumps(tags)])})
+            self.assertEqual(guardrails._barrier_kind(f, 0), tag or cls)
+            self.assertFalse(guardrails._is_guardrail(f, 0))
+
     def test_invalid_tags_are_ignored(self):
         f = FakeFeatures({"class": np.array(["barrier"]), "subtype": np.array(["barrier"]),
                           "tags": np.array(["not json"])})
@@ -62,7 +70,13 @@ class GuardrailStockAssetTest(unittest.TestCase):
         self.assertNotIn("M.NO_COLLIDE.guardrail = true", source)
         self.assertIn("M.GROUP_MAX_M.guardrail = 4000", source)
         self.assertIn("m:setColumn(0, vec3(f[b + 9], f[b + 10], f[b + 11]))", source)
-        self.assertIn("local isGuardrail = g and g:sub(1, 9) == 'guardrail'", source)
+        self.assertIn("local isGuardrail = M.isBarrier(g)", source)
+        # the median barriers' and mapped jersey / cable barriers' groups (guardrails.GROUPS)
+        for g in guardrails.GROUPS:
+            self.assertIn("M.CATALOG." + g + " = ", source)
+        self.assertIn("/art/shapes/objects/jerseybarrier_3m", source)
+        self.assertTrue(os.path.isfile(os.path.join(root, "mod", "beamng_earth", "levels", "beamng_earth", "art", "shapes",
+                                                    "beamngEarth", "bne_cable_barrier.dae")))
         self.assertIn("elseif not rowCap or t.n <= rowCap then", source)
 
 
@@ -87,6 +101,21 @@ class GuardrailForestTest(unittest.TestCase):
             attrs=attrs,
         )
 
+    def test_mapped_jersey_and_cable_rows(self):
+        flat = lambda la, lo: np.zeros_like(np.asarray(la, np.float64))
+        box = (0.0, 0.0, 256.0, 256.0)
+        for cls, group in (("jersey_barrier", guardrails.G_JERSEY), ("cable_barrier", guardrails.G_CABLE)):
+            feats = self.features(cls, tags={"two_sided": "yes"})
+            rows = guardrails.forest_rows(self.frame, lambda key: feats, box, flat)
+            self.assertGreater(len(rows), 20)
+            self.assertEqual({int(r[0]) for r in rows}, {group})     # no caps, no reverse-facing twin
+            r = rows[0]
+            c0, c1, c2 = np.array(r[8:11]), np.array(r[11:14]), np.array(r[14:17])
+            self.assertAlmostEqual(float(np.dot(np.cross(c0, c1), c2)), 1.0, places=6)
+            along = c1 if group == guardrails.G_JERSEY else c0         # (the jersey model runs along its y)
+            self.assertAlmostEqual(abs(float(along[0])), 1.0, places=6)
+            self.assertAlmostEqual(r[6], guardrails.HEIGHTS[group])
+
     def test_two_sided_osm_tag(self):
         feats = self.features("guard_rail", tags={"two_sided": "yes"})
         self.assertTrue(guardrails._is_two_sided(feats, 0))
@@ -104,7 +133,8 @@ class GuardrailForestTest(unittest.TestCase):
         self.assertEqual(path, "vfs/roads_7_1_2.json")
         self.assertEqual(data["guardrails"], {"items": rows,
                                                "groups": ["guardrail", "guardrail_start", "guardrail_end",
-                                                          "guardrail_back", "guardrail_back_start", "guardrail_back_end"]})
+                                                          "guardrail_back", "guardrail_back_start", "guardrail_back_end",
+                                                          "jersey", "jersey_end", "cable"]})
         self.assertNotIn("guardrail", roads.shape_files(7, 1, 2))
 
     def test_stock_guardrail_rows_follow_ground_and_have_full_orientation(self):

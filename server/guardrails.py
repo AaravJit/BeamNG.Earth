@@ -1,7 +1,8 @@
 """Place mapped Overture guard rails using the stock Italy guardrail Forest models.
 
-Only mapped guard rails are rendered. Their Forest rows reuse the game's model batching
-and near-field collision path instead of creating a custom mesh for every road tile.
+Mapped guard rails, jersey barriers (the stock jersey barrier) and cable barriers (the mod's model) are rendered.
+Their Forest rows reuse the game's model batching and near-field collision path instead of creating a custom mesh
+for every road tile. medians.py adds the median barriers where none is mapped, in the same rows.
 """
 import hashlib
 import json
@@ -18,26 +19,43 @@ log = logging.getLogger("earthd.guardrails")
 BBOX_PAD_M = 2.0
 
 
-def _is_guardrail(feats, i):
-    """Use Overture's normalized class, falling back to the preserved OSM tags."""
+# The Forest groups of the rows (trees.lua's CATALOG): Italy's rail, its caps and the reverse-facing three; the stock
+# jersey barrier and its sloped end (they run along their model's y axis: the rows' first two columns swapped); the
+# mod's cable barrier (tools/build_median_props.py). medians.py's rows use the same groups.
+GROUPS = ("guardrail", "guardrail_start", "guardrail_end", "guardrail_back", "guardrail_back_start",
+          "guardrail_back_end", "jersey", "jersey_end", "cable")
+G_JERSEY, G_JERSEY_END, G_CABLE = 6, 7, 8
+KINDS = {"guard_rail": 0, "jersey_barrier": G_JERSEY, "cable_barrier": G_CABLE}    # mapped class -> its module group
+HEIGHTS = {G_JERSEY: 0.88, G_JERSEY_END: 0.88, G_CABLE: 1.0}                       # (the rest: MODULE_HEIGHT_M)
+
+
+def _barrier_kind(feats, i):
+    """A mapped barrier line's kind among KINDS, or None: Overture's normalized class, falling back to the preserved
+    OSM tags."""
     classes = feats.attrs.get("class")
     subtypes = feats.attrs.get("subtype")
     cls = str(classes[i]).strip().lower() if classes is not None else ""
     subtype = str(subtypes[i]).strip().lower() if subtypes is not None else ""
-    if subtype == "barrier" and cls == "guard_rail":
-        return True
+    if subtype == "barrier" and cls in KINDS:
+        return cls
     tags = feats.attrs.get("tags")
     if tags is None:
-        return False
+        return None
     try:
         values = json.loads(str(tags[i]))
     except (TypeError, ValueError):
-        return False
+        return None
     # source_tags is optional in Overture and may be absent, JSON null, or another
     # JSON value. Only an object can contain OSM tag keys.
     if not isinstance(values, dict):
-        return False
-    return str(values.get("barrier", "")).strip().lower() == "guard_rail"
+        return None
+    v = str(values.get("barrier", "")).strip().lower()
+    return v if v in KINDS else None
+
+
+def _is_guardrail(feats, i):
+    """Whether a mapped line is a guard rail (Overture's class, else the OSM tags)."""
+    return _barrier_kind(feats, i) == "guard_rail"
 
 
 def _deck_level_hint(feats, i):
@@ -634,14 +652,19 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=(), bridge_rail
         boxes = feats.boxes(frame)
         for i in range(len(feats)):
             fid = str(feats.ids[i])
-            if fid in seen or int(feats.kind[i]) != mapgeom.LINE or not _is_guardrail(feats, i):
+            if fid in seen or int(feats.kind[i]) != mapgeom.LINE:
                 continue
+            kind = _barrier_kind(feats, i)
+            if kind is None:
+                continue
+            module = KINDS[kind]
+            rail = kind == "guard_rail"
             b = boxes[i]
             if (b[2] < x0 - BBOX_PAD_M or b[0] > x1 + BBOX_PAD_M or
                     b[3] < y0 - BBOX_PAD_M or b[1] > y1 + BBOX_PAD_M):
                 continue
             seen.add(fid)
-            two_sided = _is_two_sided(feats, i)
+            two_sided = rail and _is_two_sided(feats, i)
             deck_hint = _deck_level_hint(feats, i)
             for part_no, part in enumerate(feats.parts(i)):
                 if not part:
@@ -688,7 +711,7 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=(), bridge_rail
                     # Record only mapped rails that actually run beside this concrete deck edge.
                     # A bridge is not given generated rails merely because another road has barriers nearby.
                     # Explicitly lower-level rails are never evidence for a bridge edge.
-                    if bridge_rails and deck_hint is not False:
+                    if bridge_rails and rail and deck_hint is not False:
                         for run_no, run_segments in enumerate(support_segments):
                             if run_segments is None:
                                 continue
@@ -702,16 +725,19 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=(), bridge_rail
                             if supports:
                                 support_hits[run_no].add((fid, part_no, k))
                     if x0 <= p[0] < x1 and y0 <= p[1] < y1:
-                        candidates.append((0, p, a, b, rank, False))
+                        candidates.append((module, p, a, b, rank, False))
                         if two_sided:
                             candidates.append((3, p, a, b, rank, True))
                 # Caps extend outwards from the ends. Reverse-facing cap types are swapped so they
-                # also flare outwards rather than into the run.
-                if x0 <= first_a[0] < x1 and y0 <= first_a[1] < y1:
+                # also flare outwards rather than into the run. (A rail's only: a jersey barrier or a
+                # cable barrier ends with its last module.)
+                if not rail:
+                    pass
+                elif x0 <= first_a[0] < x1 and y0 <= first_a[1] < y1:
                     candidates.append((1, first_a, first_a, first_b, first_rank, False))
                     if two_sided:
                         candidates.append((4, first_a, first_a, first_b, first_rank, True))
-                if x0 <= last_b[0] < x1 and y0 <= last_b[1] < y1:
+                if rail and x0 <= last_b[0] < x1 and y0 <= last_b[1] < y1:
                     candidates.append((2, last_b, last_a, last_b, last_rank, False))
                     if two_sided:
                         candidates.append((5, last_b, last_a, last_b, last_rank, True))
@@ -865,10 +891,13 @@ def forest_rows(frame, infra_fn, exact, elev, decks=(), parapets=(), bridge_rail
         if pl["reverse"]:
             forward, back = -forward, -back
         yaw = math.degrees(math.atan2(float(forward[1]), float(forward[0])))
+        c0, c1 = forward, back
+        if pl["group"] in (G_JERSEY, G_JERSEY_END):     # (the jersey model runs along its y axis)
+            c0, c1 = -back, forward
         rows.append([pl["group"], float(p[0]), float(p[1]), z, yaw, 0.0,
-                     MODULE_HEIGHT_M, pl["rank"],
-                     float(forward[0]), float(forward[1]), float(forward[2]),
-                     float(back[0]), float(back[1]), float(back[2]),
+                     HEIGHTS.get(pl["group"], MODULE_HEIGHT_M), pl["rank"],
+                     float(c0[0]), float(c0[1]), float(c0[2]),
+                     float(c1[0]), float(c1[1]), float(c1[2]),
                      float(up[0]), float(up[1]), float(up[2])])
     # Whatever still lies on a rail the bridge built itself is a double.
     result = rails + _drop_doubles(rows, rails)
