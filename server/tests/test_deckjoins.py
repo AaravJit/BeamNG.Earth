@@ -190,5 +190,46 @@ class GroundGapTest(unittest.TestCase):
         self.assertEqual(roads.level_ranges(f, 1), [])
 
 
+
+@unittest.skipUnless(NATIVE, "earthfast 105")
+class PinnedJointTest(unittest.TestCase):
+    """Two decks leaving a joint a street goes on from on the ground (Charles Street over I-83: the decks' joint is
+    pinned, _ground_pins), one over a street that wants headroom: the joint stays at the street's height in the curve
+    solve too (it stood 8.5 m over it) and with measured decks (eased to their measured mean, 2.5 m under it)."""
+
+    def setUp(self):
+        self.old = roadz.PROVIDER
+        roadz.PROVIDER = None
+
+    def tearDown(self):
+        roadz.PROVIDER = self.old
+
+    def check(self):
+        lines = [[(0, -200), (0, 0)], [(0, 0), (0, 120)], [(0, 0), (60, 100)], [(-80, 60), (80, 60)],
+                 [(-200, 0), (0, 0)]]
+        f = features(lines, ["secondary", "secondary", "secondary", "residential", "residential"],
+                     flags=[(1, "is_bridge", 0.0, 1.0), (2, "is_bridge", 0.0, 1.0)],
+                     ids=["street", "deck1", "deck2", "under", "side"])
+        d = _solve(f)
+        for k in ("deck1", "deck2"):
+            self.assertLess(abs(d[k][1][0] - FLAT), 0.05, k)
+        return d
+
+    def test_curve_solve_keeps_the_pin(self):
+        d = self.check()
+        self.assertGreater(float(np.max(d["deck1"][1])), FLAT + 2.0, "(the deck still rises over the street under it)")
+
+    def test_measured_keeps_the_pin(self):
+        roadz.PROVIDER = StubProvider(lambda xy, s: np.full(len(xy), FLAT + 6.0))
+        self.check()
+
+    def test_unpinned_parts(self):
+        lines = [np.array([[0.0, 0], [0, 50]]), np.array([[0.0, 0], [50, 50]]), np.array([[0.0, -50], [0, 0]])]
+        out, gfn = roads._unpinned(lines, lambda xy: np.asarray(xy, np.float64)[:, 0], [(0.0, 0.0)])
+        ends = [tuple(np.round(out[0][0], 2)), tuple(np.round(out[1][0], 2)), tuple(np.round(out[2][-1], 2))]
+        self.assertEqual(len(set(ends)), 3, "each part's own end")
+        np.testing.assert_allclose(gfn(np.array(ends)), 0.0, atol=1e-9, err_msg="the ground at the joint itself")
+
+
 if __name__ == "__main__":
     unittest.main()
