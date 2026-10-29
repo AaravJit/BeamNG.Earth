@@ -5702,6 +5702,23 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
             roads.append((fid, spec, np.stack([e[k:k + m], n[k:k + m], u[k:k + m]], axis=1),
                           float(np.mean(ring[:, 0]))))
             k += m
+    # Geometric roundabout rings (islands.ring_directions): Overture often leaves junction=roundabout and oneway
+    # off the ring ways (Chavagnes-en-Paillers 2026-10-28). No parking / inferred sidewalks on the ring, one-way so
+    # centre lines are not painted through the circle. Short approaches that meet the ring lose sidewalks too:
+    # their stubs against the circle were rectangular concrete blocks.
+    ring_dir = {}
+    if roads:
+        import islands
+        ring_dir = islands.ring_directions(roads, left_hand)
+        if ring_dir:
+            apps = islands.ring_approaches(roads, ring_dir)
+            short_apps = {fid for fid, sp, pts, _ in roads if fid in apps
+                          and float(np.sum(np.hypot(*np.diff(pts[:, :2], axis=0).T))) < islands.APPROACH_NO_WALK_M}
+            roads = [(fid,
+                      (sp._replace(urban=False, median=None, oneway=True, dir=ring_dir[fid]) if fid in ring_dir
+                       else sp._replace(urban=False, median=None) if fid in short_apps
+                       else sp),
+                      pts, lon) for fid, sp, pts, lon in roads]
     chunks = []
     if roads_out is not None:
         roads_out.extend(roads)
@@ -5775,13 +5792,18 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         for f in isl:
             if f["ring"] is None:
                 continue
+            # one tile owns the whole curb (the one with the island's centre): clipping the ring to each tile left
+            # four arcs with gaps on a roundabout near a tile corner
+            c = f["poly"].mean(0)
+            if not (x0 <= c[0] < x1 and y0 <= c[1] < y1):
+                continue
             ring = np.vstack([f["ring"], f["ring"][:1]])
             band = offset_polyline(ring, islands.ISLAND_BAND_M / 2)
-            for piece in clip_polyline(band, *exact):
-                run = densify(simplify(piece))
-                if len(run) >= 2:
-                    walks.append({"pts": run, "side": 1, "caps": (False, False), "ramps": [],
-                                  "w": islands.ISLAND_BAND_M, "fid": "island"})
+            # tight simplify + denser nodes: the default 0.25 m / 12 m spacing faceted the curb into a hexagon
+            run = densify(simplify(band, tol=0.08), spacing=3.0)
+            if len(run) >= 2:
+                walks.append({"pts": run, "side": 1, "caps": (False, False), "ramps": [],
+                              "w": islands.ISLAND_BAND_M, "fid": "island"})
     cornered = set()                            # road pairs whose sidewalks meet at a curb return
     if walks is not None:
         for (fid, side), cl in jcuts.items():
@@ -5793,6 +5815,12 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
             p = c["arc"][len(c["arc"]) // 2]
             if isl and islands.in_island(isl, p[:2]):
                 continue                        # a curb return inside a loop: its island has its own curb
+            # a curb return on the circulatory roadway or at a ring entry (approach sidewalks meeting there): the
+            # ring has no sidewalk, so the corner was a rectangular block on the asphalt
+            if any(float(np.hypot(*(p[:2] - f["poly"].mean(0))))
+                   < float(np.max(np.hypot(*(f["poly"] - f["poly"].mean(0)).T))) + islands.ENTRY_CLEAR_M
+                   for f in isl if f.get("round")):
+                continue
             if x0 <= p[0] < x1 and y0 <= p[1] < y1:
                 walks.append({"corner": c})
                 fill_look = _corner_look(p, roads)
@@ -5861,7 +5889,11 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         decal_blockers = [(p2[:, :2], s2.width / 2 + (CUT_MARGIN if (fid, f2) in going_on else
                                                       EDGE_DECAL["w"] + EDGE_DECAL_GAP_M))
                           for f2, s2, p2, _ in roads if f2 != fid and s2.kind in BUILT]
-        walk_blockers = [(p2[:, :2], s2.width / 2 if (fid, f2) in cornered else sidewalk_stop(spec, fid, s2, f2))
+        # ring roads: sidewalks stop ENTRY_CLEAR_M outside the carriageway (no stub into the circle)
+        walk_blockers = [(p2[:, :2],
+                          (s2.width / 2 + (islands.ENTRY_CLEAR_M if f2 in ring_dir else 0.0)
+                           if (fid, f2) in cornered or f2 in ring_dir
+                           else sidewalk_stop(spec, fid, s2, f2)))
                          for f2, s2, p2, _ in roads if f2 != fid] + list(walk_cuts)
         # a median's band stops at the other carriageways' curbs only (their sidewalk is on their far side: it cut
         # one carriageway's half of Boston Street's median away)
