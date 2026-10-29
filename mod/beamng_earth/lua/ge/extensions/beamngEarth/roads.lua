@@ -681,7 +681,14 @@ function M.markCollisionDirty() collisionDirty = true end
 -- once and came back over ~26 s as the server re-sent the tiles. DecalRoads (no rotation) and anything still queued go
 -- now: their positions are the old frame's. A ghost's colliders are not made again (updateCollideRange).
 M.GHOST_MAX_S = 120         -- ghosts left after this long go anyway
-M.GHOST_FAR_M = 960         -- ... and once farther from the player than this (the server's roads DROP_M)
+M.GHOST_FAR_M = 960         -- ... and once farther from the player than this (the server's roads DROP_M; a disc)
+-- Pure: m from (x, y) to the square of half-size h round (cx, cy): to its nearest point (Euclidean, as the server's
+-- roads.tile_distance; 0 inside).
+function M.boxGap(x, y, cx, cy, h)
+  local dx = math.max(math.abs(x - cx) - h, 0)
+  local dy = math.max(math.abs(y - cy) - h, 0)
+  return math.sqrt(dx * dx + dy * dy)
+end
 M.GHOST_FAR_WAIT_S = 2      -- ... from this long after the rebase on
 local ghostSince = nil      -- stopwatch since the last rebase that left ghosts
 
@@ -784,7 +791,7 @@ local function releaseGhosts(player)
       -- (not in the rebase's first GHOST_FAR_WAIT_S: in its frame the player is still read in the old frame, every
       -- ghost looked kilometres away and all went: 46 road tiles -> 0 at each rebase, 2026-10-17)
       local far = p and t.cx and ghostSince() > M.GHOST_FAR_WAIT_S * 1000
-        and math.max(math.abs(p.x - t.cx), math.abs(p.y - t.cy)) - M.TILE_M / 2 > M.GHOST_FAR_M
+        and M.boxGap(p.x, p.y, t.cx, t.cy, M.TILE_M / 2) > M.GHOST_FAR_M
       if all or far or (t.cx and covered(t.signOnly and signsDone or done, t.cx, t.cy)) then
         dropTile(key)
         if not t.signOnly then collisionDirty = true end

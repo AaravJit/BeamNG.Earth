@@ -40,7 +40,7 @@ log = logging.getLogger("earthd.roads")
 VERSION = 1
 TILE = 256.0            # m, tile side in the anchor frame
 SEND_M = float(os.environ.get("BNE_ROADS_SEND_M", "640"))     # tiles whose square comes this close to the player
-                                                                # (Chebyshev) are sent
+                                                                # (Euclidean, tiles_near: a disc) are sent
 DROP_M = float(os.environ.get("BNE_ROADS_DROP_M", str(SEND_M + 320)))   # ... and dropped beyond this
 OVERLAP = 2.0           # m a road reaches past its tile's edge (no gap at tile seams)
 SIMPLIFY_M = 0.25       # RDP tolerance (Road Spline's layerMgr)
@@ -3404,16 +3404,32 @@ def tile_bbox(tx, ty):
     return tx * TILE, ty * TILE, (tx + 1) * TILE, (ty + 1) * TILE
 
 
+def box_gap(x0, y0, x1, y1, x, y):
+    """m from (x, y) to the nearest point of the box [x0, x1] x [y0, y1] (Euclidean; 0 inside)."""
+    return math.hypot(max(x0 - x, x - x1, 0.0), max(y0 - y, y - y1, 0.0))
+
+
 def tiles_near(x, y, radius):
-    """Tile keys whose square comes within `radius` of (x, y) (Chebyshev)."""
+    """Tile keys whose square comes within `radius` of (x, y): the Euclidean distance to its nearest point, a disc (the
+    user, 2026-10-28: "change the quality/view distance radius from a square to a circle"). Before it was the square
+    (Chebyshev): its corners reached 41 % farther than its sides, ~27 % more tiles than the disc for no reach ahead
+    (the anchor frame's axes are not the way the car drives). Order: tx, then ty (as before)."""
     t0x, t1x = int(math.floor((x - radius) / TILE)), int(math.floor((x + radius) / TILE))
     t0y, t1y = int(math.floor((y - radius) / TILE)), int(math.floor((y + radius) / TILE))
-    return [(tx, ty) for tx in range(t0x, t1x + 1) for ty in range(t0y, t1y + 1)]
+    r2 = radius * radius
+    out = []
+    for tx in range(t0x, t1x + 1):
+        dx = max(tx * TILE - x, x - (tx + 1) * TILE, 0.0)
+        for ty in range(t0y, t1y + 1):
+            dy = max(ty * TILE - y, y - (ty + 1) * TILE, 0.0)
+            if dx * dx + dy * dy <= r2:
+                out.append((tx, ty))
+    return out
 
 
 def tile_distance(tx, ty, x, y):
-    x0, y0, x1, y1 = tile_bbox(tx, ty)
-    return max(x0 - x, x - x1, y0 - y, y - y1, 0.0)
+    """m from (x, y) to tile (tx, ty)'s square (Euclidean, as tiles_near; 0 inside)."""
+    return box_gap(*tile_bbox(tx, ty), x, y)
 
 
 def wanted_tiles(x, y, vx=0.0, vy=0.0):

@@ -147,7 +147,7 @@ function cancelClearCache() { cacheConfirm.value = false }
 
 .earth-presets {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(5.5em, 1fr));     /* (4 in a row, 2 in the pause menu's card) */
+  grid-template-columns: repeat(auto-fit, minmax(5.5em, 1fr));     /* (5 in a row on the full page, fewer in the pause menu's card) */
   gap: 0.5em;
   padding: 0.25em 0 0.5em;
 }

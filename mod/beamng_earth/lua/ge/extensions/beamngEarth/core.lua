@@ -402,7 +402,10 @@ local function applyHorizon()
   if not st.active then return end
   if horizonOn then
     horizon.applySky()
-    local v = horizon.visibleTarget(farRadius, st.visibleDistance or VISIBLE_DISTANCE, VISIBLE_DISTANCE)
+    -- (a fixed view distance in the settings: theirs stays; the horizon's radius moving set it back before)
+    local stg = rawget(_G, 'beamngEarth_settings')
+    local fixed = stg and stg.get and stg.get('viewDistanceMode') == 'fixed'
+    local v = not fixed and horizon.visibleTarget(farRadius, st.visibleDistance or VISIBLE_DISTANCE, VISIBLE_DISTANCE)
     if v and horizon.setVisibleDistance(v) then st.visibleDistance = v end
   else
     horizon.restoreSky()
@@ -413,8 +416,10 @@ end
 local function activateWorld()
   if st.active then return end
   st.active = true
-  -- bigMapMode.lua:866-867 sets the same LevelInfo field at runtime
-  if scenetree.theLevelInfo then scenetree.theLevelInfo.visibleDistance = VISIBLE_DISTANCE end
+  -- bigMapMode.lua:866-867 sets the same LevelInfo field at runtime (not over the settings' fixed view distance)
+  local stg = rawget(_G, 'beamngEarth_settings')
+  local fixed = stg and stg.get and stg.get('viewDistanceMode') == 'fixed'
+  if scenetree.theLevelInfo and not fixed then scenetree.theLevelInfo.visibleDistance = VISIBLE_DISTANCE end
   terrain.hideGroundPlanes()
   applyHorizon()
 end
@@ -835,6 +840,9 @@ local function onMessage(msg)
     net.send({ type = 'gas_stations', on = true })
     -- the highway signs' switch (settings highwaySigns): no sign tiles built while it is off
     net.send({ type = 'highway_signs', on = roads.signsEnabled })
+    -- the graphics settings the server serves (terrain detail, tree and building reach, the ground photo's size)
+    M.graphicsSent = nil
+    M.sendGraphics()
     -- the on-screen credits: this session's own follow (the attribution line until then)
     credits.clear()
     -- M4: the terrain block size first (everything below may use the lattice / follow table); a
@@ -1856,6 +1864,7 @@ local function onUpdate(dtReal, dtSim)
   for k in pairs(marks) do marks[k] = nil end
   local t = hitchClock()
   postfx.update(st.inOurLevel)
+  require('beamngEarth/enginepref').update(st.inOurLevel)      -- (the settings' object detail: our level only)
   local stg = rawget(_G, 'beamngEarth_settings')
   if stg and stg.redirectBigMap then stg.redirectBigMap(st.inOurLevel) end
   if st.inOurLevel then gps.update(st.anchor, st.player) end
@@ -2101,6 +2110,7 @@ local function onClientEndMission()
   hudapps.unhookCityZone()
   hudapps.unhookMinimapNorth()
   postfx.restore()
+  require('beamngEarth/enginepref').restore()
   pcall(terrainpatch.clear)
   pcall(gasstations.reset)
   pcall(farcars.reset)
@@ -2294,6 +2304,13 @@ function M.setHorizon(on)
   return horizonOn
 end
 
+-- The settings' view distance went back to the real horizon (settings.lua applyViewDistance): the horizon's
+-- distance set again now (its hysteresis compares with the last one set here, which the fixed distance replaced).
+function M.refreshHorizon()
+  st.visibleDistance = nil
+  applyHorizon()
+end
+
 -- The server's far-field radius in metres (status.radius, horizon mode). Returns the view distance in use.
 function M.setFarRadius(m)
   farRadius = tonumber(m)
@@ -2475,6 +2492,23 @@ end
 function M.setRoadsEnabled(on)
   if roads.setEnabled(on) then net.send({ type = 'roads_reset' }) end
 end
+-- The settings page's graphics the server serves (settings.serverGraphics: { lodScale, treeScale, buildingScale,
+-- photoPx, viewM }), after every hello and when one changes (sent only when it differs from the last one sent: applyAll
+-- runs every knob at a level's start). Whether it went out.
+M.graphicsSent = nil          -- (a field: core.lua is near Lua's 200-local limit)
+function M.sendGraphics()
+  local settings = rawget(_G, 'beamngEarth_settings')
+  local g = settings and settings.serverGraphics and settings.serverGraphics()
+  if type(g) ~= 'table' or not net.isConnected() or not st.sessionId then return false end
+  local sig = string.format('%s/%s/%s/%s/%s', tostring(g.lodScale), tostring(g.treeScale), tostring(g.buildingScale),
+    tostring(g.photoPx), tostring(g.viewM))
+  if sig == M.graphicsSent then return false end
+  net.send({ type = 'graphics', lodScale = g.lodScale, treeScale = g.treeScale, buildingScale = g.buildingScale,
+    photoPx = g.photoPx, viewM = g.viewM })
+  M.graphicsSent = sig
+  return true
+end
+
 -- The highway signs on / off (settings highwaySigns): shown or hidden at once, built by the server only while on.
 function M.setHighwaySigns(on)
   if roads.setSignsEnabled(on) then net.send({ type = 'highway_signs', on = roads.signsEnabled }) end
