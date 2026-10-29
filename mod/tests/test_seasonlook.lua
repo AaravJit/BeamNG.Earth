@@ -20,4 +20,16 @@ local _, a0 = S.speciesTint(oak, 'auto', 190, 39.2)
 T.check(a0 == 0, 'July: summer')
 local _, aoff = S.speciesTint(oak, nil, 15, 39.2)
 T.check(aoff == 0, 'season off: nothing')
+
+-- the far imposters of the species' shapes take their tint (the user, 2026-10-29: flat far trees kept summer green)
+do
+  local oak = S.imposterSpecies('imposter_mat__levels_east_coast_usa_art_shapes_trees_trees_oak_tree_oak_forest_b.dae')
+  T.check(oak and oak.folders[1] == 'trees_oak', 'an oak imposter: the oak tint')
+  T.check(S.imposterSpecies('imposter_mat__levels_east_coast_usa_art_shapes_trees_trees_aspen_tree_aspen_forest_b.dae') ==
+    S.SPECIES[3], 'an aspen imposter: the birch / aspen gold')
+  T.check(S.imposterSpecies('imposter_mat__levels_west_coast_usa_art_shapes_trees_trees_conifer_pine_radiata_large.dae') == nil,
+    'a conifer imposter: untouched')
+  T.check(S.imposterSpecies('m_oak_leaves_distant') == nil, 'not an imposter material: none')
+end
+
 T.done('test_seasonlook')
