@@ -85,6 +85,8 @@ import cache as cachemod  # noqa: E402
 import cdae  # noqa: E402
 import colormatch as colormatchmod  # noqa: E402
 import credits as creditsmod  # noqa: E402
+import covermap as covermapmod  # noqa: E402
+import areas as areasmod  # noqa: E402
 import surface as surfacemod  # noqa: E402
 import navgraph as navgraphmod  # noqa: E402
 import prewarm as prewarmmod  # noqa: E402
@@ -791,6 +793,8 @@ class Server:
         self.grader_lock = threading.Lock()
         # The download cache's bookkeeping (cache.py): every producer reports its disk hits and writes
         self.cache = cache
+        self.covermap = None            # the map's cache view (covermap.CoverMap; main_async, with a Cache)
+        self.areas = None               # saved areas downloaded ahead (areas.Areas; main_async, with a Cache)
         if cache is not None:
             for producer in (self.dem, self.imagery, self.deshadow, self.colormatch):
                 if producer is not None:
@@ -1461,6 +1465,57 @@ class Server:
         self.pads_stale()               # (the blocks' photos again: with or without their forecourts)
         log.info("gas stations %s (settings)", "on" if on else "off")
         return True
+
+    def live_busy(self):
+        """The live world has work in flight: a worker pool's jobs (blocks, far tiles, road tiles, far buildings), or
+        a player's loading line not full. The saved areas' downloads (areas.py) wait meanwhile."""
+        pools = [self.road_pool, self.far_bld_pool, getattr(self.far_pool, "local", self.far_pool)]
+        pools += [bp for bp, _ in self.block_pools]
+        if any(getattr(p, "inflight", 0) for p in pools if p is not None):
+            return True
+        for c in list(self.connections):
+            counts = getattr(c, "progress_sent", None)
+            if counts and any(d < w for d, w in counts):
+                return True
+        return False
+
+    def driving(self):
+        """A player is moving (faster than a walk): the saved areas' downloads run at areas.DUTY_DRIVE."""
+        return any(math.hypot(*getattr(c, "vel", (0.0, 0.0))) > 2.0 for c in list(self.connections))
+
+    def areas_message(self, result=None):
+        """The 'areas' message (areas.Areas.message; result: the answer to an area_add)."""
+        m = {"type": "areas", **self.areas.message()}
+        if result is not None:
+            m["result"] = result
+        return m
+
+    def world_signature(self):
+        """The settings the revisit cache's items are built with ({name: value}; the parts of the revisit keys that
+        are the player's settings or the data's versions, not the place): a sidecar row (revisit.sig, written where
+        the item is kept: blockworker, plancache) is "current" when its code_key is this server's and each setting
+        it names has the value given here (the map's cache view, covermap.py). One function: a new setting that
+        changes what is built goes into its revisit key, its store site's revisit.sig and here, under the same name.
+        Per-anchor parts (the height quantum, country, lamp rules, driving side) are the place's, not settings."""
+        im = self.imagery
+        md = self.mapdata.versions() if self.mapdata is not None and hasattr(self.mapdata, "versions") else None
+        return {
+            # road tiles (blockworker._roads_tile_cached)
+            "sidewalks": bool(self.sidewalks),
+            "lift": float(DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0),
+            "buildings": bool(self.buildings),
+            "gas_stations": bool(self.gas_stations),
+            # every kind: the map data's versions (Overture release, layer versions, the weekly rail / lane builds)
+            "md": md,
+            # far tiles' geometry and texture (blockworker._far_key, far_tile): the layout (quality: cells, texture px)
+            "layout": repr(self.layout),
+            "chain": tuple(s.name for s in im.chain) if im is not None else None,
+            "tone": self.tone,
+            "leaf_on": getattr(im, "leaf_on", None),
+            "season_mode": getattr(im, "season_mode", None),
+            # road plans (plancache.for_grader's signature)
+            "plans": f"w{int(self.road_widths is not None)}s{int(self.sea is not None)}",
+        }
 
     def set_base_px(self, px):
         """The ground photo's size (px) the mod's terrain texture set has (its graphics setting groundPhoto, applied at
@@ -3331,6 +3386,59 @@ class Connection:
         log.debug("geocode %r: %d results%s", q, len(out["results"]), (" (" + out["error"] + ")") if "error" in out else "")
         self.send(out)
 
+    async def cache_map(self, msg):
+        """The map's cache view {"id", "z", "x0", "y0", "x1", "y1", "mode"?} -> cache_map_result {"id", "z", "x0",
+        "y0", "w", "h", "cells" (base64, a level per cell), "gen", "ready", "error"?} (covermap.CoverMap.query)."""
+        out = {"type": "cache_map_result", "id": msg.get("id"), "z": 0, "x0": 0, "y0": 0, "w": 0, "h": 0, "cells": "",
+               "gen": 0}
+        cm = self.s.covermap
+        if cm is None:
+            out["error"] = "no cache view (no download cache)"
+        else:
+            try:
+                out.update(await asyncio.get_running_loop().run_in_executor(
+                    None, cm.query, msg.get("z"), msg.get("x0"), msg.get("y0"), msg.get("x1"),
+                    msg.get("y1"), msg.get("mode") or "summary"))
+            except ValueError as e:
+                out["error"] = str(e)[:200]
+        self.send(out)
+
+    async def area_plan(self, msg):
+        """{"id", "s", "w", "n", "e"} -> area_plan_result {"id", "ok", km2, items, missing, downloadBytes, diskBytes,
+        seconds, days, hosts, excluded, "error"?} (areas.Areas.plan: no network)."""
+        out = {"type": "area_plan_result", "id": msg.get("id"), "ok": False}
+        if self.s.areas is None:
+            out["error"] = "saved areas need the download cache"
+        else:
+            try:
+                out.update(await asyncio.get_running_loop().run_in_executor(
+                    None, self.s.areas.plan, msg.get("s"), msg.get("w"), msg.get("n"), msg.get("e")))
+            except Exception as e:      # (the box stays without an estimate)
+                out.update(ok=False, error=f"{type(e).__name__}: {e}"[:200])
+        self.send(out)
+
+    async def area_add(self, msg):
+        """{"id", "s", "w", "n", "e", "name"?} -> areas {..., "result": {"id", "ok", "area" or "error"}}."""
+        if self.s.areas is None:
+            self.send({"type": "areas", "areas": [], "result": {"id": msg.get("id"), "ok": False,
+                                                                "error": "saved areas need the download cache"}})
+            return
+        name = msg.get("name")
+        ok, info = await asyncio.get_running_loop().run_in_executor(
+            None, self.s.areas.add, msg.get("s"), msg.get("w"), msg.get("n"), msg.get("e"),
+            name if isinstance(name, str) else "")
+        res = {"id": msg.get("id"), "ok": ok, ("area" if ok else "error"): info}
+        self.send(self.s.areas_message(res))
+
+    async def area_cmd(self, msg):
+        """{"id", "area", "op": pause | resume | delete} -> areas {..., "result": {"id", "ok"}}."""
+        if self.s.areas is None:
+            return
+        area, op = msg.get("area"), msg.get("op")
+        ok = isinstance(area, str) and isinstance(op, str) and await asyncio.get_running_loop().run_in_executor(
+            None, self.s.areas.command, area, op)
+        self.send(self.s.areas_message({"id": msg.get("id"), "ok": bool(ok)}))
+
     def send(self, msg):
         if not self.writer.is_closing():
             self.writer.write(protocol.encode(msg))
@@ -3502,6 +3610,8 @@ class Connection:
                 self.status(self.last_status)
             if self.s.cache is not None:            # the download cache's usage (the settings page)
                 self.send(self.s.cache.message())
+            if self.s.areas is not None:            # the saved areas (the map's Places panel)
+                self.send(self.s.areas_message())
             if self.s.update_check:
                 self.spawn(self.check_update())     # a newer version on GitHub: the mod says so (updates.py)
             if getattr(self.s, "game_cpus", None):  # the game off the server's cores (cpupin.py)
@@ -3529,6 +3639,14 @@ class Connection:
             self.spawn(self.map_tiles(msg))
         elif kind == "geocode":                 # the map's search box: addresses and places (geocode.py)
             self.spawn(self.geocode(msg))
+        elif kind == "cache_map":               # the map's cache view: what is cached where (covermap.py)
+            self.spawn(self.cache_map(msg))
+        elif kind == "area_plan":               # the map's picked area: the estimate for its confirm box (areas.py)
+            self.spawn(self.area_plan(msg))
+        elif kind == "area_add":                # ... downloaded ahead
+            self.spawn(self.area_add(msg))
+        elif kind == "area_cmd":                # a saved area paused, resumed or deleted
+            self.spawn(self.area_cmd(msg))
         elif kind == "route":                   # the GPS: the whole road route (routing.py)
             self.spawn(self.route(msg))
         elif kind == "where":                   # the status bar's street, town and country (geocode.py)
@@ -4749,7 +4867,8 @@ async def main_async(args):
         radii = {ml: args.near_radii[0], ml + 1: args.near_radii[1]}
     net = netfetch.Fetcher(stats_dir=os.path.join(args.cache_dir, "netstats"), offline=args.offline)
     disk = cachemod.Cache(args.cache_dir, args.cache_cap)
-    threading.Thread(target=prune_own_caches, args=(args.cache_dir,), daemon=True, name="cache-prune").start()
+    threading.Thread(target=prune_own_caches, args=(args.cache_dir, time.time()), daemon=True,
+                     name="cache-prune").start()
     # map data (mapdata.py): land cover for the surfaces, roads; one instance shares its cache locks
     mapdata = (mapdatamod.MapData(args.cache_dir, fetcher=net)
                if "on" in (args.surface, args.roads, args.sea, args.trees) else None)
@@ -4835,6 +4954,24 @@ async def main_async(args):
                     vegetation=(vegetationmod.Vegetation(mapdata, args.cache_dir) if args.trees == "on" else None))
     server.update_check = args.update_check == "on"
     server.lod_px = args.lod_px
+    loop = asyncio.get_running_loop()
+
+    def areas_changed():            # (any thread) every connection gets the saved areas' progress
+        def send():
+            if server.areas is not None:
+                m = server.areas_message()
+                for c in list(server.connections):
+                    c.send(m)
+        loop.call_soon_threadsafe(send)
+    try:            # saved areas downloaded ahead (areas.py): the list, its pins, the download thread
+        server.areas = areasmod.Areas(args.cache_dir, server, notify=areas_changed).start()
+    except Exception as e:      # (no saved areas; never the server)
+        log.warning("saved areas: %s", e)
+    try:            # the map's cache view: its index built in the background from the cache's keys (covermap.py)
+        server.covermap = covermapmod.CoverMap(disk, args.cache_dir, mapdata if args.roads == "on" else None,
+                                               server.world_signature).start()
+    except Exception as e:      # (the map's view stays empty; never the server)
+        log.warning("cache map: %s", e)
 
     server.game_cpus = getattr(args, "game_cpus", None)    # (cpupin.py: the game pinned at each hello)
     server.server_cpus = getattr(args, "server_cpus", None)
@@ -4934,6 +5071,8 @@ async def main_async(args):
         sweeper.cancel()
         if map_srv is not None:
             map_srv.close()
+        if server.areas is not None:
+            server.areas.close()
         net.close()                 # today's request counters
         disk.close()                # the cache's last uses
 
@@ -5007,10 +5146,13 @@ def raise_open_files():
         log.warning("open files limit not raised: %s", e)
 
 
-def prune_own_caches(cache_dir):
+def prune_own_caches(cache_dir, started=None):
     """The caches outside the cap's MANAGED folders, each cut back to its own limit at start (cache.prune_dir): the map
     data and DEM mirrors, sea carving's raw rasters, compute sharing's kept replies, the road widths' walls. Each grew run after run past its
-    limit (35 GB on a Steam Deck under a 20 GB cap, 2026-10-23: players' C: drives filled)."""
+    limit (35 GB on a Steam Deck under a 20 GB cap, 2026-10-23: players' C: drives filled). Then the older versions'
+    folders of the per-cell caches (cache.prune_versions: never read again, never deleted before: 8 GB of
+    vegetation/v1..v17 here, 2026-10-28) and the revisit sidecar's compaction (revisit.compact: the files written
+    before `started`, without the lines whose zip the prune removed)."""
     try:
         n = mapdatamod.prune_mirror(cache_dir)
         if n:
@@ -5028,6 +5170,22 @@ def prune_own_caches(cache_dir):
                 log.info("cache: %s cut back: %d files removed, %.2f GB left", sub, n, left / 1e9)
         except Exception as e:      # a cache's trim must never stop the server
             log.warning("cache: %s not cut back: %s", sub, e)
+    for sub, version in (("vegetation", vegetationmod.VERSION), ("seacarve", seacarvemod.VERSION),
+                         ("roadwidth", roadwidthmod.WALLS_VERSION)):
+        try:
+            n, freed = cachemod.prune_versions(os.path.join(cache_dir, sub), f"v{version}")
+            if n:
+                log.info("cache: %s: %d older version folders removed (%.2f GB)", sub, n, freed / 1e9)
+        except Exception as e:
+            log.warning("cache: %s's older versions not removed: %s", sub, e)
+    try:
+        kept = revisitmod.compact(cache_dir, started)
+        if kept:
+            log.info("cache: revisit sidecar compacted: %d items", kept)
+    except Exception as e:
+        log.warning("cache: revisit sidecar not compacted: %s", e)
+    finally:
+        revisitmod.COMPACTED.set()
 
 
 def _app_modules():

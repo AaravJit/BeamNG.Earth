@@ -117,6 +117,17 @@ class PlanCache:
         import revisit
         return revisit.key("plans", *self.persist[1], (int(key[0]), int(key[1]), int(key[2])))
 
+    def _where(self, key):
+        """revisit.where of cell key's plans (the map's cache view), or None."""
+        import mapcells
+        import revisit
+        try:
+            w, s, e, n = mapcells.CellKey(int(key[0]), int(key[1]), int(key[2])).bounds()
+            lat, lon, sig, versions = self.persist[1]
+            return revisit.where(lat, lon, s, w, n, e, revisit.sig(plans=sig, md=versions))
+        except Exception:
+            return None
+
     def _kept(self, key):
         """The revisit cache's copy of cell key's plans (a file-like npz), or None."""
         if self.persist is None:
@@ -156,7 +167,8 @@ class PlanCache:
             if persist and self.persist is not None:
                 import revisit
                 with open(p, "rb") as fh:
-                    revisit.store(self.persist[0], "plans", self._revisit_key(key), {"plans.npz": fh.read()})
+                    revisit.store(self.persist[0], "plans", self._revisit_key(key), {"plans.npz": fh.read()},
+                                  where=self._where(key))
         except (OSError, ValueError, TypeError):
             return False
         with self._lock:

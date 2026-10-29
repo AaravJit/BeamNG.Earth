@@ -704,6 +704,26 @@ class MapData:
             self._warm_ex.submit(run, k, key, layer)
         return len(todo)
 
+    def predownload(self, key, layer):
+        """A saved area's cell layer (areas.py): built from its sources at netfetch "predownload" and stored, unless it
+        is on disk; not loaded or mirrored (the session's cells keep the mirror). True when built now. Raises the
+        sources' netfetch errors."""
+        key = _key(key)
+        path = self.path(key, layer)
+        if os.path.exists(path):
+            return False
+        with self._key_lock(key, layer):
+            got, mine = xproc.once(path + ".lock", lambda: path if os.path.exists(path) else None, BUILD_WAIT_S,
+                                   "predownload")
+            if got is not None:
+                return False
+            try:
+                self._store(path, self._build(key, layer, "predownload"))
+            finally:
+                if mine:
+                    xproc.release(path + ".lock")
+        return True
+
     def cell_at(self, lat, lon, layers=LAYERS, kind="demand"):
         return self.cell(mapcells.cell_of(lat, lon), layers, kind)
 
