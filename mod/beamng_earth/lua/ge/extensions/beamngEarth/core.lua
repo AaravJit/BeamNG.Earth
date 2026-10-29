@@ -528,6 +528,7 @@ local function finishRebase()
   nightlights.transform(xf)
   gasstations.transform(xf)
   sea.transform(xf, msg.anchorId)
+  navgraph.transform(xf, msg.anchorId)    -- (the AI's road graph too: applied again at once, the AI planning afresh)
   -- a resync with a restarted server keeps the previous session's tiles the same way (st.sessionId
   -- is the new session's): they go once the new session's tiles cover them
   farfield.switchAnchor(msg.anchorId, true, { cx = tr.cx, cy = tr.cy }, st.sessionId)
