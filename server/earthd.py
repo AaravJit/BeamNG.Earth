@@ -5479,6 +5479,8 @@ def set_app_path(what, path):
 
 
 def main():
+    # (this run's id, inherited by its worker processes: roadz keeps one lidar decision per map cell and run in it)
+    os.environ.setdefault("BNGE_ROADZ_SESSION", f"{os.getpid()}.{int(time.time())}")
     home = os.path.expanduser("~")
     ap = argparse.ArgumentParser(description="BeamNG.Earth companion server")
     ap.add_argument("--port", type=int, default=47613, help="TCP port on 127.0.0.1 (0 = any free port)")

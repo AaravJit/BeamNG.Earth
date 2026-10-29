@@ -321,6 +321,111 @@ pub fn deck_gaps<'py>(py: Python<'py>, line: PyReadonlyArray2<'py, f64>, bridges
     numpy::ndarray::Array2::from_shape_vec((got.len(), 2), flat).expect("ranges").into_pyarray(py)
 }
 
+/// The free deck ends that stand on another deck's carriageway (a ramp's end on the cross street's bridge, a junction
+/// the map draws a few metres off the other road's line; held at the ground as an abutment, the ramp stood as a wall
+/// at the joint, the Springfield Interchange, 2026-10-29). Parts as deck_end_joins' (pts rows poff[k]..poff[k + 1],
+/// half widths half[k]), level[k] their levels (Overture's: a deck over another has a higher one), ground (m, 2) the
+/// ground roads' ends. An end is free as there (join_m, ground_m); it stands on part j (another, of its level) when
+/// its distance to j's line is within half[j] + margin_m (the nearest such j). (2 * parts, 2): per end the part j it
+/// stands on and the arc along j's line there (m), -1 / NaN where none. params: join_m, ground_m, margin_m.
+#[pyfunction]
+pub fn deck_end_on<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>, poff: PyReadonlyArray1<'py, i64>,
+                        half: PyReadonlyArray1<'py, f64>, level: PyReadonlyArray1<'py, f64>,
+                        ground: PyReadonlyArray2<'py, f64>, params: PyReadonlyArray1<'py, f64>)
+                        -> Bound<'py, PyArray2<f64>> {
+    let (pts, poff, half, level, ground, params) = (pts.as_array(), poff.as_array(), half.as_array(),
+                                                    level.as_array(), ground.as_array(), params.as_array());
+    let (join_m, ground_m, margin_m) = (params[0], params[1], params[2]);
+    let n = poff.len().saturating_sub(1);
+    let out = py.allow_threads(|| {
+        let span = |k: usize| (poff[k] as usize, poff[k + 1] as usize);
+        let p = |v: usize| [pts[[v, 0]], pts[[v, 1]]];
+        let d = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).hypot(a[1] - b[1]);
+        let mut ends: Vec<Option<[f64; 2]>> = vec![None; 2 * n];
+        for k in 0..n {
+            let (a, b) = span(k);
+            if b >= a + 2 {
+                ends[2 * k] = Some(p(a));
+                ends[2 * k + 1] = Some(p(b - 1));
+            }
+        }
+        // grids of the ends and the ground roads' ends (a pool of a few thousand parts: the pairs alone were seconds)
+        let cell = join_m.max(ground_m).max(1.0);
+        let key = |q: [f64; 2]| ((q[0] / cell).floor() as i64, (q[1] / cell).floor() as i64);
+        let mut eg: std::collections::HashMap<(i64, i64), Vec<usize>> = std::collections::HashMap::new();
+        for (e, q) in ends.iter().enumerate() {
+            if let Some(q) = q {
+                eg.entry(key(*q)).or_default().push(e);
+            }
+        }
+        let mut gg: std::collections::HashMap<(i64, i64), Vec<usize>> = std::collections::HashMap::new();
+        for g in 0..ground.nrows() {
+            gg.entry(key([ground[[g, 0]], ground[[g, 1]]])).or_default().push(g);
+        }
+        let near = |grid: &std::collections::HashMap<(i64, i64), Vec<usize>>, q: [f64; 2]| -> Vec<usize> {
+            let (gx, gy) = key(q);
+            let mut v = Vec::new();
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    if let Some(c) = grid.get(&(gx + dx, gy + dy)) {
+                        v.extend_from_slice(c);
+                    }
+                }
+            }
+            v
+        };
+        // each part's box, grown by its half width and the margin
+        let mut bb = vec![[f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY]; n];
+        for k in 0..n {
+            let (a, b) = span(k);
+            for v in a..b {
+                let q = p(v);
+                bb[k] = [bb[k][0].min(q[0]), bb[k][1].min(q[1]), bb[k][2].max(q[0]), bb[k][3].max(q[1])];
+            }
+            let r = half[k] + margin_m;
+            bb[k] = [bb[k][0] - r, bb[k][1] - r, bb[k][2] + r, bb[k][3] + r];
+        }
+        let mut out = vec![-1.0f64; 4 * n];
+        for e in 0..2 * n {
+            out[2 * e + 1] = f64::NAN;
+            let Some(q) = ends[e] else { continue };
+            let k = e / 2;
+            let joined = near(&eg, q).into_iter().any(|f| f != e && ends[f].map_or(false, |r| d(q, r) < join_m));
+            let grounded = near(&gg, q).into_iter().any(|g| d(q, [ground[[g, 0]], ground[[g, 1]]]) < ground_m);
+            if joined || grounded {
+                continue;
+            }
+            let mut best: Option<(f64, usize, f64)> = None;
+            for j in 0..n {
+                let (a, b) = span(j);
+                if j == k || b < a + 2 || (level[j] - level[k]).abs() > 1e-6 || q[0] < bb[j][0] || q[1] < bb[j][1]
+                    || q[0] > bb[j][2] || q[1] > bb[j][3] {
+                    continue;
+                }
+                let mut run = 0.0;
+                for v in a..b - 1 {
+                    let (s0, s1) = (p(v), p(v + 1));
+                    let (abx, aby) = (s1[0] - s0[0], s1[1] - s0[1]);
+                    let l2 = abx * abx + aby * aby;
+                    let t = if l2 > 1e-12 { (((q[0] - s0[0]) * abx + (q[1] - s0[1]) * aby) / l2).clamp(0.0, 1.0) }
+                            else { 0.0 };
+                    let dd = d(q, [s0[0] + t * abx, s0[1] + t * aby]);
+                    if dd <= half[j] + margin_m && best.map_or(true, |(bd, _, _)| dd < bd) {
+                        best = Some((dd, j, run + t * l2.sqrt()));
+                    }
+                    run += l2.sqrt();
+                }
+            }
+            if let Some((_, j, s)) = best {
+                out[2 * e] = j as f64;
+                out[2 * e + 1] = s;
+            }
+        }
+        out
+    });
+    numpy::ndarray::Array2::from_shape_vec((2 * n, 2), out).expect("ends").into_pyarray(py)
+}
+
 #[cfg(test)]
 mod tests {
     use super::fill_gaps;
