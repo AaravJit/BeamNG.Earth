@@ -94,6 +94,11 @@ You can help support development by reporting [issues](https://github.com/TecnaG
   (floating origin), and the world streams ahead of you; you never fall out of the world.
 - Buildings, sidewalks, curbs and bridge decks are solid (lean collision meshes near the car keep the
   physics' collision rebuilds cheap).
+- Real bridge and tunnel heights where open data measures them: in the US, bridge decks follow the USGS 3DEP lidar
+  measured along each bridge; in France (IGN BD TOPO) and Norway (NVDB), bridges and tunnels follow the national road
+  databases' heights, and so do roads where the terrain data is coarse. Elsewhere, or where a source has nothing,
+  the heights are estimated as before. The environment variables `BNE_ROADZ=off` (all of it) and
+  `BNE_LIDAR_DECKS=off` (the US lidar only) turn it off.
 - Fast teleports: right after a teleport, while you wait, the world server may borrow some of the game's
   CPU cores (at idle priority) to build the world faster (Linux; `--load-boost off` turns it off). It builds
   2 to 4 road pieces at once, by your computer's CPU threads and memory.

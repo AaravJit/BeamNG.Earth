@@ -164,6 +164,8 @@ APPROACH_SKIP = ("motorway", "trunk")   # never raised (their links are: _never_
 WATER_LIFT_ON = os.environ.get("BNE_WATER_FILL", "on") != "off"
 WATER_CURVE_M = 16.0        # m from an abutment a deck over water spends on its vertical curve before climbing ...
 WATER_MAX_LIFT = 2.0        # ... and its approach fill is raised at most this (any class: a motorway's too)
+OBS_HALF_M = 4.0            # m: the half width a bridge line is matched with when its abutment's lift is measured
+OBS_END_M = 12.0            # m from the end the measured deck's height is taken at most (its first measured station)
 APPROACH_GAP_M = 1.0        # m of flat ground kept between a ramp's fill slope and the road beside it
 ENU_CACHE_MAX = 512         # cells' road parts in the anchor frame kept (Grader._cell_enu; ~0.02-0.5 MB each)
 APPROACH_CELL_M = 450.0     # m: a plan's end this far from a cell cannot raise what that cell's queries see
@@ -331,12 +333,14 @@ def _normals(xy):
     return np.stack([-d[:, 1] / ln, d[:, 0] / ln], axis=1)
 
 
-def plan_roads(frame, parts, elev, abut=None, ext=None, pins=None, cuts=True, coarse=False):
+def plan_roads(frame, parts, elev, abut=None, ext=None, pins=None, cuts=True, coarse=False, obs=None):
     """plan_road for many (lonlat, spec) parts with one elev call (its cost is per call); abut: per part (start, end)
     flags, the ends leading onto a bridge (fill_abutment); ext: per part (before, after), the lines (k, 2) in the frame
     from its start / end outward along the part the road goes on in (Grader._extensions), or None: their ground is in
     the part's profile smoothing; pins: per part (start, end) heights its ends are held at, or None (Grader._pins: a
-    road ending on a more smoothed one meets it at its height). Pure given elev."""
+    road ending on a more smoothed one meets it at its height); obs(xy (m, 2), spec) -> measured heights (m,) of a
+    part's samples (NaN where none) or None: they stand in for the DEM's (roadz.py, on coarse elevation: Grader._obs).
+    Pure given elev and obs."""
     if not parts:
         return []
     ll = np.concatenate([lonlat for lonlat, _ in parts])
@@ -394,6 +398,11 @@ def plan_roads(frame, parts, elev, abut=None, ext=None, pins=None, cuts=True, co
         nb, na = len(before), len(after)
         zx = zall[k:k + nb + len(xy) + na]
         k += nb + len(xy) + na
+        if obs is not None:
+            o = obs(xy, spec)
+            if o is not None and len(o) == len(xy) and np.isfinite(o).any():
+                zx = zx.copy()
+                zx[nb:nb + len(xy)] = np.where(np.isfinite(o), o, zx[nb:nb + len(xy)])
         ab = (False, False)
         if abut is not None and ABUT_FILL_ON:
             ab = (bool(abut[j][0]), bool(abut[j][1]))
@@ -887,7 +896,7 @@ class _Planner:
             pparts = []                         # (fid, spec, lon/lat ring) of each plan (roadcorners.grade_rows)
             coarse = COARSE_EASE_ON and self._coarse(key)
             for fid, part, cl, p in zip(ids, parts, clipped, plan_roads(self.frame, parts, self.elev, abut, ext, pins,
-                                                                         coarse=coarse)):
+                                                                         coarse=coarse, obs=self._obs(key))):
                 if p is not None:
                     p.rid = road_id(fid)
                     plans.append((fid, p))
@@ -1149,7 +1158,8 @@ class _Planner:
                 parts = [(part, asks[n][0][4]) for n, (part, _last, _whole) in zip(jobs, preps)]
                 ext = self._extensions(parts, [asks[n][0][5] for n in jobs])
                 plans = plan_roads(self.frame, parts, self.elev, None, ext, cuts=False,
-                                   coarse=COARSE_EASE_ON and self._coarse_ll(parts[0][0]))
+                                   coarse=COARSE_EASE_ON and self._coarse_ll(parts[0][0]),
+                                   obs=self._obs(None, parts[0][0]))
                 for n, (part, last, whole), p in zip(jobs, preps, plans):
                     self._strong_keep(asks[n][0], keys[n], p, last, whole)
             except Exception as e:      # one at a time, each its own failure (_stronger_z)
@@ -1208,7 +1218,7 @@ class _Planner:
             # (the profile alone: its cutting's walls cost most of a plan and no height, 2026-10-25)
             p = plan_roads(self.frame, [(part, cand[4])], self.elev, None,
                            self._extensions([(part, cand[4])], [cand[5]]), cuts=False,
-                           coarse=COARSE_EASE_ON and self._coarse_ll(part))[0]
+                           coarse=COARSE_EASE_ON and self._coarse_ll(part), obs=self._obs(None, part))[0]
             self._strong_keep(cand, k, p, last, whole)
         except Exception as e:      # not held rather than no grading
             log.debug("grading: pin height of %s: %s: %s", cand[5], type(e).__name__, e)
@@ -1245,6 +1255,49 @@ class _Planner:
             la, lo, _ = self.frame.enu_to_geodetic(run[:, 0], run[:, 1], 0.0)
             out.append(np.stack([np.asarray(lo, np.float64), np.asarray(la, np.float64)], axis=1))
         return out
+
+    def _obs(self, key, lonlat=None):
+        """plan_roads' obs: the measured heights of ground roads (roadz.PROVIDER, level 0) where cell key's (or the
+        part's) elevation is only the coarse global model (dem.coarse_at): on lidar terrain the DTM is the better
+        height (decimetres; BD TOPO's Z is 1.5-2.5 m), so None there, as when roadz is off."""
+        import roadz
+        prov = roadz.PROVIDER
+        if prov is None or not prov.enabled:
+            return None
+        if not (self._coarse(key) if key is not None else self._coarse_ll(lonlat)):
+            return None
+
+        def obs(xy, spec):
+            try:
+                return prov.observed(self.frame, xy, spec.width / 2, 0)
+            except Exception as e:      # the DEM's rather than no grading
+                log.debug("grading: measured road heights: %s: %s", type(e).__name__, e)
+                return None
+        return obs
+
+    def _observed_lift(self, bridge, xy, z_at):
+        """m the abutment at bridge end xy is raised when a source measured the deck (roadz.PROVIDER, level 1): the
+        measured deck end over the ground there, 0 or more; None when none did (the inference: bridge_lifts)."""
+        import roadz
+        prov = roadz.PROVIDER
+        if prov is None or not prov.enabled:
+            return None
+        try:
+            z = prov.observed(self.frame, bridge, OBS_HALF_M, 1)
+        except Exception as e:
+            log.debug("grading: measured deck at %s: %s: %s", xy, type(e).__name__, e)
+            return None
+        if z is None:
+            return None
+        z = np.asarray(z, np.float64)
+        s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(bridge, axis=0).T))]
+        at_end = bool(np.hypot(*(bridge[-1] - xy)) < np.hypot(*(bridge[0] - xy)))
+        d = (s[-1] - s) if at_end else s
+        near = np.flatnonzero(np.isfinite(z) & (d <= OBS_END_M))
+        if not len(near):
+            return None
+        k = int(near[np.argmin(d[near])])
+        return max(0.0, float(z[k]) - float(z_at(np.asarray([xy], np.float64))[0]))
 
     def _coarse(self, key):
         """Is cell key's elevation only the coarse global model (dem.coarse_at its centre)? False without a DEM."""
@@ -1744,6 +1797,9 @@ class _Planner:
             if np.hypot(*(end - xy)) <= APPROACH_TOUCH_M:
                 best = lift
                 break
+        seen = self._observed_lift(bridge, xy, z_at)
+        if seen is not None:            # (a measured deck: its own end, not what the clearance rules would need)
+            return None if seen < APPROACH_MIN_LIFT else (min(seen, APPROACH_MAX_LIFT), others, approaches, False)
         wl = self._water_lift(bridge, chain, xy, z_at) if bridge_chain_ends_free(bridge, bridges, xy) else 0.0
         if wl >= APPROACH_MIN_LIFT and (best is None or wl > best):
             return min(wl, WATER_MAX_LIFT), others, approaches, True

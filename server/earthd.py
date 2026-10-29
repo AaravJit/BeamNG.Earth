@@ -1280,7 +1280,11 @@ class Server:
         # water when it starts; all of it at once kept a Steam Deck's 4 cores from the road tiles themselves)
         order = sorted((kl for kl in needs if kl[1] in self.WARM_PLACE_LAYERS),
                        key=lambda kl: (self.WARM_ORDER.get(kl[1], 9), where(kl[0]), str(kl[0]), kl[1]))
-        return self.mapdata.warm(order)
+        n = self.mapdata.warm(order)
+        import roadz        # (the measured road heights of the same cells, kept on disk for the road processes)
+        if roadz.PROVIDER is not None:
+            roadz.PROVIDER.warm(sorted({kl[0] for kl in order if kl[1] == "roads"}, key=lambda k: (where(k), str(k))))
+        return n
 
     def build_roads_tile(self, aid, tx, ty):
         """roads.py: one road tile of anchor aid, written to the session folder. Returns (vfs path,

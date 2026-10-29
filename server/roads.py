@@ -3772,6 +3772,13 @@ def pier_sites(xy, z, width, ground_fn, road_lines=(), wet_fn=None, depth=None):
     return out
 
 
+OBS_BLEND_DG = 0.04     # a measured deck eased onto its joints' heights changes its grade by at most this (BridgeProfiles)
+OBS_BLEND_MIN_M = 10.0  # m, the shortest easing
+OBS_MAX_GRADE = 0.14    # a measured deck steeper than this after the easing (2 m steps) keeps the inference
+OBS_END_MAX_M = float(os.environ.get("BNE_OBS_END_MAX", "inf"))  # m a measured deck's end may lie off the graded road at
+                        # its abutment, else the inference (inf: always eased onto it; 4 m made Springfield worse)
+
+
 class BridgeProfiles:
     """Deck heights per bridge part for one anchor frame, each chain resolved once from all of it, so
     every tile gets the same deck (2026-10-11: computed per tile from the tile's cells, a chain's
@@ -3881,6 +3888,7 @@ class BridgeProfiles:
         if feats is not None and len(feats):
             bs = self.specs_of(feats)
             rs = road_specs(feats)
+            names = feats.attrs.get("name")
             for i in range(len(feats)):
                 fid = str(feats.ids[i])
                 if bs[i] is not None:
@@ -3891,7 +3899,8 @@ class BridgeProfiles:
                             continue
                         e, n = mapgeom.enu_xy(feats, self.frame, ring)
                         best[(fid, j)] = (bs[i], densify(_dedupe(np.stack([e, n], axis=1)), DECK_STEP),
-                                          float(np.mean(ring[:, 0])), lvls[j] if j < len(lvls) else 1.0, len(ring))
+                                          float(np.mean(ring[:, 0])), lvls[j] if j < len(lvls) else 1.0, len(ring),
+                                          str(names[i]) if names is not None else "")     # (roadz: name matching)
                     parts.extend(best.items())
                 if rs[i] is not None:
                     lines = []
@@ -4005,7 +4014,94 @@ class BridgeProfiles:
             # filled players' consoles, GitHub #391, TGForever Discord 2026-10-28)
             log.debug("bridge clearance below %.1f m target: %s; abutment/grade or map constraints prevent full headroom",
                       MIN_BRIDGE_HEADROOM_M, [(comp[i], round(h, 2)) for i, h in deficits[:3]])
-        return zs
+        return self._observed(comp, pool, lines, zs)
+
+    def _observed(self, comp, pool, lines, zs, level=1):
+        """The chain's deck heights where a source measured them (roadz.py: IGN BD TOPO, NVDB, US lidar), the solved
+        ones (the inference) elsewhere. Each joint ends up at one height: an abutment (a joint no other part of the
+        chain shares) at the solved one (the graded road it meets), a joint between parts at the mean of their measured
+        ends; each part's profile is eased onto its joints' heights (earthfast.deck_blend: the grade changes by
+        OBS_BLEND_DG at most). A part whose measured profile still steps or climbs past OBS_MAX_GRADE keeps the
+        solve. Pure given the provider's cached data."""
+        import roadz
+        prov = roadz.PROVIDER
+        if prov is None or not prov.enabled or not lines:
+            return zs
+        obs = []
+        for k, ln in zip(comp, lines):
+            xy = np.asarray(ln, np.float64)[:, :2]
+            got = None
+            try:
+                spec = pool[k][0]
+                nm = pool[k][5] if len(pool[k]) > 5 else ""
+                z = prov.observed(self.frame, xy, spec.width / 2, level, "" if nm in ("None", "nan") else nm)
+                if z is not None:
+                    la, lo, _ = self.frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
+                    ok = np.isfinite(z)
+                    s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
+                    zf = np.interp(s, s[ok], np.asarray(z)[ok])         # (the ends past the last measurement: flat)
+                    got = np.asarray(self.frame.geodetic_to_enu(la, lo, zf)[2], np.float64)
+            except Exception as ex:             # the inference rather than no bridge
+                log.debug("observed deck %s: %s: %s", k, type(ex).__name__, ex)
+            obs.append(got)
+        if all(o is None for o in obs):
+            return zs
+        nk = _EndJoin()
+        ends = [(nk(np.asarray(ln)[0]), nk(np.asarray(ln)[-1])) for ln in lines]
+        deg = {}
+        for a, b in ends:
+            deg[a] = deg.get(a, 0) + 1
+            deg[b] = deg.get(b, 0) + 1
+        # a measured deck whose end is far off the graded road it meets there is a map gap (a flyover's untagged
+        # stretch drawn on the ground: Springfield's 15 m): the inference keeps that part rather than a long ramp
+        for i, (o, z, (a, b)) in enumerate(zip(obs, zs, ends)):
+            z = np.asarray(z, np.float64)
+            if o is not None and len(z) and OBS_END_MAX_M is not None and (
+                    (deg[a] == 1 and abs(o[0] - z[0]) > OBS_END_MAX_M)
+                    or (deg[b] == 1 and abs(o[-1] - z[-1]) > OBS_END_MAX_M)):
+                log.debug("observed deck %s: its end %.1f m off the road it meets, the solve kept", comp[i],
+                          max(abs(o[0] - z[0]), abs(o[-1] - z[-1])))
+                obs[i] = None
+        if all(o is None for o in obs):
+            return zs
+        target = {}
+        for node in deg:
+            if deg[node] == 1:
+                continue
+            got = [(o[0] if a == node else o[-1]) for o, (a, b) in zip(obs, ends) if o is not None and node in (a, b)]
+            if got:
+                target[node] = float(np.mean(got))
+        import fast
+        out = []
+        for k, (ln, z, o, (a, b)) in enumerate(zip(lines, zs, obs, ends)):
+            z = np.asarray(z, np.float64)
+            if not np.isfinite(z).all():
+                out.append(z)
+                continue
+            base = o if o is not None else z
+            t0 = z[0] if deg[a] == 1 else target.get(a, z[0])
+            t1 = z[-1] if deg[b] == 1 else target.get(b, z[-1])
+            if o is None and t0 == z[0] and t1 == z[-1]:
+                out.append(z)
+                continue
+            xy = np.asarray(ln, np.float64)[:, :2]
+            s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
+            zz = np.asarray(fast._ef.deck_blend(s, np.ascontiguousarray(base), float(t0), float(t1), OBS_BLEND_DG,
+                                                OBS_BLEND_MIN_M, 0.5), np.float64)
+            if o is not None and len(s) > 3:
+                step = np.interp(np.arange(0.0, s[-1], 2.0), s, zz)
+                g = np.abs(np.diff(step)) / 2.0 if len(step) > 1 else np.zeros(1)
+                if len(g) and float(g.max()) > OBS_MAX_GRADE:
+                    log.debug("observed deck %s: %.0f %% after the blend, the solve kept", comp[k], 100 * g.max())
+                    zz = np.asarray(fast._ef.deck_blend(s, np.ascontiguousarray(z), float(t0), float(t1), OBS_BLEND_DG,
+                                                        OBS_BLEND_MIN_M, 0.5), np.float64)
+                else:
+                    # never under both the solve (its clearances) and the measurement: an easing toward a joint
+                    # pulled a deck through the road under it (-1.8 m over I-95 at Springfield)
+                    # (the ends as eased: the parts at a joint keep meeting at one height)
+                    zz = np.r_[zz[0], np.maximum(zz, np.minimum(z, o))[1:-1], zz[-1]]
+            out.append(zz)
+        return out
 
     def _depth(self, lines):
         """m of slab and girders of a chain: deck_depth of the inventory's main span where a record matches, else of
@@ -4357,6 +4453,13 @@ class TunnelProfiles(BridgeProfiles):
         gfn = self._raw_ground if self.raw is not None else self._ground
         out = []
         self._tls.staged = {}           # (committed by parts() right after, the rest dropped with the next solve)
+        nk = _EndJoin()                 # (the parts' ends another part of the chain goes on from: no portal there)
+        jends = {k: (nk(np.asarray(pool[k][1])[0]), nk(np.asarray(pool[k][1])[-1])) for k in comp
+                 if len(pool[k][1]) >= 2}
+        jdeg = {}
+        for a, b in jends.values():
+            jdeg[a] = jdeg.get(a, 0) + 1
+            jdeg[b] = jdeg.get(b, 0) + 1
         for k in comp:
             xy = np.asarray(pool[k][1], np.float64)
             if len(xy) < 2:
@@ -4379,6 +4482,8 @@ class TunnelProfiles(BridgeProfiles):
                 i = j + 1
             # neighbouring sections share their end sample (no gap between a portal and the open road)
             secs = [(a if n == 0 else a - 1, b, kd) for n, (a, b, kd) in enumerate(secs)]
+            floor = self._observed_floor(k, pool, xy, s, floor, secs,
+                                         tuple(jdeg.get(e, 0) > 1 for e in jends.get(k, (None, None))))
             cover = g - floor
             log.debug("tunnel %s: sections %s over %.0f m", k, secs, s[-1])
             subs = {}
@@ -4413,6 +4518,53 @@ class TunnelProfiles(BridgeProfiles):
             self._tls.staged[k] = (secs, subs)
             out.append(floor)
         return out
+
+    def _observed_floor(self, k, pool, xy, s, floor, secs, joints=(False, False)):
+        """floor with each covered section (kind 1 / 2) at the measured height where a source has one (roadz.py,
+        level < 0: BD TOPO, NVDB) and it is deeper: never over the ground's lower hull (the cover stays); at a portal
+        (next to an open section, or the part's end where no other part of the chain goes on: joints (start, end))
+        at the hull's (the portals, the open sections and the grader's mouth plans keep theirs), eased in as the decks
+        are (earthfast.deck_blend); at a joint inside the hill as measured (the next part reads the same source).
+        Pure given the provider's cached data."""
+        import roadz
+        prov = roadz.PROVIDER
+        if prov is None or not prov.enabled or not any(kd for _a, _b, kd in secs):
+            return floor
+        try:
+            spec = pool[k][0]
+            nm = pool[k][5] if len(pool[k]) > 5 else ""
+            z = prov.observed(self.frame, xy, spec.width / 2, -1, "" if nm in ("None", "nan") else nm)
+            if z is None:
+                return floor
+            import fast
+            la, lo, _ = self.frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
+            z = np.asarray(z, np.float64)
+            zf = np.where(np.isfinite(z), z, 0.0)
+            zg = np.where(np.isfinite(z), np.asarray(self.frame.geodetic_to_enu(la, lo, zf)[2], np.float64), np.nan)
+            out = np.array(floor, np.float64)
+            last = len(s) - 1
+            for n, (a, b, kd) in enumerate(secs):
+                seg = zg[a:b + 1]
+                if not kd or b - a < 2 or np.isfinite(seg).mean() < roadz.MIN_COVER:
+                    continue
+                ok = np.isfinite(seg)
+                ss = s[a:b + 1]
+                filled = np.interp(ss, ss[ok], seg[ok])
+                inside0 = a == 0 and joints[0]
+                inside1 = b == last and joints[1]
+                if n > 0 and secs[n - 1][2]:            # (another covered section before it: no portal between)
+                    inside0 = True
+                if n + 1 < len(secs) and secs[n + 1][2]:
+                    inside1 = True
+                eased = np.asarray(fast._ef.deck_blend(ss - ss[0], np.ascontiguousarray(filled),
+                                                       float("nan") if inside0 else float(out[a]),
+                                                       float("nan") if inside1 else float(out[b]),
+                                                       OBS_BLEND_DG, OBS_BLEND_MIN_M, 0.5), np.float64)
+                out[a:b + 1] = np.minimum(eased, out[a:b + 1])
+            return out
+        except Exception as ex:             # the hull rather than no tunnel
+            log.debug("observed tunnel floor %s: %s: %s", k, type(ex).__name__, ex)
+            return floor
 
     def _load(self, key, pool, ground):
         super()._load(key, pool, ground)
