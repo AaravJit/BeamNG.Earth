@@ -1495,6 +1495,7 @@ function M.forget()
   objSlot = {}
   pending, live, old, oldCount, lossy, doomed, moving = {}, {}, {}, 0, {}, {}, {}
   oldFrames, under.level, under.old, under.miss = {}, nil, false, false
+  anchorObj = nil
   mainQ, mH, mT, preQ, pH, pT, nQueued = {}, 1, 0, {}, 1, 0, 0
   groups, activeGroups, removals, rH, rT = {}, 0, {}, 1, 0
   anchorId, doneReceived, block, session = nil, false, nil, nil

@@ -462,6 +462,7 @@ class Anchor:
     zf: int = 14                                   # far level 3's Web-Mercator zoom here (farfield.global_zoom)
 
 
+PIECE_PARTS = 24            # nodes whose geometry and texture the server keeps for their other pieces (Server.piece_parts)
 # The far tiles' server key of a global tile (farfield.GTile, geotiles phase 3b): (GLOBAL_AID, key), the same under
 # every anchor (anchor ids start at 1)
 GLOBAL_AID = 0
@@ -766,6 +767,10 @@ class Server:
         # Far tiles: (anchorId, key) -> TileInfo, LRU order; files are far_<anchorId>_<key>.<fmt>.
         self.tiles = OrderedDict()
         self.tile_inflight = {}
+        # A node across the global tiles' region edge is a piece per global tile it overlaps (farfield.Piece), each
+        # its node's geometry and texture cut: (anchorId, node key) -> {"built", "tex": (DDS bytes, bytes, sources,
+        # pending regions)} of the last few, so the node's other pieces build neither again
+        self.piece_parts = OrderedDict()
         self.build_stats = deque(maxlen=500)   # seconds per built tile, for the log
         self.level_stats = {}                  # level -> deque of (build s, texture s, shape B, texture B)
         self.prune_delay = PRUNE_DELAY
@@ -2565,6 +2570,7 @@ class Server:
             q = self.anchor_q(anchor) if lvl <= 0 else None
             ref_zoom = anchor.zooms[lvl - 1] if lvl > 0 else None
             zoom = anchor.zooms[max(lvl, 0)]
+            part = self.piece_parts.get((anchor.id, node.key)) if node is not tile else None
             g = self.grader_for(anchor) if lvl <= 0 and self.far_pool is None else None   # graded like the block
             base = self.airports.wrap(self.dem) if self.airports is not None else self.dem
             if self.sea is not None:
@@ -2594,6 +2600,8 @@ class Server:
                         self.refetched += 1
                 if got is not None:
                     done = (texture, got[0], got[1])
+            elif part is not None:          # (another piece of this node built it)
+                built = part["built"]
             elif self.far_pool is not None:
                 # the geometry in a far-tile process while this thread warps the texture from the finished imagery (no
                 # analysis waits there any more: imagery.Imagery.finished); the steps that need both after it
@@ -2608,11 +2616,20 @@ class Server:
         material = texture = used = None
         tex_bytes = 0
         pending = set() if self.colormatch is not None or self.deshadow is not None else None
+        part = self.piece_parts.get((anchor.id, node.key)) if node is not tile else None
         if done is not None:
             texture, tex_bytes, used = done
             material = self.matslots.take(ck)
             self.degraded.discard(ck)
             self.imagery_worker += 1
+        elif part is not None and part.get("tex") is not None:      # the node's texture, another piece's
+            texture = self.texture_name(*ck, self.tex_rev.get(ck, 0))
+            data, tex_bytes, used, was = part["tex"]
+            self.write_file(os.path.join(self.out_dir, texture), data)
+            if pending is not None:
+                pending |= set(was)
+            material = self.matslots.take(ck)
+            self.degraded.discard(ck)
         elif self.imagery is not None:
             try:
                 px = self.tex_size(lvl)
@@ -2653,6 +2670,14 @@ class Server:
             built = geo.result()
             geo_wait += time.perf_counter() - w0
         if node is not tile:            # a piece: its node cut to its global tile
+            if part is None:
+                tex = None
+                if material is not None:
+                    with open(os.path.join(self.out_dir, texture), "rb") as fh:
+                        tex = (fh.read(), tex_bytes, used, frozenset(pending or ()))
+                self.piece_parts[(anchor.id, node.key)] = {"built": built, "tex": tex}
+                while len(self.piece_parts) > PIECE_PARTS:
+                    self.piece_parts.popitem(last=False)
             built = farfield.clip_built(built, tile.quad)
         t2 = time.perf_counter()
         size = farfield.write_built(path, built, self.far_format, material or farfield.MATERIAL,
@@ -2830,11 +2855,11 @@ class Server:
         now = time.monotonic()
         for c in self.connections:
             out |= set(c.shown)
-            out |= {c.ck(k) for k in c.sent}
+            out |= {self.far_ck(c.active, k) for k in c.sent}
             # built for the active anchor but not sent yet: evicting these deleted the files of
             # tiles about to be sent (in-game 2026-10-10, after a 200 mph run had left thousands
             # of held previous-anchor tiles in the cache: 150 tiles failed with "No Mesh")
-            out |= {c.ck(k) for k in c.desired}
+            out |= {self.far_ck(c.active, k) for k in c.desired}
             out |= set(c.inflight)
             out |= {ck for ck, t in c.retired.items() if now - t < self.retired_keep}
         held = self.held_anchors()
@@ -2847,8 +2872,8 @@ class Server:
         keep their names. Whether a game still draws a name is slot_held()."""
         out = set()
         for c in self.connections:
-            out |= {c.ck(k) for k in c.sent}
-            out |= {c.ck(k) for k in c.desired}
+            out |= {self.far_ck(c.active, k) for k in c.sent}
+            out |= {self.far_ck(c.active, k) for k in c.desired}
             out |= set(c.inflight)
         return out
 
@@ -3015,7 +3040,7 @@ class Server:
         """The connections that show the tile, or hold it (sent, not swapped in yet), under their
         active anchor (a previous anchor's tiles are on their way out)."""
         aid, key = ck
-        return [c for c in self.connections if c.active is not None and c.ck(key) == ck
+        return [c for c in self.connections if c.active is not None and self.far_ck(c.active, key) == ck
                 and (ck in c.shown or key in c.sent)]
 
     def retex_request(self, ck, pump=True):
