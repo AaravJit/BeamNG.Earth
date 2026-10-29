@@ -2963,7 +2963,7 @@ class Server:
         sent again: a copy of its shape with the new name in the new name's pooled file (slot_<n>; DAE tiles: a file
         _s<serial>, the old copy deleted), even when it got its own name back (its pooled file may hold another
         tile by now).
-        On failure the tile keeps its name (it may show another tile's texture)."""
+        On failure the tile keeps its name: the caller builds it again rather than send it with another tile's name."""
         new = self.matslots.take(ck)
         src = os.path.join(self.out_dir, self.tile_name(*ck))
         pooled = self.far_format == "cdae"
@@ -2971,8 +2971,15 @@ class Server:
         try:
             with open(src, "rb") as fh:
                 data = fh.read()
-            if new != info.material:
-                data = matslotsmod.restamp(data, info.material, new)
+            # the name in the tile's own file: the one it was built with, not info.material once it was renamed before
+            # (a global far tile kept across rebases is renamed again and again: restamping info.material failed from
+            # its second rename on, and the tile was sent with a name another tile had, drawing that tile's texture:
+            # Utah's red far tiles on the Pikes Peak ground, 2026-10-29)
+            have = info.material if info.material.encode() in data else self.matslots.name_in(data)
+            if have is None:
+                raise ValueError(f"no pooled name in {os.path.basename(src)}")
+            if new != have:
+                data = matslotsmod.restamp(data, have, new)
             dst = os.path.join(self.out_dir, name)
             tmp = staging.tmp_for(dst)
             with open(tmp, "wb") as fh:
@@ -5229,6 +5236,13 @@ class Connection:
                 info = self.s.tiles.get(ck, fut.result())
                 if info.material is not None and not self.s.matslots.owns(ck, info.material):
                     info = self.s.reslot(ck, info)      # its material name went to another tile meanwhile
+                    if not self.s.matslots.owns(ck, info.material):
+                        # not renamed: sent with that name it would draw the other tile's texture; built again
+                        # (its files are written anew; the cached entry and its claim on the name go)
+                        self.s.tiles.pop(ck, None)
+                        self.s.matslots.release(ck)
+                        self.queue.append(t)
+                        continue
                 self.sent[t.key] = t
                 if info.stale:          # a region turned ready since: re-rendered live, then far_retex
                     self.s.retex_request(ck)
