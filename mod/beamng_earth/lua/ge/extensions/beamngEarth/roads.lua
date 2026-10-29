@@ -1087,15 +1087,42 @@ function M.skyCovered(seen, aid, ux, uy)
   return true
 end
 
+-- Road geotiles (M.geo): a far tile's 256 m square (key "a:[B]tx_ty") is the road tiles' when every geotile within its
+-- reach has its content here (buildings made, or none; decks: its deck made or none, and its skin's road mesh), the
+-- keys found once per far tile (its anchor's world). Until the far tiles are geotiles too (phase 2), a square at the
+-- road tiles' edge shows its far buildings over the geotiles it overlaps.
+local function geoSquareCovered(f, sq, deck)
+  if not f.geoKeys then
+    local tx, ty = tostring(sq):match('(%-?%d+)_(%-?%d+)$')
+    if not tx or not anchorObj then return false end
+    f.geoKeys = M.geoKeysNear((tonumber(tx) + 0.5) * M.TILE_M, (tonumber(ty) + 0.5) * M.TILE_M, M.TILE_M * 0.5)
+  end
+  if #f.geoKeys == 0 then return false end
+  for _, k in ipairs(f.geoKeys) do
+    local t = tiles[geoKey(k)]
+    if not t then return false end
+    if deck then
+      if (t.parts.deck and not t.deck) or not t.road then return false end
+    elseif t.parts.bld and not t.bld then
+      return false
+    end
+  end
+  return true
+end
+
 local function updateFar(gov)
   for key, f in pairs(far) do
     if f.id then
       local hide
       if f.sky then
         hide = M.skyCovered(farSeen, f.anchor, f.sky[1], f.sky[2])
+      elseif f.deckOf and M.geo then      -- (a ghost: as it was, its square is another anchor's)
+        hide = f.ghost and (f.hidden or false) or geoSquareCovered(f, f.deckOf, true)
       elseif f.deckOf then
         local t = tiles[f.deckOf]
         hide = t ~= nil and (t.deck ~= nil or t.road ~= nil)
+      elseif M.geo then
+        hide = f.ghost and (f.hidden or false) or geoSquareCovered(f, key, false)
       else
         hide = tiles[key] ~= nil and tiles[key].bld ~= nil
       end

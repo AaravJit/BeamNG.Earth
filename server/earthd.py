@@ -551,6 +551,12 @@ def survey_q(frame, dem, block_m=BLOCK_SURVEY_M):
     return heightmap.choose_q(float((win.max(axis=(2, 3)) - win.min(axis=(2, 3))).max()))
 
 
+def road_tracker(conn):
+    """A connection's road tiles' tracker: geotiles (roads.GeoTracker) when its mod places them (Connection.road_geo),
+    else the anchor's."""
+    return roadsmod.GeoTracker() if getattr(conn, "road_geo", False) else roadsmod.Tracker()
+
+
 class Server:
     def __init__(self, user_dir, cache_dir, tile_workers=3, kfun=None,
                  hysteresis=farfield.HYSTERESIS, radius=farfield.RADIUS, far_format="cdae",
@@ -3625,10 +3631,6 @@ class Connection:
         """Server.build_veg_tile in this mod's format (veg_flat). The vegetation tracker's worker threads."""
         return self.s.build_veg_tile(aid, tx, ty, flat=self.veg_flat)
 
-    def new_road_tracker(self):
-        """The road tiles' tracker: geotiles (roads.GeoTracker) when this mod places them, else the anchor's."""
-        return roadsmod.GeoTracker() if self.road_geo else roadsmod.Tracker()
-
     def build_veg_geo(self, gx, gy):
         """Server.build_veg_geo in this mod's format (veg_flat): the geotile tracker's worker threads."""
         return self.s.build_veg_geo(gx, gy, flat=self.veg_flat, aid=self.active)
@@ -3706,7 +3708,7 @@ class Connection:
             if road_geo != self.road_geo:
                 self.road_geo = road_geo
                 self.roads.close()
-                self.roads = self.new_road_tracker()
+                self.roads = road_tracker(self)
             if road_geo:
                 m["roadGeo"] = roadsmod.ROAD_GEO
             self.send(m)
@@ -3784,7 +3786,7 @@ class Connection:
                     log.info("game: %s", line[:PERF_LOG_CHARS].replace("\n", " "))
         elif kind == "roads_reset":             # the mod dropped its roads (settings): send them all again
             self.roads.close()
-            self.roads = self.new_road_tracker()
+            self.roads = road_tracker(self)
             self.signs.close()
             self.signs = signstream.Tracker()
         elif kind == "highway_signs":           # the settings page's switch: no sign tiles built while it is off
@@ -3794,7 +3796,7 @@ class Connection:
         elif kind == "gas_stations":            # the settings page's switch: the road tiles again, with or without
             if self.s.set_gas_stations(msg.get("on")):
                 self.roads.close()
-                self.roads = self.new_road_tracker()
+                self.roads = road_tracker(self)
         else:
             log.debug("ignoring message type %r", kind)
 

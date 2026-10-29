@@ -167,6 +167,16 @@ roads.onExact({ type = 'roads_exact', anchorId = 2, key = key, parts = { bldcol 
 run(2, B)
 T.check(#objsWith('rx_2_bldcol') == 0 and #objsWith('rg_bldcol') == 1, 'base shape again')
 
+-- a far buildings tile over the geotile's square: shown while not every geotile within its reach is here
+do
+  local tx, ty = math.floor(car.x / 256), math.floor(car.y / 256)
+  files['/s/far.json'] = '{ shape = "/s/bldfar.cdae", pos = { 0, 0, 0 } }'
+  roads.onFarTile({ anchorId = 2, key = tx .. '_' .. ty, path = '/s/far.json', n = 1 }, 2)
+  run(2, B)
+  local f = objsWith('bldfar')[1]
+  T.check(f ~= nil and f.hidden == false, 'far tile shown: not every geotile of its square is here')
+end
+
 -- the ahead probe and readyAround by geotile keys
 do
   local a = roads.ahead(car.x, car.y, 1, 0, 64)
