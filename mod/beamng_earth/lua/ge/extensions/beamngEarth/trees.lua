@@ -62,7 +62,8 @@ M.SHAPE_ITEMS_PER_FRAME = 4000
 -- (2026-10-26, a Fells Point drive: 119 tree frames of 8 ms or more, 24.8 ms on average, two thirds of it
 -- making Forests). More while the world loads (core: the governor's loading mode, a teleport or the car standing), none
 -- in the governor's heavy frames.
-M.FRAME_MS = 2.5          -- (4.0 before 2026-10-29: its frames every EVERY_N stood out as the game's time pulsing)
+M.FRAME_MS = 4.0          -- (2.5 for an evening, 2026-10-29: no steadier game time, and the trees, poles and
+                          -- signs fell 2,000+ items behind at 70-120 mph, their collision late)
 M.LOADING_FRAME_MS = 12.0
 local CHECK_ROWS = 256
 -- Registering a new Forest costs ~9 ms (in-game 2026-10-26: 8-10 ms each, named or not, whatever its data file), and
