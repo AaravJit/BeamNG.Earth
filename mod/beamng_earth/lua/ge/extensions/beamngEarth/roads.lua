@@ -2116,6 +2116,18 @@ local function releaseOrphans(player)
 end
 M._releaseOrphans = releaseOrphans
 
+-- The sign tiles shown (diagnostics): how many, and the farthest one's centre from (x, y) in m.
+function M.signTiles(x, y)
+  local n, far = 0, 0
+  for _, t in pairs(tiles) do
+    if t.signOnly and not t.ghost and t.cx then
+      n = n + 1
+      far = math.max(far, math.sqrt((t.cx - x) ^ 2 + (t.cy - y) ^ 2))
+    end
+  end
+  return n, far
+end
+
 function M.status()
   local nt, no, nw, nr, nd, nb, ngForest, ngRows = 0, 0, 0, 0, 0, 0, 0, 0
   for _, t in pairs(tiles) do

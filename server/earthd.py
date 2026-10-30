@@ -4563,9 +4563,9 @@ class Connection:
                 self.roads.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_roads_geo,
                                    vel=self.vel, ground_busy=self.terrain_wait > 0, view=self.view_at,
                                    foci=self.foci, frame=anchor.frame if anchor is not None else None)
-                # (the sign tiles stay the anchor's: those round the car once its road geotiles are in)
-                ready = (set(roadsmod.tiles_near(*self.focus, roadsmod.SEND_M))
-                         if self.roads.progress()[0] >= self.roads.progress()[1] else set())
+                # (the sign tiles stay the anchor's: each once the road geotiles under it are in)
+                ready = self.roads.ready_tiles(anchor.frame, *self.focus, roadsmod.SEND_M) if anchor is not None \
+                    else set()
             else:
                 self.roads.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_roads_tile,
                                    vel=self.vel, ground_busy=self.terrain_wait > 0, view=self.view_at,

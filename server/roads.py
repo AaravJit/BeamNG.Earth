@@ -7384,6 +7384,20 @@ class GeoTracker:
         done = sum(1 for k in self.car if (k in self.sent and k in self.skins) or k in self.retry)
         return done, len(self.car)
 
+    def ready_tiles(self, frame, x, y, r):
+        """The anchor road tiles (tx, ty) within r of (x, y) (tiles_near) whose road geotiles are all with the mod
+        (content and this anchor's skin, or waiting for a retry): their highway and speed signs may come (signstream).
+        Before (2026-10-29) the signs waited until every road geotile round the car was in, which while driving it
+        seldom was: signs came only once the car slowed down or stopped, one tile at a time, right next to it."""
+        import geotiles
+        reach = TILE / 2 * math.sqrt(2.0)
+        out = set()
+        for tx, ty in tiles_near(x, y, r):
+            ks = geotiles.tiles_near(frame, (tx + 0.5) * TILE, (ty + 0.5) * TILE, reach)
+            if all(((a, b) in self.sent and (a, b) in self.skins) or (a, b) in self.retry for a, b, _ in ks):
+                out.add((tx, ty))
+        return out
+
     def _shown_err(self, key, what, part, frame):
         """m the part (pivot, relief) of tile key is off in frame's world as the mod shows it (its base shape, or the
         exact variant of the anchor in shown) under rigid placement."""
