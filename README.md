@@ -140,7 +140,9 @@ You can help support development by reporting [issues](https://github.com/TecnaG
   (some hosts' daily limits stretch big areas over days). Its map data, elevation and imagery then download in the
   background, slower while you drive and never while the world around you loads, and carry on after a restart.
   Saved areas (Places panel) show their progress, can be paused or deleted, and their data is kept when the cache
-  is full or cleared. The world itself (roads, buildings) is still built when you get there.
+  is full or cleared. Tick **Build the world too** (areas and routes up to 155 square miles) to have the roads,
+  sidewalks, bridges, buildings and street furniture built ahead as well, so they load at once when you arrive;
+  otherwise the world itself is built when you get there.
 - In multiplayer the map has a **Players** list: follow a player, show everyone, or set the GPS to them. Teleport
   works without a car too (the free camera goes there).
 - **Autodrive**: the car drives itself along the GPS route (in lane, legal speed, minding traffic).
