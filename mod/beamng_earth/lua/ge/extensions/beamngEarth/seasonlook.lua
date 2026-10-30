@@ -139,10 +139,11 @@ function M.update(inOurLevel, lat)
     for _, n in ipairs(sp.mats) do pcall(tintOne, n, 'baseColorFactor', tint, t) end
     for _, n in ipairs(sp.merged) do pcall(tintOne, n, 'diffuseColor', tint, t) end
   end
-  for _, e in ipairs(imposters()) do         -- (both factors: the imposter shader reads either, by material version)
+  -- (one field: on these version 1 materials baseColorFactor and diffuseColor are the same colour, so tinting both
+  -- tinted the far trees twice, brighter and redder than the 3D trees in front of them, the user 2026-10-29)
+  for _, e in ipairs(imposters()) do
     local tint, t = M.speciesTint(e[2], mode, doy, lat)
     pcall(tintOne, e[1], 'baseColorFactor', tint, t)
-    pcall(tintOne, e[1], 'diffuseColor', tint, t)
   end
 end
 
