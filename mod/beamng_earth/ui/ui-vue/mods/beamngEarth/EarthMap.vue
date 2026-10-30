@@ -141,7 +141,7 @@
       <button class="map-btn" @click="zoomBy(-1)" title="Zoom out">-</button>
       <button class="map-btn" :class="{ on: follow === true }" @click="centreOnMe" title="Centre on the car and follow it">Me</button>
       <button class="map-btn" :class="{ on: selecting }" @click="toggleSelect"
-              title="Pick an area to download its map data, elevation and imagery ahead of time (or Shift + drag on the map)">Area</button>
+              title="Pick an area to pre-cache: its map data, elevation and imagery downloaded ahead of time, and the world built too if you like (or Shift + drag on the map)">Pre-cache area</button>
       <!-- the other players of a BeamMP session, nearest first: follow one on the map, or a GPS route to them -->
       <div v-if="state.others" class="layers-wrap">
         <button class="map-btn" :class="{ on: playersPanel || typeof follow === 'string' }"
@@ -232,7 +232,7 @@
         </span>
         <button class="map-btn small" @click="showOnMap(state.gps)">Show</button>
         <button v-if="routePts.length >= 2" class="map-btn small" @click="askRoute(routeHalf)"
-                title="Download this route's data (elevation, roads, buildings, aerial photos) and keep it, like a saved area">Save route</button>
+                title="Pre-cache this route: its data (elevation, roads, buildings, aerial photos) downloaded and kept, and the world built too if you like">Pre-cache route</button>
         <button class="map-btn small" :disabled="!!state.cannotGo" @click="teleportNow(state.gps.lat, state.gps.lon, state.gps.name)">Teleport</button>
         <button class="map-btn small" :class="{ primary: state.gps.autodrive }" @click="setAutodrive(!state.gps.autodrive)"
                 :title="state.gps.autodrive ? 'Stop driving by itself' : 'The car drives itself along the route (in its lane, at the speed limit)'">
@@ -272,7 +272,7 @@
 
     <!-- a picked area: its estimate and Download (server areas.py plan) -->
     <div v-if="areaAsk" class="confirm area-confirm" @mousedown.stop @wheel.stop>
-      <div class="confirm-title">{{ areaAsk.route ? "Download along this route?" : "Download this area?" }}</div>
+      <div class="confirm-title">{{ areaAsk.route ? "Pre-cache along this route?" : "Pre-cache this area?" }}</div>
       <div v-if="areaAsk.route" class="panel-row route-width">
         <span class="layer-hint">Width each side:</span>
         <button v-for="o in ROUTE_WIDTHS" :key="o.m" class="map-btn small" :class="{ primary: areaAsk.half === o.m }"
@@ -301,7 +301,7 @@
         Build the world too <span class="layer-hint">(roads and buildings ready when you arrive)</span></label>
       <div v-if="areaAsk.error" class="confirm-warn">{{ areaAsk.error }}</div>
       <div class="confirm-btns">
-        <button class="map-btn primary" :disabled="!areaAsk.plan || !areaAsk.plan.ok || areaAsk.busy" @click="confirmArea">Download{{ padMode ? " (X)" : "" }}</button>
+        <button class="map-btn primary" :disabled="!areaAsk.plan || !areaAsk.plan.ok || areaAsk.busy" @click="confirmArea">Pre-cache{{ padMode ? " (X)" : "" }}</button>
         <button class="map-btn" @click="cancelSelect">Cancel{{ padMode ? " (B)" : "" }}</button>
       </div>
     </div>
@@ -355,7 +355,7 @@
         </div>
         <div v-if="!placeList.length" class="panel-empty">No saved places yet.</div>
 
-        <div class="panel-sub">Saved areas <span class="layer-hint">(downloaded ahead: Area button)</span></div>
+        <div class="panel-sub">Pre-cached areas <span class="layer-hint">(Pre-cache area / Pre-cache route)</span></div>
         <div v-for="a in areaList" :key="'a' + a.id" class="panel-item area-item">
           <div class="item-text" @click="showArea(a)" title="Show on the map">
             <div class="item-name">{{ a.name }}<span v-if="a.route" class="layer-hint"> (route)</span><span
@@ -371,7 +371,7 @@
               {{ confirmAreaId === a.id ? "Confirm" : "Delete" }}</button>
           </div>
         </div>
-        <div v-if="!areaList.length" class="panel-empty">No saved areas yet (GPS: Save route keeps a route's).</div>
+        <div v-if="!areaList.length" class="panel-empty">Nothing pre-cached yet.</div>
         <div v-if="areaMsg" class="panel-msg" :class="{ warn: areaMsgError }">{{ areaMsg }}</div>
 
         <div class="panel-sub">Recent places</div>
@@ -1167,7 +1167,7 @@ const areaMsg = ref(""), areaMsgError = ref(false)
 const confirmAreaId = ref(null)
 let areaSeq = 0, areaTimer = null, confirmAreaTimer = null
 const areaList = computed(() => toArray(areas.value && areas.value.areas))
-const selectHint = computed(() => (areaAsk.value ? "X: download this area · B: cancel"
+const selectHint = computed(() => (areaAsk.value ? "X: pre-cache this area · B: cancel"
   : padMode.value ? (boxStart.value ? "A: the other corner · B: cancel" : "A: one corner of the area · B: cancel")
     : "Drag a box over the area to download · Esc: cancel"))
 

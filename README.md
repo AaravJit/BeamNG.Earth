@@ -128,18 +128,18 @@ You can help support development by reporting [issues](https://github.com/TecnaG
   on the game's minimap (bottom left), which shows the roads around you. The first 20 km (12 miles) of the
   route's map data and elevation download ahead while you drive, with a progress bar on the map (Settings >
   Storage > Download along the GPS route: off, the next 12 miles, or the whole route up to 300 miles).
-  **Save route** on the GPS box keeps the whole route's data (a quarter mile to 2 miles each side, aerial photos
-  included) like a saved area below.
+  **Pre-cache route** on the GPS box keeps the whole route's data (a quarter mile to 2 miles each side, aerial photos
+  included) like a pre-cached area below.
   The map shows the route's elevation profile under the GPS box and the local time and weather, has a Dark base
   map, and its right-click menu copies a spot's coordinates.
 - A **Cache** overlay on the map (Layers > Cache, or LB / RB on a controller) shows what is downloaded on your
   computer and at what detail: a summary (some data / the far view / ready to drive), or the elevation, imagery or
   map data alone.
-- **Download an area ahead**: the map's **Area** button (or Shift + drag; on a controller A, A, then X) picks a box
+- **Pre-cache an area**: the map's **Pre-cache area** button (or Shift + drag; on a controller A, A, then X) picks a box
   of up to 965 square miles; the confirm box shows its size, the download, the disk space and the time it takes
   (some hosts' daily limits stretch big areas over days). Its map data, elevation and imagery then download in the
   background, slower while you drive and never while the world around you loads, and carry on after a restart.
-  Saved areas (Places panel) show their progress, can be paused or deleted, and their data is kept when the cache
+  Pre-cached areas (Places panel) show their progress, can be paused or deleted, and their data is kept when the cache
   is full or cleared. Tick **Build the world too** (areas and routes up to 155 square miles) to have the roads,
   sidewalks, bridges, buildings and street furniture built ahead as well, so they load at once when you arrive;
   otherwise the world itself is built when you get there.
