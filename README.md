@@ -4,7 +4,7 @@ A 1:1 scale, streamed Earth for [BeamNG.drive](https://www.beamng.com/): drive a
 planet on real elevation data and satellite imagery, with distance-based level of detail and the
 real curvature of the Earth.
 
-Status: beta (see VERSION). Tested on BeamNG.drive 0.40.3 on Linux (Vulkan) and the Steam Deck. See
+Status: beta (see VERSION). Tested on BeamNG.drive 0.40.4 on Linux (Vulkan) and 0.40.3 on the Steam Deck. See
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is coming.
 
 **Community:** join the TGForever Discord, **[discord.gg/tgf](https://discord.gg/tgf)**, and head to the
@@ -167,6 +167,8 @@ You can help support development by reporting [issues](https://github.com/TecnaG
   BeamNG.Earth > Graphics; every settings page is listed down the side there), each fine-tunable; the first start
   picks Low, Medium or High for your hardware (Medium on a Steam Deck). **Extreme** puts every setting at its most,
   out to the real horizon, for the strongest PCs (it is never picked for you). The Graphics page's settings:
+  - **Even frame pacing** (on): keeps the time between frames steady so the game's speed doesn't pulse while the
+    world loads around you; costs up to about a tenth of the frame rate, and stays off below 30 fps.
   - **Terrain detail** (Low to Extreme): how far out each finer level of the distant land reaches (Extreme builds
     about twice as many distant ground pieces).
   - **Ground photo** (1024 / 2048 / 4096): the sharpness of the aerial photo and the painted roads on the
