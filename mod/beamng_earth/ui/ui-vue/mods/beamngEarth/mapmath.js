@@ -351,8 +351,9 @@ export function creditsFor(imagery, other, box) {
 export const CACHE_MIN_Z = 6, CACHE_MAX_Z = 16       // covermap.GRID_MIN_Z / GRID_MAX_Z
 export const CACHE_MAX_CELLS = 16384                 // covermap.MAX_CELLS
 export const CACHE_PARTIAL = 0x80                    // cachemap.rs PARTIAL: the detail covers less than half the cell
-export const CACHE_MODES = ["summary", "elevation", "imagery", "mapdata"]
-export const CACHE_MODE_NAMES = { summary: "Summary", elevation: "Elevation", imagery: "Imagery", mapdata: "Map data" }
+export const CACHE_MODES = ["summary", "elevation", "imagery", "mapdata", "world"]
+export const CACHE_MODE_NAMES = { summary: "Summary", elevation: "Elevation", imagery: "Imagery", mapdata: "Map data",
+  world: "World built" }
 
 // the grid's zoom for a view zoom: about 8 cells a map tile
 export function cacheGridZoom(z) { return Math.max(CACHE_MIN_Z, Math.min(CACHE_MAX_Z, Math.round(z) + 3)) }
@@ -403,6 +404,14 @@ export const CACHE_CLASSES = {
   mapdata: [
     { id: 1, name: "Some layers", rgb: [255, 196, 60] },
     { id: 2, name: "Every layer", rgb: [61, 220, 132] },
+  ],
+  // the generated world kept on disk (covermap "world": the revisit cache's places); older: built by an earlier version
+  // or other settings (built again when used)
+  world: [
+    { id: 1, name: "Terrain and far view, older", rgb: [110, 120, 135] },
+    { id: 2, name: "Terrain and far view", rgb: [58, 160, 255] },
+    { id: 3, name: "Roads and buildings, older", rgb: [190, 150, 60] },
+    { id: 4, name: "Roads and buildings", rgb: [61, 220, 132] },
   ],
 }
 export function cacheLegend(mode) { return CACHE_CLASSES[mode === "elevation" || mode === "imagery" ? "detail" : mode] || [] }

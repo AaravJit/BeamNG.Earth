@@ -134,7 +134,7 @@ You can help support development by reporting [issues](https://github.com/TecnaG
   map, and its right-click menu copies a spot's coordinates.
 - A **Cache** overlay on the map (Layers > Cache, or LB / RB on a controller) shows what is downloaded on your
   computer and at what detail: a summary (some data / the far view / ready to drive), or the elevation, imagery or
-  map data alone.
+  map data alone, or **World built** (the terrain, far view, roads and buildings already generated and kept).
 - **Pre-cache an area**: the map's **Pre-cache area** button (or Shift + drag; on a controller A, A, then X) picks a box
   of up to 965 square miles; the confirm box shows its size, the download, the disk space and the time it takes
   (some hosts' daily limits stretch big areas over days). Its map data, elevation and imagery then download in the
@@ -202,7 +202,7 @@ You can help support development by reporting [issues](https://github.com/TecnaG
 
 ## Install and play
 **You need:** BeamNG.drive (tested with 0.40.x) on Steam, free disk space for the map download cache (it grows
-as you visit places, up to 20 GB by default; settings page > "Download cache size" sets 5-50 GB), and an internet
+as you visit places, up to 20 GB by default; Settings > Storage > "Cache size limit" takes any size in GB, 0 for no limit), and an internet
 connection (the map is downloaded while you play).
 
 1. **Download** the file for your system from the [Releases](https://github.com/TecnaGamer/BeamNG.Earth/releases)

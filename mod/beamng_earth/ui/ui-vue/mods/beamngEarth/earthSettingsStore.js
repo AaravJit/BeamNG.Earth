@@ -79,8 +79,7 @@ export const settingsSchema = [
     name: "Storage",
     items: [
       { id: "cacheUsage", type: "info", name: "Download cache", desc: "Elevation, imagery and map data kept on disk so places you visited load without downloading again: the space in use, the limit and the number of files." },
-      { id: "cacheCapGb", type: "select", default: "20", name: "Cache size limit", desc: "The most the download cache may use. Over the limit the files used longest ago are removed (never what this session used in the last hour).",
-        options: [ { label: "5 GB", value: "5" }, { label: "10 GB", value: "10" }, { label: "20 GB", value: "20" }, { label: "50 GB", value: "50" }, { label: "Unlimited", value: "unlimited" } ] },
+      { id: "cacheCapGb", type: "number", default: 20, min: 0, unit: "GB", name: "Cache size limit (GB)", desc: "The most the download cache may use, in GB: type a number and press Enter (0: no limit). Over the limit the files used longest ago are removed (never what this session used in the last hour), and pre-cached areas and routes are kept." },
       { id: "routeDownload", type: "select", default: "ahead", name: "Download along the GPS route", desc: "When you plan a GPS route, its elevation and road and building data are downloaded ahead in the background, so the drive loads faster. Ahead: the next 12 miles. Whole route: all of it (up to 300 miles). To keep a route for good, with its aerial photos, use Pre-cache route on the map's GPS box.",
         options: [ { label: "Off", value: "off" }, { label: "Ahead (12 miles)", value: "ahead" }, { label: "Whole route", value: "route" } ] },
       { id: "cacheDir", type: "path", what: "cache", name: "Cache folder", placeholder: "Folder for the download cache, or default", desc: "Where the download cache is kept, e.g. on another drive. Change... opens your system's folder window (it may open behind the game: Alt+Tab to it); or type or paste a folder below and press Use (default: .cache/beamng-earth in your home folder). Used from the next start of the app; move the old folder's contents there first to keep what is downloaded." },
@@ -319,6 +318,15 @@ export function updateSetting(key) {
 export function resetSetting(item) {
   config.value[item.id] = item.default
   updateSetting(item.id)
+}
+
+// A typed number (type "number"): applied on Enter or when the box loses focus; anything else puts the value back.
+export function onNumberEnter(item, text) {
+  const n = Number(String(text).trim())
+  if (String(text).trim() === "" || !Number.isFinite(n)) return false
+  config.value[item.id] = Math.max(item.min ?? -Infinity, Math.min(item.max ?? Infinity, n))
+  updateSetting(item.id)
+  return true
 }
 
 export function onSliderChange(item, val) {

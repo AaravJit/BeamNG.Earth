@@ -98,8 +98,9 @@ M.SCHEMA = {
   creditsCorner = { kind = 'enum', default = 'bottom-left', values = credits.CORNERS, label = 'Data credits corner' },
   creditsSize = { kind = 'enum', default = 'small', values = { 'small', 'normal' }, label = 'Data credits size' },
   -- the server's download cache (server cache.py): its size cap in GB, sent on every hello and change
-  cacheCapGb = { kind = 'enum', default = '20', values = { '5', '10', '20', '50', 'unlimited' },
-    label = 'Download cache size' },
+  -- (typed on the page since 2026-10-29, the user: "change the cache limit setting to be a text box"; 0: unlimited.
+  -- The old choices '5' .. '50' read as numbers, 'unlimited' as 0: MIGRATE)
+  cacheCapGb = { kind = 'number', default = 20, min = 0, max = 100000, label = 'Download cache size (GB, 0: unlimited)' },
   -- even frame pacing (framepacer.lua): frames shorter than the recent ones wait, so the game's time runs steadily
   framePacing = { kind = 'bool', default = true, label = 'Even frame pacing' },
   -- the GPS route's data fetched ahead (the server's route_download; sent with each route): none, the next 12 miles
@@ -175,7 +176,7 @@ end
 -- Old values that still load (and set) as their replacement, without a warning: 'auto' weather
 -- (real unless BWM_Weather was changing the weather) is Real now, which switches itself to Manual
 -- when anyone changes the weather.
-M.MIGRATE = { weatherMode = { auto = 'real' } }
+M.MIGRATE = { weatherMode = { auto = 'real' }, cacheCapGb = { unlimited = 0 } }
 
 local values = {}       -- the settings in use (always complete and valid)
 local cachePolls = 0    -- uiState calls (the cache usage is asked every CACHE_POLL-th)
@@ -201,6 +202,7 @@ function M.validate(key, v)
   local s = M.SCHEMA[key]
   if not s then return nil, 'unknown setting ' .. tostring(key) end
   if s.kind == 'number' then
+    if M.MIGRATE[key] and M.MIGRATE[key][v] ~= nil then v = M.MIGRATE[key][v] end
     local n = tonumber(v)
     if not n or n ~= n or n == math.huge or n == -math.huge then return nil, key .. ': not a number' end
     return math.max(s.min, math.min(s.max, n))
@@ -319,7 +321,7 @@ end
 function M.get(key) return values[key] end
 
 -- The download cache's cap for the server: GB, 0 = unlimited.
-function M.cacheCapGb() return tonumber(values.cacheCapGb) or 0 end
+function M.cacheCapGb() return math.max(0, tonumber(values.cacheCapGb) or 0) end
 
 -- bytes as the page shows them: "350 MB", "1.2 GB", "20 GB" (decimal units, as the cap)
 local function size(b, whole)
