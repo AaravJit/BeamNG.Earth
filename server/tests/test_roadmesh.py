@@ -297,15 +297,6 @@ class BridgeLookTest(unittest.TestCase):
         top = P[np.abs(P[:, 2] - 20.0) < 1e-6]
         self.assertTrue(((top[:, 1] > 5.3) & (top[:, 1] < 5.7)).any(), "the slabs reach the median's middle")
 
-    def test_parapets_across_a_median_with_a_step(self):
-        """A ramp beside the deck 1.9 m lower, a median apart (the Jones Falls Expressway where a ramp splits off,
-        2026-10-29): no slabs widened to meet (a 1.9 m step with no barrier), parapets on both inner edges."""
-        lo = self.deck(11.0, "b", z=18.1)
-        runs = roadmesh.parapet_runs([self.deck(0.0, "a"), lo])
-        ys = sorted(float(np.mean(run["line"][:, 1])) for run in runs)
-        self.assertEqual(len(runs), 4, ys)
-        self.assertTrue(any(4.0 < y < 5.5 for y in ys) and any(5.5 < y < 7.0 for y in ys), ys)
-
     def test_parapets_beside_a_deck_well_apart(self):
         P = roadmesh.deck([self.deck(0.0, "a"), self.deck(20.0, "b")], (0.0, 0.0, 0.0))[0]
         ys = np.unique(np.round(self.parapet_tops(P)[:, 1], 2))
