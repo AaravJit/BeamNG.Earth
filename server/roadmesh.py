@@ -483,7 +483,10 @@ PARAPET_MIN_M = 8.0     # m: a parapet run shorter than this is left out (stubs 
                         # where its two directions' decks meet and the cover test missed a few points, 2026-10-17)
 MEDIAN_JOIN_M = 6.0     # m: two decks' edges closer than this (a divided road's carriageways on one bridge) face a
                         # median: no parapets there, each slab widened to meet the other halfway (two parapets and a
-                        # dark gap stood in a divided road's median over a canal, Port St. Lucie, 2026-10-23)
+                        # dark gap stood in a divided road's median over a canal, Port St. Lucie, 2026-10-23) ...
+MEDIAN_DZ_M = 0.5       # ... at about the same height: two slabs widened to meet with more between them left a step
+                        # with no parapet (a ramp 1.9 m under the Jones Falls Expressway where it splits off; a car
+                        # crawling across the median fell to the ground, 2026-10-29)
 FOOTING_M = 2.0         # m a pier reaches into the ground
 PIER_T = 1.8            # m: a wall pier's thickness along the deck (at its top; FOOTING tapers wider)
 PIER_TAPER = 0.012      # its width grows this much per m down (each side)
@@ -847,7 +850,7 @@ def _ground_carriageways(chunks):
 
 def _median_gaps(rb, context=()):
     """Per deck ribbon (left, right) the gap (m) from each edge point to the nearest edge of another deck within
-    MEDIAN_JOIN_M at about its height (PARAPET_COVER_DZ), else 0: a median between two carriageways' decks. rb and
+    MEDIAN_JOIN_M at about its height (MEDIAN_DZ_M), else 0: a median between two carriageways' decks. rb and
     context: [(ribbon, chunk)]; the context's pieces of the same deck (its fid: the deck going on in the tiles around)
     are not another deck (they had hidden every median at 0 m)."""
     edges = []                      # (owner, points (k, 3))
@@ -875,7 +878,7 @@ def _median_gaps(rb, context=()):
                     continue
                 d = np.hypot(E[:, None, 0] - O[None, :, 0], E[:, None, 1] - O[None, :, 1])
                 dz = np.abs(E[:, None, 2] - O[None, :, 2])
-                d = np.where(dz < PARAPET_COVER_DZ, d, np.inf).min(1)
+                d = np.where(dz < MEDIAN_DZ_M, d, np.inf).min(1)
                 hit = (d < MEDIAN_JOIN_M) & ((g == 0) | (d < g))
                 g = np.where(hit, np.maximum(d, 1e-3), g)
             sides.append(g)
