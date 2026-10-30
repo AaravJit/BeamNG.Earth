@@ -1416,6 +1416,31 @@ class Server:
             self.keep_fuel_pads(res["content"][3])
         return res
 
+    def geo_content_key(self, gx, gy):
+        """The revisit key geotile (gx, gy)'s road content has with this server's settings (blockworker._geo_content_key,
+        its own place's rules), or None (no map data)."""
+        if self.mapdata is None:
+            return None
+        import geotiles
+        lh, mph, buried, lamps, country, gzoom = self.geo_rules(gx, gy)
+        return blockworker._geo_content_key(geotiles.geobox(gx, gy).key, gzoom, self.buildings, lh, mph,
+                                            self.gas_stations, buried, lamps, country, md=self.mapdata.versions())
+
+    def geo_prebuilt(self, gx, gy):
+        """Is geotile (gx, gy)'s road content in the revisit cache (no worker, no network)? -> its key or None."""
+        k = self.geo_content_key(gx, gy)
+        return k if k is not None and os.path.exists(revisitmod._path(self.cache_dir, "roadsg", k)) else None
+
+    def prebuild_geo(self, gx, gy):
+        """Saved areas' world phase: geotile (gx, gy)'s road content built into the revisit cache in a road process
+        (blockworker.prebuild_geo), the game sent nothing. -> its revisit key, or None (not complete: tried later)."""
+        if self.mapdata is None or self.road_pool is None or not revisitmod.ON:
+            return None
+        lh, mph, buried, lamps, country, gzoom = self.geo_rules(gx, gy)
+        scratch = os.path.join(self.cache_dir, "areas", "scratch")
+        return self.road_pool.submit(blockworker.prebuild_geo, gx, gy, gzoom, scratch, self.buildings, lh, mph,
+                                     self.gas_stations, buried, lamps, country).result(timeout=ROAD_TILE_TIMEOUT_S)
+
     def build_roads_tile(self, aid, tx, ty):
         """roads.py: one road tile of anchor aid, written to the session folder. Returns (vfs path,
         chunks) or None if the anchor is gone. Worker threads (fetches the map cells it lacks)."""
@@ -3679,12 +3704,13 @@ class Connection:
         else:
             try:
                 route = self._area_route(msg)
+                mode = msg.get("mode") if isinstance(msg.get("mode"), str) else areasmod.DEFAULT_MODE
                 if route is not None:
                     out.update(await asyncio.get_running_loop().run_in_executor(
-                        None, self.s.areas.plan_route, route[0], route[1], msg.get("half")))
+                        None, self.s.areas.plan_route, route[0], route[1], msg.get("half"), mode))
                 else:
                     out.update(await asyncio.get_running_loop().run_in_executor(
-                        None, self.s.areas.plan, msg.get("s"), msg.get("w"), msg.get("n"), msg.get("e")))
+                        None, self.s.areas.plan, msg.get("s"), msg.get("w"), msg.get("n"), msg.get("e"), mode))
             except Exception as e:      # (the box stays without an estimate)
                 out.update(ok=False, error=f"{type(e).__name__}: {e}"[:200])
         self.send(out)
@@ -3698,13 +3724,14 @@ class Connection:
             return
         name = msg.get("name")
         name = name if isinstance(name, str) else ""
+        mode = msg.get("mode") if isinstance(msg.get("mode"), str) else areasmod.DEFAULT_MODE
         route = self._area_route(msg)
         if route is not None:
             ok, info = await asyncio.get_running_loop().run_in_executor(
-                None, self.s.areas.add_route, route[0], route[1], msg.get("half"), name)
+                None, self.s.areas.add_route, route[0], route[1], msg.get("half"), name, mode)
         else:
             ok, info = await asyncio.get_running_loop().run_in_executor(
-                None, self.s.areas.add, msg.get("s"), msg.get("w"), msg.get("n"), msg.get("e"), name)
+                None, self.s.areas.add, msg.get("s"), msg.get("w"), msg.get("n"), msg.get("e"), name, mode)
         res = {"id": msg.get("id"), "ok": ok, ("area" if ok else "error"): info}
         self.send(self.s.areas_message(res))
 
@@ -5642,7 +5669,8 @@ def prune_own_caches(cache_dir, started=None):
                            (os.path.join("dem", "decoded"), demmod.MIRROR_MB, lambda n: n.endswith(".npy")),
                            ("peercache", peerworkmod.CACHE_BYTES / 1e6, None),
                            ("roadwidth", roadwidthmod.STORE_MB, lambda n: n.endswith(".npy")),
-                           (revisitmod.SUBDIR, revisitmod.MAX_MB, lambda n: n.endswith(".zip"))):
+                           (revisitmod.SUBDIR, revisitmod.MAX_MB,
+                            lambda n, kept=areasmod.pinned_world(cache_dir): n.endswith(".zip") and n[:-4] not in kept)):
         try:
             n, left = cachemod.prune_dir(os.path.join(cache_dir, sub), mb * 1e6, match=match)
             if n:

@@ -853,22 +853,24 @@ local function areaSend(fn, ...)
   if not core[fn](areaId, ...) then return { error = 'Companion server not connected' } end
   return { id = areaId }
 end
-function M.uiAreaPlan(s, w, n, e)
-  return areaSend('requestAreaPlan', tonumber(s), tonumber(w), tonumber(n), tonumber(e))
+-- mode: 'data' (the downloads) or 'world' (them, then the roads, buildings etc. built ahead: server areas.py)
+local function areaMode(mode) return mode == 'world' and 'world' or 'data' end
+function M.uiAreaPlan(s, w, n, e, mode)
+  return areaSend('requestAreaPlan', tonumber(s), tonumber(w), tonumber(n), tonumber(e), areaMode(mode))
 end
 function M.uiAreaPlanResult(id)
   local core = ext('beamngEarth_core')
   return core and core.takeAreaPlan and core.takeAreaPlan(tonumber(id)) or nil
 end
-function M.uiAreaAdd(s, w, n, e, name)
-  return areaSend('areaAdd', tonumber(s), tonumber(w), tonumber(n), tonumber(e), tostring(name or ''))
+function M.uiAreaAdd(s, w, n, e, name, mode)
+  return areaSend('areaAdd', tonumber(s), tonumber(w), tonumber(n), tonumber(e), tostring(name or ''), areaMode(mode))
 end
 -- A saved route: the GPS's planned route with half m each side (the estimate, then the download, as an area's).
-function M.uiRoutePlan(half)
-  return areaSend('requestRoutePlan', tonumber(half))
+function M.uiRoutePlan(half, mode)
+  return areaSend('requestRoutePlan', tonumber(half), areaMode(mode))
 end
-function M.uiRouteAdd(half, name)
-  return areaSend('routeAdd', tonumber(half), tostring(name or ''))
+function M.uiRouteAdd(half, name, mode)
+  return areaSend('routeAdd', tonumber(half), tostring(name or ''), areaMode(mode))
 end
 function M.uiAreaCmd(area, op)
   return areaSend('areaCmd', tostring(area or ''), tostring(op or ''))

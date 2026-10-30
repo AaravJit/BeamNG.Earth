@@ -966,10 +966,39 @@ def _write_geo_content(out_dir, vfs_dir, tile, P):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def _geo_content_key(key, zoom, buildings, left_hand, mph, gas_stations, buried, lamp_region, country):
+def _geo_content_key(key, zoom, buildings, left_hand, mph, gas_stations, buried, lamp_region, country, md=None):
+    """The revisit key of a geotile's content (md: the map data's versions, when not this worker's: the server's own
+    check, earthd.Server.geo_prebuilt)."""
     import revisit
     return revisit.key("roadsg", str(key), int(zoom), bool(buildings), bool(left_hand), bool(mph), bool(gas_stations),
-                       _md_versions(), float(buried), lamp_region, country, GEO_SKIN_MARGIN_M)
+                       _md_versions() if md is None else md, float(buried), lamp_region, country, GEO_SKIN_MARGIN_M)
+
+
+def prebuild_geo(gx, gy, zoom, scratch, buildings, left_hand, mph, gas_stations, buried=0.0, lamp_region=None,
+                 country=None):
+    """Saved areas' world phase (areas.py, the user 2026-10-29: "pre generate along a route or area"): geotile (gx, gy)'s
+    road content (_geo_content: roads, sidewalks, bridges, buildings, street furniture) built into the revisit cache
+    ahead of play; nothing for the game (its files written to scratch, then removed). The revisit key when the content
+    is in the cache after (built now or before), else None (something it read was missing: tried again later)."""
+    import geotiles
+    import revisit
+    tile_key = geotiles.geobox(gx, gy).key
+    k = _geo_content_key(tile_key, zoom, buildings, left_hand, mph, gas_stations, buried, lamp_region, country)
+    path = revisit._path(_s.cache_dir, "roadsg", k)
+    if not os.path.exists(path):
+        os.makedirs(scratch, exist_ok=True)
+        try:
+            _geo_content(gx, gy, zoom, scratch, "/x", buildings, left_hand, mph, gas_stations, buried, lamp_region,
+                         country)
+        finally:
+            for name in geo_names(tile_key).values():
+                try:
+                    os.remove(os.path.join(scratch, name))
+                except OSError:
+                    pass
+            with _geo_lock:
+                _geo_inputs.pop(tile_key, None)
+    return k if os.path.exists(path) else None
 
 
 def _geo_content(gx, gy, zoom, out_dir, vfs_dir, buildings, left_hand, mph, gas_stations, buried, lamp_region,

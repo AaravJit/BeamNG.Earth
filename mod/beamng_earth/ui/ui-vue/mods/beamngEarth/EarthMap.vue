@@ -287,13 +287,18 @@
           v-if="hst[2] > 1"> (about {{ Math.ceil(hst[2]) }} days: its daily limit)</template></div>
         <div v-if="areaAsk.plan.excluded && areaAsk.plan.excluded.length" class="confirm-warn">Not included (these sources
           are fetched while you drive): {{ areaAsk.plan.excluded.join(", ") }}</div>
+        <div v-if="areaAsk.plan.worldTiles" class="confirm-where">Builds {{ areaAsk.plan.worldTiles.toLocaleString() }} road
+          tiles ahead ({{ areaAsk.plan.worldMissing.toLocaleString() }} not built yet)</div>
         <div class="area-note">It downloads in the background, slower while you drive, and the data is kept when the
-          cache is cleared or full. The world itself is still built when you get there.</div>
+          cache is cleared or full.<template v-if="!areaWorld"> The world itself is still built when you get there.</template></div>
         <div class="panel-row area-name-row">
           <input v-model="areaName" class="panel-input" @focus="typing(true)" @blur="typing(false)" placeholder="Name (optional)"
                  maxlength="60" @keydown.enter.stop.prevent="confirmArea" @keydown.esc.stop.prevent="cancelSelect" @mousedown.stop />
         </div>
       </template>
+      <label class="layer-opt area-world" title="Also build the roads, sidewalks, bridges, buildings and street furniture ahead of time, so arriving there loads them instead of building them (more disk space and time; rebuilt after a BeamNG.Earth update)">
+        <input type="checkbox" :checked="areaWorld" :disabled="areaAsk.busy" @change="setAreaWorld($event.target.checked)" />
+        Build the world too <span class="layer-hint">(roads and buildings ready when you arrive)</span></label>
       <div v-if="areaAsk.error" class="confirm-warn">{{ areaAsk.error }}</div>
       <div class="confirm-btns">
         <button class="map-btn primary" :disabled="!areaAsk.plan || !areaAsk.plan.ok || areaAsk.busy" @click="confirmArea">Download{{ padMode ? " (X)" : "" }}</button>
@@ -353,7 +358,8 @@
         <div class="panel-sub">Saved areas <span class="layer-hint">(downloaded ahead: Area button)</span></div>
         <div v-for="a in areaList" :key="'a' + a.id" class="panel-item area-item">
           <div class="item-text" @click="showArea(a)" title="Show on the map">
-            <div class="item-name">{{ a.name }}<span v-if="a.route" class="layer-hint"> (route)</span></div>
+            <div class="item-name">{{ a.name }}<span v-if="a.route" class="layer-hint"> (route)</span><span
+              v-if="a.mode === 'world'" class="layer-hint"> (world built)</span></div>
             <div class="item-sub">{{ areaStateText(a) }}</div>
             <div class="area-bar"><span class="area-bar-fill" :class="a.state" :style="{ width: areaPct(a) + '%' }"></span></div>
           </div>
@@ -1237,12 +1243,22 @@ const ROUTE_WIDTHS = [
   { m: 1609, mi: "1 mi", km: "1.6 km" }, { m: 3219, mi: "2 mi", km: "3.2 km" },
 ]
 const routeHalf = ref(805)
+// "Build the world too" (server areas.py mode "world"): the estimate asked again with it
+const areaWorld = ref(false)
+const areaMode = () => (areaWorld.value ? "world" : "data")
+function setAreaWorld(on) {
+  areaWorld.value = !!on
+  const a = areaAsk.value
+  if (!a) return
+  if (a.route) askRoute(a.half)
+  else askArea(a.box)
+}
 function askRoute(half) {
   routeHalf.value = half
   const seq = ++areaSeq
   areaAsk.value = { route: true, half, plan: null, error: "" }
   areaName.value = state.value.gps && state.value.gps.name ? String(state.value.gps.name).slice(0, 60) : ""
-  engineLua(`beamngEarth_settings and beamngEarth_settings.uiRoutePlan and beamngEarth_settings.uiRoutePlan(${half}) or nil`, r => {
+  engineLua(`beamngEarth_settings and beamngEarth_settings.uiRoutePlan and beamngEarth_settings.uiRoutePlan(${half}, ${luaStr(areaMode())}) or nil`, r => {
     if (seq !== areaSeq || !areaAsk.value) return
     if (!r || r.error || !r.id) { areaAsk.value = { ...areaAsk.value, error: (r && r.error) || "BeamNG.Earth is not loaded" }; return }
     let tries = 0
@@ -1261,15 +1277,15 @@ function askRoute(half) {
     setTimeout(poll, 100)
   })
 }
-function askArea() {
-  const b = pickedBox.value
+function askArea(again) {
+  const b = again || pickedBox.value
   if (!b) return
   const rect = rectOf(b)
-  if (rect.w < 6 || rect.h < 6) { boxStart.value = boxEnd.value = null; return }      // a click, not a box
+  if (!again && (rect.w < 6 || rect.h < 6)) { boxStart.value = boxEnd.value = null; return }      // a click, not a box
   const seq = ++areaSeq
   areaAsk.value = { box: b, plan: null, error: "" }
-  areaName.value = ""
-  engineLua(`beamngEarth_settings and beamngEarth_settings.uiAreaPlan and beamngEarth_settings.uiAreaPlan(${b.s}, ${b.w}, ${b.n}, ${b.e}) or nil`, r => {
+  if (!again) areaName.value = ""
+  engineLua(`beamngEarth_settings and beamngEarth_settings.uiAreaPlan and beamngEarth_settings.uiAreaPlan(${b.s}, ${b.w}, ${b.n}, ${b.e}, ${luaStr(areaMode())}) or nil`, r => {
     if (seq !== areaSeq || !areaAsk.value) return
     if (!r || r.error || !r.id) { areaAsk.value = { ...areaAsk.value, error: (r && r.error) || "BeamNG.Earth is not loaded" }; return }
     let tries = 0
@@ -1298,8 +1314,8 @@ function confirmArea() {
   areaAsk.value = { ...a, busy: true }
   const b = a.box
   const call = a.route
-    ? `beamngEarth_settings.uiRouteAdd and beamngEarth_settings.uiRouteAdd(${a.half}, ${luaStr(areaName.value)})`
-    : `beamngEarth_settings.uiAreaAdd and beamngEarth_settings.uiAreaAdd(${b.s}, ${b.w}, ${b.n}, ${b.e}, ${luaStr(areaName.value)})`
+    ? `beamngEarth_settings.uiRouteAdd and beamngEarth_settings.uiRouteAdd(${a.half}, ${luaStr(areaName.value)}, ${luaStr(areaMode())})`
+    : `beamngEarth_settings.uiAreaAdd and beamngEarth_settings.uiAreaAdd(${b.s}, ${b.w}, ${b.n}, ${b.e}, ${luaStr(areaName.value)}, ${luaStr(areaMode())})`
   engineLua(`beamngEarth_settings and ${call} or nil`, r => {
     if (!r || r.error) { areaAsk.value = { ...a, busy: false, error: (r && r.error) || "BeamNG.Earth is not loaded" }; return }
     let tries = 0
@@ -1872,6 +1888,7 @@ const fmtLatLon = mm.fmtLatLon
 .map-grid .area-route.done { stroke: rgba(61, 220, 132, 0.22); }
 .map-grid .area-route.paused { stroke: rgba(160, 170, 180, 0.25); }
 .route-width { gap: 6px; align-items: center; margin: 4px 0; }
+.area-world { display: block; margin: 6px 0 2px; }
 .area-rect.selecting { border: 2px solid #ffb54a; background: rgba(255, 181, 74, 0.15); z-index: 3; }
 .area-rect-label {
   position: absolute; left: 4px; top: 2px; font-size: 11px; padding: 0 4px; background: rgba(0, 0, 0, 0.6);

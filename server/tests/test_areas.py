@@ -76,6 +76,19 @@ class StubServer:
     def live_busy(self):
         return self.busy
 
+    # the world phase (earthd.Server.geo_prebuilt / prebuild_geo): a geotile's content "built" once
+    built = None
+
+    def geo_prebuilt(self, gx, gy):
+        return f"k{gx}_{gy}" if self.built is not None and (gx, gy) in self.built else None
+
+    def prebuild_geo(self, gx, gy):
+        if self.built is None:
+            self.built = set()
+        self.built.add((gx, gy))
+        self.prebuilds = getattr(self, "prebuilds", 0) + 1
+        return f"k{gx}_{gy}"
+
     def driving(self):
         return False
 
@@ -158,11 +171,12 @@ class AreasTest(unittest.TestCase):
         self.assertEqual(len(s.mapdata.got), n_cells)
         m = a.message()["areas"][0]
         self.assertEqual((m["name"], m["done"], m["total"]), ("Harbour", len(a.steps(BOX)), len(a.steps(BOX))))
-        # the job is its mode's phases (only "data" so far; a "world" phase comes later)
+        # the job is its mode's phases ("data": the downloads; "world": them, then the road geotiles: test_world_mode)
         self.assertEqual(m["mode"], "data")
         self.assertEqual(a.steps(BOX, "data"), a.phase_steps("data", BOX))
+        self.assertEqual(a.steps(BOX, "world"), a.phase_steps("data", BOX) + a.phase_steps("world", BOX))
         with self.assertRaises(ValueError):
-            a.phase_steps("world", BOX)
+            a.phase_steps("nope", BOX)
         import json
         with open(os.path.join(self.tmp.name, areas.SUBDIR, areas.STORE)) as f:
             self.assertEqual(json.load(f)["areas"][0]["mode"], "data")
@@ -300,6 +314,37 @@ class AreasTest(unittest.TestCase):
         self.assertEqual(b.areas[0]["route"], route)
         self.assertEqual(b.message()["areas"][0]["state"], "done")
         self.assertFalse(b.add_route(lats, lons, 20, "")[0])
+
+    def test_world_mode(self):
+        # "world": the downloads, then every road geotile's content built ahead (z17 tiles of the box), listed in
+        # <id>.world (pinned_world), none built twice
+        a, s = self.make(start=True)
+        p = a.plan(*BOX, mode="world")
+        self.assertTrue(p["ok"], p)
+        n17 = len(fast._ef.area_tiles(*BOX, areas.WORLD_Z, 0))
+        self.assertEqual((p["worldTiles"], p["worldMissing"]), (n17, n17))
+        self.assertGreater(p["diskBytes"], a.plan(*BOX)["diskBytes"] + 0.9 * n17 * areas.WORLD_TILE_BYTES - 1)
+        self.assertEqual(a.plan(*BOX)["worldTiles"], 0, "data only: no world tiles")
+        self.assertFalse(a.plan(*BOX, mode="nope")["ok"])
+        ok, aid = a.add(*BOX, name="Harbour", mode="world")
+        self.assertTrue(ok, aid)
+        self.assertTrue(wait_for(lambda: a.message()["areas"][0]["state"] == "done"))
+        self.assertEqual(s.prebuilds, n17)
+        self.assertEqual(a.message()["areas"][0]["mode"], "world")
+        self.assertEqual(len(areas.pinned_world(self.tmp.name)), n17)
+        a.close()
+        b, _ = self.make(server=s, start=True)          # a restart: done, nothing built again
+        self.assertTrue(b.command(aid, "resume"))
+        self.assertTrue(wait_for(lambda: b.message()["areas"][0]["state"] == "done"))
+        self.assertEqual(s.prebuilds, n17)
+        self.assertEqual(len(areas.pinned_world(self.tmp.name)), n17, "the list rewritten, the same keys")
+        # a route can build its world too; too large an area cannot
+        lats, lons = list(ROUTE[0]), list(ROUTE[1])
+        self.assertGreater(b.plan_route(lats, lons, 800, "world")["worldTiles"], 0)
+        with mock.patch.object(areas, "MAX_WORLD_KM2", 1.0):
+            self.assertIn("too large", b.plan(*BOX, mode="world")["error"])
+        self.assertTrue(b.command(aid, "delete"))
+        self.assertEqual(areas.pinned_world(self.tmp.name), set(), "deleted: unpinned")
 
     def test_a_damaged_store_is_no_list(self):
         os.makedirs(os.path.join(self.tmp.name, areas.SUBDIR))

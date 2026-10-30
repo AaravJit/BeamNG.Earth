@@ -154,9 +154,9 @@ MOD_TO_SERVER = {
     # saved areas (areas.py; additive): a picked box's estimate, a new area, pause / resume / delete one; a saved
     # route: route "current" (the last planned GPS route) and half (its corridor's half width, m) instead of the box
     "area_plan": {"id": F(int), "s": F(NUM, OPT), "w": F(NUM, OPT), "n": F(NUM, OPT), "e": F(NUM, OPT),
-                  "route": F(str, OPT), "half": F(NUM, OPT)},
+                  "route": F(str, OPT), "half": F(NUM, OPT), "mode": F(str, OPT)},
     "area_add": {"id": F(int), "s": F(NUM, OPT), "w": F(NUM, OPT), "n": F(NUM, OPT), "e": F(NUM, OPT),
-                 "route": F(str, OPT), "half": F(NUM, OPT), "name": F(str, OPT)},
+                 "route": F(str, OPT), "half": F(NUM, OPT), "name": F(str, OPT), "mode": F(str, OPT)},
     "area_cmd": {"id": F(int), "area": F(str), "op": F(str)},
     "route": {"id": F(int), "lat0": F(NUM), "lon0": F(NUM), "lat1": F(NUM), "lon1": F(NUM),
               "bearing": F(NUM, OPT),    # the GPS (routing.py); bearing: the car's heading, the route starts that way
@@ -188,7 +188,8 @@ SERVER_TO_MOD = {
     "area_plan_result": {"id": F(int), "ok": F(bool), "km2": F(NUM, OPT), "items": F(int, OPT),
                          "missing": F(int, OPT), "downloadBytes": F(int, OPT), "diskBytes": F(int, OPT),
                          "seconds": F(int, OPT), "days": F(NUM, OPT), "hosts": F(list, OPT),
-                         "excluded": F(list, OPT), "km": F(NUM, OPT), "error": F(str, OPT)},
+                         "excluded": F(list, OPT), "km": F(NUM, OPT), "worldTiles": F(int, OPT),
+                         "worldMissing": F(int, OPT), "error": F(str, OPT)},
     # the saved areas [{id, name, s, w, n, e, state, done, total, msg, mode, route?}] after hello, a change and while one downloads
     # (at most every areas.STATUS_S); result: the answer to an area_add / area_cmd
     "areas": {"areas": F(list), "pinnedBytes": F(int, OPT), "result": F(dict, OPT)},

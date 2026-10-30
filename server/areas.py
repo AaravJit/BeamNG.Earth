@@ -22,9 +22,12 @@ ready first) where a box takes its rectangle's; its pins are the cache keys unde
 (keys_in_cover).
 
 Modes and phases: an area's mode names the phases its job walks, in order (MODES); each phase is a plan of steps
-(phase_steps) the thread fetches the same way. Only "data" (the downloads) exists now; a "world" phase (the world
-generation's tiles cached for the place, once they are made the same from any anchor) can be added as a phase of
-its own without changing the store.
+(phase_steps) the thread fetches the same way. "data": the downloads. "world" (the user, 2026-10-29: "pre generate
+along a route or area"): the downloads, then every road geotile's content (roads, sidewalks, bridges, buildings,
+street furniture: built the same from any anchor since the geotiles) built into the revisit cache ahead of play
+(earthd.Server.prebuild_geo), so arriving there loads it instead of building it. Its keys are listed in
+<cache>/areas/<id>.world (rewritten each pass: the cache's code key changes with every update, the old ones fall
+out) and kept out of the revisit cache's trim (pinned_world).
 """
 import json
 import logging
@@ -73,6 +76,10 @@ RAW_PER_CELL = 1.2e6        # the sources' blocks kept on disk per new cell (map
 ROUTE_HALF_M = (200.0, 5000.0)  # a route's half width (m): at least, at most
 ROUTE_MAX_POINTS = 20000
 ROUTE_PREVIEW_POINTS = 400  # the route drawn on the map (the 'areas' message): at most this many of its points
+WORLD_Z = 17                # the road geotiles' zoom (geotiles.Z)
+WORLD_TILE_BYTES = 0.78e6   # a road geotile's content in the revisit cache (mean of 482, Baltimore 2026-10-29)
+WORLD_TILE_S = 2.0          # ... and its build in a road process (rough)
+MAX_WORLD_KM2 = 400.0       # (155 square miles, ~4,300 road geotiles, ~3.4 GB) a "world" area at most
 SIZES = {"dem": 110e3, "img": 25e3, "cell": 120e3}      # bytes on disk (a cell: one layer's file) when the cache
                                                         # knows no better
 
@@ -155,8 +162,44 @@ def route_tiles(route):
     return lambda z, ring: [(x, y) for x, y, _ in fast._ef.corridor_tiles(lats, lons, half, z, ring)]
 
 
-MODES = {"data": ("data",)}      # mode -> its phases, in order ("world" later)
+MODES = {"data": ("data",), "world": ("data", "world")}      # mode -> its phases, in order
 DEFAULT_MODE = "data"
+
+
+def check_mode(mode, server=None):
+    """mode as given, or ValueError: one of MODES; "world" needs the revisit cache on and a server that pre-builds."""
+    mode = str(mode or DEFAULT_MODE)
+    if mode not in MODES:
+        raise ValueError(f"unknown mode {mode!r}")
+    if "world" in MODES[mode]:
+        import revisit
+        if not revisit.ON or (server is not None and not hasattr(server, "prebuild_geo")):
+            raise ValueError("building the world ahead needs the world cache (it is off)")
+    return mode
+
+
+def world_too_big(km2):
+    return (f"too large to build the world ahead: {km2 / 2.59:,.0f} square miles; at most "
+            f"{MAX_WORLD_KM2 / 2.59:,.0f} (or download its data only)")
+
+
+def pinned_world(cache_dir):
+    """The revisit keys the saved areas' world phases built (their <id>.world lists): kept out of the revisit cache's
+    trim (earthd.prune_own_caches). Never raises."""
+    out = set()
+    d = os.path.join(cache_dir, SUBDIR)
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return out
+    for n in names:
+        if n.endswith(".world"):
+            try:
+                with open(os.path.join(d, n), encoding="utf-8") as f:
+                    out.update(line.strip() for line in f if line.strip())
+            except OSError:
+                continue
+    return out
 
 
 def plan_steps(tiles, hm_zooms, img_zoom, layers):
@@ -257,6 +300,20 @@ class Areas:
     def _done_path(self, aid):
         return os.path.join(self.dir, f"{aid}.done")
 
+    def _world_path(self, aid):
+        return os.path.join(self.dir, f"{aid}.world")
+
+    def _write_world(self, aid, keys):
+        """The area's pre-built road geotiles' revisit keys (pinned_world), the whole list at once (atomic)."""
+        try:
+            p = self._world_path(aid)
+            tmp = f"{p}.{os.getpid()}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write("".join(k + "\n" for k in keys))
+            os.replace(tmp, p)
+        except OSError as e:
+            log.warning("areas: %s world list not saved: %s", aid, e)
+
     def _done_set(self, aid):
         try:
             with open(self._done_path(aid), encoding="utf-8") as f:
@@ -298,9 +355,12 @@ class Areas:
     def phase_steps(self, phase, box, route=None):
         """The steps of one phase of an area's job ("data": plan_steps) for a box, or a route's corridor (box: its
         bounds)."""
+        tiles = route_tiles(route) if route is not None else box_tiles(box)
         if phase == "data":
-            return plan_steps(route_tiles(route) if route is not None else box_tiles(box), self._hm_zooms(box),
-                              self._img_zoom(box), area_layers() if self.s.mapdata is not None else ())
+            return plan_steps(tiles, self._hm_zooms(box), self._img_zoom(box),
+                              area_layers() if self.s.mapdata is not None else ())
+        if phase == "world":
+            return [("geo", WORLD_Z, x, y) for x, y in tiles(WORLD_Z, 0)]
         raise ValueError(f"unknown area phase {phase!r}")
 
     def steps(self, box, mode=DEFAULT_MODE, route=None):
@@ -318,26 +378,35 @@ class Areas:
             return self.s.mapdata.has(mapcells.CellKey(step[1], step[2], step[3]), step[4])
         if kind == "dem":
             return self.s.dem.has(step[1], step[2], step[3])
+        if kind == "geo":
+            return self.s.geo_prebuilt(step[2], step[3]) is not None
         return done_imgs is not None and img_key(step) in done_imgs
 
-    def plan(self, s, w, n, e):
+    def plan(self, s, w, n, e, mode=DEFAULT_MODE):
         """The confirm box's estimate of a new area: {ok, km2, items, missing, downloadBytes, diskBytes, seconds, days,
-        hosts [[host, requests, days]], excluded [source names], error?}. No network."""
+        hosts [[host, requests, days]], excluded [source names], worldTiles, worldMissing, error?}. No network."""
         try:
             box = check_box(s, w, n, e)
+            mode = check_mode(mode, self.s)
         except ValueError as err:
             return {"ok": False, "error": str(err)}
-        return self._estimate(self.steps(box), fast._ef.area_km2(*box))
+        km2 = fast._ef.area_km2(*box)
+        if "world" in MODES[mode] and km2 > MAX_WORLD_KM2:
+            return {"ok": False, "error": world_too_big(km2)}
+        return self._estimate(self.steps(box, mode), km2)
 
-    def plan_route(self, lats, lons, half):
+    def plan_route(self, lats, lons, half, mode=DEFAULT_MODE):
         """plan() for a route's corridor (half: its half width, m), with its length "km" too."""
         try:
             lats, lons, half = check_route(lats, lons, half)
+            mode = check_mode(mode, self.s)
         except ValueError as err:
             return {"ok": False, "error": str(err)}
         route = {"lat": lats, "lon": lons, "half": half}
         length, km2 = fast._ef.corridor_size(lats, lons, half)
-        out = self._estimate(self.steps(route_bounds(route), route=route), km2)
+        if "world" in MODES[mode] and km2 > MAX_WORLD_KM2:
+            return {"ok": False, "error": world_too_big(km2)}
+        out = self._estimate(self.steps(route_bounds(route), mode, route), km2)
         out["km"] = round(length / 1000.0, 2)
         return out
 
@@ -378,6 +447,9 @@ class Areas:
                         dl += len(todo) * sizes.get(src.name, sizes["img"])
                         disk += len(todo) * sizes.get(src.name, sizes["img"])
                     break
+        geo = [st for st in steps if st[0] == "geo"]
+        geo_missing = sum(1 for st in geo if not self._present(st))
+        disk += geo_missing * WORLD_TILE_BYTES
         n_req = sum(req.values())
         hosts = []
         days = 0.0
@@ -387,11 +459,11 @@ class Areas:
             d = r / (netfetch.PREDOWNLOAD_SHARE * cap) if cap else 0.0
             days = max(days, d)
             hosts.append([host, int(r), round(d, 2)])
-        seconds = n_req * REQUEST_S + cells * CELL_S
+        seconds = n_req * REQUEST_S + cells * CELL_S + geo_missing * WORLD_TILE_S
         return {"ok": True, "km2": round(km2, 2), "items": len(steps),
                 "missing": missing["layer"] + missing["dem"] + missing["img"],
                 "downloadBytes": int(dl), "diskBytes": int(disk), "seconds": int(seconds), "days": round(days, 2),
-                "hosts": hosts, "excluded": sorted(excluded)}
+                "hosts": hosts, "excluded": sorted(excluded), "worldTiles": len(geo), "worldMissing": geo_missing}
 
     def _sizes(self):
         """Average bytes a file of each kind takes in this cache (the estimate), else SIZES."""
@@ -417,24 +489,26 @@ class Areas:
         return out
 
     # --- the list ---------------------------------------------------------------------------------
-    def add(self, s, w, n, e, name=""):
+    def add(self, s, w, n, e, name="", mode=DEFAULT_MODE):
         """A new saved area (its download starts in the background). (True, area id) or (False, why)."""
         try:
             box = check_box(s, w, n, e)
+            mode = check_mode(mode, self.s)
         except ValueError as err:
             return False, str(err)
-        return self._add(box, None, self.plan(*box), name)
+        return self._add(box, None, self.plan(*box, mode=mode), name, mode)
 
-    def add_route(self, lats, lons, half, name=""):
+    def add_route(self, lats, lons, half, name="", mode=DEFAULT_MODE):
         """A new saved route (its corridor: half m each side). (True, area id) or (False, why)."""
         try:
             lats, lons, half = check_route(lats, lons, half)
+            mode = check_mode(mode, self.s)
         except ValueError as err:
             return False, str(err)
         route = {"lat": lats, "lon": lons, "half": half}
-        return self._add(route_bounds(route), route, self.plan_route(lats, lons, half), name)
+        return self._add(route_bounds(route), route, self.plan_route(lats, lons, half, mode), name, mode)
 
-    def _add(self, box, route, est, name):
+    def _add(self, box, route, est, name, mode=DEFAULT_MODE):
         if not est.get("ok"):
             return False, est.get("error") or "no estimate"
         with self.lock:
@@ -452,7 +526,7 @@ class Areas:
                                "e": box[3],
                                "created": time.time(), "paused": False, "complete": False, "total": est.get("items", 0),
                                "diskBytes": est.get("diskBytes", 0), "done": 0, "state": "queued", "msg": "",
-                               "retry_at": 0.0, "mode": DEFAULT_MODE})
+                               "retry_at": 0.0, "mode": mode})
             self._save()
         self.pin_at = -1e18
         self.wake.set()
@@ -471,10 +545,11 @@ class Areas:
                 a["paused"], a["complete"], a["retry_at"], a["state"], a["msg"] = False, False, 0.0, "queued", ""
             else:
                 self.areas.remove(a)
-                try:
-                    os.remove(self._done_path(aid))
-                except OSError:
-                    pass
+                for p in (self._done_path(aid), self._world_path(aid)):
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
             self._save()
         if op == "delete":
             self.pin_at = -1e18
@@ -619,11 +694,22 @@ class Areas:
         self._changed(force=True)
         failed = 0
         todo = []
+        world = []                      # the pre-built geotiles' keys (the .world list)
         for st in steps:
-            if self._present(st, done_imgs):
+            if st[0] == "geo":
+                k = self.s.geo_prebuilt(st[2], st[3])
+                if k is not None:
+                    world.append(k)
+                    a["done"] += 1
+                    continue
+                todo.append(st)
+            elif self._present(st, done_imgs):
                 a["done"] += 1
             else:
                 todo.append(st)
+        if any(st[0] == "geo" for st in steps):
+            self._write_world(a["id"], world)
+        a["_world"] = world
         with self.lock:
             a["state"] = "running"
         self._changed(force=True)
@@ -642,6 +728,8 @@ class Areas:
                 self._changed()
         finally:
             self.current = None
+            if a.get("_world") is not None and any(st[0] == "geo" for st in steps):
+                self._write_world(a["id"], a["_world"])
         with self.lock:
             if failed:
                 a["state"], a["msg"] = "queued", f"{failed} items failed: tried again later"
@@ -689,6 +777,15 @@ class Areas:
 
     def _fetch(self, a, st):
         kind = st[0]
+        if kind == "geo":
+            k = self.s.prebuild_geo(st[2], st[3])
+            if k is None:
+                raise RuntimeError("geotile content not complete")     # (a failed item: the next pass tries again)
+            world = a.setdefault("_world", [])
+            world.append(k)
+            if len(world) % 25 == 0:
+                self._write_world(a["id"], world)
+            return
         if kind == "cell":
             import mapcells
             key = mapcells.CellKey(st[1], st[2], st[3])

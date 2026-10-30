@@ -2585,22 +2585,22 @@ end
 -- Saved areas (server areas.py; M._areas / _areaPlans / _areaResults: fields, not locals, as above): the estimate of
 -- a picked box (area_plan -> area_plan_result), a new area (area_add), pause / resume / delete (area_cmd); the answers
 -- come in the 'areas' message's result.
-function M.requestAreaPlan(id, s, w, n, e)
+function M.requestAreaPlan(id, s, w, n, e, mode)
   if not net.isConnected() then return false end
   M._areaPlans = {}
-  net.send({ type = 'area_plan', id = id, s = s, w = w, n = n, e = e })
+  net.send({ type = 'area_plan', id = id, s = s, w = w, n = n, e = e, mode = mode })
   return true
 end
 -- A saved route (the GPS's planned route, which the server keeps: route 'current'): half m each side of it.
-function M.requestRoutePlan(id, half)
+function M.requestRoutePlan(id, half, mode)
   if not net.isConnected() then return false end
   M._areaPlans = {}
-  net.send({ type = 'area_plan', id = id, route = 'current', half = half })
+  net.send({ type = 'area_plan', id = id, route = 'current', half = half, mode = mode })
   return true
 end
-function M.routeAdd(id, half, name)
+function M.routeAdd(id, half, name, mode)
   if not net.isConnected() then return false end
-  net.send({ type = 'area_add', id = id, route = 'current', half = half, name = name })
+  net.send({ type = 'area_add', id = id, route = 'current', half = half, name = name, mode = mode })
   return true
 end
 function M.takeAreaPlan(id)
@@ -2609,9 +2609,9 @@ function M.takeAreaPlan(id)
   all[id] = nil
   return r
 end
-function M.areaAdd(id, s, w, n, e, name)
+function M.areaAdd(id, s, w, n, e, name, mode)
   if not net.isConnected() then return false end
-  net.send({ type = 'area_add', id = id, s = s, w = w, n = n, e = e, name = name })
+  net.send({ type = 'area_add', id = id, s = s, w = w, n = n, e = e, name = name, mode = mode })
   return true
 end
 function M.areaCmd(id, area, op)
