@@ -2142,7 +2142,22 @@ end
 
 -- After physics, before rendering (main.lua:819-824): measure when a rebase's vehicle move became
 -- visible. Hook order relative to core_camera does not matter here; this only measures.
+M._pacer = require('beamngEarth/framepacer')    -- even frame pacing (fields: the main chunk's 200-local limit)
+M._paceClock = stopwatch.clock()
 local function onPreRender(dtReal, dtSim)
+  -- even frame pacing (framepacer.lua): our level, playing (not paused, not loading), not BeamMP, the setting on
+  local now = M._paceClock()
+  if M._paceLast then
+    local on = st.inOurLevel and (dtSim or 0) > 0 and not gov.loading and not beammp.inSession()
+      and settings.get('framePacing') ~= false
+    if on then
+      local wait = M._pacer.step(now - M._paceLast)
+      if wait > 0 then pcall(M._pacer.sleep, wait); now = M._paceClock() end
+    else
+      M._pacer.reset()
+    end
+  end
+  M._paceLast = now
   local probe = st.lagProbe
   if not probe then return end
   if moveVisible(probe) then
