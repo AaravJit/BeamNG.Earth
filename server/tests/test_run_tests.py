@@ -77,6 +77,32 @@ class ManifestTest(unittest.TestCase):
         self.assertEqual(data["counts"]["passed"], 1)
         self.assertEqual(data["modules"][0]["returncode"], 0)
 
+    def test_importable_empty_module_is_unsuccessful(self):
+        empty = self.module("test_empty", "# Importable, but contains no tests.\n")
+        good = self.module("test_good", "class T(unittest.TestCase):\n def test_ok(self): pass\n")
+        skipped = self.module("test_skipped", "class T(unittest.TestCase):\n @unittest.skip('skip')\n def test_skip(self): pass\n")
+        for others in ([], [good, skipped]):
+            with self.subTest(others=others):
+                self.assertEqual(self.runner([empty, *others]).all(), 1)
+                data = self.manifest()
+                self.assertFalse(data["success"])
+                self.assertTrue(data["complete"], "unittest completed, but discovered no tests")
+                module = data["modules"][0]
+                self.assertEqual(module["status"], "no_tests")
+                self.assertEqual(module["counts"], {k: 0 for k in run_tests.COUNTS})
+                self.assertEqual(module["returncode"], 0, "a zero child exit must not mask an empty suite")
+                self.assertEqual([m["status"] for m in data["modules"][1:]], ["passed"] * len(others))
+
+    def test_all_skipped_module_remains_successful(self):
+        name = self.module("test_skipped", "class T(unittest.TestCase):\n @unittest.skip('skip')\n def test_skip(self): pass\n")
+        self.assertEqual(self.runner([name]).all(), 0)
+        data = self.manifest()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["modules"][0]["status"], "passed")
+        self.assertEqual(data["counts"]["tests_run"], 1)
+        self.assertEqual(data["counts"]["passed"], 0)
+        self.assertEqual(data["counts"]["skipped"], 1)
+
     def test_timeout_keeps_partial_counts_and_other_modules(self):
         slow = self.module("test_slow", '''import time
 class T(unittest.TestCase):

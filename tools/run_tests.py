@@ -98,7 +98,8 @@ class Runner:
             modules = list(self.results.values())
             complete = bool(modules) and all(m["complete"] for m in modules)
             data = dict(schema_version=1, status=status, complete=complete,
-                        success=status == "finished" and complete and all(m["status"] == "passed" for m in modules),
+                        success=status == "finished" and complete and all(
+                            m["status"] == "passed" and m["counts"]["tests_run"] > 0 for m in modules),
                         duration_seconds=round(time.time() - self.t0, 3), modules=modules,
                         counts={k: sum(m["counts"][k] for m in modules) for k in COUNTS})
             path = os.path.abspath(self.results_path)
@@ -199,9 +200,10 @@ class Runner:
         counts, complete = self.read_counts(m)
         status = ("interrupted" if self.cancelled.is_set() else "timed_out" if st["killed"] else
                   "incomplete" if not complete else
+                  "no_tests" if counts["tests_run"] == 0 else
                   "passed" if p.returncode == 0 and not any(counts[k] for k in
                       ("failures", "errors", "unexpected_successes")) else "failed")
-        self.result(m, status=status, complete=complete and status in ("passed", "failed"),
+        self.result(m, status=status, complete=complete and status in ("passed", "failed", "no_tests"),
                     counts=counts or {k: 0 for k in COUNTS}, duration_seconds=round(dt, 3),
                     timed_out=st["killed"], returncode=p.returncode)
         res = "HANG" if st["killed"] else "OK" if status == "passed" else "FAIL"
