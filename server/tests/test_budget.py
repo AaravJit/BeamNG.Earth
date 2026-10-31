@@ -76,6 +76,55 @@ class BudgetTest(unittest.TestCase):
         im.close()
 
 
+class RoadProcessesCliTest(unittest.TestCase):
+    """Omitting --road-processes selects a budget; any explicit count, including 2, wins."""
+
+    def cli_args(self, flags, is_small=False, cpus=16, gb=64.0):
+        import earthd
+        import fast
+        import sampler
+        argv = ["earthd.py", "--nice", "0", "--sched", "normal", "--pin", "off", *flags]
+        with mock.patch.object(sys, "argv", argv), \
+                mock.patch.dict(os.environ, {"BNGE_TRACEMALLOC": ""}), \
+                mock.patch.object(earthd, "saved_cache_dir", return_value=None), \
+                mock.patch.object(earthd, "raise_open_files"), \
+                mock.patch.object(earthd.logging, "basicConfig"), \
+                mock.patch.object(fast, "require"), \
+                mock.patch.object(sampler, "maybe_start"), \
+                mock.patch.object(budget, "apply", return_value=is_small), \
+                mock.patch.object(budget, "total_gb", return_value=gb), \
+                mock.patch.object(os, "cpu_count", return_value=cpus), \
+                mock.patch.object(budget, "road_processes", wraps=budget.road_processes) as select, \
+                mock.patch.object(earthd, "main_async", new_callable=mock.Mock) as start, \
+                mock.patch.object(earthd.asyncio, "run") as run:
+            earthd.main()
+            start.assert_called_once()
+            run.assert_called_once_with(start.return_value)
+            return start.call_args.args[0], select.call_count
+
+    def test_automatic_desktop_counts(self):
+        for cpus, gb, expected in ((16, 64.0, 4), (12, 16.0, 3), (8, 16.0, 3),
+                                   (6, 16.0, 2), (16, 8.0, 2)):
+            with self.subTest(cpus=cpus, gb=gb):
+                args, selections = self.cli_args([], cpus=cpus, gb=gb)
+                self.assertEqual(args.road_processes, expected)
+                self.assertEqual(selections, 1)
+
+    def test_automatic_small_count(self):
+        args, selections = self.cli_args([], is_small=True)
+        self.assertEqual(args.road_processes, budget.SMALL_ROAD_PROCESSES)
+        self.assertEqual(selections, 0)
+
+    def test_explicit_counts_bypass_automatic_selection(self):
+        for is_small in (False, True):
+            for count in (0, 1, 2, 3, 4, 6):
+                for flags in (["--road-processes", str(count)], [f"--road-processes={count}"]):
+                    with self.subTest(is_small=is_small, flags=flags):
+                        args, selections = self.cli_args(flags, is_small=is_small)
+                        self.assertEqual(args.road_processes, count)
+                        self.assertEqual(selections, 0)
+
+
 class PriorityTest(unittest.TestCase):
     """lower_priority in a child process: Windows' classes (below normal for the server; a worker keeps its
     parent's, never idle: starved on the server's few cores), elsewhere niceness."""

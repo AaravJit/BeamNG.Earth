@@ -298,7 +298,6 @@ HM_KEEP_SENT = 2            # terrains handed to the mod but maybe not committed
 TILE_CACHE = {32: 6000, 64: 2500}
 HM_THREADS = 4
 LAG_TICK_S, LAG_REPORT_S = 0.1, 0.25     # the event-loop stall report (-v)
-ROAD_PROCESSES = 2              # road-tile processes (--block-process on, --roads on)
 # s a road tile may take in its worker before it is given up and its workers restarted (build_roads_tile): a first
 # visit's slowest tiles take ~1 min on a busy 6-core laptop and several times that on a Steam Deck, where a tile given
 # up at 2 min would be built and given up again for good; BNGE_ROAD_TILE_TIMEOUT=<s> to change it
@@ -5885,9 +5884,9 @@ def main():
     ap.add_argument("--trees", choices=("on", "off"), default="off",
                     help="trees, bushes and rocks near the player (vegetation.py): from the canopy height model and "
                          "land cover, Forest items of stock shapes in the mod")
-    ap.add_argument("--road-processes", type=int, default=ROAD_PROCESSES,
-                    help="processes building the road tiles (--block-process on); 0 = threads in the server; left at "
-                    "the default: 2-4 by the machine's threads and memory (budget.road_processes)")
+    ap.add_argument("--road-processes", type=int, default=None,
+                    help="processes building the road tiles (--block-process on); 0 = threads in the server; omitted: "
+                    "2-4 by the machine's threads and memory (budget.road_processes); explicit counts are kept")
     ap.add_argument("--download-ahead", choices=("on", "off"), default="on",
                     help="fetch the elevation tiles and map cells 10-60 s ahead of a driving player (AHEAD_S)")
     ap.add_argument("--route-prefetch", choices=("on", "off"), default="on",
@@ -5998,7 +5997,7 @@ def main():
     if small:
         # a small machine (a Steam Deck): fewer worker processes, each with smaller caches (budget.py), where the
         # player left the defaults
-        if args.road_processes == ROAD_PROCESSES:
+        if args.road_processes is None:
             args.road_processes = budget.SMALL_ROAD_PROCESSES
         if args.workers == WORKERS:
             args.workers = budget.SMALL_FAR_WORKERS
@@ -6007,7 +6006,7 @@ def main():
         log.info("small machine (%.1f GB): %d far-tile and %d road-tile processes, smaller caches, imagery analyses "
                  "off (budget.py; BNGE_BUDGET=desktop for the desktop sizes)", budget.total_gb() or 0, args.workers,
                  args.road_processes)
-    elif args.road_processes == ROAD_PROCESSES:
+    elif args.road_processes is None:
         args.road_processes = budget.road_processes()
         log.info("road-tile processes: %d (%d threads, %.0f GB)", args.road_processes, os.cpu_count() or 0,
                  budget.total_gb() or 0)
