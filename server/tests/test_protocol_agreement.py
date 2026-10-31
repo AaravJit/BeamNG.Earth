@@ -36,7 +36,7 @@ docs/V1_2_DESIGN.md §7 as amended by §12; server/README.md documents the same 
   - the download cache (server/cache.py, docs/ROADMAP.md "Caching"): 'cache' both ways (additive the
     same way; Server()'s default has no Cache and sends none): the mod's size cap / clear / usage request
     and the server's usage answer (clearedBytes after a clear), exercised in the session; the settings
-    page's cap values are the settings schema's;
+    page's numeric cap and default agree with the settings schema and server;
   - live retexture (--colormatch / --deshadow): the 'far_retex' message (additive the same way), sent
     in a session whose colour-match regions turn ready once the far field is shown; core.lua hands it
     to farfield.onRetex, which reads anchorId / key / texture.
@@ -521,8 +521,8 @@ class CreditsAgreementTest(unittest.TestCase):
 class CacheAgreementTest(unittest.TestCase):
     def test_cache_in_the_mod(self):
         """core.lua sends the page's cap on hello (settings.cacheCapGb) and keeps the server's 'cache'
-        for the page (cleared on hello / disconnect); settings.lua's cap values are the page's options
-        and the page's default is the server's."""
+        for the page (cleared on hello / disconnect); Lua and Vue use a numeric GB cap (0 = unlimited)
+        and the page's default is the server's. Legacy values are exercised in test_settings.lua."""
         core = (LUA / "core.lua").read_text(encoding="utf-8")
         on_msg = lua_function(core, "onMessage")
         hello = on_msg[on_msg.index("t == 'hello'"):on_msg.index("t == 'status'")]
@@ -531,15 +531,26 @@ class CacheAgreementTest(unittest.TestCase):
         self.assertIn("cacheInfo = nil", on_msg[on_msg.index("t == '_disconnected'"):on_msg.index("t == 'hello'")])
         self.assertIn("cacheInfo = { usedBytes = tonumber(msg.usedBytes)", on_msg[on_msg.index("t == 'cache'"):])
         settings = (LUA / "settings.lua").read_text(encoding="utf-8")
-        m = re.search(r"cacheCapGb = \{ kind = 'enum', default = '(\w+)', values = \{ ([^}]*) \}", settings)
-        values = re.findall(r"'(\w+)'", m.group(2))
-        self.assertEqual((m.group(1), values), ("20", ["5", "10", "20", "50", "unlimited"]))
-        self.assertEqual(float(m.group(1)), cachemod.DEFAULT_CAP_GB, "the page's default is the server's")
+        cap = re.search(r"cacheCapGb\s*=\s*\{([^}]+)\}", settings)
+        self.assertIsNotNone(cap, "settings.lua must define cacheCapGb")
+        self.assertRegex(cap.group(1), r"kind\s*=\s*'number'")
+        default = re.search(r"default\s*=\s*(\d+(?:\.\d+)?)\s*[,}]", cap.group(1))
+        self.assertIsNotNone(default, "the Lua cache cap default must be a number")
+        self.assertEqual(float(default.group(1)), cachemod.DEFAULT_CAP_GB, "the page's default is the server's")
+        self.assertRegex(cap.group(1), r"min\s*=\s*0\s*,")
+        self.assertRegex(cap.group(1), r"max\s*=\s*100000\s*,")
+        self.assertNotRegex(cap.group(1), r"\bvalues\s*=")
         # (the settings pages' schema and state: earthSettingsStore.js, since the pause-menu tab, 2026-10-28)
         page = (LUA.parents[3] / "ui" / "ui-vue" / "mods" / "beamngEarth" / "earthSettingsStore.js").read_text(encoding="utf-8")
-        row = re.search(r'\{ id: "cacheCapGb", type: "select", default: "(\w+)".*?options: \[(.*?)\] \}', page, re.S)
-        self.assertEqual(row.group(1), m.group(1))
-        self.assertEqual(re.findall(r'value: "(\w+)"', row.group(2)), values)
+        row = re.search(r'\{\s*id:\s*"cacheCapGb",([^}]+)\}', page)
+        self.assertIsNotNone(row, "earthSettingsStore.js must define cacheCapGb")
+        self.assertRegex(row.group(1), r'type:\s*"number"')
+        page_default = re.search(r'default:\s*(\d+(?:\.\d+)?)\s*,', row.group(1))
+        self.assertIsNotNone(page_default, "the Vue cache cap default must be a number")
+        self.assertEqual(float(page_default.group(1)), float(default.group(1)))
+        self.assertRegex(row.group(1), r'min:\s*0\s*,')
+        self.assertRegex(row.group(1), r'unit:\s*"GB"')
+        self.assertNotRegex(row.group(1), r'\boptions:')
         self.assertIn("beamngEarth_settings.uiCacheClear()", page)
 
 

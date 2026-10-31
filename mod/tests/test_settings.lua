@@ -270,6 +270,29 @@ T.check(capsSent[1] == 50 and capsSent[2] == 0 and files[settings.FILE].cacheCap
   'cache cap: saved, sent to the server in GB (unlimited = 0)')
 settings.applyAll()
 T.check(capsSent[3] == 0, 'cache cap: applied with the rest (the level start)')
+
+-- Version-1 files used enum strings. Loading them must preserve the cap without warnings,
+-- apply numeric GB to core, and write numbers on the next save (including unlimited -> 0).
+for _, case in ipairs({ { '5', 5 }, { '10', 10 }, { '20', 20 }, { '50', 50 }, { 'unlimited', 0 },
+  { 0, 0 }, { 7, 7 }, { 12.5, 12.5 }, { '7.25', 7.25 } }) do
+  files[settings.FILE] = { version = 1, quality = 'high', cacheCapGb = case[1] }
+  local loaded, warnings = settings.load()
+  local label = 'cache cap load ' .. tostring(case[1]) .. ': '
+  T.check(#warnings == 0 and loaded.cacheCapGb == case[2] and settings.cacheCapGb() == case[2],
+    label .. 'numeric GB, no warning')
+  settings.apply('cacheCapGb')
+  T.check(capsSent[#capsSent] == case[2], label .. 'sent to core as numeric GB')
+  T.check(settings.save() and files[settings.FILE].cacheCapGb == case[2], label .. 'saved as a number')
+end
+for _, invalid in ipairs({ 'lots', 0 / 0, math.huge, -math.huge }) do
+  files[settings.FILE] = { version = 1, quality = 'high', cacheCapGb = invalid }
+  local loaded, warnings = settings.load()
+  T.check(loaded.cacheCapGb == 20 and #warnings == 1 and warnings[1]:match('cacheCapGb'),
+    'cache cap load: invalid/non-finite value keeps the default with a warning')
+end
+T.check(settings.validate('cacheCapGb', -1) == 0 and settings.validate('cacheCapGb', 100001) == 100000,
+  'cache cap: numeric bounds enforced')
+settings.uiReset()
 T.check(settings.cacheLine(nil) == 'no information from the server', 'cache line: no server (or one without a cache)')
 T.check(settings.cacheLine({ usedBytes = 3e9, capBytes = 20e9, files = 10, ready = true, managed = true,
   pinnedBytes = 1.5e9 }) == '3.0 GB of 20 GB, 10 files, 1.5 GB in saved areas (Clear cache keeps them)',
