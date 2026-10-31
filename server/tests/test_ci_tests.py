@@ -29,12 +29,16 @@ class CiTest(unittest.TestCase):
                'test_mesh.TexturedShapeTest.test_local', 'test_simple.T.test_a', 'test_simple.T.test_b',
                'test_integration_drive.FollowDrive512Test.test_synthetic',
                'test_integration_drive.MeshDriveTest.test_live',
-               'test_cache.ServerCacheTest.test_share_port']
+               'test_cache.ServerCacheTest.test_share_port',
+               'test_server.A.test_session', 'test_server.B.test_session']
         plan = ci.plan(ids)['lanes']
         all_ids = [t for lane in plan.values() for t in lane['tests']]
         self.assertCountEqual(all_ids, ids)
         self.assertEqual(len(all_ids), len(set(all_ids)))
         self.assertIn('test_simple', plan['offline']['targets'])
+        self.assertNotIn('test_server', plan['offline']['targets'])
+        self.assertIn('test_server.A', plan['offline']['targets'])
+        self.assertIn('test_server.B', plan['offline']['targets'])
         self.assertIn('test_imagery.Local', plan['offline']['targets'])
         self.assertIn('test_mesh.TexturedShapeTest.test_local', plan['offline']['targets'])
         self.assertEqual(len(plan['network']['tests']), 2)

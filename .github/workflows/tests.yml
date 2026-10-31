@@ -47,7 +47,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y luajit
       - name: Cache Rust dependencies and kernels
-        uses: actions/cache@v4
+        id: rust-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry
@@ -60,6 +61,15 @@ jobs:
           rustc --version | tee build/ci/rust-version.log
           python tools/build_native.py 2>&1 | tee build/ci/native-build.log
           PYTHONPATH=server python -c 'import fast; fast.require(fast.MIN_VERSION, "offline CI")'
+      - name: Save successful native build even if later tests fail
+        if: steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/earthfast/target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
       - name: Required offline Python lane (external sockets denied)
         run: python tools/ci_tests.py python 2>&1 | tee build/ci/python-run.log
       - name: Network lane — NOT RUN (live services and cached datasets)

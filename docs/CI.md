@@ -21,7 +21,8 @@ drives use network DEM data. Node-backed map-math checks run through the existin
 The Python lane discovers **every** `server/tests/test_*.py`; an import failure or empty module fails inventory.
 Tests default to offline. Explicit prefixes assign external requirements; stale prefixes fail inventory too.
 Mixed modules split into class/method execution units so their offline tests are still required. `inventory.json`
-lists every discovered test ID exactly once, its lane, execution targets, and exclusion reasons. New tests that
+lists every discovered test ID exactly once, its lane, execution targets, and exclusion reasons. The long
+`test_server` synthetic-session module also runs by class to keep each timeout bounded without dropping variants. New tests that
 unexpectedly need services/assets fail offline CI (network access is denied or skips are rejected), prompting an
 explicit classification review rather than automatic exclusion.
 
@@ -43,7 +44,7 @@ for seven days. Even if dependency setup fails, its placeholder cannot be mistak
 A hard runner termination may prevent upload; an artifact that was never produced is not evidence of success.
 Workflow shell steps explicitly use Bash with pipefail so `tee` cannot hide failing test/setup commands.
 
-The workflow uses pip and Cargo caches, a single Python/OS configuration, no schedule, and cancels superseded
+The workflow uses pip and Cargo caches (successful native builds are saved before potentially failing tests), a single Python/OS configuration, no schedule, and cancels superseded
 runs on the same PR/ref. Lua does not install Python application packages or build Rust. Job timeouts are
 30 minutes for Python including its native build and 10 minutes for Lua. Setup downloads are outside the
 offline test boundary. The network/engine reports are steps of the Python job, avoiding extra hosted jobs

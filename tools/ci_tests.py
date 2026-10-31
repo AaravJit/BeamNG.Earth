@@ -19,6 +19,8 @@ import unittest
 import run_tests
 
 ROOT = Path(__file__).resolve().parents[1]
+# Several full synthetic session variants exceed a single module timeout; retain every class as its own unit.
+CLASS_UNITS = {'test_server'}
 # Longest prefixes first: the synthetic follow drive stays offline, unlike the real-DEM drives.
 RULES = {
     'test_integration_drive.FollowDrive512Test': ('offline', 'Synthetic DEM and in-process server'),
@@ -73,7 +75,7 @@ def plan(ids):
     lanes = {lane: {'targets': [], 'tests': [], 'reasons': {}} for lane in ('offline', 'network', 'beamng', 'disabled')}
     def group(prefix, tests):
         kinds = {classify(t)[0] for t in tests}
-        if len(kinds) == 1:
+        if len(kinds) == 1 and prefix not in CLASS_UNITS:
             lane = lanes[kinds.pop()]
             lane['targets'].append(prefix)
             lane['tests'].extend(tests)
