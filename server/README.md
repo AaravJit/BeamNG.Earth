@@ -698,6 +698,24 @@ python3 tools/run_tests.py [module ...]                # the same, a process per
                                                        # progress, an ETA, a timeout per module
 ```
 
+The parallel runner writes `build/test-logs/results.json` by default (`--logs DIR` relocates both logs and
+the default manifest; `--results FILE` chooses a separate manifest). Schema version 1 contains a `modules`
+entry for every selected module, its execution `status`, `complete` flag, `counts`, `duration_seconds`,
+`timeout_seconds`, `timed_out`, process `returncode`, and absolute `log` path. Top-level `counts` sum the module
+counts. Counts come from unittest results: `tests_run`, `passed`, `failures`, `errors`, `skipped`,
+`expected_failures`, and `unexpected_successes`; subtest failures/skips can make outcome counts exceed
+`tests_run`. Expected failures remain successful unittest outcomes; unexpected successes fail the run.
+
+The manifest is replaced atomically at startup and on module transitions. Statuses are `queued`, `running`,
+`passed`, `failed`, `no_tests`, `error` (runner/launch error), `incomplete`, `timed_out`, `interrupted`, or `not_run`.
+Counts on incomplete modules are partial; their per-module `.result.json` checkpoints beside the logs are
+updated during execution. A consumer must require top-level `success: true` (which also requires `complete: true`
+and every selected module passing with `tests_run > 0`). An importable module with zero discovered tests is
+`no_tests` and makes the runner exit 1, even if unittest completed with exit 0. Modules containing only skipped
+tests remain successful when `tests_run > 0`. A zero child exit without a completed unittest result is incomplete.
+Timeouts fail with exit 1; Ctrl-C/SIGTERM return 130 after cleanup. An abrupt runner death leaves a running,
+unsuccessful manifest. `build/test_times.json` remains the separate ETA history.
+
 `test_airports.py`, `test_runwaygeom.py`, `test_runwaymarks.py`: the airport data (parsing, qualities, surfaces,
 determinism, queries, the download / weekly refresh / last-good-copy store behind a fake transport and clock,
 the CLI), the grading on synthetic DEMs (limits, data ends, steep / relaxed / coarse, crossings, no steps,
