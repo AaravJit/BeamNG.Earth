@@ -1,0 +1,110 @@
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-offline:
+    name: Required offline Python
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: '2'
+      OPENBLAS_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize unsuccessful setup manifest
+        run: |
+          mkdir -p build/ci/python
+          echo '{"status":"setup","success":false,"complete":false}' > build/ci/python/results.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            server/requirements.txt
+            server/requirements-ci.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Python and Lua bridge dependencies
+        run: |
+          python -m pip install -r server/requirements-ci.txt 2>&1 | tee build/ci/python-setup.log
+          sudo apt-get update -qq
+          sudo apt-get install -y luajit
+      - name: Cache Rust dependencies and kernels
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/earthfast/target
+          key: earthfast-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/earthfast/Cargo.lock', 'native/earthfast/Cargo.toml', 'native/earthfast/src/**') }}
+          restore-keys: earthfast-${{ runner.os }}-${{ runner.arch }}-
+      - name: Build and require native kernels
+        run: |
+          rustc --version | tee build/ci/rust-version.log
+          python tools/build_native.py 2>&1 | tee build/ci/native-build.log
+          PYTHONPATH=server python -c 'import fast; fast.require(fast.MIN_VERSION, "offline CI")'
+      - name: Required offline Python lane (external sockets denied)
+        run: python tools/ci_tests.py python 2>&1 | tee build/ci/python-run.log
+      - name: Network lane — NOT RUN (live services and cached datasets)
+        if: always()
+        run: |
+          echo '### Network lane: NOT RUN' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Live downloads and local map-data checks are excluded from the offline gate. See network.json and docs/CI.md; no network test coverage is claimed.' >> "$GITHUB_STEP_SUMMARY"
+      - name: BeamNG lane — NOT RUN (licensed assets and controlled hardware)
+        if: always()
+        run: |
+          echo '### BeamNG / hardware lane: NOT RUN' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Hosted runners have no BeamNG installation or controlled GPU/performance setup. See beamng.json and docs/CI.md; no engine test coverage is claimed.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload Python logs, inventory and manifests even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-offline-results
+          path: build/ci/
+          if-no-files-found: error
+          retention-days: 7
+
+  lua-offline:
+    name: Required offline Lua (stubbed engine)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize unsuccessful setup manifest
+        run: |
+          mkdir -p build/ci/lua
+          echo '{"status":"setup","success":false,"complete":false}' > build/ci/lua/results.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install LuaJIT
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y luajit 2>&1 | tee build/ci/lua-setup.log
+      - name: Required offline Lua lane
+        run: python tools/ci_tests.py lua 2>&1 | tee build/ci/lua-run.log
+      - name: Upload Lua logs and manifest even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lua-offline-results
+          path: build/ci/
+          if-no-files-found: error
+          retention-days: 7

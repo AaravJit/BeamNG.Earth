@@ -692,6 +692,8 @@ python3 server/airports.py --stats                                   # data-qual
 
 ## Tests
 
+Pull-request and main-branch CI lanes, prerequisites, and artifact semantics: [docs/CI.md](../docs/CI.md).
+
 ```sh
 python3 -m unittest discover -s server/tests -v        # BNGE_SKIP_DRIVE=1 skips the drive test
 python3 tools/run_tests.py [module ...]                # the same, a process per module, 6 at a time, live
