@@ -1,4 +1,5 @@
 """launcher.py on Linux: the user folder and start path with a Flatpak Steam, the game-closed grace period."""
+import io
 import os
 import sys
 import tempfile
@@ -93,10 +94,23 @@ class FlatpakSteam(unittest.TestCase):
         self.assertFalse(launcher.sandboxed_game("/usr/games/steam/BeamNG.drive.x64"))
 
     def test_flatpak_steam_pid(self):
-        touch(os.path.join(self.home, *FP, ".steam", "steam.pid"))
-        with open(os.path.join(self.home, *FP, ".steam", "steam.pid"), "w") as f:
-            f.write(str(os.getpid()))
-        self.assertTrue(launcher.steam_running())
+        pid = 4242
+        pidfile = os.path.join(self.home, *FP, ".steam", "steam.pid")
+        touch(pidfile)
+        with open(pidfile, "w") as f:
+            f.write(str(pid))
+        real_open = open
+
+        def fopen(path, *args, **kwargs):
+            if path == f"/proc/{pid}/comm":
+                return io.StringIO("steam\n")
+            return real_open(path, *args, **kwargs)
+
+        # A live pid is insufficient: it must name Steam, not this test's Python process.
+        with mock.patch("builtins.open", side_effect=fopen), \
+                mock.patch.object(launcher.os, "listdir") as scan:
+            self.assertTrue(launcher.steam_running())
+        scan.assert_not_called()    # the Flatpak pidfile worked, without the fallback process scan
 
 
 class GameClosed(unittest.TestCase):
@@ -118,11 +132,11 @@ class GameClosed(unittest.TestCase):
 @unittest.skipIf(os.name == "nt", "Linux: ensure_ca_certs leaves Windows alone")
 class CaCerts(unittest.TestCase):
     """The packaged app's OpenSSL looks in /usr/lib/ssl (Ubuntu's): elsewhere SSL_CERT_FILE points at a bundle."""
-    NONE = mock.Mock(cafile="/usr/lib/ssl/cert.pem", capath="/nonexistent/certs")
+    NONE = mock.Mock(cafile=None, capath=None)
 
-    def run_it(self, bundles, env=None):
+    def run_it(self, bundles, env=None, defaults=None):
         with mock.patch.dict(os.environ, env or {}, clear=False), \
-                mock.patch("ssl.get_default_verify_paths", return_value=self.NONE), \
+                mock.patch("ssl.get_default_verify_paths", return_value=defaults or self.NONE), \
                 mock.patch.object(launcher, "CA_BUNDLES", bundles):
             if not env:
                 os.environ.pop("SSL_CERT_FILE", None)
@@ -139,6 +153,27 @@ class CaCerts(unittest.TestCase):
 
     def test_kept_when_set(self):
         self.assertEqual(self.run_it((), {"SSL_CERT_FILE": "/mine.pem"}), "/mine.pem")
+
+    def test_default_bundle_needs_no_override(self):
+        with tempfile.NamedTemporaryFile() as f:
+            defaults = mock.Mock(cafile=f.name, capath=None)
+            self.assertIsNone(self.run_it((), defaults=defaults))
+
+    def test_default_cert_directory_needs_no_override(self):
+        with tempfile.TemporaryDirectory() as d:
+            touch(os.path.join(d, "certificate.pem"))
+            defaults = mock.Mock(cafile=None, capath=d)
+            self.assertIsNone(self.run_it((), defaults=defaults))
+
+    def test_missing_default_paths_use_system_bundle(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.NamedTemporaryFile() as f:
+            defaults = mock.Mock(cafile=os.path.join(d, "missing.pem"), capath=os.path.join(d, "missing-certs"))
+            self.assertEqual(self.run_it((f.name,), defaults=defaults), f.name)
+
+    def test_empty_default_directory_uses_system_bundle(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.NamedTemporaryFile() as f:
+            defaults = mock.Mock(cafile=None, capath=d)
+            self.assertEqual(self.run_it((f.name,), defaults=defaults), f.name)
 
 
 
@@ -317,7 +352,9 @@ class SteamRunningTest(unittest.TestCase):
         self.assertTrue(self.run_it({".steam/steam.pid": "500\n"}, {500: "steam"}))
 
     def test_pidfile_pid_is_not_steam(self):
-        self.assertFalse(self.run_it({".steam/steam.pid": "500\n"}, {500: "bash"}))
+        for pidfile in (".steam/steam.pid", ".var/app/com.valvesoftware.Steam/.steam/steam.pid"):
+            with self.subTest(pidfile=pidfile):
+                self.assertFalse(self.run_it({pidfile: "500\n"}, {500: "bash"}))
 
     def test_nothing_running(self):
         self.assertFalse(self.run_it({}, {500: "steamwebhelper", 501: "kwin"}))
