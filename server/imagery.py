@@ -1486,7 +1486,13 @@ class Imagery:
             self.deshadow.close()
         if self.colormatch is not None:
             self.colormatch.close()
-        self.pool.shutdown(wait=False, cancel_futures=True)
+        # Match _future's lock order: imagery, then executor. shutdown(cancel_futures=True)
+        # invokes _finish synchronously under the executor's shutdown lock; without this
+        # outer RLock a concurrent submit can hold our lock while waiting for that one.
+        # Do not wait here: a running fetch's completion callback also needs our lock.
+        with self._lock:
+            self.pool.shutdown(wait=False, cancel_futures=True)
+            self.urgent_pool.shutdown(wait=False, cancel_futures=True)
 
 
 class EnuSquare:
