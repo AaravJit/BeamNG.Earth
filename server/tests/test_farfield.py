@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -585,6 +586,55 @@ class AdaptiveTileTest(unittest.TestCase):
 
     def test_near_levels_stay_the_lattice(self):
         self.assertEqual(ff.ADAPT_MIN_LEVEL, 1)
+
+
+class GroupDeltaSamplingTest(unittest.TestCase):
+    def test_large_move_bounds_sampling_by_each_overlapping_pair(self):
+        """A near 2 m tile must not give an unrelated 8 km overlap a 4097-square sampling grid."""
+        layout = ff.Layout(64, mesh=True)
+        old, _ = ff.select(0.0, 0.0, [], min_level=ff.MESH_MIN_LEVEL[64], layout=layout)
+        new, _ = ff.select(50000.0, 0.0, [], min_level=ff.MESH_MIN_LEVEL[64], layout=layout)
+        groups = ff.swap_groups(old, new)
+        real_meshgrid = np.meshgrid
+        samples = []
+
+        def bounded_meshgrid(xs, ys, *args, **kwargs):
+            count = len(xs) * len(ys)
+            self.assertLessEqual(count, 65 * 65, "unrelated finer tiles must not oversample this overlap")
+            samples.append(count)
+            return real_meshgrid(xs, ys, *args, **kwargs)
+
+        before, after = np.full((65, 65), -4.0), np.full((65, 65), 7.0)
+        with mock.patch.object(ff.np, "meshgrid", side_effect=bounded_meshgrid):
+            for adds, removes in groups:
+                actual = ff.group_deltas(([(new[k], after) for k in adds], [(old[k], before) for k in removes]))
+                self.assertEqual(actual, (11.0, 0.0) if adds and removes else (0.0, 0.0))
+        self.assertTrue(samples)
+
+    def test_pair_finest_extrema_match_dense_triangulated_surfaces(self):
+        """The dyadic checkerboard grid refines every coarser grid, including negative tile origins."""
+        rng = np.random.default_rng(20261103)
+        for na, nr in ((32, 32), (32, 64), (64, 32), (64, 64), (256, 64), (64, 256)):
+            for gap in (1, 3):
+                for i, j in ((0, 0), (-3, 2)):
+                    with self.subTest(add_cells=na, remove_cells=nr, gap=gap, origin=(i, j)):
+                        tr = ff.Tile(5, i, j)
+                        # Opposite corners exercise both offsets and diagonal parities of the parent grid.
+                        ta = ff.Tile(5 - gap, i * 2 ** gap + 2 ** gap - 1, j * 2 ** gap)
+                        ga, gr = rng.normal(size=(na + 1, na + 1)), rng.normal(size=(nr + 1, nr + 1))
+                        spa, spr = ta.size / na, tr.size / nr
+                        step = min(spa, spr) / 4
+                        ab, rb = ta.bbox, tr.bbox
+                        xs = ab[0] + np.arange(int(round(ta.size / step)) + 1) * step
+                        ys = ab[1] + np.arange(int(round(ta.size / step)) + 1) * step
+                        X, Y = np.meshgrid(xs, ys)
+                        delta = (ff.surface_at(ga, spa, X - ab[0], Y - ab[1])
+                                 - ff.surface_at(gr, spr, X - rb[0], Y - rb[1]))
+                        expected = max(0.0, float(delta.max())), max(0.0, float(-delta.min()))
+                        actual = ff.group_deltas(([(ta, ga)], [(tr, gr)]))
+                        np.testing.assert_allclose(actual, expected, rtol=0, atol=1e-12)
+                        reverse = ff.group_deltas(([(tr, gr)], [(ta, ga)]))
+                        np.testing.assert_allclose(reverse, expected[::-1], rtol=0, atol=1e-12)
 
 
 if __name__ == "__main__":

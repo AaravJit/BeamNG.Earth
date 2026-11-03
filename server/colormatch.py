@@ -704,8 +704,9 @@ def upsample(g, f):
     return o
 
 
-def bilinear(img, y, x):
-    """img [h, w, c] at pixel index coordinates (y, x) (pixel centres at integers), clamped."""
+def bilinear(img, y, x, lut=None):
+    """img [h, w, c] at clamped pixel coordinates; optional LUT applied to the sampled taps
+    before interpolation (e.g. sRGB to linear), without converting the whole image."""
     h, w = img.shape[:2]
     y = np.clip(y, 0, h - 1.001)
     x = np.clip(x, 0, w - 1.001)
@@ -713,8 +714,12 @@ def bilinear(img, y, x):
     x0 = np.floor(x).astype(np.int64)
     fy = (y - y0)[..., None]
     fx = (x - x0)[..., None]
-    return ((img[y0, x0] * (1 - fx) + img[y0, x0 + 1] * fx) * (1 - fy)
-            + (img[y0 + 1, x0] * (1 - fx) + img[y0 + 1, x0 + 1] * fx) * fy)
+    a, b = img[y0, x0], img[y0, x0 + 1]
+    c, d = img[y0 + 1, x0], img[y0 + 1, x0 + 1]
+    if lut is not None:
+        a, b, c, d = lut[a], lut[b], lut[c], lut[d]
+    return ((a * (1 - fx) + b * fx) * (1 - fy)
+            + (c * (1 - fx) + d * fx) * fy)
 
 
 class Field:
@@ -829,11 +834,11 @@ class Field:
             src = margin() if margin is not None else None
             if src is None:
                 src = np.pad(rgb, ((MARGIN, MARGIN), (MARGIN, MARGIN), (0, 0)), mode="edge")
-            src, o = SRGB2LIN[src], MARGIN
+            o = MARGIN
         else:
-            src, o = SRGB2LIN[rgb], 0
-        pa = bilinear(src, ya + o, xa + o) * self.gA[s]
-        pb = bilinear(src, yb + o, xb + o) * self.gB[s]
+            src, o = rgb, 0
+        pa = bilinear(src, ya + o, xa + o, lut=SRGB2LIN) * self.gA[s]
+        pb = bilinear(src, yb + o, xb + o, lut=SRGB2LIN) * self.gB[s]
         t = ((d16 + REACH) / (2 * REACH))[:, None]
         x_lin[py, px] = (1 - t) * pb + t * pa
 

@@ -1271,15 +1271,14 @@ def write_tile(path, frame, dem, tile, zoom, q=None, ref_zoom=None, fmt="cdae", 
 
 def group_deltas(group_tiles):
     """(dIn, dOut) of a swap group: how far the new surface rises above the old one at most,
-    and how far the old one lies above the new one, evaluated on the finest vertex grid of the
-    group (every vertex of both sides). group_tiles: (adds, removes), lists of (Tile, grid); a
-    grid's shape gives its tile's cell count."""
+    and how far the old one lies above the new one, evaluated on each overlapping pair's finest
+    vertex grid. group_tiles: (adds, removes), lists of (Tile, grid); a grid's shape gives its
+    tile's cell count. The grids use build_tile's aligned, power-of-two checkerboard triangulation."""
     adds, removes = group_tiles
     if not adds or not removes:
         return 0.0, 0.0
     adds = [(t, np.asarray(g, np.float64)) for t, g in adds]
     removes = [(t, np.asarray(g, np.float64)) for t, g in removes]
-    sp = min(t.size / (g.shape[0] - 1) for t, g in adds + removes)
     d_in = d_out = 0.0
     for ta, ga in adds:
         ab = ta.bbox
@@ -1288,7 +1287,12 @@ def group_deltas(group_tiles):
             x0, y0, x1, y1 = max(ab[0], rb[0]), max(ab[1], rb[1]), min(ab[2], rb[2]), min(ab[3], rb[3])
             if x0 >= x1 or y0 >= y1:
                 continue
-            # The intersection of two quadtree tiles is the smaller one: aligned to sp.
+            # Only this pair's grids matter. A group's unrelated near tile made coarse overlaps sample tens of
+            # millions of points after a large move. Each dyadic checkerboard grid refines the coarser one:
+            # coarse diagonals follow the same fine diagonals, so the surface difference is affine on each fine
+            # triangle and its extrema are at fine vertices. No finer grid elsewhere in the group adds extrema.
+            sp = min(ta.size / (ga.shape[0] - 1), tr.size / (gr.shape[0] - 1))
+            # The intersection of two quadtree tiles is the smaller one, aligned to the pair's spacing.
             X, Y = np.meshgrid(x0 + np.arange(int(round((x1 - x0) / sp)) + 1) * sp,
                                y0 + np.arange(int(round((y1 - y0) / sp)) + 1) * sp)
             z_new = surface_at(ga, ta.size / (ga.shape[0] - 1), X - ab[0], Y - ab[1])
