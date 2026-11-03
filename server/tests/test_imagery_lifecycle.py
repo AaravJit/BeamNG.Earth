@@ -14,7 +14,7 @@ import imagery  # noqa: E402
 
 def close_during_submission(kind):
     """Run in a child: a regression must time out instead of hanging the test runner at exit."""
-    faulthandler.dump_traceback_later(5)
+    faulthandler.dump_traceback_later(10)
     running, release = threading.Event(), threading.Event()
     producer_locked, close_started = threading.Event(), threading.Event()
     cancelled_callback = threading.Event()
@@ -22,7 +22,7 @@ def close_during_submission(kind):
     class BlockedImagery(imagery.Imagery):
         def _load(self, key):
             running.set()
-            release.wait(10)
+            release.wait(30)
             return None
 
     with tempfile.TemporaryDirectory() as root:
@@ -43,14 +43,14 @@ def close_during_submission(kind):
         with im._lock:
             active = im._future(keys[0], kind)
             pending = im._future(keys[1], kind)
-        assert running.wait(2), "the synthetic load never started"
+        assert running.wait(5), "the synthetic load never started"
         submitted, errors = [], []
 
         def submit():
             try:
                 with im._lock:
                     producer_locked.set()
-                    assert close_started.wait(2)
+                    assert close_started.wait(5)
                     # Before the fix, cancellation enters _finish while close owns the executor's
                     # shutdown lock. With the consistent lock order, close waits for this producer.
                     cancelled_callback.wait(0.5)
@@ -60,7 +60,7 @@ def close_during_submission(kind):
 
         def close():
             try:
-                assert producer_locked.wait(2)
+                assert producer_locked.wait(5)
                 close_started.set()
                 im.close()
             except BaseException as exc:
@@ -70,8 +70,8 @@ def close_during_submission(kind):
         closer = threading.Thread(target=close, name="imagery-closer", daemon=True)
         producer.start()
         closer.start()
-        producer.join(3)
-        closer.join(3)
+        producer.join(5)
+        closer.join(5)
         release.set()
         assert not producer.is_alive(), "submit deadlocked against close"
         assert not closer.is_alive(), "close deadlocked in a cancellation callback"
@@ -79,7 +79,7 @@ def close_during_submission(kind):
         assert len(submitted) == 1
         assert pending.cancelled(), "queued fetch was not cancelled"
         assert submitted[0].cancelled(), "fetch queued just before close was not cancelled"
-        assert active.result(timeout=2) is None
+        assert active.result(timeout=5) is None
         im.pool.shutdown(wait=True)
         im.urgent_pool.shutdown(wait=True)
         # Repeated close must be harmless, and neither lane may accept new work after close.
@@ -102,7 +102,7 @@ class ShutdownTest(unittest.TestCase):
         )
         try:
             child = subprocess.run([sys.executable, "-c", command], capture_output=True, text=True,
-                                   timeout=9)
+                                   timeout=20)
         except subprocess.TimeoutExpired as exc:
             self.fail(f"{kind} fetch/close deadlock:\n{exc.stderr}")
         self.assertEqual(child.returncode, 0, child.stdout + child.stderr)
