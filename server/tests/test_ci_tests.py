@@ -1,5 +1,6 @@
 """CI classification, manifest gates, offline socket policy and workflow invariants."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -115,6 +116,14 @@ for event, args in [('socket.connect', (None, ('8.8.8.8', 42))), ('socket.getadd
             self.assertTrue(data['modules'][0]['timed_out'])
             self.assertFalse(data['success'])
             self.assertEqual((Path(tmp) / 'lua/test_fake.log').read_text(), 'partial')
+
+    def test_relative_output_path_is_resolved_before_worker_launch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relative = os.path.relpath(tmp, start=Path.cwd())
+            with mock.patch.object(sys, 'argv', ['ci_tests.py', 'python', '--output', relative]), \
+                    mock.patch.object(ci, 'python_lane', return_value=0) as python_lane:
+                self.assertEqual(ci.main(), 0)
+            python_lane.assert_called_once_with(Path(tmp).resolve())
 
     def test_workflow_runs_required_checks_and_always_uploads_artifacts(self):
         workflow = yaml.load((TOOLS.parent / '.github/workflows/tests.yml').read_text(), Loader=yaml.BaseLoader)
