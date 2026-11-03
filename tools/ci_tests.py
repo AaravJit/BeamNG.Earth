@@ -181,6 +181,8 @@ def main():
     ap.add_argument('lane', choices=('python', 'lua'))
     ap.add_argument('--output', type=Path, default=ROOT / 'build/ci')
     args = ap.parse_args()
+    # Worker subprocesses execute from server/tests, so checkpoints must use absolute paths.
+    args.output = args.output.expanduser().resolve()
     args.output.mkdir(parents=True, exist_ok=True)
     def interrupt(signum, frame):
         raise KeyboardInterrupt
