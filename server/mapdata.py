@@ -347,24 +347,36 @@ class MapData:
 
     def layer_provenance(self, key, layer):
         """The provenance dict of a cached layer file, None when it is not cached (or has none): only that entry of
-        the file is read (np.load is lazy per array), and remembered per file (credits.feature_ids asks every second,
-        from the event loop). Never fetches."""
+        the file is read (np.load is lazy per array), and remembered while the file is unchanged (credits.feature_ids
+        asks every second, from the event loop). Other processes can rebuild or evict it. Never fetches."""
         path = self.path(_key(key), layer)
         memo = self.__dict__.setdefault("_prov_memo", {})
-        if path in memo:
-            return memo[path]
+
+        def identity():
+            st = os.stat(path)
+            # An atomic replacement can retain the size and mtime. ctime also catches in-place repairs with a
+            # restored mtime, on filesystems where the inode is unavailable or reused.
+            return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
+
         p = None
         try:
+            stamp = identity()
+            cached = memo.get(path)
+            if cached is not None and cached[0] == stamp:
+                return cached[1]
             with np.load(path, allow_pickle=False) as z:
                 if "provenance" in z.files:
                     p = json.loads(str(z["provenance"]))
-        except FileNotFoundError:
-            return None                 # (not remembered: it may be built later)
+            unchanged = identity() == stamp
         except Exception:
-            p = None
+            memo.pop(path, None)        # missing, corrupt or held by a writer: retry on the next credit check
+            return None
         if len(memo) > 4096:
             memo.clear()
-        memo[path] = p
+        if unchanged:
+            memo[path] = (stamp, p)
+        else:
+            memo.pop(path, None)        # replaced while read: do not associate the old record with the new file
         return p
 
     def _load(self, path):

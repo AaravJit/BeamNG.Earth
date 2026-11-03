@@ -967,6 +967,116 @@ class KindsTest(Sources, SmallBlocks, unittest.TestCase):
         self.assertTrue(netfetch.POLICIES["stac.overturemaps.org"].allow_prefetch)
 
 
+class LayerProvenanceTest(unittest.TestCase):
+    """The credits reader follows shared cache files without downloading or decoding other arrays."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix="mapdata-provenance-")
+        self.addCleanup(tmp.cleanup)
+        self.md = mapdata.MapData(tmp.name, netfetch.Fetcher(offline=True))
+        self.addCleanup(self.md.close)
+        self.key = mf.CELL
+        self.path = Path(self.md.path(self.key, "roads"))
+        self.path.parent.mkdir(parents=True)
+        self.old = {"id": "overture:transportation", "datasets": [{"dataset": "old", "features": 1}]}
+        self.new = {"id": "overture:transportation", "datasets": [{"dataset": "new", "features": 1}]}
+
+    def write(self, provenance, path=None):
+        # Uncompressed so equal-length records have the same file size, even if their bytes differ.
+        np.savez(path or self.path, provenance=np.array(json.dumps(provenance)))
+
+    def read(self):
+        return self.md.layer_provenance(self.key, "roads")
+
+    def replacement(self):
+        replacement = self.path.with_name("replacement.npz")
+        self.write(self.new, replacement)
+        stat = self.path.stat()
+        self.assertEqual(replacement.stat().st_size, stat.st_size)
+        os.utime(replacement, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        return replacement
+
+    def test_unchanged_file_is_decoded_once(self):
+        self.write(self.old)
+        with mock.patch.object(mapdata.np, "load", wraps=np.load) as load:
+            self.assertEqual(self.read(), self.old)
+            self.assertEqual(self.read(), self.old)
+        self.assertEqual(load.call_count, 1)
+
+    def test_atomic_replacement_with_same_size_and_mtime(self):
+        self.write(self.old)
+        self.assertEqual(self.read(), self.old)
+        os.replace(self.replacement(), self.path)
+        self.assertEqual(self.read(), self.new)
+
+    def test_missing_then_created_and_deleted(self):
+        self.assertIsNone(self.read())
+        self.write(self.old)
+        self.assertEqual(self.read(), self.old)
+        self.path.unlink()
+        self.assertIsNone(self.read())
+        self.write(self.new)
+        self.assertEqual(self.read(), self.new)
+
+    def test_corrupt_and_old_layout_rebuilt_by_another_writer(self):
+        for content in (b"truncated cache", None):
+            with self.subTest(content=content):
+                if content is None:
+                    np.savez(self.path, old_layout=np.array([1]))
+                else:
+                    self.path.write_bytes(content)
+                self.assertIsNone(self.read())
+                # This is the worker-side atomic writer; it cannot invalidate the reader's in-memory memo.
+                writer = mapdata.MapData(self.md.cache_dir, netfetch.Fetcher(offline=True))
+                try:
+                    writer._store(str(self.path), {"provenance": np.array(json.dumps(self.new))})
+                finally:
+                    writer.close()
+                self.assertEqual(self.read(), self.new)
+
+    def test_replacement_during_read_is_not_memoized_as_the_new_file(self):
+        self.write(self.old)
+        replacement = self.replacement()
+        real_load = np.load
+
+        class ReplaceOnClose:
+            def __enter__(inner):
+                inner.opened = real_load(self.path, allow_pickle=False)
+                return inner.opened.__enter__()
+
+            def __exit__(inner, *args):
+                result = inner.opened.__exit__(*args)
+                # Closing first also permits the writer's replacement on Windows.
+                os.replace(replacement, self.path)
+                return result
+
+        with mock.patch.object(mapdata.np, "load", side_effect=lambda *a, **kw: ReplaceOnClose()):
+            self.assertEqual(self.read(), self.old)
+        self.assertEqual(self.read(), self.new)
+
+    def test_temporary_read_failure_is_retried_without_file_change(self):
+        self.write(self.new)
+        with mock.patch.object(mapdata.np, "load", side_effect=PermissionError("file held by writer")):
+            self.assertIsNone(self.read())
+        self.assertEqual(self.read(), self.new)
+
+    def test_credits_follow_repaired_source_records(self):
+        import credits
+        import geodesy
+        import types
+
+        frame = geodesy.EnuFrame(*self.key.center())
+        server = types.SimpleNamespace(anchors={1: types.SimpleNamespace(frame=frame)}, mapdata=self.md)
+        conn = types.SimpleNamespace(s=server, active=1, focus=(0.0, 0.0),
+                                     roads=types.SimpleNamespace(aid=1, sent={(0, 0)}))
+        self.path.write_bytes(b"truncated cache")
+        self.assertNotIn("map:new", credits.feature_ids(conn))
+        self.write(self.new)
+        self.assertIn("map:new", credits.feature_ids(conn))
+        self.path.unlink()
+        self.assertNotIn("map:new", credits.feature_ids(conn))
+
+
 @needs_duckdb
 class ProvenanceTest(Sources, SmallBlocks, unittest.TestCase):
     def test_licences(self):
