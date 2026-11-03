@@ -9,6 +9,7 @@
 - vegetation tiles in tile frames (vegetation.geo_tile_items): the same items from any anchor once placed, the
   tracker keeps what it sent across a rebase.
 """
+import asyncio
 import json
 import math
 import os
@@ -341,7 +342,7 @@ class FakeVeg:
                             rng.uniform(0, 1, k).astype(f32), rng.uniform(0, 360, k).astype(f32), np.ones(k, f32))
 
 
-class VegGeoTilesTest(unittest.TestCase):
+class VegGeoTilesTest(unittest.IsolatedAsyncioTestCase):
     def test_tiles_partition_their_cell(self):
         import vegetation
         fv = FakeVeg()
@@ -374,19 +375,9 @@ class VegGeoTilesTest(unittest.TestCase):
         exact = geotiles.world_map(geotiles.frame(gx, gy), a, pts)
         self.assertLess(float(np.abs(placed - exact).max()), 0.02, "(rows rounded to 1 cm)")
 
-    def test_tracker_keeps_tiles_across_a_rebase(self):
+    async def test_tracker_keeps_tiles_across_a_rebase(self):
         """A scripted rebase: the geo tracker builds nothing again; the anchor tracker builds every tile again."""
         import vegetation
-        from concurrent.futures import ThreadPoolExecutor, wait
-
-        class Loop:
-            def __init__(self):
-                self.futs = []
-
-            def run_in_executor(self, pool, fn, *args):
-                f = pool.submit(fn, *args)
-                self.futs.append(f)
-                return f
 
         class Conn:
             def __init__(self):
@@ -405,24 +396,29 @@ class VegGeoTilesTest(unittest.TestCase):
             built.append((aid, tx, ty))
             return "/x/veg.json", 1
 
-        def drive(tr, build, frames):
-            loop, conn = Loop(), Conn()
+        async def drive(tr, build, frames):
+            # As in earthd, asyncio confines completion callbacks and poses to the same loop thread.
+            loop, conn = asyncio.get_running_loop(), Conn()
             counts = []
-            for aid, f in frames:
-                n0 = len(built)
-                x, y, _ = f.geodetic_to_enu(LAT, LON, 0.0)
-                for _ in range(40):         # (poses until nothing more is wanted)
-                    tr.on_pose(conn, aid, float(x), float(y), loop, build, frame=f)
-                    wait(loop.futs)
-                    if len(tr.building) == 0 and all(k in tr.sent for k in tr.car):
-                        break
-                counts.append(len(built) - n0)
-            tr.close()
+            try:
+                for aid, f in frames:
+                    n0 = len(built)
+                    x, y, _ = f.geodetic_to_enu(LAT, LON, 0.0)
+                    for _ in range(40):         # (poses until nothing more is wanted)
+                        tr.on_pose(conn, aid, float(x), float(y), loop, build, frame=f)
+                        await asyncio.wait_for(asyncio.gather(*tr.futs.values()), timeout=10)
+                        if not tr.building and tr.car <= tr.sent:
+                            break
+                    self.assertTrue(not tr.building and tr.car <= tr.sent, "the requested tiles must finish")
+                    self.assertFalse(tr.futs)
+                    counts.append(len(built) - n0)
+            finally:
+                tr.close()
             return counts, conn.msgs
         a, b = east(LAT, LON, -15.0), geodesy.EnuFrame(LAT, LON)
-        geo, msgs = drive(vegetation.Tracker(per_pose=16, geo=True), build_geo, [(1, a), (2, b)])
+        geo, msgs = await drive(vegetation.Tracker(per_pose=16, geo=True), build_geo, [(1, a), (2, b)])
         built.clear()
-        old, _ = drive(vegetation.Tracker(per_pose=16), build_anchor, [(1, a), (2, b)])
+        old, _ = await drive(vegetation.Tracker(per_pose=16), build_anchor, [(1, a), (2, b)])
         self.assertGreater(geo[0], 50)
         self.assertLessEqual(geo[1], 3, "after the rebase: (almost) nothing built again")
         self.assertGreater(old[1], 50, "the anchor's tiles: all of them again")

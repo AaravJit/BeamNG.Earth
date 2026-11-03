@@ -13,6 +13,7 @@ skin per anchor.
 - with the map data cache (~/.cache/beamng-earth, Fells Point): the same geotile's content from two anchors 15 km apart
   is byte-identical; its skin's vertices lie on the anchor's drawn ground; the skins' seams.
 """
+import asyncio
 import json
 import math
 import os
@@ -183,23 +184,13 @@ class ExactVariantTest(unittest.TestCase):
         self.assertEqual(sorted(far), ["bld", "bldcol"])       # (60 x 2.35e-3 = 14 cm; 20 x 2.35e-3 = 4.7 cm)
 
 
-class GeoTrackerRebaseTest(unittest.TestCase):
+class GeoTrackerRebaseTest(unittest.IsolatedAsyncioTestCase):
     """A scripted 15 km rebase (the mod's poses round one place, first from an anchor 15 km west, then from one at it):
     no content is built again, a skin for each tile round the car."""
 
-    def test_rebase_sends_skins_only(self):
-        from concurrent.futures import ThreadPoolExecutor, wait  # noqa: F401
+    async def test_rebase_sends_skins_only(self):
         jobs = []
         lock = threading.Lock()
-
-        class Loop:
-            def __init__(self):
-                self.futs = []
-
-            def run_in_executor(self, pool, fn, *args):
-                f = pool.submit(fn, *args)
-                self.futs.append(f)
-                return f
 
         class Conn:
             def __init__(self):
@@ -226,22 +217,26 @@ class GeoTrackerRebaseTest(unittest.TestCase):
         a, b = east(LAT, LON, -15.0), geodesy.EnuFrame(LAT, LON)
         frames = {1: a, 2: b}
         tr = roads.GeoTracker()
-        loop, conn = Loop(), Conn()
+        loop, conn = asyncio.get_running_loop(), Conn()
 
-        def drive(aid, f):
+        async def drive(aid, f):
             x, y, _ = f.geodetic_to_enu(LAT, LON, 0.0)
             n0 = len(jobs)
             for _ in range(60):
                 tr.on_pose(conn, aid, float(x), float(y), loop, build, frame=f)
-                wait(loop.futs)
+                await asyncio.wait_for(asyncio.gather(*tr.futs.values()), timeout=10)
                 if not tr.building and all(k in tr.sent and k in tr.skins for k in tr.car) and \
                         not any(tr.need.get((k, aid)) for k in tr.car):
                     break
+            self.assertTrue(not tr.building and all(k in tr.sent and k in tr.skins for k in tr.car)
+                            and not any(tr.need.get((k, aid)) for k in tr.car), "the requested tiles must finish")
             return jobs[n0:]
-        first = drive(1, a)
-        m0 = len(conn.msgs)
-        second = drive(2, b)
-        tr.close()
+        try:
+            first = await drive(1, a)
+            m0 = len(conn.msgs)
+            second = await drive(2, b)
+        finally:
+            tr.close()
         msgs = conn.msgs[m0:]
         content_after = [j for j in second if j[3]]
         skins_after = [j for j in second if j[4]]

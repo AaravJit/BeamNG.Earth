@@ -863,7 +863,11 @@ def _squares_near(x, y, m, size):
 
 class Tracker:
     """Per connection: which tiles of a kind the mod has (as roads.Tracker): vegetation tiles by default
-    (messages veg_tile / veg_drop); the far buildings use one too (buildings.FAR_*)."""
+    (messages veg_tile / veg_drop); the far buildings use one too (buildings.FAR_*).
+
+    Poses and asyncio-future completion callbacks run on the connection's event-loop thread; only build runs in
+    the executor. Keep that ordering when driving the tracker outside earthd (including tests).
+    """
 
     def __init__(self, send_m=SEND_M, drop_m=DROP_M, per_pose=BUILD_PER_POSE, kind="veg", skip_m=None, group=None,
                  unit=1, inner=None, geo=False, z=None, group_z=None):

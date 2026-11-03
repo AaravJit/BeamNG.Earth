@@ -13,6 +13,7 @@ rebases.
   far tiles, none of a road geotile's in another key's far tile, and the mod's rule (a far tile hidden once its road
   geotile shows its own) shows each building of a square once, whichever road geotiles are in.
 """
+import asyncio
 import hashlib
 import math
 import os
@@ -88,16 +89,6 @@ class SlabKernelTest(unittest.TestCase):
         self.assertEqual(len(got[0]) if got else 0, 16 * n, "the box's segments: 4 quads each")
 
 
-class Loop:
-    def __init__(self):
-        self.futs = []
-
-    def run_in_executor(self, pool, fn, *args):
-        f = pool.submit(fn, *args)
-        self.futs.append(f)
-        return f
-
-
 class Conn:
     def __init__(self):
         self.msgs, self.lock = [], threading.Lock()
@@ -107,7 +98,7 @@ class Conn:
             self.msgs.append(m)
 
 
-class TrackerTest(unittest.TestCase):
+class TrackerTest(unittest.IsolatedAsyncioTestCase):
     """The far geotiles' trackers as earthd.Connection.make_far_trackers makes them, driven like the mod's poses."""
 
     def trackers(self, geo):
@@ -117,25 +108,44 @@ class TrackerTest(unittest.TestCase):
         earthd.Connection.make_far_trackers(c, geo)
         return c
 
-    def drive(self, trs, frames, builds):
-        from concurrent.futures import wait
-        loop, conn = Loop(), Conn()
-        counts = []
-        for aid, f in frames:
-            n0 = len(builds)
-            x, y, _ = f.geodetic_to_enu(LAT, LON, 0.0)
-            for _ in range(400):
-                for kind, tr, build in trs:
-                    tr.on_pose(conn, aid, float(x), float(y), loop, build(aid), frame=f)
-                wait(loop.futs)
-                if all(not tr.building and all(k in tr.sent for k in tr.car) for _k, tr, _b in trs):
-                    break
-            counts.append(len(builds) - n0)
-        for _k, tr, _b in trs:
-            tr.close()
-        return counts, conn.msgs
+    async def drive(self, trs, frames, builds):
+        # earthd uses asyncio futures: their callbacks run on the pose loop, never in the build threads. A raw
+        # concurrent Future here used to mutate sent during on_pose and could finish before futs was assigned.
+        loop, conn = asyncio.get_running_loop(), Conn()
+        counts, tile_messages = [], []
+        try:
+            for aid, f in frames:
+                n0 = len(builds)
+                m0 = len(conn.msgs)
+                x, y, _ = f.geodetic_to_enu(LAT, LON, 0.0)
 
-    def test_rebase_builds_and_sends_no_far_content(self):
+                def pose():
+                    for kind, tr, build in trs:
+                        tr.on_pose(conn, aid, float(x), float(y), loop, build(aid), frame=f)
+
+                pose()
+                # One batch per pose, including the first above. The old fixed 400 stopped before all 1,168
+                # anchor bridge tiles could finish (two per pose), silently rebasing after only 800 were sent.
+                batches = max(1, max(math.ceil(len(tr.car) / tr.per_pose) for _k, tr, _b in trs))
+                for batch in range(batches):
+                    if batch:
+                        pose()
+                    pending = [f for _k, tr, _b in trs for f in tr.futs.values()]
+                    await asyncio.wait_for(asyncio.gather(*pending), timeout=10)
+                    if all(not tr.building and tr.car <= tr.sent for _k, tr, _b in trs):
+                        break
+                self.assertTrue(all(not tr.building and tr.car <= tr.sent for _k, tr, _b in trs),
+                                [(k, len(tr.car), len(tr.sent), len(tr.building), len(tr.car - tr.sent))
+                                 for k, tr, _b in trs])
+                self.assertTrue(all(not tr.futs for _k, tr, _b in trs))
+                counts.append(len(builds) - n0)
+                tile_messages.append(sum(m["type"].endswith("_tile") for m in conn.msgs[m0:]))
+        finally:
+            for _k, tr, _b in trs:
+                tr.close()
+        return counts, conn.msgs, tile_messages
+
+    async def test_rebase_builds_and_sends_no_far_content(self):
         builds, lock = [], threading.Lock()
 
         def geo(kind):
@@ -159,13 +169,12 @@ class TrackerTest(unittest.TestCase):
         a, b = east(LAT, LON, -15.0), geodesy.EnuFrame(LAT, LON)
         t = self.trackers(True)
         trs = [(k, getattr(t, k), geo(k)) for k in ("bldfar", "bldsky", "brfar")]
-        n, msgs = self.drive(trs, [(1, a), (2, b)], builds)
+        n, msgs, sent = await self.drive(trs, [(1, a), (2, b)], builds)
         first = [m for m in msgs if m["type"].endswith("_tile")]
         by = {k: [m for m in first if m["type"] == f"{k}_tile"] for k in ("bldfar", "bldsky", "brfar")}
         self.assertGreater(n[0], 150)
         self.assertEqual(n[1], 0, "after the rebase: no far content built again")
-        m0 = len(first)
-        self.assertEqual(len([m for m in msgs if m["type"].endswith("_tile")]), m0, "... nor sent (0 mod loads)")
+        self.assertEqual(sent, [len(first), 0], "... nor sent after the rebase (0 mod loads)")
         # far buildings in the road geotiles' grid, whole skyline squares; the skyline only where none of theirs are
         far = {tuple(map(int, m["key"][4:].split("_"))) for m in by["bldfar"]}
         self.assertTrue(all(m["key"].startswith("g17_") for m in by["bldfar"]))
@@ -180,12 +189,83 @@ class TrackerTest(unittest.TestCase):
         builds.clear()
         t = self.trackers(False)
         trs = [(k, getattr(t, k), anchor(k)) for k in ("bldfar", "bldsky", "brfar")]
-        old, _ = self.drive(trs, [(1, a), (2, b)], builds)
+        old, _, _sent = await self.drive(trs, [(1, a), (2, b)], builds)
         self.assertGreater(old[1], 150)
         kinds = {k: sum(1 for j in builds if j[0] == k and j[1] == 2) for k in ("bldfar", "bldsky", "brfar")}
         print(f"\nscripted rebase (15 km): far jobs before {n[0]} / after {n[1]} (geotiles: "
               f"{len(by['bldfar'])} far buildings, {len(by['bldsky'])} skyline, {len(by['brfar'])} far bridge squares); "
               f"anchor tiles {old[0]} / after {old[1]} ({kinds})")
+
+    async def test_worker_completion_is_deferred_to_pose_loop(self):
+        """Even an already-finished build cannot reenter on_pose or edit its sent-set iteration."""
+        from concurrent.futures import ThreadPoolExecutor
+        import vegetation
+        loop = asyncio.get_running_loop()
+        pose_thread = threading.get_ident()
+        gx, gy = geotiles.tile_of(LAT, LON)
+        frame = geotiles.frame(gx, gy)
+        for geo in (False, True):
+            for immediate in (False, True):
+                with self.subTest(geo=geo, immediate=immediate):
+                    release = threading.Event()
+                    if immediate:
+                        release.set()
+                    worker_threads, callbacks, sources = [], [], []
+                    in_pose = [True]
+
+                    class Pool(ThreadPoolExecutor):
+                        def submit(self, fn, *args, **kwargs):
+                            f = super().submit(fn, *args, **kwargs)
+                            sources.append(f)
+                            if immediate:  # completed before asyncio wraps the concurrent future
+                                f.result(timeout=5)
+                            return f
+
+                    tr = vegetation.Tracker(send_m=0, drop_m=0, per_pose=1, geo=geo)
+                    tr.pool = Pool(1)
+                    original = tr._built_geo if geo else tr._built
+
+                    def built(*args):
+                        callbacks.append((threading.get_ident(), in_pose[0]))
+                        original(*args)
+
+                    setattr(tr, "_built_geo" if geo else "_built", built)
+                    old_key = (gx + 50, gy + 50) if geo else (100, 100)
+                    tr.aid, tr.frame, tr.sent = 1, frame, {old_key}
+                    dist = tr._geo_dist if geo else tr._dist
+
+                    def distance(k, *args, **kwargs):
+                        if k == old_key:
+                            # Complete the queued worker while on_pose is iterating sent. An executor Future's
+                            # callback would mutate the set here; asyncio defers it until the pose returns.
+                            release.set()
+                            sources[0].result(timeout=5)
+                        return dist(k, *args, **kwargs)
+
+                    setattr(tr, "_geo_dist" if geo else "_dist", distance)
+
+                    def build(*args):
+                        worker_threads.append(threading.get_ident())
+                        if not release.wait(5):
+                            raise TimeoutError("test did not release the queued build")
+                        return ("/x/geo.json", 1, geotiles.centre(*args), 0.0) if geo else ("/x/anchor.json", 1)
+
+                    try:
+                        tr.on_pose(Conn(), 1, 10.0, 10.0, loop, build, frame=frame)
+                        self.assertEqual(callbacks, [], "completion must not run during the synchronous pose")
+                        self.assertEqual(tr.sent, set(), "only the old tile was dropped")
+                        self.assertEqual(len(tr.futs), 1)
+                        in_pose[0] = False
+                        await asyncio.wait_for(asyncio.gather(*tr.futs.values()), timeout=5)
+                        self.assertEqual(callbacks, [(pose_thread, False)])
+                        self.assertEqual(len(worker_threads), 1)
+                        self.assertNotEqual(worker_threads[0], pose_thread)
+                        self.assertEqual(len(tr.sent), 1)
+                        self.assertFalse(tr.building)
+                        self.assertFalse(tr.futs, "a fast completion must not leave a stale future")
+                    finally:
+                        release.set()
+                        tr.pool.shutdown(wait=True, cancel_futures=True)
 
 
 class AgreementTest(unittest.TestCase):
