@@ -1,0 +1,5 @@
+# Test-only dependencies; application dependencies remain in requirements.txt.
+-r requirements.txt
+fonttools           # regenerate the bundled highway-sign glyph atlas
+osmium              # local OSM fixture builder, not a live data download
+PyYAML              # validate CI workflow structure in test_ci_tests.py
